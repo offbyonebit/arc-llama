@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -152,7 +151,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         try:
             model, srv = await rt.ensure_active(name)
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
+            raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}") from None
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         return {"name": model.name, "loaded": srv.is_running}
@@ -201,7 +200,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             try:
                 ctx = int(body["ctx"])
             except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="ctx must be an integer")
+                raise HTTPException(status_code=400, detail="ctx must be an integer") from None
             if not (256 <= ctx <= 1_048_576):
                 raise HTTPException(status_code=400, detail="ctx must be 256..1048576")
             recipe["ctx"] = ctx
@@ -220,7 +219,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             try:
                 par = int(body["parallel"])
             except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="parallel must be an integer")
+                raise HTTPException(status_code=400, detail="parallel must be an integer") from None
             if not (1 <= par <= 32):
                 raise HTTPException(status_code=400, detail="parallel must be 1..32")
             recipe["parallel"] = par
@@ -302,7 +301,7 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     try:
         model, srv = await rt.ensure_active(model_query)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown model: {model_query!r}")
+        raise HTTPException(status_code=404, detail=f"Unknown model: {model_query!r}") from None
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     target_url = f"{srv.plan.backend_url}{target_path}"

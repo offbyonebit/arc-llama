@@ -20,7 +20,7 @@ from arc_llama.config import (
     Config,
     ModelConfig,
 )
-from arc_llama.recipes import KVCacheType, default_recipe
+from arc_llama.recipes import default_recipe
 
 log = logging.getLogger("arc_llama.models")
 

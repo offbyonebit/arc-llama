@@ -11,7 +11,6 @@ Color choices avoid red/green — status is signalled by brightness/dim, not hue
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import httpx
@@ -20,9 +19,9 @@ try:
     from textual import on, work
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Grid, Horizontal, Vertical
+    from textual.containers import Horizontal, Vertical
     from textual.screen import ModalScreen
-    from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Select, Static
+    from textual.widgets import Button, DataTable, Footer, Input, Label, Select, Static
 except ImportError as e:  # pragma: no cover
     raise SystemExit(
         "arc-llama TUI requires textual. Install with: pip install 'arc-llama[tui]'"

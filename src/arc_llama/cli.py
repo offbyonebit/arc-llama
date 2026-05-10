@@ -29,14 +29,9 @@ from rich.console import Console
 from rich.table import Table
 
 from arc_llama import __version__
-from arc_llama.arch import Arch, profile_for
 from arc_llama.config import (
     Config,
-    GPUConfig,
-    PathsConfig,
-    ServerConfig,
     default_config_path,
-    default_models_dir,
     init_config_from_detection,
     load_config,
 )

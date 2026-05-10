@@ -38,6 +38,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "textual>=0.60",
+    "build>=1.2",
 ]
 
 [project.scripts]
@@ -50,12 +51,6 @@ Issues = "https://github.com/offbyonebit/arc-llama/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/arc_llama"]
 
-[tool.hatch.build.targets.wheel.shared-data]
-"src/arc_llama/static" = "arc_llama/static"
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/arc_llama/static" = "arc_llama/static"
-
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -63,3 +58,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N"]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
