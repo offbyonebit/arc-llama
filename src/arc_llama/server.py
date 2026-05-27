@@ -242,7 +242,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             try:
                 ub = int(body["ubatch_size"])
             except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="ubatch_size must be an integer")
+                raise HTTPException(status_code=400, detail="ubatch_size must be an integer") from None
             if not (1 <= ub <= 4096):
                 raise HTTPException(status_code=400, detail="ubatch_size must be 1..4096")
             recipe["ubatch_size"] = ub

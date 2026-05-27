@@ -35,7 +35,7 @@ from arc_llama.config import (
     init_config_from_detection,
     load_config,
 )
-from arc_llama.detect import detect_gpus, lspci_intel_gpus
+from arc_llama.detect import detect_gpus, lspci_intel_gpus, render_nodes_in_dev
 from arc_llama.models import (
     add_local_model,
     discover_ggufs,
@@ -208,11 +208,89 @@ def doctor(ctx: click.Context) -> None:
         else:
             console.print("    lspci shows no Intel display devices either.")
 
+    # DRM device nodes in /dev/dri/
+    console.print("\n  /dev/dri/ render nodes:")
+    dev_dri = Path("/dev/dri")
+    if not dev_dri.exists():
+        console.print(
+            "    [red]/dev/dri/ does not exist[/red] — no DRM device nodes "
+            "present in this environment."
+        )
+        console.print(
+            "    In a container: pass the device through with --device=/dev/dri/")
+    else:
+        render_nodes = render_nodes_in_dev()
+        all_dri = sorted(dev_dri.iterdir()) if dev_dri.exists() else []
+        if not render_nodes:
+            console.print(
+                "    [yellow]no renderD* nodes found[/yellow] (all entries: "
+                + (", ".join(p.name for p in all_dri) or "none")
+                + ")"
+            )
+        else:
+            for node in render_nodes:
+                try:
+                    stat = node.stat()
+                    mode = oct(stat.st_mode)[-3:]
+                except OSError:
+                    mode = "???"
+                console.print(f"    [green]{node}[/green]  (mode={mode})")
+
+    # Cross-reference: driver bound but render node absent
+    _missing_render = [
+        g for g in gpus if g.driver in ("xe", "i915") and g.drm_render is None
+    ]
+    if _missing_render:
+        console.print()
+        for g in _missing_render:
+            console.print(
+                f"  [red]WARNING[/red]: {g.name} has `{g.driver}` driver bound "
+                f"but no DRM render node was created."
+            )
+        console.print(
+            "  This is the most common cause of "
+            "\"No device of requested type available\" from SYCL.\n"
+            "  Steps to resolve:\n"
+            "    1. Check render nodes:  ls -la /dev/dri/\n"
+            "    2. Check driver init:   dmesg | grep -E '(xe|i915|drm)' | tail -30\n"
+            "    3. In containers:       ensure host /dev/dri is passed through "
+            "(--device=/dev/dri/ or --device=/dev/dri/renderD128)\n"
+            "    4. Add to groups:       sudo usermod -aG render,video $USER  (re-login)\n"
+            "    5. Reload driver:       sudo modprobe -r xe && sudo modprobe xe"
+        )
+
     # External tools
     console.print("\n  external tools:")
     for tool in ("clinfo", "sycl-ls", "intel_gpu_top", "nvtop", "lspci"):
         path = shutil.which(tool)
         console.print(f"    {tool:<14} {path or '— missing —'}")
+
+    # sycl-ls device enumeration (most useful signal for "can SYCL see the GPU?")
+    sycl_ls_bin = shutil.which("sycl-ls")
+    console.print("\n  sycl-ls device enumeration:")
+    if not sycl_ls_bin:
+        console.print("    [yellow]sycl-ls not found — install Intel oneAPI Base Toolkit[/yellow]")
+    else:
+        try:
+            sl = subprocess.run(
+                [sycl_ls_bin], capture_output=True, text=True, timeout=10
+            )
+            output = sl.stdout.strip()
+            if output:
+                for line in output.splitlines():
+                    console.print(f"    {line}")
+            else:
+                console.print(
+                    "    [yellow](no output — SYCL sees no devices; "
+                    "GPU/render-node access likely missing)[/yellow]"
+                )
+            if sl.returncode != 0:
+                console.print(f"    [yellow]sycl-ls exited {sl.returncode}[/yellow]")
+                if sl.stderr.strip():
+                    for line in sl.stderr.strip().splitlines()[:5]:
+                        console.print(f"    [dim]{line}[/dim]")
+        except subprocess.TimeoutExpired:
+            console.print("    [yellow]sycl-ls timed out[/yellow]")
 
     # Permissions
     console.print("\n  user groups:")
@@ -227,8 +305,7 @@ def doctor(ctx: click.Context) -> None:
         console.print(f"    {needed:<14} {marker}")
     if "render" not in groups or "video" not in groups:
         console.print(
-            "    [yellow]→ add yourself with `sudo usermod -aG render,video $USER` "
-            "and re-login.[/yellow]"
+            "    [yellow]→ sudo usermod -aG render,video $USER  then log out and back in.[/yellow]"
         )
 
     # oneAPI
