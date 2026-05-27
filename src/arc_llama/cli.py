@@ -223,7 +223,7 @@ def doctor(ctx: click.Context) -> None:
         all_dri = sorted(dev_dri.iterdir()) if dev_dri.exists() else []
         if not render_nodes:
             console.print(
-                f"    [yellow]no renderD* nodes found[/yellow] (all entries: "
+                "    [yellow]no renderD* nodes found[/yellow] (all entries: "
                 + (", ".join(p.name for p in all_dri) or "none")
                 + ")"
             )

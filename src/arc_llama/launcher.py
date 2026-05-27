@@ -181,7 +181,7 @@ def _surface_crash_logs(name: str, log_path: Path | None) -> None:
             tail = f.read().decode("utf-8", errors="replace")
     except Exception:
         return
-    lines = [l for l in tail.splitlines() if l.strip()][-40:]
+    lines = [line for line in tail.splitlines() if line.strip()][-40:]
     if not lines:
         return
     log.error("[%s] last output before crash:", name)

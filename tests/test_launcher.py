@@ -191,7 +191,6 @@ class TestLlamaServerLifecycle:
         srv.started_at = 0.0
 
         import httpx
-        original_get = httpx.AsyncClient.get
 
         async def _fake_get(self, url):
             if "/health" in url:

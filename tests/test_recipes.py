@@ -1,8 +1,6 @@
 """Tests for arc_llama.recipes — VRAM math, recipe generation, KV sizing."""
 from __future__ import annotations
 
-import pytest
-
 from arc_llama.arch import Arch
 from arc_llama.recipes import (
     DEFAULT_CTX_CAP,
