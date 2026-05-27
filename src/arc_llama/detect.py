@@ -141,6 +141,12 @@ def _scan_pci() -> list[DetectedGPU]:
         )
         if driver is None:
             gpu.notes.append("No kernel driver bound — install `xe` or `i915` modules.")
+        elif render is None:
+            gpu.notes.append(
+                f"driver '{driver}' bound but no render node found in sysfs "
+                "(DRM render node not created). "
+                "Check: ls /dev/dri/  and  dmesg | grep -E '(xe|i915|drm)'"
+            )
         found.append(gpu)
     for i, g in enumerate(found):
         g._index = i  # type: ignore[attr-defined]
@@ -223,6 +229,14 @@ def detect_gpus(enrich: bool = True) -> list[DetectedGPU]:
     if enrich and gpus:
         _enrich_with_clinfo(gpus)
     return gpus
+
+
+def render_nodes_in_dev() -> list[Path]:
+    """Return renderD* device nodes present under /dev/dri/, sorted by name."""
+    dev_dri = Path("/dev/dri")
+    if not dev_dri.exists():
+        return []
+    return sorted(p for p in dev_dri.iterdir() if p.name.startswith("renderD"))
 
 
 def lspci_intel_gpus() -> str:

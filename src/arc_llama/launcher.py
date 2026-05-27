@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,6 +163,48 @@ def build_plan(
     )
 
 
+def _surface_crash_logs(name: str, log_path: Path | None) -> None:
+    """Read the tail of the server's stderr log and emit diagnostic hints.
+
+    Called when the subprocess exits before passing the health check.  If the
+    log contains the canonical SYCL "no device" message we print an actionable
+    checklist so the user knows exactly what to fix without having to grep logs
+    themselves.
+    """
+    if log_path is None or not log_path.exists():
+        return
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return
+    lines = [l for l in tail.splitlines() if l.strip()][-40:]
+    if not lines:
+        return
+    log.error("[%s] last output before crash:", name)
+    for line in lines:
+        log.error("[%s]   %s", name, line)
+    combined = tail.lower()
+    if "no device of requested type available" in combined:
+        log.error(
+            "[%s] SYCL/level_zero found no compute device. Checklist:\n"
+            "  1. render nodes present?  ls /dev/dri/renderD*\n"
+            "  2. user in render group?  sudo usermod -aG render,video $USER  (re-login)\n"
+            "  3. driver init errors?    dmesg | grep -E '(xe|i915|drm)'\n"
+            "  4. device visible?        sycl-ls\n"
+            "  5. full diagnostics:      arc-llama doctor",
+            name,
+        )
+    elif "level_zero" in combined and ("error" in combined or "failed" in combined):
+        log.error(
+            "[%s] level_zero adapter error — run `sycl-ls` and `arc-llama doctor`.",
+            name,
+        )
+
+
 class LlamaServer:
     """One llama-server subprocess. Lifecycle: start → wait_ready → stop."""
 
@@ -170,6 +213,8 @@ class LlamaServer:
         self.name = name
         self.process: subprocess.Popen[bytes] | None = None
         self.started_at: float | None = None
+        self._log_path: Path | None = None  # path to current stderr/log file
+        self._is_tmp_log: bool = False       # True when _log_path is a temp file
 
     @property
     def is_running(self) -> bool:
@@ -181,11 +226,23 @@ class LlamaServer:
             return
         stdout = subprocess.DEVNULL
         stderr = subprocess.DEVNULL
+        _tmp_fh = None  # temp file handle to close after Popen
         if log_dir is not None:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / f"{self.name}.log"
             stdout = open(log_path, "ab")
             stderr = subprocess.STDOUT
+            self._log_path = log_path
+            self._is_tmp_log = False
+        else:
+            # Capture stderr to a temp file so wait_ready can surface crash
+            # messages such as "No device of requested type available".
+            _tmp_fh = tempfile.NamedTemporaryFile(
+                prefix=f"arc-llama-{self.name}-", suffix=".log", delete=False
+            )
+            stderr = _tmp_fh
+            self._log_path = Path(_tmp_fh.name)
+            self._is_tmp_log = True
         log.info("[%s] starting: %s", self.name, " ".join(self.plan.argv))
         self.process = subprocess.Popen(
             self.plan.argv,
@@ -194,6 +251,9 @@ class LlamaServer:
             stderr=stderr,
             preexec_fn=_preexec_isolate_and_pdeathsig,
         )
+        # Parent closes its write copy; child keeps its own inherited fd.
+        if _tmp_fh is not None:
+            _tmp_fh.close()
         self.started_at = time.time()
 
     async def wait_ready(self, timeout: float = DEFAULT_HEALTH_TIMEOUT) -> bool:
@@ -202,6 +262,7 @@ class LlamaServer:
             while time.time() < deadline:
                 if not self.is_running:
                     log.warning("[%s] process exited before becoming healthy", self.name)
+                    _surface_crash_logs(self.name, self._log_path)
                     return False
                 try:
                     r = await client.get(self.plan.health_url)
@@ -236,3 +297,10 @@ class LlamaServer:
                 pass
         self.process = None
         self.started_at = None
+        if self._is_tmp_log and self._log_path is not None:
+            try:
+                self._log_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._log_path = None
+            self._is_tmp_log = False
