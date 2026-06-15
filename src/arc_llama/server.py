@@ -20,6 +20,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,6 +29,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -75,6 +77,13 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     app = FastAPI(title="arc-llama", version="0.1.0", lifespan=lifespan)
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -87,11 +96,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         # Local models
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
+            try:
+                created = int(os.path.getmtime(m.path))
+            except OSError:
+                created = 0
             data.append({
                 "id": m.name,
                 "object": "model",
                 "owned_by": "arc-llama",
-                "created": 0,
+                "created": created,
                 "metadata": {
                     "display_name": m.display_name,
                     "path": m.path,
@@ -106,7 +119,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         "id": alias,
                         "object": "model",
                         "owned_by": "arc-llama-alias",
-                        "created": 0,
+                        "created": created,
                         "metadata": {"canonical": m.name},
                     })
         # Upstream models
