@@ -21,6 +21,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import secrets
 import time
 import uuid
@@ -31,6 +32,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -134,6 +136,13 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
 
     app = FastAPI(title="arc-llama", version="0.1.0", lifespan=lifespan)
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:
         """Liveness probe for the arc-llama router itself."""
@@ -226,12 +235,16 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
         # Local models
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
+            try:
+                created = int(os.path.getmtime(m.path))
+            except OSError:
+                created = 0
             data.append(
                 {
                     "id": m.name,
                     "object": "model",
                     "owned_by": "arc-llama",
-                    "created": 0,
+                    "created": created,
                     "metadata": {
                         "display_name": m.display_name,
                         "path": m.path,
@@ -248,10 +261,10 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
                             "id": alias,
                             "object": "model",
                             "owned_by": "arc-llama-alias",
-                            "created": 0,
+                            "created": created,
                             "metadata": {"canonical": m.name},
                         }
-                    )
+                )
         # Upstream models
         try:
             upstream_models = await mgr.models()

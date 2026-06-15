@@ -1,0 +1,56 @@
+# docker-compose.yml — arc-llama + Open WebUI on Intel Arc
+#
+# Usage:
+#   docker compose up
+#
+# Open WebUI → http://localhost:3000
+# arc-llama API → http://localhost:11437/v1
+#
+# Set MODELS_DIR to your GGUF directory (default: $HOME/models):
+#   MODELS_DIR=/mnt/data/models docker compose up
+#
+# To add LMStudio (running on host) as an upstream once the stack is up:
+#   docker compose exec arc-llama arc-llama upstream add lmstudio http://host.docker.internal:1234
+#
+# GPU access requires the host user to be in the render and video groups.
+# If group_add names don't resolve in the container, replace them with GIDs
+# (check with: getent group render video).
+
+services:
+  arc-llama:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "11437:11437"
+    environment:
+      ARC_LLAMA_HOST: "0.0.0.0"
+    volumes:
+      - "${MODELS_DIR:-${HOME}/models}:/models:ro"
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11437/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    environment:
+      OPENAI_API_BASE_URL: "http://arc-llama:11437/v1"
+      OPENAI_API_KEY: "arc-llama"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      arc-llama:
+        condition: service_healthy
+
+volumes:
+  open-webui-data:
