@@ -150,9 +150,10 @@ BATTLEMAGE_PROFILE = ArchProfile(
     notes=[
         "Requires kernel 6.14+ and Mesa 24.x+ for stable `xe` driver.",
         "ReBAR REQUIRED — without it llama.cpp will fall back to slow paths.",
-        "First inference per cold start pays ~20s of SYCL JIT compile.",
+        "First inference per cold start pays ~20s of SYCL JIT compile. An AOT "
+        "build (-DGGML_SYCL_DEVICE_ARCH=bmg-g21) eliminates it entirely.",
         "q8_0 K/V cache works correctly but on some builds underutilises memory "
-        "bandwidth on dense models. Verify perf if you care; correctness is OK.",
+        "bandwidth on dense models. Run `arc-llama tune MODEL` to measure.",
     ],
     safe_kv_q8=True,
     prefer_uniform_quants=True,

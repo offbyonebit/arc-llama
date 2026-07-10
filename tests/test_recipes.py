@@ -1,15 +1,16 @@
 """Tests for arc_llama.recipes — VRAM math, recipe generation, KV sizing."""
 from __future__ import annotations
 
-import pytest
-
 from arc_llama.arch import Arch
 from arc_llama.recipes import (
     DEFAULT_CTX_CAP,
+    PERF_BATCH,
+    PERF_UBATCH,
     KVCacheType,
     LaunchRecipe,
     default_recipe,
     estimate_kv_bytes,
+    recipe_to_dict,
     suggest_ctx,
 )
 
@@ -192,3 +193,83 @@ class TestLaunchRecipeArgv:
         assert argv[argv.index("--spec-type") + 1] == "draft-mtp"
         assert "-ub" in argv
         assert argv[argv.index("-ub") + 1] == "8"
+
+    def test_batch_size_emitted(self):
+        argv = LaunchRecipe(batch_size=2048).to_argv()
+        assert argv[argv.index("-b") + 1] == "2048"
+
+    def test_flash_attn_new_style_takes_value(self):
+        for v in ("on", "off", "auto"):
+            argv = LaunchRecipe(flash_attn=v).to_argv(fa_takes_value=True)
+            assert argv[argv.index("-fa") + 1] == v
+
+    def test_flash_attn_old_style_boolean(self):
+        # Old builds: -fa is a boolean; only 'on' emits it, bare.
+        argv = LaunchRecipe(flash_attn="on").to_argv(fa_takes_value=False)
+        assert "-fa" in argv
+        idx = argv.index("-fa")
+        assert idx == len(argv) - 1 or argv[idx + 1].startswith("-")
+        for v in ("off", "auto"):
+            assert "-fa" not in LaunchRecipe(flash_attn=v).to_argv(fa_takes_value=False)
+
+    def test_flash_attn_none_omitted(self):
+        assert "-fa" not in LaunchRecipe().to_argv()
+
+    def test_invalid_flash_attn_value_omitted(self):
+        # A typo'd value in a hand-edited config must not produce a bad argv.
+        assert "-fa" not in LaunchRecipe(flash_attn="yes").to_argv()
+
+    def test_mmap_and_mlock(self):
+        argv = LaunchRecipe(no_mmap=True, mlock=True).to_argv()
+        assert "--no-mmap" in argv
+        assert "--mlock" in argv
+        argv = LaunchRecipe().to_argv()
+        assert "--no-mmap" not in argv
+        assert "--mlock" not in argv
+
+
+class TestPerfDefaults:
+    def test_big_card_gets_perf_batching(self):
+        r = default_recipe(Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=4 * 1024)
+        assert r.ubatch_size == PERF_UBATCH
+        assert r.batch_size == PERF_BATCH
+        assert r.flash_attn == "auto"
+
+    def test_small_card_keeps_stock_batching(self):
+        r = default_recipe(Arch.ALCHEMIST, vram_mb=8 * 1024, model_file_mb=4 * 1024)
+        assert r.ubatch_size is None
+        assert r.batch_size is None
+        assert r.flash_attn == "auto"
+
+    def test_perf_batching_reserves_bigger_compute_buffer(self):
+        # Same card either side of the threshold: the perf recipe must budget
+        # more compute buffer, i.e. never suggest a LARGER ctx than stock.
+        big = default_recipe(Arch.BATTLEMAGE, vram_mb=16 * 1024, model_file_mb=14 * 1024)
+        small = default_recipe(Arch.BATTLEMAGE, vram_mb=16 * 1024 - 1, model_file_mb=14 * 1024)
+        assert big.ctx <= small.ctx
+
+
+class TestRecipeToDict:
+    def test_round_trips_through_model_config(self):
+        from arc_llama.config import ModelConfig
+
+        r = default_recipe(Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=4 * 1024)
+        mc = ModelConfig(
+            name="m", path="/x.gguf", port=1, gpu_pci_slot="0000:03:00.0",
+            recipe=recipe_to_dict(r),
+        )
+        back = mc.launch_recipe()
+        assert back.ctx == r.ctx
+        assert back.cache_type_k == r.cache_type_k
+        assert back.flash_attn == r.flash_attn
+        assert back.ubatch_size == r.ubatch_size
+        assert back.batch_size == r.batch_size
+
+    def test_unset_optionals_not_serialised(self):
+        d = recipe_to_dict(LaunchRecipe())
+        assert "flash_attn" not in d
+        assert "ubatch_size" not in d
+        assert "batch_size" not in d
+        assert "spec_type" not in d
+        assert "no_mmap" not in d
+        assert "mlock" not in d

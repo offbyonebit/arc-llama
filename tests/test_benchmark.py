@@ -1,7 +1,6 @@
 """Tests for arc_llama.benchmark — measurement, formatting, sweep."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ from arc_llama.benchmark import (
     _fmt_speed,
     _fmt_time,
     _fmt_vram,
+    _read_pid_vram_mb,
     _read_vram_total,
     _read_vram_used,
     benchmark_model,
@@ -55,6 +55,26 @@ class TestVramHelpers:
         (d / "mem_info_vram_total").write_text("25769803776\n")
         assert _read_vram_total(tmp_path) == 24576  # 24 GiB
 
+    def test_read_vram_total_xe_layout(self, tmp_path: Path):
+        # Intel xe driver: total is per-tile, no amdgpu-style attrs.
+        tile = tmp_path / "device" / "tile0"
+        tile.mkdir(parents=True)
+        (tile / "physical_vram_size_bytes").write_text("25769803776\n")
+        assert _read_vram_total(tmp_path) == 24576
+
+    def test_read_vram_total_i915_layout(self, tmp_path: Path):
+        d = tmp_path / "device"
+        d.mkdir()
+        (d / "lmem_total_bytes").write_text("17179869184\n")
+        assert _read_vram_total(tmp_path) == 16384
+
+    def test_read_vram_used_absent_on_intel(self, tmp_path: Path):
+        # xe/i915 expose no global used counter — must return None, not 0.
+        tile = tmp_path / "device" / "tile0"
+        tile.mkdir(parents=True)
+        (tile / "physical_vram_size_bytes").write_text("25769803776\n")
+        assert _read_vram_used(tmp_path) is None
+
     def test_find_drm_card_no_sys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("arc_llama.benchmark.Path", lambda p: tmp_path / p)
         assert _find_drm_card("0000:03:00.0") is None
@@ -72,6 +92,59 @@ class TestVramHelpers:
         found = _find_drm_card("0000:03:00.0")
         assert found is not None
         assert found.name == "card1"
+
+
+class TestPidVram:
+    def _fdinfo(self, tmp_path: Path, pid: int, files: dict[str, str]) -> Path:
+        d = tmp_path / str(pid) / "fdinfo"
+        d.mkdir(parents=True)
+        for name, content in files.items():
+            (d / name).write_text(content)
+        return tmp_path
+
+    def test_xe_fdinfo(self, tmp_path: Path):
+        proc = self._fdinfo(tmp_path, 42, {
+            "5": (
+                "drm-driver:\txe\n"
+                "drm-client-id:\t7\n"
+                "drm-total-vram0:\t8192 MiB\n"
+                "drm-resident-vram0:\t6144 MiB\n"
+            ),
+        })
+        assert _read_pid_vram_mb(42, proc_root=proc) == 6144
+
+    def test_i915_fdinfo_total_fallback(self, tmp_path: Path):
+        proc = self._fdinfo(tmp_path, 42, {
+            "5": (
+                "drm-driver:\ti915\n"
+                "drm-client-id:\t3\n"
+                "drm-total-local0:\t4194304 KiB\n"
+            ),
+        })
+        assert _read_pid_vram_mb(42, proc_root=proc) == 4096
+
+    def test_duplicate_clients_counted_once(self, tmp_path: Path):
+        fd = (
+            "drm-driver:\txe\n"
+            "drm-client-id:\t7\n"
+            "drm-resident-vram0:\t1024 MiB\n"
+        )
+        proc = self._fdinfo(tmp_path, 42, {"5": fd, "6": fd, "7": fd})
+        assert _read_pid_vram_mb(42, proc_root=proc) == 1024
+
+    def test_distinct_clients_summed(self, tmp_path: Path):
+        proc = self._fdinfo(tmp_path, 42, {
+            "5": "drm-client-id:\t1\ndrm-resident-vram0:\t1024 MiB\n",
+            "6": "drm-client-id:\t2\ndrm-resident-vram0:\t512 MiB\n",
+        })
+        assert _read_pid_vram_mb(42, proc_root=proc) == 1536
+
+    def test_no_drm_fds(self, tmp_path: Path):
+        proc = self._fdinfo(tmp_path, 42, {"0": "pos:\t0\nflags:\t0100002\n"})
+        assert _read_pid_vram_mb(42, proc_root=proc) is None
+
+    def test_missing_pid(self, tmp_path: Path):
+        assert _read_pid_vram_mb(99999, proc_root=tmp_path) is None
 
 
 class TestBenchmarkResult:

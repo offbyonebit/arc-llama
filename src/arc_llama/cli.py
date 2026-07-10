@@ -616,6 +616,149 @@ def serve(ctx: click.Context, host: str | None, port: int | None) -> None:
 
 
 # ===========================================================================
+# benchmark / tune
+# ===========================================================================
+
+def _server_url_from(ctx: click.Context, server_url: str | None) -> str:
+    if server_url:
+        return server_url.rstrip("/")
+    cfg = load_config(ctx.obj["config_path"])
+    return f"http://{cfg.server.host}:{cfg.server.port}"
+
+
+@cli.command("benchmark")
+@click.argument("model")
+@click.option(
+    "--server", "server_url", default=None,
+    help="Base URL of a running `arc-llama serve` (default: http://HOST:PORT from config).",
+)
+@click.option("--prompt-tokens", type=int, default=512, show_default=True,
+              help="Approximate prompt length for the prompt-eval measurement.")
+@click.option("--gen-tokens", type=int, default=128, show_default=True,
+              help="Tokens to generate for the generation measurement.")
+@click.option(
+    "--sweep-ctx", default=None,
+    help="Comma-separated ctx values to sweep (e.g. 8192,16384,32768). "
+         "Each is benchmarked against every --kv value.",
+)
+@click.option(
+    "--kv", "kv_types", multiple=True,
+    type=click.Choice(["f16", "q8_0", "q5_1", "q4_0"]),
+    help="KV cache type(s) for --sweep-ctx (repeatable; default: f16 q8_0).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit raw JSON instead of tables.")
+@click.pass_context
+def benchmark_cmd(
+    ctx: click.Context,
+    model: str,
+    server_url: str | None,
+    prompt_tokens: int,
+    gen_tokens: int,
+    sweep_ctx: str | None,
+    kv_types: tuple[str, ...],
+    as_json: bool,
+) -> None:
+    """Measure prompt-eval and generation tok/s for MODEL.
+
+    Requires a running `arc-llama serve` — measurements go through the
+    router so they use the exact SYCL env and recipe your requests get.
+    """
+    import asyncio
+    import json as _json
+
+    from arc_llama.benchmark import (
+        benchmark_model,
+        benchmark_sweep,
+        print_result,
+        print_sweep_table,
+    )
+
+    url = _server_url_from(ctx, server_url)
+    cfg = load_config(ctx.obj["config_path"])
+    if sweep_ctx:
+        try:
+            ctx_values = [int(v) for v in sweep_ctx.split(",") if v.strip()]
+        except ValueError:
+            console.print(f"[red]--sweep-ctx must be comma-separated integers: {sweep_ctx!r}[/red]")
+            sys.exit(1)
+        kvs = list(kv_types) or ["f16", "q8_0"]
+        results = asyncio.run(benchmark_sweep(
+            url, model,
+            ctx_values=ctx_values, kv_types=kvs,
+            prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, cfg=cfg,
+        ))
+        if as_json:
+            click.echo(_json.dumps([r.to_dict() for r in results], indent=2))
+        else:
+            print_sweep_table(results)
+        sys.exit(1 if all(r.error for r in results) else 0)
+    result = asyncio.run(benchmark_model(
+        url, model, prompt_tokens=prompt_tokens, gen_tokens=gen_tokens, cfg=cfg,
+    ))
+    if as_json:
+        click.echo(_json.dumps(result.to_dict(), indent=2))
+    else:
+        print_result(result)
+    sys.exit(1 if result.error else 0)
+
+
+@cli.command("tune")
+@click.argument("model")
+@click.option(
+    "--server", "server_url", default=None,
+    help="Base URL of a running `arc-llama serve` (default: http://HOST:PORT from config).",
+)
+@click.option(
+    "--target", type=click.Choice(["balanced", "generation", "prompt"]),
+    default="balanced", show_default=True,
+    help="What to optimise: generation tok/s, prompt-eval tok/s, or both.",
+)
+@click.option("--prompt-tokens", type=int, default=1024, show_default=True)
+@click.option("--gen-tokens", type=int, default=128, show_default=True)
+@click.option(
+    "--apply/--dry-run", "apply_", default=True,
+    help="Write the winning config into the model's recipe (default) or restore the original.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit raw JSON instead of tables.")
+@click.pass_context
+def tune_cmd(
+    ctx: click.Context,
+    model: str,
+    server_url: str | None,
+    target: str,
+    prompt_tokens: int,
+    gen_tokens: int,
+    apply_: bool,
+    as_json: bool,
+) -> None:
+    """Find the fastest recipe for MODEL by measuring, then persist it.
+
+    Staged sweep over KV cache type, ubatch size, and flash attention —
+    roughly 6–9 measured configs, each paying one model reload. Expect
+    ~10 minutes on a Battlemage-class card. Requires a running
+    `arc-llama serve`.
+    """
+    import asyncio
+    import json as _json
+    from dataclasses import asdict
+
+    from arc_llama.tune import print_report, tune_model
+
+    url = _server_url_from(ctx, server_url)
+    cfg = load_config(ctx.obj["config_path"])
+    report = asyncio.run(tune_model(
+        url, model,
+        target=target, prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
+        apply=apply_, cfg=cfg,
+    ))
+    if as_json:
+        click.echo(_json.dumps(asdict(report), indent=2, default=str))
+    else:
+        print_report(report)
+    sys.exit(1 if report.error else 0)
+
+
+# ===========================================================================
 # mtp-info
 # ===========================================================================
 

@@ -21,7 +21,7 @@ from arc_llama.config import (
     ModelConfig,
 )
 from arc_llama.gguf_meta import has_mtp_heads
-from arc_llama.recipes import default_recipe
+from arc_llama.recipes import default_recipe, recipe_to_dict
 
 log = logging.getLogger("arc_llama.models")
 
@@ -121,13 +121,7 @@ def add_local_model(
         model_file_mb=p.stat().st_size // (1024 * 1024),
         kv_class=kv_class,
     )
-    recipe_dict: dict[str, Any] = {
-        "n_gpu_layers": recipe.n_gpu_layers,
-        "ctx": recipe.ctx,
-        "parallel": recipe.parallel,
-        "cache_type_k": recipe.cache_type_k.value,
-        "cache_type_v": recipe.cache_type_v.value,
-    }
+    recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
     # Auto-enable draft-mtp for models that actually carry MTP heads.
     if has_mtp_heads(p):
         recipe_dict["spec_type"] = "draft-mtp"
@@ -313,13 +307,7 @@ def register_discovered(
             model_file_mb=rp.stat().st_size // (1024 * 1024),
             kv_class=kv_class,
         )
-        recipe_dict: dict[str, Any] = {
-            "n_gpu_layers": recipe.n_gpu_layers,
-            "ctx": recipe.ctx,
-            "parallel": recipe.parallel,
-            "cache_type_k": recipe.cache_type_k.value,
-            "cache_type_v": recipe.cache_type_v.value,
-        }
+        recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
         # Auto-enable draft-mtp for discovered models that carry MTP heads.
         if has_mtp_heads(rp):
             recipe_dict["spec_type"] = "draft-mtp"

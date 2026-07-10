@@ -35,6 +35,9 @@ KV_PER_TOKEN_F16_BYTES: dict[str, int] = {
 }
 
 
+FLASH_ATTN_VALUES = ("on", "off", "auto")
+
+
 @dataclass
 class LaunchRecipe:
     """A complete llama-server invocation, minus the model path and port."""
@@ -51,10 +54,24 @@ class LaunchRecipe:
     """Speculative decoding type, e.g. 'draft-mtp'."""
     ubatch_size: int | None = None
     """Ubatch size (-ub). Auto-set to 8 for MTP models to avoid SSM compute-buffer OOM."""
+    batch_size: int | None = None
+    """Logical batch size (-b). Must be >= ubatch_size when both are set."""
+    flash_attn: str | None = None
+    """Flash Attention: 'on' | 'off' | 'auto' | None (binary default).
+
+    Old llama-server builds (pre ~b6300) expose -fa as a boolean that defaults
+    to off; new builds take -fa {on,off,auto} and default to auto. `to_argv`
+    translates per the probed binary style — see launcher.probe_server_caps.
+    """
+    no_mmap: bool = False
+    """Disable mmap (--no-mmap): slower reload, but the whole model is read
+    up-front — avoids page-cache thrash when VRAM spill keeps tensors host-side."""
+    mlock: bool = False
+    """--mlock: pin host-side weights in RAM so they can't be swapped out."""
     extra_flags: list[str] = field(default_factory=list)
     """Anything else the user wants appended to the command line verbatim."""
 
-    def to_argv(self) -> list[str]:
+    def to_argv(self, fa_takes_value: bool = True) -> list[str]:
         argv = [
             "-ngl", str(self.n_gpu_layers),
             "-c", str(self.ctx),
@@ -74,6 +91,19 @@ class LaunchRecipe:
             argv += ["--spec-type", self.spec_type]
         if self.ubatch_size is not None:
             argv += ["-ub", str(self.ubatch_size)]
+        if self.batch_size is not None:
+            argv += ["-b", str(self.batch_size)]
+        if self.flash_attn in FLASH_ATTN_VALUES:
+            if fa_takes_value:
+                argv += ["-fa", self.flash_attn]
+            elif self.flash_attn == "on":
+                # Old boolean-style flag; 'off' is that style's default and
+                # 'auto' is inexpressible, so both fall through to no flag.
+                argv += ["-fa"]
+        if self.no_mmap:
+            argv += ["--no-mmap"]
+        if self.mlock:
+            argv += ["--mlock"]
         argv += list(self.extra_flags)
         return argv
 
@@ -134,6 +164,18 @@ def suggest_ctx(
     return max(4096, min(rounded, ctx_cap))
 
 
+PERF_UBATCH_MIN_VRAM_MB = 16384
+"""Only default to a large ubatch on cards with real VRAM headroom — the
+compute buffer grows roughly linearly with ubatch, and on 8–12 GB cards a
+previously-fitting model could stop fitting."""
+
+PERF_UBATCH = 1024
+PERF_BATCH = 2048
+PERF_COMPUTE_BUFFER_MB = 1536
+"""Compute-buffer estimate used for ctx sizing when the perf ubatch applies
+(vs. the conservative 768 MiB default at llama.cpp's stock ubatch of 512)."""
+
+
 def default_recipe(
     arch: Arch,
     vram_mb: int,
@@ -144,11 +186,15 @@ def default_recipe(
     """A safe starting recipe for a freshly added model on a given arch."""
     profile: ArchProfile = profile_for(arch)
     kv_type = KVCacheType.Q8_0 if (prefer_q8_kv and profile.safe_kv_q8) else KVCacheType.F16
+    # Prompt processing on Arc is very sensitive to ubatch; default up from
+    # llama.cpp's 512 when the card can absorb the bigger compute buffer.
+    perf_batching = vram_mb >= PERF_UBATCH_MIN_VRAM_MB
     ctx = suggest_ctx(
         vram_mb=vram_mb,
         model_file_mb=model_file_mb,
         kv_type=kv_type,
         kv_class=kv_class,
+        compute_buffer_mb=PERF_COMPUTE_BUFFER_MB if perf_batching else 768,
     )
     return LaunchRecipe(
         n_gpu_layers=999,
@@ -156,4 +202,36 @@ def default_recipe(
         parallel=1,
         cache_type_k=kv_type,
         cache_type_v=kv_type,
+        flash_attn="auto",
+        ubatch_size=PERF_UBATCH if perf_batching else None,
+        batch_size=PERF_BATCH if perf_batching else None,
     )
+
+
+def recipe_to_dict(recipe: LaunchRecipe) -> dict:
+    """Serialise a recipe to the TOML-friendly dict stored in ModelConfig.recipe.
+
+    Only always-meaningful fields are emitted unconditionally; optional fields
+    are included only when set, so configs stay small and None never reaches
+    the TOML writer.
+    """
+    d: dict = {
+        "n_gpu_layers": recipe.n_gpu_layers,
+        "ctx": recipe.ctx,
+        "parallel": recipe.parallel,
+        "cache_type_k": recipe.cache_type_k.value,
+        "cache_type_v": recipe.cache_type_v.value,
+    }
+    if recipe.flash_attn is not None:
+        d["flash_attn"] = recipe.flash_attn
+    if recipe.ubatch_size is not None:
+        d["ubatch_size"] = recipe.ubatch_size
+    if recipe.batch_size is not None:
+        d["batch_size"] = recipe.batch_size
+    if recipe.spec_type is not None:
+        d["spec_type"] = recipe.spec_type
+    if recipe.no_mmap:
+        d["no_mmap"] = True
+    if recipe.mlock:
+        d["mlock"] = True
+    return d

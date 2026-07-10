@@ -375,3 +375,65 @@ def test_upstream_streaming_proxy_forwards_sse_and_closes_upstream(monkeypatch):
     assert "content-length" not in response.headers
     assert mgr.last_streaming_ok is True
     assert mgr.last_stream.closed is True
+
+
+# ---------------------------------------------------------------------------
+# /admin/models/{name}/edit — perf recipe fields
+# ---------------------------------------------------------------------------
+
+class FakeRouterWithRebuild(FakeRouter):
+    async def rebuild_model(self, name):
+        return True, False
+
+
+def _edit_app(monkeypatch, tmp_path):
+    from conftest import make_config
+
+    import arc_llama.server as server_mod
+
+    # Keep cfg.save() away from the real ~/.config.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(server_mod, "Router", FakeRouterWithRebuild)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    cfg = make_config(tmp_path)
+    return create_app(cfg), cfg
+
+
+def test_admin_edit_accepts_flash_attn_and_batch_size(monkeypatch, tmp_path):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit",
+            json={"flash_attn": "on", "batch_size": 2048, "ubatch_size": 1024},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["changed"]) == {"flash_attn", "batch_size", "ubatch_size"}
+    model = next(m for m in cfg.models if m.name == "qwen")
+    assert model.recipe["flash_attn"] == "on"
+    assert model.recipe["batch_size"] == 2048
+    assert model.recipe["ubatch_size"] == 1024
+
+
+def test_admin_edit_flash_attn_null_clears(monkeypatch, tmp_path):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    model = next(m for m in cfg.models if m.name == "qwen")
+    model.recipe["flash_attn"] = "on"
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"flash_attn": None})
+    assert response.status_code == 200
+    assert "flash_attn" not in model.recipe
+
+
+def test_admin_edit_rejects_bad_flash_attn(monkeypatch, tmp_path):
+    app, _cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"flash_attn": "yes"})
+    assert response.status_code == 400
+
+
+def test_admin_edit_rejects_bad_batch_size(monkeypatch, tmp_path):
+    app, _cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"batch_size": 0})
+    assert response.status_code == 400

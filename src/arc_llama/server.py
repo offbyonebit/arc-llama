@@ -372,16 +372,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
             r = m.recipe or {}
+            running = bool(srv and srv.is_running)
             models.append({
                 "name": m.name,
                 "display_name": m.display_name,
                 "path": m.path,
                 "gpu_pci_slot": m.gpu_pci_slot,
                 "port": m.port,
-                "loaded": bool(srv and srv.is_running),
+                "loaded": running,
+                "pid": getattr(getattr(srv, "process", None), "pid", None) if running else None,
                 "ctx": r.get("ctx"),
                 "cache_type_k": r.get("cache_type_k"),
                 "cache_type_v": r.get("cache_type_v"),
+                "flash_attn": r.get("flash_attn"),
+                "ubatch_size": r.get("ubatch_size"),
+                "batch_size": r.get("batch_size"),
                 "kv_class": m.kv_class,
                 "aliases": list(m.aliases),
             })
@@ -476,7 +481,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         Body is a partial recipe dict — only provided fields change. Recognised
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
-        `spec_type`, `ubatch_size`.
+        `spec_type`, `ubatch_size`, `batch_size`, `flash_attn` (null clears).
         If the model is currently loaded, the server is stopped first; callers
         decide whether to reload it afterwards via /admin/load.
         """
@@ -550,6 +555,28 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail="ubatch_size must be 1..4096")
             recipe["ubatch_size"] = ub
             changed.append("ubatch_size")
+        if "batch_size" in body:
+            try:
+                b = int(body["batch_size"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="batch_size must be an integer") from None
+            if not (1 <= b <= 8192):
+                raise HTTPException(status_code=400, detail="batch_size must be 1..8192")
+            recipe["batch_size"] = b
+            changed.append("batch_size")
+        if "flash_attn" in body:
+            from arc_llama.recipes import FLASH_ATTN_VALUES
+            v = body["flash_attn"]
+            if v is None:
+                recipe.pop("flash_attn", None)
+            elif str(v) in FLASH_ATTN_VALUES:
+                recipe["flash_attn"] = str(v)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"flash_attn must be one of {list(FLASH_ATTN_VALUES)} or null",
+                )
+            changed.append("flash_attn")
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         model.recipe = recipe

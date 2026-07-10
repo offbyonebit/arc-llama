@@ -166,6 +166,10 @@ class ModelConfig:
             top_k=r.get("top_k"),
             spec_type=r.get("spec_type"),
             ubatch_size=r.get("ubatch_size"),
+            batch_size=r.get("batch_size"),
+            flash_attn=r.get("flash_attn"),
+            no_mmap=bool(r.get("no_mmap", False)),
+            mlock=bool(r.get("mlock", False)),
             extra_flags=list(r.get("extra_flags", [])),
         )
 

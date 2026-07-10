@@ -76,10 +76,16 @@ arc-llama scan
 # 5. Run the OpenAI-compatible server (also serves the web UI at /)
 arc-llama serve
 
-# 6. (Optional) Open the terminal UI in another window
+# 6. (Optional) Measure, then let arc-llama find the fastest recipe for a
+#    model on YOUR card (staged sweep over KV type, ubatch, flash attention;
+#    ~10 min, writes the winner into the config)
+arc-llama benchmark qwen3-7b
+arc-llama tune qwen3-7b
+
+# 7. (Optional) Open the terminal UI in another window
 arc-llama tui
 
-# 7. (Optional) Install a systemd --user unit
+# 8. (Optional) Install a systemd --user unit
 arc-llama systemd --write
 systemctl --user daemon-reload
 systemctl --user enable --now arc-llama.service
@@ -109,6 +115,35 @@ curl http://127.0.0.1:11437/v1/chat/completions \
   cmake --build build --config Release -j
   ```
 - User in the `render` and `video` groups (`arc-llama doctor` will tell you).
+
+## Benchmark & autotune
+
+Static defaults can't know whether *your* card/model/llama.cpp build prefers
+f16 or q8_0 KV cache, a 512 or 2048 ubatch, or flash attention on/off — the
+SYCL backend's answer genuinely differs per SKU and per revision. So measure:
+
+```bash
+# One-shot measurement (prompt-eval + generation tok/s, VRAM)
+arc-llama benchmark qwen3-7b
+
+# Sweep context lengths × KV types
+arc-llama benchmark qwen3-7b --sweep-ctx 8192,32768 --kv f16 --kv q8_0
+
+# Staged greedy sweep: KV type → ubatch → flash attention. Winner is written
+# into the model's recipe and persisted. ~6–9 configs, ~10 min on Battlemage.
+arc-llama tune qwen3-7b
+arc-llama tune qwen3-7b --target generation   # optimise chat latency only
+arc-llama tune qwen3-7b --dry-run             # look, don't touch
+```
+
+Both need a running `arc-llama serve` so measurements inherit the exact SYCL
+env and router policy your real requests get. Candidates that fail to start
+(e.g. compute-buffer OOM from a bigger ubatch) simply lose the round — the
+tuner always leaves the model in a working config.
+
+arc-llama also probes your `llama-server --help` once per binary to emit the
+right flag dialect (`-fa on|off|auto` on current builds vs boolean `-fa` on
+pre-b6300 ones), so hand-built and prebuilt binaries both work.
 
 ## Multi-GPU
 
@@ -183,7 +218,12 @@ cache_type_k     = "q8_0"
 cache_type_v     = "q8_0"
 n_gpu_layers     = 999
 parallel         = 1
+flash_attn       = "auto"   # "on" | "off" | "auto"; omit for binary default
+ubatch_size      = 1024     # -ub; big cards default to 1024 for prompt speed
+batch_size       = 2048     # -b
 extra_flags      = []
+# no_mmap = true            # --no-mmap
+# mlock   = true            # --mlock
 
 [[upstreams]]
 name = "ollama"
@@ -259,12 +299,17 @@ Both use brightness/dim for status (loaded vs idle) , no red/green palettes.
 
 ## Container
 
-A Dockerfile is included that builds llama-server with the SYCL backend and
-installs arc-llama in a single image:
+A Dockerfile is included that builds llama-server with the SYCL backend
+(FP16 math path on by default) and installs arc-llama in a single image:
 
 ```bash
-# Build
+# Build (generic: JIT-compiled device code, works on any Intel GPU)
 docker build -t arc-llama:latest .
+
+# Build with AOT device code for your GPU generation — kills the ~20s SYCL
+# JIT recompile every cold start pays (Battlemage can't use the JIT cache):
+docker build --build-arg GGML_SYCL_DEVICE_ARCH=bmg-g21 -t arc-llama:bmg .  # B-series
+docker build --build-arg GGML_SYCL_DEVICE_ARCH=acm-g10 -t arc-llama:acm .  # A770/750/580
 
 # Run (GPU access required)
 docker run --rm -it \
@@ -288,10 +333,17 @@ docker run ... \
 
 - Smoke test on Alchemist (A770, A380) and Battlemage (B580) hardware.
 - IPEX-LLM Ollama as an optional backend for users who prefer it.
+- Community recipe registry: share `arc-llama tune` results per (SKU, model,
+  quant) so new users get measured-on-real-hardware defaults on day one.
+- Per-model backend choice (SYCL vs Vulkan llama-server builds), picked by
+  `arc-llama tune`.
+- Multi-GPU tensor split (`--split-mode layer`) for >24 GB models on B60
+  Dual / multi-card rigs.
 - ~~HF model download (`arc-llama add org/repo:quant --from-hf`).~~ ✅
 - ~~Streaming response forwarding (`stream: true`).~~ ✅
 - ~~Container image with `llama-server` + arc-llama prebuilt.~~ ✅
 - ~~`arc-llama benchmark` , quick prompt-eval/gen tok/s harness.~~ ✅
+- ~~`arc-llama tune` , measure-and-persist recipe autotuner.~~ ✅
 
 ## Contributing
 

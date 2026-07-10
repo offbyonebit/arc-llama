@@ -26,6 +26,7 @@ import httpx
 from arc_llama.arch import Arch, ArchProfile, profile_for
 from arc_llama.config import Config, GPUConfig, ModelConfig
 from arc_llama.gguf_meta import has_mtp_heads, is_hybrid_ssm
+from arc_llama.server_caps import probe_server_caps
 
 log = logging.getLogger("arc_llama.launcher")
 
@@ -147,13 +148,21 @@ def build_plan(
             arch.value,
         )
 
+    caps = probe_server_caps(cfg.paths.llama_server)
+    if recipe.flash_attn is not None and not caps.supports_flash_attn:
+        log.info(
+            "[%s] recipe requests flash_attn=%s but %s has no --flash-attn; omitting",
+            model.name, recipe.flash_attn, cfg.paths.llama_server,
+        )
+        recipe.flash_attn = None
+
     argv: list[str] = [
         cfg.paths.llama_server,
         "-m", model.path,
         "--host", host,
         "--port", str(model.port),
     ]
-    argv.extend(recipe.to_argv())
+    argv.extend(recipe.to_argv(fa_takes_value=caps.flash_attn_takes_value))
     backend_url = f"http://{host}:{model.port}"
     return LaunchPlan(
         argv=argv,
