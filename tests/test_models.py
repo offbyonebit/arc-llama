@@ -680,3 +680,44 @@ def test_discover_and_register_ggufs_skips_hidden_symlink_and_existing_files(tmp
     assert added[0].kv_class == "qwen3_27b_dense"
     assert added_again == []
     assert len(cfg.models) == 1
+
+
+# ===========================================================================
+# slow weight-quant warning + new recipe field persistence
+# ===========================================================================
+
+
+class TestSlowWeightQuantWarning:
+    def test_q8_0_on_battlemage_warns(self):
+        from arc_llama.arch import Arch
+        from arc_llama.models import warn_slow_weight_quant
+        msg = warn_slow_weight_quant(Arch.BATTLEMAGE, "Qwen3.6-27B-Q8_0.gguf")
+        assert msg is not None
+        assert "Q8_0" in msg
+
+    def test_q4_k_m_on_battlemage_silent(self):
+        from arc_llama.arch import Arch
+        from arc_llama.models import warn_slow_weight_quant
+        assert warn_slow_weight_quant(Arch.BATTLEMAGE, "Qwen3.6-27B-Q4_K_M.gguf") is None
+
+    def test_q8_0_on_alchemist_silent(self):
+        # No measured slow path on Alchemist — don't cry wolf.
+        from arc_llama.arch import Arch
+        from arc_llama.models import warn_slow_weight_quant
+        assert warn_slow_weight_quant(Arch.ALCHEMIST, "model-Q8_0.gguf") is None
+
+
+def test_add_local_model_persists_xmx_fields(tmp_path):
+    """Real default_recipe on a roomy Battlemage → FA fields land in config."""
+    with patch("arc_llama.models.has_mtp_heads", return_value=False):
+        cfg = _make_config_with_gpu(tmp_path)
+        gguf = tmp_path / "model-Q4_K_M.gguf"
+        gguf.write_bytes(b"\x00" * 1024)
+        mc = add_local_model(
+            cfg, name="m", path=str(gguf), gpu_pci_slot="0000:03:00.0",
+        )
+        assert mc.recipe["cache_type_k"] == "f16"
+        assert mc.recipe["flash_attn"] == "on"
+        assert mc.recipe["ubatch_size"] == 1024
+        assert mc.recipe["batch_size"] == 2048
+        assert mc.recipe["cache_reuse"] == 256

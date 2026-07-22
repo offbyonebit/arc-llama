@@ -367,6 +367,189 @@ async def benchmark_sweep(
 
 
 # ------------------------------------------------------------------
+# Autotune
+# ------------------------------------------------------------------
+
+TUNE_PROMPT_TOKENS = 2048
+TUNE_GEN_TOKENS = 128
+"""Autotune workload shape: long enough prefill to expose the XMX/oneDNN
+flash-attention path (which only engages ≥32-token query batches and pays
+off at scale), plus a chat-sized generation burst."""
+
+
+@dataclass
+class TuneCandidate:
+    """One recipe variant the autotuner will measure."""
+    label: str
+    edit: dict[str, Any]
+
+
+@dataclass
+class TuneOutcome:
+    candidate: TuneCandidate
+    result: BenchmarkResult
+
+    @property
+    def request_seconds(self) -> float | None:
+        """Modelled wall time of one real request: prefill + generation.
+
+        This is the scoring metric — it weighs prompt and generation speed by
+        how much time each actually costs, instead of an arbitrary blend.
+        """
+        pp = self.result.prompt_eval_tok_s
+        gen = self.result.generation_tok_s
+        if not pp or not gen:
+            return None
+        return self.result.prompt_tokens / pp + self.result.gen_tokens / gen
+
+
+def build_tune_candidates(arch_value: str, current_recipe: dict[str, Any]) -> list[TuneCandidate]:
+    """Candidate grid for one model on one arch.
+
+    Kept deliberately small — each candidate costs a full model reload plus
+    JIT warm-up, so we probe the configurations that actually move the needle
+    on Arc rather than a blind grid:
+      * q8_0 KV without forced FA (the pre-XMX-era default, still best when
+        the quantized-KV shader path happens to win on a given build);
+      * f16 KV + -fa on across ubatch 512/1024/2048 (the oneDNN XMX prefill
+        path needs f16 KV; ubatch controls how well-fed the systolic arrays are).
+    """
+    from arc_llama.arch import Arch, profile_for
+    try:
+        profile = profile_for(Arch(arch_value))
+    except ValueError:
+        profile = profile_for(Arch.UNKNOWN)
+
+    cands = [TuneCandidate(
+        label="current",
+        edit={
+            k: current_recipe[k]
+            for k in ("cache_type_k", "cache_type_v", "ubatch_size", "batch_size", "flash_attn")
+            if k in current_recipe
+        } or {"flash_attn": None},
+    )]
+    cands.append(TuneCandidate(
+        label="q8-kv",
+        edit={"cache_type_k": "q8_0", "cache_type_v": "q8_0",
+              "flash_attn": None, "ubatch_size": 512, "batch_size": None},
+    ))
+    ubatches = [512, 1024, 2048] if profile.supports_xmx_fa else [512, 1024]
+    for ub in ubatches:
+        cands.append(TuneCandidate(
+            label=f"f16-fa-ub{ub}",
+            edit={"cache_type_k": "f16", "cache_type_v": "f16",
+                  "flash_attn": "on", "ubatch_size": ub, "batch_size": max(2048, ub)},
+        ))
+    return cands
+
+
+async def autotune_model(
+    server_url: str,
+    model_name: str,
+    *,
+    prompt_tokens: int = TUNE_PROMPT_TOKENS,
+    gen_tokens: int = TUNE_GEN_TOKENS,
+    apply_best: bool = True,
+    cfg: Config | None = None,
+) -> tuple[list[TuneOutcome], TuneOutcome | None]:
+    """Measure each candidate on the real hardware and keep the fastest.
+
+    Every candidate goes through the running arc-llama server (correct SYCL
+    env, arch profile, managed JIT cache), gets a full reload, warm-up, and
+    prefill+generation measurement. Winner = lowest modelled request time.
+    Applies the winner to the model's recipe unless apply_best=False, in
+    which case the original recipe is restored.
+    """
+    if cfg is None:
+        cfg = load_config()
+    model = cfg.find_model(model_name)
+    if model is None:
+        raise ValueError(f"Model '{model_name}' not found in config")
+    gpu = cfg.find_gpu(model.gpu_pci_slot)
+    arch_value = gpu.arch if gpu else "unknown"
+    original_recipe = dict(model.recipe or {})
+
+    candidates = build_tune_candidates(arch_value, original_recipe)
+    outcomes: list[TuneOutcome] = []
+    # MTP models pin ubatch to 8 — sweeping prefill batches would fight the
+    # SSM compute-buffer constraint, so only the current config is measured.
+    if original_recipe.get("spec_type") == "draft-mtp":
+        log.warning("%s uses draft-mtp; skipping batch/FA sweep, keeping current recipe", model_name)
+        candidates = candidates[:1]
+
+    async with httpx.AsyncClient(base_url=server_url, timeout=600.0) as client:
+        for cand in candidates:
+            log.info("tuning %s: %s ...", model_name, cand.label)
+            r = await client.post(f"/admin/models/{model_name}/edit", json=cand.edit)
+            if r.status_code != 200:
+                outcomes.append(TuneOutcome(cand, BenchmarkResult(
+                    model=model_name, ctx=0,
+                    cache_type_k=str(cand.edit.get("cache_type_k", "?")),
+                    cache_type_v=str(cand.edit.get("cache_type_v", "?")),
+                    prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
+                    error=f"edit failed: {r.status_code} {r.text}",
+                )))
+                continue
+            res = await benchmark_model(
+                server_url, model_name,
+                prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
+                load=True, cfg=cfg,
+            )
+            outcomes.append(TuneOutcome(cand, res))
+
+        scored = [o for o in outcomes if o.request_seconds is not None and not o.result.error]
+        best = min(scored, key=lambda o: o.request_seconds) if scored else None
+
+        # Land on the winner (or roll back). The edit endpoint persists to
+        # config.toml, so whatever we set last is what survives.
+        final_edit = best.candidate.edit if (best and apply_best) else {
+            k: original_recipe.get(k)
+            for k in ("cache_type_k", "cache_type_v", "ubatch_size", "batch_size", "flash_attn")
+        }
+        final_edit = {k: v for k, v in final_edit.items() if k in (
+            "cache_type_k", "cache_type_v", "ubatch_size", "batch_size", "flash_attn",
+        )}
+        # cache_type must never be null; drop absent keys instead.
+        for k in ("cache_type_k", "cache_type_v"):
+            if final_edit.get(k) is None:
+                final_edit.pop(k, None)
+        if final_edit:
+            await client.post(f"/admin/models/{model_name}/edit", json=final_edit)
+
+    return outcomes, best
+
+
+def print_tune_table(outcomes: list[TuneOutcome], best: TuneOutcome | None) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    table = Table(title="Autotune")
+    table.add_column("candidate")
+    table.add_column("KV")
+    table.add_column("Prompt-eval")
+    table.add_column("Generation")
+    table.add_column("2k-req time")
+    table.add_column("")
+    for o in outcomes:
+        r = o.result
+        if r.error:
+            table.add_row(o.candidate.label, f"{r.cache_type_k}/{r.cache_type_v}",
+                          "[red]error[/red]", "", "", "")
+            continue
+        secs = o.request_seconds
+        table.add_row(
+            o.candidate.label,
+            f"{r.cache_type_k}/{r.cache_type_v}",
+            _fmt_speed(r.prompt_eval_tok_s),
+            _fmt_speed(r.generation_tok_s),
+            f"{secs:.2f} s" if secs is not None else "—",
+            "◀ winner" if best is o else "",
+        )
+    console.print(table)
+
+
+# ------------------------------------------------------------------
 # Formatting
 # ------------------------------------------------------------------
 

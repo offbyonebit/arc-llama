@@ -225,3 +225,51 @@ class TestLlamaServerLifecycle:
         # Should not raise when not running
         srv.stop()
         assert srv.is_running is False
+
+
+class TestManagedJitCache:
+    def _cfg(self, tmp_path: Path) -> Config:
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"ELF fake")
+        cfg = Config()
+        cfg.paths.llama_server = str(binary)
+        cfg.paths.state_dir = str(tmp_path / "state")
+        return cfg
+
+    def test_battlemage_gets_managed_cache(self, tmp_path: Path):
+        cfg = self._cfg(tmp_path)
+        model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")
+        gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
+        plan = build_plan(cfg, model, gpu)
+        # Managed cache overrides the profile's conservative disable.
+        assert plan.env["SYCL_CACHE_PERSISTENT"] == "1"
+        assert "sycl-cache" in plan.env["SYCL_CACHE_DIR"]
+        assert plan.jit_marker is not None
+
+    def test_jit_cache_off_keeps_profile_default(self, tmp_path: Path):
+        cfg = self._cfg(tmp_path)
+        cfg.server.jit_cache = "off"
+        model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")
+        gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
+        plan = build_plan(cfg, model, gpu)
+        assert plan.env["SYCL_CACHE_PERSISTENT"] == "0"
+        assert plan.jit_marker is None
+
+    def test_alchemist_untouched(self, tmp_path: Path):
+        cfg = self._cfg(tmp_path)
+        model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")
+        gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="alchemist")
+        plan = build_plan(cfg, model, gpu)
+        assert "SYCL_CACHE_DIR" not in plan.env
+        assert plan.jit_marker is None
+
+    def test_stop_disarms_guard(self, tmp_path: Path):
+        cfg = self._cfg(tmp_path)
+        model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")
+        gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
+        plan = build_plan(cfg, model, gpu)
+        plan.jit_marker.parent.mkdir(parents=True, exist_ok=True)
+        plan.jit_marker.write_text("pid\n")
+        srv = LlamaServer(plan)
+        srv.stop()  # clean stop, not running — must still clear the marker
+        assert not plan.jit_marker.exists()

@@ -26,6 +26,7 @@ import httpx
 from arc_llama.arch import Arch, ArchProfile, profile_for
 from arc_llama.config import Config, GPUConfig, ModelConfig
 from arc_llama.gguf_meta import has_mtp_heads, is_hybrid_ssm
+from arc_llama.sycl_cache import prepare_jit_cache
 
 log = logging.getLogger("arc_llama.launcher")
 
@@ -90,9 +91,15 @@ class LaunchPlan:
     cwd: str | None = None
     health_url: str = ""
     backend_url: str = ""
+    jit_marker: Path | None = None
+    """Warm-up crash-guard marker for the managed SYCL JIT cache. Written
+    just before spawn, cleared after the first successful health check or a
+    clean stop — a leftover marker means the run crashed during JIT warm-up."""
 
 
-def build_env(profile: ArchProfile, sycl_index: int) -> dict[str, str]:
+def build_env(
+    profile: ArchProfile, sycl_index: int, extra_env: dict[str, str] | None = None
+) -> dict[str, str]:
     """Compose the environment, layering arch defaults over the user's shell env."""
     env = os.environ.copy()
     # Strip env vars known to break this arch (even if the user inherited them).
@@ -102,6 +109,10 @@ def build_env(profile: ArchProfile, sycl_index: int) -> dict[str, str]:
     # specific GPU index this model is bound to.
     env.update(profile.sycl_env)
     env["ONEAPI_DEVICE_SELECTOR"] = f"level_zero:{sycl_index}"
+    # Layered last so the managed JIT cache can re-enable persistence that the
+    # arch profile conservatively disabled.
+    if extra_env:
+        env.update(extra_env)
     return env
 
 
@@ -110,7 +121,29 @@ def build_plan(
 ) -> LaunchPlan:
     arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
     profile = profile_for(arch)
-    env = build_env(profile, gpu.sycl_index)
+
+    # --- Managed persistent SYCL JIT cache ---
+    # Only where the profile would otherwise disable persistence (Xe2), and
+    # only when the config hasn't opted out. getattr keeps old/partial configs
+    # (and test doubles) working without a state_dir.
+    jit_env: dict[str, str] | None = None
+    jit_marker: Path | None = None
+    state_dir = getattr(cfg.paths, "state_dir", None)
+    jit_mode = getattr(cfg.server, "jit_cache", "managed")
+    if profile.managed_jit_cache and state_dir and jit_mode == "managed":
+        jit_plan = prepare_jit_cache(state_dir, cfg.paths.llama_server)
+        if jit_plan.enabled:
+            jit_env = jit_plan.env
+            jit_marker = jit_plan.marker
+            log.info("[%s] %s", model.name, jit_plan.reason)
+        else:
+            log.info(
+                "[%s] managed JIT cache inactive (%s); SYCL_CACHE_PERSISTENT=0 "
+                "applies — expect ~20s JIT warm-up per cold start",
+                model.name, jit_plan.reason,
+            )
+
+    env = build_env(profile, gpu.sycl_index, extra_env=jit_env)
     recipe = model.launch_recipe()
 
     # --- MTP head detection & safety wiring ---
@@ -160,6 +193,7 @@ def build_plan(
         env=env,
         backend_url=backend_url,
         health_url=f"{backend_url}/health",
+        jit_marker=jit_marker,
     )
 
 
@@ -190,6 +224,14 @@ class LlamaServer:
             stdout = self._log_file
             stderr = subprocess.STDOUT
         log.info("[%s] starting: %s", self.name, " ".join(self.plan.argv))
+        # Arm the JIT crash guard before spawn — a SIGSEGV can land inside the
+        # first milliseconds of persistent-cache reads.
+        if self.plan.jit_marker is not None:
+            try:
+                self.plan.jit_marker.parent.mkdir(parents=True, exist_ok=True)
+                self.plan.jit_marker.write_text(f"{os.getpid()} {self.name}\n")
+            except OSError:
+                pass
         self.process = subprocess.Popen(
             self.plan.argv,
             env=self.plan.env,
@@ -198,6 +240,15 @@ class LlamaServer:
             preexec_fn=_preexec_isolate_and_pdeathsig,
         )
         self.started_at = time.time()
+
+    def _disarm_jit_guard(self) -> None:
+        """Clear the warm-up marker — the run survived (or was stopped cleanly),
+        so the persistent JIT cache is not implicated in anything."""
+        if self.plan.jit_marker is not None:
+            try:
+                self.plan.jit_marker.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     async def wait_ready(self, timeout: float = DEFAULT_HEALTH_TIMEOUT) -> bool:
         deadline = time.time() + timeout
@@ -209,6 +260,7 @@ class LlamaServer:
                 try:
                     r = await client.get(self.plan.health_url)
                     if r.status_code == 200 and r.json().get("status") == "ok":
+                        self._disarm_jit_guard()
                         return True
                 except Exception:
                     pass
@@ -216,6 +268,9 @@ class LlamaServer:
         return False
 
     def stop(self, drain_seconds: float = 3.0) -> None:
+        # A deliberate stop is not a crash — don't let a Ctrl-C during warm-up
+        # poison the JIT cache.
+        self._disarm_jit_guard()
         if not self.is_running:
             return
         proc = self.process

@@ -9,6 +9,7 @@ Top-level commands:
   arc-llama add        Register a model — local file or HF download.
   arc-llama remove     Remove a model from the config.
   arc-llama serve      Run the OpenAI-compatible router.
+  arc-llama tune       Autotune a model's recipe on the actual hardware.
   arc-llama tui        Launch the terminal UI.
   arc-llama systemd    Print a systemd --user service unit for `arc-llama serve`.
 
@@ -613,6 +614,72 @@ def serve(ctx: click.Context, host: str | None, port: int | None) -> None:
             pass
 
     uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
+
+
+# ===========================================================================
+# tune
+# ===========================================================================
+
+@cli.command("tune")
+@click.argument("model")
+@click.option("--server-url", default=None,
+              help="Base URL of the running `arc-llama serve` (default: from config).")
+@click.option("--prompt-tokens", type=int, default=None,
+              help="Prefill size to benchmark (default: 2048).")
+@click.option("--gen-tokens", type=int, default=None,
+              help="Generation burst to benchmark (default: 128).")
+@click.option("--no-apply", is_flag=True,
+              help="Measure only; restore the original recipe afterwards.")
+@click.pass_context
+def tune_cmd(
+    ctx: click.Context,
+    model: str,
+    server_url: str | None,
+    prompt_tokens: int | None,
+    gen_tokens: int | None,
+    no_apply: bool,
+) -> None:
+    """Autotune a model's recipe on the actual hardware.
+
+    Sweeps the configurations that matter on Arc — q8_0 KV vs f16 KV with
+    flash attention forced on (the oneDNN XMX prefill path), across ubatch
+    sizes — through the running `arc-llama serve`, then persists the fastest.
+    Requires the server to be running; each candidate costs a model reload.
+    """
+    import asyncio
+
+    from arc_llama.benchmark import (
+        TUNE_GEN_TOKENS,
+        TUNE_PROMPT_TOKENS,
+        autotune_model,
+        print_tune_table,
+    )
+    cfg = load_config(ctx.obj["config_path"])
+    url = server_url or f"http://{cfg.server.host}:{cfg.server.port}"
+    try:
+        outcomes, best = asyncio.run(autotune_model(
+            url, model,
+            prompt_tokens=prompt_tokens or TUNE_PROMPT_TOKENS,
+            gen_tokens=gen_tokens or TUNE_GEN_TOKENS,
+            apply_best=not no_apply,
+            cfg=cfg,
+        ))
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]tune failed: {e}[/red]")
+        console.print("Is `arc-llama serve` running at "
+                      f"{url}? Start it first — tuning runs through the live server.")
+        sys.exit(1)
+    print_tune_table(outcomes, best)
+    if best is None:
+        console.print("[yellow]No candidate produced a valid measurement.[/yellow]")
+        sys.exit(1)
+    if no_apply:
+        console.print(f"Winner: [bold]{best.candidate.label}[/bold] (original recipe restored).")
+    else:
+        console.print(f"Applied winner: [bold]{best.candidate.label}[/bold] → {best.candidate.edit}")
 
 
 # ===========================================================================

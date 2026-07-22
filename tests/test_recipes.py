@@ -96,15 +96,27 @@ class TestSuggestCtx:
 
 
 class TestDefaultRecipe:
-    def test_battlemage_prefers_q8(self):
+    def test_battlemage_roomy_vram_prefers_f16_xmx_fa(self):
+        # Since the oneDNN XMX FA path (f16 KV only), roomy Battlemage
+        # setups take f16 KV + forced FA instead of the old q8_0 default.
         r = default_recipe(
             Arch.BATTLEMAGE,
             vram_mb=24 * 1024,
             model_file_mb=4 * 1024,
         )
+        assert r.cache_type_k == KVCacheType.F16
+        assert r.cache_type_v == KVCacheType.F16
+        assert r.flash_attn == "on"
+        assert r.n_gpu_layers == 999
+
+    def test_battlemage_tight_vram_still_prefers_q8(self):
+        r = default_recipe(
+            Arch.BATTLEMAGE,
+            vram_mb=8 * 1024,
+            model_file_mb=6 * 1024,
+        )
         assert r.cache_type_k == KVCacheType.Q8_0
         assert r.cache_type_v == KVCacheType.Q8_0
-        assert r.n_gpu_layers == 999
 
     def test_unknown_arch_is_conservative(self):
         r = default_recipe(
@@ -192,3 +204,71 @@ class TestLaunchRecipeArgv:
         assert argv[argv.index("--spec-type") + 1] == "draft-mtp"
         assert "-ub" in argv
         assert argv[argv.index("-ub") + 1] == "8"
+
+
+class TestNewLaunchFlags:
+    def test_xmx_flags_emitted(self):
+        r = LaunchRecipe(
+            flash_attn="on",
+            ubatch_size=1024,
+            batch_size=2048,
+            cache_reuse=256,
+            no_mmap=True,
+        )
+        argv = r.to_argv()
+        assert argv[argv.index("-fa") + 1] == "on"
+        assert argv[argv.index("-ub") + 1] == "1024"
+        assert argv[argv.index("-b") + 1] == "2048"
+        assert argv[argv.index("--cache-reuse") + 1] == "256"
+        assert "--no-mmap" in argv
+
+    def test_new_flags_omitted_by_default(self):
+        argv = LaunchRecipe().to_argv()
+        assert "-fa" not in argv
+        assert "-b" not in argv
+        assert "--cache-reuse" not in argv
+        assert "--no-mmap" not in argv
+
+
+class TestXmxFaPolicy:
+    def test_battlemage_roomy_vram_prefers_f16_fa(self):
+        """24GB card, 4GB model → f16 KV + forced FA + fat prefill batches."""
+        r = default_recipe(
+            Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=4 * 1024,
+        )
+        assert r.cache_type_k == KVCacheType.F16
+        assert r.cache_type_v == KVCacheType.F16
+        assert r.flash_attn == "on"
+        assert r.ubatch_size == 1024
+        assert r.batch_size == 2048
+        assert r.cache_reuse == 256
+
+    def test_battlemage_tight_vram_falls_back_to_q8(self):
+        """8GB card, 6.5GB model → f16 ctx would be tiny; keep q8_0 KV."""
+        r = default_recipe(
+            Arch.BATTLEMAGE, vram_mb=8 * 1024, model_file_mb=6656,
+        )
+        assert r.cache_type_k == KVCacheType.Q8_0
+        assert r.flash_attn is None
+        assert r.ubatch_size is None
+
+    def test_alchemist_unchanged_q8_default(self):
+        """No confirmed XMX FA path on Alchemist — behaviour is pre-existing."""
+        r = default_recipe(
+            Arch.ALCHEMIST, vram_mb=16 * 1024, model_file_mb=4 * 1024,
+        )
+        assert r.cache_type_k == KVCacheType.Q8_0
+        assert r.flash_attn is None
+
+    def test_gemma_swa_gets_no_cache_reuse(self):
+        r = default_recipe(
+            Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=4 * 1024,
+            kv_class="gemma_swa",
+        )
+        assert r.cache_reuse is None
+
+    def test_non_swa_gets_cache_reuse_on_fallback_path(self):
+        r = default_recipe(
+            Arch.ALCHEMIST, vram_mb=16 * 1024, model_file_mb=4 * 1024,
+        )
+        assert r.cache_reuse == 256

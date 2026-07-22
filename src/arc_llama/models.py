@@ -21,7 +21,7 @@ from arc_llama.config import (
     ModelConfig,
 )
 from arc_llama.gguf_meta import has_mtp_heads
-from arc_llama.recipes import default_recipe
+from arc_llama.recipes import LaunchRecipe, default_recipe
 
 log = logging.getLogger("arc_llama.models")
 
@@ -80,6 +80,52 @@ def _short_name_from(repo: str, file: str | None) -> str:
     return base or "model"
 
 
+def _recipe_to_dict(recipe: LaunchRecipe) -> dict[str, Any]:
+    """Serialise the auto-picked recipe fields that belong in config.toml."""
+    d: dict[str, Any] = {
+        "n_gpu_layers": recipe.n_gpu_layers,
+        "ctx": recipe.ctx,
+        "parallel": recipe.parallel,
+        "cache_type_k": recipe.cache_type_k.value,
+        "cache_type_v": recipe.cache_type_v.value,
+    }
+    if recipe.ubatch_size is not None:
+        d["ubatch_size"] = recipe.ubatch_size
+    if recipe.batch_size is not None:
+        d["batch_size"] = recipe.batch_size
+    if recipe.flash_attn is not None:
+        d["flash_attn"] = recipe.flash_attn
+    if recipe.cache_reuse is not None:
+        d["cache_reuse"] = recipe.cache_reuse
+    return d
+
+
+def warn_slow_weight_quant(arch, filename: str) -> str | None:
+    """Warn when a GGUF's weight quant hits a known-slow kernel path.
+
+    Q8_0 on Xe2 reaches ~22% of memory bandwidth vs Q4_K_M's ~55%
+    (ggml-org/llama.cpp#21517) — 4-5x slower generation for 1.7x the bytes.
+    Returns the warning string (also logged) or None.
+    """
+    from arc_llama.arch import profile_for
+    profile = profile_for(arch)
+    if not profile.slow_weight_quants:
+        return None
+    m = _QUANT_TIER_RE.search(filename)
+    if m is None:
+        return None
+    tier = m.group(1).upper()
+    if tier not in profile.slow_weight_quants:
+        return None
+    msg = (
+        f"{filename}: {tier} weight quant has a known-slow kernel path on "
+        f"{profile.display_name} — expect 4-5x slower generation than Q4_K_M. "
+        f"Prefer Q4_K_M, Q4_K_S, or Q6_K of the same model."
+    )
+    log.warning(msg)
+    return msg
+
+
 def add_local_model(
     cfg: Config,
     *,
@@ -121,17 +167,16 @@ def add_local_model(
         model_file_mb=p.stat().st_size // (1024 * 1024),
         kv_class=kv_class,
     )
-    recipe_dict: dict[str, Any] = {
-        "n_gpu_layers": recipe.n_gpu_layers,
-        "ctx": recipe.ctx,
-        "parallel": recipe.parallel,
-        "cache_type_k": recipe.cache_type_k.value,
-        "cache_type_v": recipe.cache_type_v.value,
-    }
+    warn_slow_weight_quant(arch, p.name)
+    recipe_dict = _recipe_to_dict(recipe)
     # Auto-enable draft-mtp for models that actually carry MTP heads.
+    # ubatch is pinned to 8 there, so the XMX prefill batch/FA fields would be
+    # dead weight (and -fa on is untested against hybrid-SSM MTP graphs).
     if has_mtp_heads(p):
         recipe_dict["spec_type"] = "draft-mtp"
         recipe_dict["ubatch_size"] = 8
+        recipe_dict.pop("batch_size", None)
+        recipe_dict.pop("flash_attn", None)
         log.info(
             "model %s has MTP heads; auto-enabling spec_type=draft-mtp, ubatch_size=8",
             name,
@@ -313,17 +358,15 @@ def register_discovered(
             model_file_mb=rp.stat().st_size // (1024 * 1024),
             kv_class=kv_class,
         )
-        recipe_dict: dict[str, Any] = {
-            "n_gpu_layers": recipe.n_gpu_layers,
-            "ctx": recipe.ctx,
-            "parallel": recipe.parallel,
-            "cache_type_k": recipe.cache_type_k.value,
-            "cache_type_v": recipe.cache_type_v.value,
-        }
+        warn_slow_weight_quant(arch, rp.name)
+        recipe_dict = _recipe_to_dict(recipe)
         # Auto-enable draft-mtp for discovered models that carry MTP heads.
+        # Same field trimming as add_local_model — ub is pinned to 8.
         if has_mtp_heads(rp):
             recipe_dict["spec_type"] = "draft-mtp"
             recipe_dict["ubatch_size"] = 8
+            recipe_dict.pop("batch_size", None)
+            recipe_dict.pop("flash_attn", None)
             log.info(
                 "discovered %s has MTP heads; auto-enabling spec_type=draft-mtp, ubatch_size=8",
                 rp.name,
