@@ -95,6 +95,12 @@ class ServerConfig:
     admin_token: str | None = None
     """Bearer token required for destructive admin endpoints (load, stop, edit, scan).
     Set via `arc-llama serve --admin-token` or env var ARC_LLAMA_ADMIN_TOKEN."""
+    jit_cache: str = "managed"
+    """SYCL JIT cache policy on arches with the persistent-cache SIGSEGV
+    (Battlemage/Lunar Lake). 'managed' → per-binary fingerprinted cache dir
+    with crash guard (see sycl_cache.py) — cold starts pay the ~20s JIT cost
+    once per llama-server build. 'off' → the arch profile's conservative
+    SYCL_CACHE_PERSISTENT=0, i.e. ~20s JIT on every cold start."""
     """Why 11437? Ollama owns 11434 by default, and IPEX-LLM-Ollama installs
     sometimes use 11435/11436. 11437 is the first port in that neighbourhood
     that nobody else seems to claim."""
@@ -166,6 +172,10 @@ class ModelConfig:
             top_k=r.get("top_k"),
             spec_type=r.get("spec_type"),
             ubatch_size=r.get("ubatch_size"),
+            batch_size=r.get("batch_size"),
+            flash_attn=r.get("flash_attn"),
+            cache_reuse=r.get("cache_reuse"),
+            no_mmap=bool(r.get("no_mmap", False)),
             extra_flags=list(r.get("extra_flags", [])),
         )
 

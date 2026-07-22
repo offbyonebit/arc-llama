@@ -476,7 +476,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
         Body is a partial recipe dict — only provided fields change. Recognised
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
-        `spec_type`, `ubatch_size`.
+        `spec_type`, `ubatch_size`, `batch_size`, `flash_attn`, `cache_reuse`.
+        `batch_size`, `flash_attn`, and `cache_reuse` accept null to clear the
+        field (falls back to llama.cpp defaults).
         If the model is currently loaded, the server is stopped first; callers
         decide whether to reload it afterwards via /admin/load.
         """
@@ -542,14 +544,52 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             recipe["spec_type"] = v
             changed.append("spec_type")
         if "ubatch_size" in body:
-            try:
-                ub = int(body["ubatch_size"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="ubatch_size must be an integer") from None
-            if not (1 <= ub <= 4096):
-                raise HTTPException(status_code=400, detail="ubatch_size must be 1..4096")
-            recipe["ubatch_size"] = ub
+            if body["ubatch_size"] is None:
+                recipe.pop("ubatch_size", None)
+            else:
+                try:
+                    ub = int(body["ubatch_size"])
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="ubatch_size must be an integer") from None
+                if not (1 <= ub <= 4096):
+                    raise HTTPException(status_code=400, detail="ubatch_size must be 1..4096")
+                recipe["ubatch_size"] = ub
             changed.append("ubatch_size")
+        if "batch_size" in body:
+            if body["batch_size"] is None:
+                recipe.pop("batch_size", None)
+            else:
+                try:
+                    b = int(body["batch_size"])
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="batch_size must be an integer") from None
+                if not (1 <= b <= 8192):
+                    raise HTTPException(status_code=400, detail="batch_size must be 1..8192")
+                recipe["batch_size"] = b
+            changed.append("batch_size")
+        if "flash_attn" in body:
+            if body["flash_attn"] is None:
+                recipe.pop("flash_attn", None)
+            else:
+                v = str(body["flash_attn"])
+                if v not in ("on", "off", "auto"):
+                    raise HTTPException(
+                        status_code=400, detail="flash_attn must be 'on', 'off', or 'auto'",
+                    )
+                recipe["flash_attn"] = v
+            changed.append("flash_attn")
+        if "cache_reuse" in body:
+            if body["cache_reuse"] is None:
+                recipe.pop("cache_reuse", None)
+            else:
+                try:
+                    cr = int(body["cache_reuse"])
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="cache_reuse must be an integer") from None
+                if not (0 <= cr <= 65536):
+                    raise HTTPException(status_code=400, detail="cache_reuse must be 0..65536")
+                recipe["cache_reuse"] = cr
+            changed.append("cache_reuse")
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         model.recipe = recipe

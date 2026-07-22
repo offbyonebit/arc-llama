@@ -51,6 +51,19 @@ class LaunchRecipe:
     """Speculative decoding type, e.g. 'draft-mtp'."""
     ubatch_size: int | None = None
     """Ubatch size (-ub). Auto-set to 8 for MTP models to avoid SSM compute-buffer OOM."""
+    batch_size: int | None = None
+    """Logical batch size (-b). Raised together with ubatch for prefill throughput."""
+    flash_attn: str | None = None
+    """Flash attention (-fa): 'on', 'off', or 'auto'. None → omit the flag and
+    let llama.cpp decide. Must be 'on' + f16 KV cache to hit the oneDNN XMX
+    prefill path on Xe2."""
+    cache_reuse: int | None = None
+    """--cache-reuse N: reuse cached prompt prefixes with a KV shift when at
+    least N tokens match. Slashes time-to-first-token in multi-turn chat.
+    Incompatible with sliding-window-attention models (gemma_swa)."""
+    no_mmap: bool = False
+    """--no-mmap: read the model up front instead of paging it in lazily.
+    Avoids first-inference page-fault stalls when weights live on slow disks."""
     extra_flags: list[str] = field(default_factory=list)
     """Anything else the user wants appended to the command line verbatim."""
 
@@ -74,6 +87,14 @@ class LaunchRecipe:
             argv += ["--spec-type", self.spec_type]
         if self.ubatch_size is not None:
             argv += ["-ub", str(self.ubatch_size)]
+        if self.batch_size is not None:
+            argv += ["-b", str(self.batch_size)]
+        if self.flash_attn is not None:
+            argv += ["-fa", self.flash_attn]
+        if self.cache_reuse is not None:
+            argv += ["--cache-reuse", str(self.cache_reuse)]
+        if self.no_mmap:
+            argv += ["--no-mmap"]
         argv += list(self.extra_flags)
         return argv
 
@@ -134,6 +155,25 @@ def suggest_ctx(
     return max(4096, min(rounded, ctx_cap))
 
 
+XMX_FA_MIN_F16_CTX = 16384
+"""Smallest f16-KV context worth trading Q8_0 KV headroom for. Below this the
+KV savings buy more useful context than the XMX prefill path buys speed."""
+
+XMX_FA_UBATCH = 1024
+XMX_FA_BATCH = 2048
+"""Prefill batch sizing for the XMX path. llama.cpp's default -ub 512 leaves
+the systolic arrays underfed on Arc dGPUs; 1024/2048 measured fastest on
+Battlemage without blowing up compute buffers."""
+
+XMX_FA_COMPUTE_BUFFER_MB = 1536
+"""Compute-buffer estimate when ubatch is raised to 1024 — roughly double the
+768 MB default-ubatch figure. Deliberately pessimistic so ctx sizing stays safe."""
+
+DEFAULT_CACHE_REUSE = 256
+"""--cache-reuse threshold applied to non-SWA models: multi-turn chats re-use
+the common prefix KV instead of re-prefilling the whole conversation."""
+
+
 def default_recipe(
     arch: Arch,
     vram_mb: int,
@@ -141,8 +181,38 @@ def default_recipe(
     kv_class: str = "default",
     prefer_q8_kv: bool = True,
 ) -> LaunchRecipe:
-    """A safe starting recipe for a freshly added model on a given arch."""
+    """A safe starting recipe for a freshly added model on a given arch.
+
+    On Xe2 (Battlemage / Lunar Lake) the oneDNN XMX flash-attention path is
+    preferred when VRAM allows: it needs an f16 KV cache (quantized KV falls
+    back to shader kernels), so we take f16 + `-fa on` whenever that still
+    leaves ≥ XMX_FA_MIN_F16_CTX of context, and only drop to q8_0 KV on
+    VRAM-tight setups where context matters more than prefill speed.
+    """
     profile: ArchProfile = profile_for(arch)
+    cache_reuse = None if kv_class == "gemma_swa" else DEFAULT_CACHE_REUSE
+
+    if profile.supports_xmx_fa:
+        ctx_f16 = suggest_ctx(
+            vram_mb=vram_mb,
+            model_file_mb=model_file_mb,
+            kv_type=KVCacheType.F16,
+            kv_class=kv_class,
+            compute_buffer_mb=XMX_FA_COMPUTE_BUFFER_MB,
+        )
+        if ctx_f16 >= XMX_FA_MIN_F16_CTX:
+            return LaunchRecipe(
+                n_gpu_layers=999,
+                ctx=ctx_f16,
+                parallel=1,
+                cache_type_k=KVCacheType.F16,
+                cache_type_v=KVCacheType.F16,
+                ubatch_size=XMX_FA_UBATCH,
+                batch_size=XMX_FA_BATCH,
+                flash_attn="on",
+                cache_reuse=cache_reuse,
+            )
+
     kv_type = KVCacheType.Q8_0 if (prefer_q8_kv and profile.safe_kv_q8) else KVCacheType.F16
     ctx = suggest_ctx(
         vram_mb=vram_mb,
@@ -156,4 +226,5 @@ def default_recipe(
         parallel=1,
         cache_type_k=kv_type,
         cache_type_v=kv_type,
+        cache_reuse=cache_reuse,
     )

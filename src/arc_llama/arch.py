@@ -32,6 +32,19 @@ class ArchProfile:
     """Whether q8_0 K/V cache produces correct generation on this arch."""
     prefer_uniform_quants: bool = True
     """If true, recommend Q4_K_M over Unsloth Dynamic XL/UD variants."""
+    supports_xmx_fa: bool = False
+    """Whether the oneDNN XMX flash-attention prefill path (llama.cpp
+    PR #25222, merged 2026-07-15) is confirmed working on this arch.
+    The path requires an f16 K/V cache — quantized KV silently falls back
+    to the shader kernels, so recipes trade KV size for prefill speed."""
+    slow_weight_quants: tuple[str, ...] = ()
+    """Weight-quant tiers with known-bad kernel efficiency on this arch.
+    Used to warn at registration time, e.g. Q8_0 on Xe2 runs at ~22% of
+    memory bandwidth vs Q4_K_M's ~55% (ggml-org/llama.cpp#21517)."""
+    managed_jit_cache: bool = False
+    """If true, arc-llama replaces this profile's SYCL_CACHE_PERSISTENT=0
+    workaround with a managed per-binary cache dir (see sycl_cache.py),
+    recovering the ~20s cold-start JIT cost without the stale-cache SIGSEGV."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +163,22 @@ BATTLEMAGE_PROFILE = ArchProfile(
     notes=[
         "Requires kernel 6.14+ and Mesa 24.x+ for stable `xe` driver.",
         "ReBAR REQUIRED — without it llama.cpp will fall back to slow paths.",
-        "First inference per cold start pays ~20s of SYCL JIT compile.",
+        "First inference per cold start pays ~20s of SYCL JIT compile "
+        "(recovered automatically when the managed JIT cache is active).",
         "q8_0 K/V cache works correctly but on some builds underutilises memory "
         "bandwidth on dense models. Verify perf if you care; correctness is OK.",
+        "llama.cpp builds with GGML_SYCL_DNN=ON route long prefills through the "
+        "XMX engines when flash attention is on and the KV cache is f16 — up to "
+        "4.26x prefill at 80k ctx (PR #25222). arc-llama recipes prefer f16 KV "
+        "on this arch when VRAM allows.",
+        "Avoid Q8_0 *weight* quants here — Q4_K_M/Q4_K_S/Q6_K run 4-5x faster "
+        "(llama.cpp issue #21517).",
     ],
     safe_kv_q8=True,
     prefer_uniform_quants=True,
+    supports_xmx_fa=True,
+    slow_weight_quants=("Q8_0",),
+    managed_jit_cache=True,
 )
 
 LUNAR_LAKE_PROFILE = ArchProfile(
@@ -177,6 +200,12 @@ LUNAR_LAKE_PROFILE = ArchProfile(
     ],
     safe_kv_q8=True,
     prefer_uniform_quants=True,
+    # Xe2-LPG carries the same XMX engines and JIT-cache behaviour as
+    # Battlemage; the shared-memory VRAM budget is what differs, and that is
+    # already handled by ctx sizing.
+    supports_xmx_fa=True,
+    slow_weight_quants=("Q8_0",),
+    managed_jit_cache=True,
 )
 
 UNKNOWN_PROFILE = ArchProfile(

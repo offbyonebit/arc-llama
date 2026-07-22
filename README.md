@@ -28,8 +28,9 @@ something useful before lunch.
 - **Auto-discovery** of every Intel GPU on the host (`Alchemist`, `Battlemage`,
   Lunar Lake iGPU). PCI device-ID table covers the common SKUs and falls back
   to OpenCL device-name parsing for the rest.
-- **Per-arch SYCL profiles** , env vars like `SYCL_CACHE_PERSISTENT=0` are
-  applied automatically, and known-bad ones (e.g. `GGML_SYCL_DISABLE_OPT`,
+- **Per-arch SYCL profiles** , env vars like `SYCL_CACHE_PERSISTENT` are
+  managed automatically (see the managed JIT cache below), and known-bad ones
+  (e.g. `GGML_SYCL_DISABLE_OPT`,
   `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS`) are stripped from the
   inherited shell environment.
 - **Smart defaults** for `-ctx`, `--cache-type-k/v`, and `-ngl` based on the
@@ -109,6 +110,47 @@ curl http://127.0.0.1:11437/v1/chat/completions \
   cmake --build build --config Release -j
   ```
 - User in the `render` and `video` groups (`arc-llama doctor` will tell you).
+- For the XMX flash-attention prefill path (below), add `-DGGML_SYCL_DNN=ON`
+  (oneDNN ≥ 3.11.2, llama.cpp ≥ b10016 / 2026-07-15).
+
+## Performance: beyond stock settings
+
+arc-llama doesn't just avoid the Arc footguns — it applies optimizations no
+other Intel runtime ships yet:
+
+- **XMX flash-attention aware recipes.** llama.cpp's oneDNN SDPA path
+  (merged 2026-07-15) routes long prefills through the XMX systolic arrays —
+  up to **4.26× faster prefill at 80k ctx** on Battlemage — but only with an
+  **f16 KV cache**; quantized KV silently falls back to shader kernels. On
+  Xe2, arc-llama now defaults to f16 KV + `-fa on` + `-ub 1024 -b 2048`
+  whenever VRAM still allows ≥16k context, and drops back to q8_0 KV (more
+  context per byte) only on VRAM-tight setups. Every other tool leaves you
+  with the pre-XMX defaults — quantized KV that quietly disables the fastest
+  attention path Intel hardware has.
+- **Managed persistent SYCL JIT cache.** Battlemage + oneAPI 2026.0 SIGSEGVs
+  when `SYCL_CACHE_PERSISTENT=1` reads stale cache entries; everyone works
+  around it by disabling the cache — paying **~20 s of JIT recompilation on
+  every cold start, forever**. arc-llama instead gives each
+  (llama-server build, GPU driver) combination its own fingerprinted cache
+  dir, so stale entries can't exist, and arms a crash guard: if a server ever
+  dies during warm-up with the cache active, that cache is wiped, poisoned,
+  and the safe `=0` behaviour returns automatically. Net effect: the JIT cost
+  is paid once per llama.cpp upgrade instead of on every model swap.
+  Opt out with `jit_cache = "off"` under `[server]`.
+- **Multi-turn prompt reuse.** Non-SWA recipes get `--cache-reuse 256`, so
+  follow-up chat turns re-use the shared-prefix KV instead of re-prefilling
+  the whole conversation.
+- **`arc-llama tune`** — on-device autotuning. With `arc-llama serve`
+  running, `arc-llama tune <model>` sweeps the configs that actually matter
+  on Arc (q8 KV vs f16+FA, ubatch 512/1024/2048), measures real prefill +
+  generation through your own stack, scores each by modelled request latency,
+  and persists the winner into the model's recipe. Your card, your driver,
+  your build — not someone else's benchmark table.
+- **Slow-quant warnings.** Q8_0 *weight* quants hit a known-bad kernel path
+  on Xe2 (~22% of memory bandwidth vs Q4_K_M's ~55%,
+  [llama.cpp#21517](https://github.com/ggml-org/llama.cpp/issues/21517)) —
+  registering one warns you to grab Q4_K_M/Q6_K instead of leaving you to
+  wonder why generation crawls.
 
 ## Multi-GPU
 
