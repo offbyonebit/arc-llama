@@ -267,7 +267,7 @@ def mock_recipe_and_mtp():
     """Patch default_recipe and has_mtp_heads for add_local_model/register_discovered."""
     from arc_llama.recipes import KVCacheType, LaunchRecipe
 
-    def _recipe(*, arch, vram_mb, model_file_mb, kv_class, backend=None, trained_ctx=None):
+    def _recipe(*, arch, vram_mb, model_file_mb, kv_class, backend=None, **kwargs):
         return LaunchRecipe(
             n_gpu_layers=999,
             ctx=8192,

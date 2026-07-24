@@ -172,6 +172,7 @@ def add_local_model(
         kv_class=kv_class,
         backend=backend,
         trained_ctx=trained_ctx,
+        llama_server=cfg.paths.llama_server,
     )
     recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
     # Auto-enable draft-mtp for models that actually carry MTP heads.
@@ -559,6 +560,7 @@ def register_discovered(
             kv_class=kv_class,
             backend=backend,
             trained_ctx=trained_ctx,
+            llama_server=cfg.paths.llama_server,
         )
         recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
         # Auto-enable draft-mtp for discovered models that carry MTP heads.
