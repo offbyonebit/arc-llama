@@ -7,10 +7,20 @@ crank context up than have a first-run experience that OOMs.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
+
+log = logging.getLogger("arc_llama.recipes")
+
+XMX_ARCHES = frozenset({Arch.BATTLEMAGE, Arch.LUNAR_LAKE})
+"""Xe2 architectures with XMX systolic arrays.
+
+Alchemist (Xe-HPG) is deliberately excluded: the oneDNN SDPA path targets Xe2,
+and we do not have measurements for it on Alchemist. Unknown archs are excluded
+too — an unrecognised card must not be assumed to behave like a B60."""
 
 
 class KVCacheType(str, Enum):
@@ -214,6 +224,58 @@ PERF_COMPUTE_BUFFER_MB = 1536
 (vs. the conservative 768 MiB default at llama.cpp's stock ubatch of 512)."""
 
 
+def _xmx_sdpa_worth_it(
+    llama_server: str,
+    vram_mb: int,
+    model_file_mb: int,
+    kv_class: str,
+) -> bool:
+    """True when this binary can use the XMX SDPA path *and* f16 KV still fits.
+
+    Deliberately conservative: anything short of a positive oneDNN detection
+    (absent, stripped binary, missing library, probe error) returns False and
+    leaves the caller on the previous defaults.
+    """
+    try:
+        from arc_llama.binary_caps import probe_sycl_caps
+
+        caps = probe_sycl_caps(llama_server)
+    except Exception as exc:  # never let capability probing break registration
+        log.debug("oneDNN probe failed for %s: %s", llama_server, exc)
+        return False
+
+    # Tri-state: only an explicit True is good enough. None means "stripped or
+    # unknown", and guessing there is exactly the failure mode this avoids.
+    if caps.has_onednn_sdpa is not True:
+        return False
+
+    ctx_f16 = suggest_ctx(
+        vram_mb=vram_mb,
+        model_file_mb=model_file_mb,
+        kv_type=KVCacheType.F16,
+        kv_class=kv_class,
+        compute_buffer_mb=(
+            PERF_COMPUTE_BUFFER_MB if vram_mb >= PERF_UBATCH_MIN_VRAM_MB else 768
+        ),
+    )
+    if ctx_f16 < XMX_SDPA_MIN_CTX:
+        log.debug(
+            "oneDNN present but f16 KV only affords %d ctx (< %d); keeping q8_0",
+            ctx_f16,
+            XMX_SDPA_MIN_CTX,
+        )
+        return False
+    return True
+
+
+XMX_SDPA_MIN_CTX = 16384
+"""Don't trade context for the XMX SDPA path below this.
+
+The oneDNN SDPA path only engages with an f16 KV cache, and f16 costs roughly
+2x the KV bytes of q8_0. Taking that trade is only worth it if the model still
+gets a useful context window afterwards."""
+
+
 def default_recipe(
     arch: Arch,
     vram_mb: int,
@@ -221,8 +283,23 @@ def default_recipe(
     kv_class: str = "default",
     prefer_q8_kv: bool = True,
     backend: Backend = Backend.SYCL,
+    llama_server: str | None = None,
 ) -> LaunchRecipe:
-    """A safe starting recipe for a freshly added model on a given arch/backend."""
+    """A safe starting recipe for a freshly added model on a given arch/backend.
+
+    If *llama_server* is given, the binary is inspected (no GPU, no launch) to
+    see whether it actually carries the oneDNN XMX SDPA path. That path routes
+    long prefills through the XMX systolic arrays, but **only with an f16 KV
+    cache** — with a quantized KV it silently falls back to shader kernels.
+
+    Recommending ``-fa on`` + f16 KV to a binary built without oneDNN is a
+    measured regression, not a no-op: on an Arc Pro B60 whose llama.cpp was
+    configured with ``GGML_SYCL_DNN=ON`` but where ``find_package(DNNL)``
+    failed (so the path was compiled out), forcing ``-fa on`` cost ~10-11%
+    decode at shallow context and gained nothing on prefill. When the probe
+    cannot prove oneDNN is present we therefore keep the previous, measured
+    defaults rather than gambling.
+    """
     profile: ArchProfile = profile_for(arch)
     extra_flags: list[str] = []
     # SYCL: express flash-attn via the recipe field so server_caps can emit
@@ -241,6 +318,23 @@ def default_recipe(
             flash_attn = "auto"
     else:
         use_q8 = prefer_q8_kv and profile.safe_kv_q8
+
+    if (
+        backend == Backend.SYCL
+        and arch in XMX_ARCHES
+        and llama_server is not None
+        and _xmx_sdpa_worth_it(
+            llama_server=llama_server,
+            vram_mb=vram_mb,
+            model_file_mb=model_file_mb,
+            kv_class=kv_class,
+        )
+    ):
+        # Binary provably has oneDNN and f16 KV still affords a usable context:
+        # take the XMX prefill path.
+        use_q8 = False
+        flash_attn = "on"
+
     kv_type = KVCacheType.Q8_0 if use_q8 else KVCacheType.F16
     # Bump ubatch above llama.cpp's stock 512 when the card can absorb the
     # bigger compute buffer; budget the larger buffer into the ctx suggestion.
