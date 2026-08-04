@@ -13,7 +13,7 @@ It's built for the day you unbox an Arc card, install drivers, and want
 something useful before lunch.
 
 > [!NOTE]
-> **Status: 0.5.0.** Tested end-to-end on Battlemage B60: `arc-llama
+> **Status: 0.6.0.** Tested end-to-end on Battlemage B60: `arc-llama
 > install-runtime` fetches a portable Vulkan `llama-server` and serves real
 > inference with no oneAPI install or source build. HF download, streaming,
 > and the OpenAI-compatible API all pass. Other SKUs (A770, A380, B580) need

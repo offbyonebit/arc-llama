@@ -13,6 +13,8 @@ import inspect
 import io
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -26,6 +28,20 @@ GIT_MUTATION_COMMANDS = frozenset(
      "git reset", "git checkout", "git switch", "git branch", "git tag",
      "git stash", "git cherry-pick", "git revert"}
 )
+
+# Wrappers that prefix a command without changing what it ultimately invokes.
+# Stripping them lets us catch e.g. `sudo git push` or `env git commit`. This is
+# a guardrail, not a sandbox: we only unwrap a fixed, well-known set rather than
+# trying to defeat arbitrary shell metaprogramming. Best-effort by design.
+_COMMAND_WRAPPERS = frozenset(
+    {"sudo", "env", "command", "exec", "time", "nice", "xargs"}
+)
+
+# Shell operators that separate independent commands on one line. Splitting on
+# these lets the denylist catch a mutation that happens after `&&`, `;`, `|`,
+# etc. We deliberately keep this to single-character control operators; bash
+#isms like `$(...)` or backticks are out of scope for a best-effort guard.
+_SHELL_OPERATOR_RE = re.compile(r"[;|&]+")
 
 
 class ToolError(Exception):
@@ -209,12 +225,96 @@ def _resolve_path(path: str, root: Path) -> Path:
 
 
 def _git_mutation_prefix(command: str) -> str | None:
-    """Return the matched git mutation prefix if *command* starts with one."""
-    norm = command.strip().lower()
-    for prefix in GIT_MUTATION_COMMANDS:
-        if norm == prefix or norm.startswith(prefix + " "):
-            return prefix
+    """Return the matched git mutation prefix if *command* invokes one.
+
+    This is a guardrail, not a sandbox: it blocks the obvious and the
+    common-bypass forms of the git-mutating commands in
+    ``GIT_MUTATION_COMMANDS``. It is not a complete shell parser and does not
+    try to defeat arbitrary metaprogramming. The goal is to stop the agent from
+    quietly rewriting history via the confirmation-gated ``run_command`` tool
+    even when it wraps or chains the invocation.
+
+    The matching pipeline is:
+
+    1. Split the line on shell control operators (``;``, ``&&``, ``||``,
+       ``|``) so a mutation after a separator is caught.
+    2. For each segment, strip leading ``FOO=bar`` env-var assignments (as in
+       ``FOO=1 git commit``) and unwrap a leading wrapper prefix
+       (``sudo``, ``env``, ``command``, ``exec``, ``time``, ``nice``,
+       ``xargs``) recursively.
+    3. Collapse internal whitespace and lowercase before comparing against
+       the denylist, so ``git\\tcommit`` or trailing spaces cannot slip past.
+
+    Returns the matched prefix (e.g. ``"git commit"``) for reporting, or
+    ``None`` if no segment resolves to a denied command.
+    """
+    for segment in _split_command_segments(command):
+        normalized = _normalize_segment(segment)
+        if normalized is None:
+            continue
+        for prefix in GIT_MUTATION_COMMANDS:
+            if normalized == prefix or normalized.startswith(prefix + " "):
+                return prefix
     return None
+
+
+def _split_command_segments(command: str) -> list[str]:
+    """Split *command* into independent shell segments on control operators.
+
+    ``&&`` and ``||`` are two-character operators but ``re.split`` on ``[;|&]+``
+    treats them as a single separator class, which is what we want here: any
+    run of those characters is a boundary between two commands. Quoting is not
+    honoured; a literal ``;`` inside a quoted string would split too. That is
+    acceptable for a best-effort guard because over-splitting only risks a
+    false *match*, never a missed one -- and we only match against a denylist
+    of git mutations, so a false positive on a benign command is the safe
+    direction.
+    """
+    return _SHELL_OPERATOR_RE.split(command)
+
+
+def _normalize_segment(segment: str) -> str | None:
+    """Strip env-var assignments and wrapper prefixes, return the core command.
+
+    Returns None when the segment is empty after stripping.
+
+    Leading ``KEY=VALUE`` pairs (the form the shell treats as transient env
+    assignments to the following command, e.g. ``FOO=1 git commit``) are
+    dropped. Wrappers in ``_COMMAND_WRAPPERS`` are unwrapped recursively so
+    ``sudo git push`` and ``env FOO=1 git commit`` resolve to ``git push`` /
+    ``git commit``. We stop unwrapping at the first token that is not a known
+    wrapper and not an env assignment, so a wrapper named identically to a
+    real binary the user might invoke (``time git status`` -- ``time`` is both
+    a shell builtin and a binary) is still treated as a wrapper here. The
+    trade-off is a rare false positive on a benign wrapped command, which is
+    preferable to a missed mutation.
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        # Unbalanced quotes / parse error: fall back to a naive whitespace
+        # split rather than letting the whole line through unexamined. A
+        # malformed segment is more likely to be noise than a deliberate
+        # bypass, and normalizing conservatively still catches the obvious
+        # forms.
+        tokens = segment.split()
+    while tokens:
+        head = tokens[0]
+        # Strip a leading env-var assignment: KEY=VALUE (VALUE may be empty).
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", head):
+            tokens = tokens[1:]
+            continue
+        # Unwrap a single wrapper token; `env` may itself carry KEY=VALUE
+        # args, which the loop above will strip on the next pass.
+        if head in _COMMAND_WRAPPERS:
+            tokens = tokens[1:]
+            continue
+        break
+    if not tokens:
+        return None
+    # Collapse all internal whitespace and lowercase so `git\tcommit` and
+    # `git  commit` match `git commit` from the denylist.
+    return " ".join(tokens).lower()
 
 
 def _ensure_checkpoint(ctx: ToolContext) -> str | None:
