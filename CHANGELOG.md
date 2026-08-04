@@ -58,6 +58,8 @@ Bugfix release clearing the remaining concurrency and leak findings from the ful
 
 ## [0.6.0] - 2026-07-30
 
+## [0.6.0] - 2026-07-30
+
 ### Added
 - Background auto-tuner. Once a model has been used and the router is idle, `arc-llama serve` runs the same staged KV/ubatch/flash-attention sweep that `arc-llama tune` uses, over loopback HTTP, aborting instantly when a real request arrives. The tuned recipe is written via the existing `/admin/models/{name}/edit` endpoint.
 - `[tune]` config section (`auto`, `idle_seconds`, `target`, `prompt_tokens`, `gen_tokens`, `min_uses`, `retune_on_fingerprint_change`) and per-model tune state ([`tune_state`, `tuned_at`, `tune_fingerprint`, `tune_error`]) persisted in the existing config.

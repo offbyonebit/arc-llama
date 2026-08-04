@@ -107,6 +107,89 @@ def test_run_command_allows_git_status(tmp_root: Path) -> None:
     assert "git history-mutating" not in res.content
 
 
+# --- Guard bypass regressions ------------------------------------------------
+# The git-mutation denylist is best-effort, not a sandbox. These tests pin the
+# common bypasses that the guard is expected to catch: extra whitespace, a
+# leading env-var assignment, shell separators (`;`, `&&`, `||`, `|`), and a
+# wrapper prefix (`sudo`, `env`, ...). They assert the command is blocked
+# before it ever reaches subprocess.run, so no git repo is needed on the host.
+
+
+def test_run_command_blocks_git_commit_extra_whitespace(tmp_root: Path) -> None:
+    res = run_command("git\tcommit   -m test", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_git_commit_leading_env_assignment(tmp_root: Path) -> None:
+    res = run_command("FOO=1 git commit -m test", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_git_push_after_semicolon(tmp_root: Path) -> None:
+    res = run_command("echo hi; git push", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_git_push_after_and(tmp_root: Path) -> None:
+    res = run_command("make && git push", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_git_push_after_or(tmp_root: Path) -> None:
+    res = run_command("false || git push", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_git_push_after_pipe(tmp_root: Path) -> None:
+    res = run_command("echo hi | git push", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_sudo_git_push(tmp_root: Path) -> None:
+    res = run_command("sudo git push", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_env_git_commit(tmp_root: Path) -> None:
+    res = run_command("env git commit -m test", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_env_with_assignment_git_commit(tmp_root: Path) -> None:
+    res = run_command("env FOO=1 git commit", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_blocks_nested_wrapper_git_push(tmp_root: Path) -> None:
+    # Multiple wrappers should be unwrapped recursively.
+    res = run_command("sudo env git push", tmp_root)
+    assert res.error
+    assert "git history-mutating" in res.content
+
+
+def test_run_command_allows_legitimate_wrapped_command(tmp_root: Path) -> None:
+    # A benign command that happens to be wrapped should still run.
+    res = run_command("env echo hello", tmp_root)
+    assert not res.error
+    assert "hello" in res.content
+
+
+def test_run_command_allows_chained_benign_commands(tmp_root: Path) -> None:
+    res = run_command("echo a && echo b", tmp_root)
+    assert not res.error
+    assert "a" in res.content
+    assert "b" in res.content
+
+
 def test_search_files(tmp_root: Path) -> None:
     res = search_files("hello", tmp_root)
     assert not res.error
