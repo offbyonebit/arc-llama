@@ -184,20 +184,21 @@ def tune_cmd(
                 target=target, prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
                 apply=apply_, cfg=cfg, on_start=on_start,
             ))
-            for r in reports:
-                if not r.error and not r.aborted:
-                    m = cfg.find_model(r.model)
-                    if m is not None:
-                        gpu = cfg.find_gpu(m.gpu_pci_slot)
-                        fp = compute_fingerprint(
-                            m, cfg.paths.llama_server, gpu, __version__,
-                            workload.fingerprint_key(cfg.workload),
-                        )
-                        set_tuned_state(cfg, m, fp)
-            try:
-                cfg.save(ctx.obj["config_path"])
-            except OSError as e:
-                console.print(f"[yellow]Warning: failed to save tune state: {e}[/yellow]")
+            if apply_:
+                for r in reports:
+                    if not r.error and not r.aborted:
+                        m = cfg.find_model(r.model)
+                        if m is not None:
+                            gpu = cfg.find_gpu(m.gpu_pci_slot)
+                            fp = compute_fingerprint(
+                                m, cfg.paths.llama_server, gpu, __version__,
+                                workload.fingerprint_key(cfg.workload),
+                            )
+                            set_tuned_state(cfg, m, fp)
+                try:
+                    cfg.save(ctx.obj["config_path"])
+                except OSError as e:
+                    console.print(f"[yellow]Warning: failed to save tune state: {e}[/yellow]")
             if as_json:
                 click.echo(json.dumps([asdict(r) for r in reports], indent=2, default=str))
             else:
@@ -216,7 +217,7 @@ def tune_cmd(
         console.print("[yellow]Tune interrupted.[/yellow]")
         sys.exit(130)
 
-    if not report.error and not report.aborted:
+    if apply_ and not report.error and not report.aborted:
         m = cfg.find_model(report.model)
         if m is not None:
             gpu = cfg.find_gpu(m.gpu_pci_slot)
