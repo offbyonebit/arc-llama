@@ -14,6 +14,7 @@ import asyncio
 import ctypes
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -27,7 +28,12 @@ import httpx
 
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
 from arc_llama.binary import list_vulkan_devices, resolve_vulkan_index
-from arc_llama.config import Config, GPUConfig, ModelConfig
+from arc_llama.config import (
+    AudioModelConfig,
+    Config,
+    GPUConfig,
+    ModelConfig,
+)
 from arc_llama.gguf_meta import has_mtp_heads
 from arc_llama.platform_checks import (
     oneapi_runtime_env_needed,
@@ -129,12 +135,20 @@ def _rotate_log(log_path: Path) -> None:
 
 @dataclass
 class LaunchPlan:
-    """Everything needed to invoke llama-server for one model."""
+    """Everything needed to invoke a backend for one model."""
     argv: list[str]
     env: dict[str, str]
     cwd: str | None = None
     health_url: str = ""
     backend_url: str = ""
+    health_timeout: float | None = None
+    """Seconds to wait for /health, or None for ``DEFAULT_HEALTH_TIMEOUT``.
+
+    The default is sized for llama-server's cold-start SYCL JIT. A TTS backend
+    that imports torch and may download several GB of weights on first use
+    needs a far larger budget, and a timeout that fires mid-download looks
+    exactly like a backend that never starts.
+    """
 
 
 # Environment variables that only make sense for the SYCL backend; they can
@@ -198,9 +212,16 @@ def build_env(
     gpu: GPUConfig,
     llama_server: str | Path | None = None,
     oneapi_setvars: str | None = None,
+    backend_override: Backend | None = None,
 ) -> dict[str, str]:
-    """Compose the environment for llama-server based on backend and arch."""
-    backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
+    """Compose the environment for llama-server based on backend and arch.
+
+    ``backend_override`` ignores the GPU's configured backend, for a runtime
+    whose backend support differs from llama.cpp's — a torch TTS engine reaches
+    an Arc card through Level Zero and so wants the SYCL device selector
+    whatever the GPU is configured for.
+    """
+    backend = backend_override or (Backend(gpu.backend) if gpu.backend else Backend.SYCL)
     env = os.environ.copy()
 
     if backend == Backend.VULKAN:
@@ -343,8 +364,140 @@ def build_plan(
     )
 
 
+def resolve_binary(path_or_name: str) -> str | None:
+    """Resolve a configured binary to a runnable path, or None if absent.
+
+    A bare name (`llama-server`) goes through PATH the way the shell would;
+    anything with a separator is taken literally. Returning None rather than
+    the unresolved string lets callers say "not installed" instead of leaving
+    the user to decode an ENOENT from a subprocess that never started.
+    """
+    if not path_or_name:
+        return None
+    candidate = Path(path_or_name).expanduser()
+    if os.sep in path_or_name or (os.altsep and os.altsep in path_or_name):
+        return str(candidate) if candidate.exists() else None
+    found = shutil.which(str(candidate))
+    return found or None
+
+
+def build_audio_plan(
+    cfg: Config, model: AudioModelConfig, gpu: GPUConfig, host: str = "127.0.0.1"
+) -> LaunchPlan:
+    """Everything needed to launch the backend serving one audio model.
+
+    Dispatches on the model's task: transcription is llama-server, speech is
+    whichever TTS engine the entry names. Every backend answers `/health` with
+    `{"status": "ok"}`, so everything downstream — the readiness gate, the
+    router lifecycle, the proxy — is identical once the plan is built.
+
+    The TTS registry is imported here rather than at module scope because the
+    engines import this module for ``LaunchPlan`` and ``build_env``. Keeping
+    the edge inside the function is what lets an engine reuse the launcher
+    instead of reimplementing the environment it needs.
+    """
+    if model.task == "tts":
+        from arc_llama.tts import require_engine
+
+        engine = require_engine(model.engine)
+        plan = engine.build_plan(cfg, model, gpu, host=host)
+        if plan.health_timeout is None:
+            plan.health_timeout = engine.health_timeout
+        return plan
+    return build_llamacpp_audio_plan(cfg, model, gpu, host=host)
+
+
+def build_llamacpp_audio_plan(
+    cfg: Config, model: AudioModelConfig, gpu: GPUConfig, host: str = "127.0.0.1"
+) -> LaunchPlan:
+    """Launch plan for an ASR model served by llama-server.
+
+    This is an ordinary llama-server invocation with an audio projector
+    attached, so it goes through the same `build_env` the LLMs use: the arch
+    SYCL profile, the stripped known-bad vars, the device selector. That is
+    the whole point of transcribing on llama.cpp here — it is the only ASR
+    runtime with a SYCL build, so it is the only one that reaches an Arc card
+    the same way the LLMs do.
+
+    Deliberately launched without a `--config`/router setup: llama.cpp's
+    multi-model router mode is reported to 500 on this endpoint
+    (ggml-org/llama.cpp#21906), and arc-llama is the router anyway.
+    """
+    recipe = model.audio_recipe()
+    if not recipe.mmproj:
+        raise RuntimeError(
+            f"audio model {model.name!r} has no 'mmproj' in its recipe. "
+            "llama.cpp keeps the audio projector in a separate GGUF "
+            "(mmproj-*.gguf, published beside the weights); without it "
+            "llama-server loads the model as a plain text LLM and "
+            "transcription returns confident nonsense."
+        )
+    mmproj_path = Path(recipe.mmproj).expanduser()
+    if not mmproj_path.exists():
+        raise RuntimeError(
+            f"audio model {model.name!r}: mmproj not found at {mmproj_path}"
+        )
+    binary = resolve_binary(cfg.paths.llama_server)
+    if binary is None:
+        raise RuntimeError(
+            f"llama-server not found at {cfg.paths.llama_server!r}. Run "
+            "`arc-llama install-runtime` or set paths.llama_server."
+        )
+
+    arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
+    profile = profile_for(arch)
+    env = build_env(
+        profile,
+        gpu,
+        llama_server=binary,
+        oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None),
+    )
+
+    caps = probe_server_caps(binary)
+    if caps.probed and not caps.supports_mmproj:
+        raise RuntimeError(
+            f"{binary} has no --mmproj, so it was built without multimodal "
+            "(mtmd) support and cannot serve ASR. Install a newer build with "
+            "`arc-llama install-runtime`."
+        )
+
+    # -c is not optional here. llama-server's default is 0, meaning "whatever
+    # the GGUF was trained for", and Qwen3-ASR advertises 65536 — a ~7 GB KV
+    # cache in front of 2 GB of weights, allocated on the first request and
+    # held for the life of the process. -np 1 keeps that budget from being
+    # split into auto-chosen slots as well.
+    argv: list[str] = [
+        binary,
+        "-m", str(Path(model.path).expanduser()),
+        "--mmproj", str(mmproj_path),
+        "--host", host,
+        "--port", str(model.port),
+        "-ngl", str(recipe.n_gpu_layers),
+        "-c", str(recipe.ctx),
+        "-np", "1",
+        "-ctk", recipe.cache_type_k,
+        "-ctv", recipe.cache_type_v,
+    ]
+    argv.extend(recipe.extra_flags)
+
+    backend_url = f"http://{host}:{model.port}"
+    return LaunchPlan(
+        argv=argv,
+        env=env,
+        backend_url=backend_url,
+        health_url=f"{backend_url}/health",
+    )
+
+
 class LlamaServer:
-    """One llama-server subprocess. Lifecycle: start → wait_ready → stop."""
+    """One llama-server subprocess. Lifecycle: start → wait_ready → stop.
+
+    Despite the name, nothing here is llama.cpp-specific: it drives whatever
+    ``plan.argv`` says and gates on ``plan.health_url`` returning
+    ``{"status": "ok"}``. Every audio backend answers /health in that shape --
+    it is the one thing a TTS engine must implement -- so they reuse this class
+    as-is, including the process-group kill that gets the VRAM back.
+    """
 
     def __init__(self, plan: LaunchPlan, name: str = "llama-server"):
         self.plan = plan
@@ -410,7 +563,12 @@ class LlamaServer:
         self._log_file = log_file
         self.started_at = time.time()
 
-    async def wait_ready(self, timeout: float = DEFAULT_HEALTH_TIMEOUT) -> bool:
+    async def wait_ready(self, timeout: float | None = None) -> bool:
+        timeout = timeout if timeout is not None else (
+            self.plan.health_timeout
+            if self.plan.health_timeout is not None
+            else DEFAULT_HEALTH_TIMEOUT
+        )
         deadline = time.time() + timeout
         last_progress = time.time()
         progress_interval = 15.0  # log every 15 s so the terminal isn't silent

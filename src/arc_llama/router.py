@@ -20,15 +20,21 @@ import time
 from pathlib import Path
 from typing import Any
 
-from arc_llama.config import Config, GPUConfig, ModelConfig
+from arc_llama.config import (
+    AudioModelConfig,
+    Config,
+    GPUConfig,
+    ModelConfig,
+)
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
     override_tensor_saved_bytes,
     scan_weight_tensors,
     weight_tensor_table,
 )
-from arc_llama.launcher import LlamaServer, build_plan
+from arc_llama.launcher import LlamaServer, build_audio_plan, build_plan
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
+from arc_llama.tts import get_engine as get_tts_engine
 
 log = logging.getLogger("arc_llama.router")
 
@@ -129,6 +135,55 @@ def _estimate_model_vram_mb(
     return weight_mb + kv_mb + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
 
+def _estimate_audio_vram_mb(model: AudioModelConfig) -> int | None:
+    """Rough VRAM footprint for one audio model instance.
+
+    A declared ``vram_mb`` always wins: the user watching `arc-llama gpus`
+    knows the real number better than we can derive it.
+
+    For a transcription model the estimate is weights + projector + a KV cache
+    sized to the recipe's ctx, because that KV is the dominant term and the
+    reason an unconfigured ASR model can occupy more VRAM than the 27B it
+    sits next to. A TTS model is measured by its engine, which knows where its
+    weights actually are — OmniVoice's usually live in the Hugging Face cache
+    rather than at ``model.path``.
+
+    Returns None when the path cannot be measured, which makes the caller
+    skip this model rather than guess; the fit guard treats an unmeasurable
+    co-resident the same way it treats an unmeasurable offloaded LLM.
+    """
+    if model.vram_mb:
+        return int(model.vram_mb)
+    if model.task == "tts":
+        engine = get_tts_engine(model.engine)
+        return engine.estimate_vram_mb(model) if engine is not None else None
+    path = Path(model.path).expanduser()
+    recipe = model.audio_recipe()
+    try:
+        if path.is_file():
+            size = path.stat().st_size
+        elif path.is_dir():
+            size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        else:
+            return None
+    except OSError:
+        return None
+    if not size:
+        return None
+    total_mb = size // (1_048_576)
+    if recipe.mmproj:
+        try:
+            total_mb += Path(recipe.mmproj).expanduser().stat().st_size // (1_048_576)
+        except OSError:
+            pass
+    try:
+        kv_type = KVCacheType(recipe.cache_type_k)
+    except ValueError:
+        kv_type = KVCacheType.F16
+    total_mb += estimate_kv_bytes(recipe.ctx, kv_type, "default") // (1_048_576)
+    return total_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+
+
 def min_moe_offload_layers(
     model: ModelConfig,
     vram_mb: int | None,
@@ -175,6 +230,40 @@ def min_moe_offload_layers(
     return n_layers
 
 
+def _startup_failure_hint(log_tail: str) -> str:
+    """Translate a known backend startup failure into the fix for it.
+
+    The backend's own message is accurate but assumes context the reader does
+    not have. A TTS sidecar that dies on `ModuleNotFoundError: omnivoice` is
+    reporting a perfectly ordinary fact about the interpreter it was started
+    with — but the user never chose that interpreter explicitly, so the fix
+    (point `tts_python` at the environment that has OmniVoice) is not visible
+    from the traceback.
+    """
+    if "No module named 'omnivoice'" in log_tail:
+        return (
+            "The interpreter running the TTS backend cannot import `omnivoice`. "
+            "arc-llama does not depend on torch, so OmniVoice lives in its own "
+            "virtualenv: point at it with `arc-llama audio set-python "
+            "/path/to/OmniVoice/.venv/bin/python`."
+        )
+    if "No module named 'torch'" in log_tail:
+        return (
+            "The TTS interpreter has no torch. Install OmniVoice and a torch "
+            "build for your GPU into that environment (XPU for Arc), then "
+            "re-run `arc-llama audio set-python`."
+        )
+    if "AssertionError: Torch not compiled with XPU" in log_tail or (
+        "Torch not compiled with XPU enabled" in log_tail
+    ):
+        return (
+            "The TTS interpreter's torch has no XPU support, so it cannot use "
+            "the Arc card. Install an XPU torch build, or set "
+            "`recipe.device = \"cpu\"` on the model to run it on the CPU."
+        )
+    return ""
+
+
 class Router:
     """Owns one LlamaServer per registered model and serialises swaps."""
 
@@ -183,7 +272,9 @@ class Router:
         self.log_dir = log_dir
         self._servers: dict[str, LlamaServer] = {}  # keyed by model.name
         self._lock = asyncio.Lock()
-        self._loading_futures: dict[str, asyncio.Future[tuple[ModelConfig, LlamaServer]]] = {}
+        self._loading_futures: dict[
+            str, asyncio.Future[tuple[ModelConfig | AudioModelConfig, LlamaServer]]
+        ] = {}
         self.metrics: dict[str, Any] = {
             "loads": 0,
             "stops": 0,
@@ -207,6 +298,9 @@ class Router:
         # lock-free fast path in ensure_active can never hand out a server
         # that is already on its way down.
         self._stopping: set[str] = set()
+        # Why an audio model has no backend, keyed by name. Populated by
+        # _build_servers and surfaced through /admin/status.
+        self.audio_launch_errors: dict[str, str] = {}
         self._build_servers()
 
     def acquire_model(self, name: str) -> None:
@@ -224,11 +318,15 @@ class Router:
             self.model_inflight[name] = current - 1
 
     def _build_servers(self) -> None:
-        """(Re)build the per-model LlamaServer registry from cfg.
+        """(Re)build the per-model backend registry from cfg.
 
         Idempotent — existing servers (running or not) are preserved by name,
         only new model entries get fresh LlamaServer instances. Use after a
         runtime config mutation (e.g. an admin scan).
+
+        Both registries land in the same ``_servers`` map: an audio backend
+        differs only in the argv its plan carries, so every lifecycle path
+        below (swap, drain, stop, shutdown) treats them alike.
         """
         for m in self.cfg.models:
             if m.name in self._servers:
@@ -243,13 +341,48 @@ class Router:
                 continue
             plan = build_plan(self.cfg, m, gpu, host=self.cfg.server.host)
             self._servers[m.name] = LlamaServer(plan, name=m.name)
+        for am in self.cfg.audio_models:
+            if am.name in self._servers:
+                continue
+            gpu = self.cfg.find_gpu(am.gpu_pci_slot)
+            if gpu is None:
+                log.warning(
+                    "audio model %s references unknown GPU %s; skipping",
+                    am.name,
+                    am.gpu_pci_slot,
+                )
+                continue
+            try:
+                plan = build_audio_plan(self.cfg, am, gpu, host=self.cfg.server.host)
+            except RuntimeError as exc:
+                # Missing binary, missing projector, a build without mtmd.
+                # Registering nothing keeps the rest of the router working,
+                # but the reason has to survive: "not launchable" with no
+                # explanation is the least useful thing a UI can say.
+                log.warning("audio model %s is not launchable: %s", am.name, exc)
+                self.audio_launch_errors[am.name] = str(exc)
+                continue
+            self.audio_launch_errors.pop(am.name, None)
+            self._servers[am.name] = LlamaServer(plan, name=am.name)
+
+    def _entry_for(self, name: str) -> ModelConfig | AudioModelConfig | None:
+        """The registry entry backing *name*, from either table."""
+        for m in self.cfg.models:
+            if m.name == name:
+                return m
+        for am in self.cfg.audio_models:
+            if am.name == name:
+                return am
+        return None
 
     # ------------------------------------------------------------------
     # Lookup
     # ------------------------------------------------------------------
 
-    def resolve(self, query: str) -> tuple[ModelConfig, GPUConfig, LlamaServer] | None:
-        m = self.cfg.find_model(query)
+    def resolve(
+        self, query: str
+    ) -> tuple[ModelConfig | AudioModelConfig, GPUConfig, LlamaServer] | None:
+        m = self.cfg.find_any_model(query)
         if m is None:
             return None
         gpu = self.cfg.find_gpu(m.gpu_pci_slot)
@@ -262,6 +395,9 @@ class Router:
 
     def all_models(self) -> list[ModelConfig]:
         return list(self.cfg.models)
+
+    def all_audio_models(self) -> list[AudioModelConfig]:
+        return list(self.cfg.audio_models)
 
     def running_models(self) -> list[str]:
         """Names of models whose llama-server process is alive (snapshot).
@@ -285,7 +421,7 @@ class Router:
 
     async def ensure_active(
         self, query: str, *, acquire: bool = False
-    ) -> tuple[ModelConfig, LlamaServer]:
+    ) -> tuple[ModelConfig | AudioModelConfig, LlamaServer]:
         """Make sure the requested model is the resident one (per policy) and
         return its (config, LlamaServer). Caller forwards the request to
         `srv.plan.backend_url`.
@@ -396,20 +532,25 @@ class Router:
             # We are the one responsible for starting.
             log.info("loading model %s on GPU %s ...", target_model.name, target_gpu.pci_slot)
             loop = asyncio.get_running_loop()
-            future: asyncio.Future[tuple[ModelConfig, LlamaServer]] = loop.create_future()
+            future: asyncio.Future[tuple[ModelConfig | AudioModelConfig, LlamaServer]] = (
+                loop.create_future()
+            )
             self._loading_futures[target_model.name] = future
             try:
                 target_srv.start(log_dir=self.log_dir)
                 ready = await target_srv.wait_ready()
                 if not ready:
                     tail = target_srv.tail_log(lines=40)
+                    hint = _startup_failure_hint(tail)
                     log.error(
                         "model %s failed health-check; stopping it",
                         target_model.name,
                     )
                     target_srv.stop()
                     self.metrics["last_error"] = f"{target_model.name} did not become healthy"
-                    detail = f"llama-server for {target_model.name} did not become healthy"
+                    detail = f"backend for {target_model.name} did not become healthy"
+                    if hint:
+                        detail += f"\n\n{hint}"
                     if tail:
                         detail += "\n\n--- last log lines ---\n" + tail
                     raise RuntimeError(detail)
@@ -434,15 +575,23 @@ class Router:
             finally:
                 self._loading_futures.pop(target_model.name, None)
 
-    def _check_vram_fit(self, target: ModelConfig, target_gpu: GPUConfig) -> None:
+    def _check_vram_fit(
+        self, target: ModelConfig | AudioModelConfig, target_gpu: GPUConfig
+    ) -> None:
         """Refuse to load *target* if its estimated VRAM won't fit on target_gpu.
 
         In multi-resident mode this also accounts for other loaded models that
-        share the same GPU.
+        share the same GPU. Pinned audio models survive eviction, so they are
+        counted here whatever the swap policy says: they are the co-residents
+        an LLM load actually has to fit alongside.
         """
         if not target_gpu.vram_mb:
             return
-        target_mb = _estimate_model_vram_mb(target)
+        target_mb = (
+            _estimate_audio_vram_mb(target)
+            if isinstance(target, AudioModelConfig)
+            else _estimate_model_vram_mb(target)
+        )
         if target_mb is None:
             # Expert offload is in force but its bytes cannot be accounted.
             # Refusing here would silently disable expert offload (the model
@@ -455,13 +604,21 @@ class Router:
             )
             return
         used_mb = target_mb
+        breakdown: list[str] = []
         for name, srv in self._servers.items():
             if name == target.name or not srv.is_running:
                 continue
-            other = next((m for m in self.cfg.models if m.name == name), None)
+            other = self._entry_for(name)
             if other is None or other.gpu_pci_slot != target_gpu.pci_slot:
                 continue
-            other_mb = _estimate_model_vram_mb(other)
+            # _evict_for has already run, so anything still alive here is a
+            # real co-resident: an unevictable pinned model, or (in
+            # multi-resident mode) an LLM sharing the card.
+            other_mb = (
+                _estimate_audio_vram_mb(other)
+                if isinstance(other, AudioModelConfig)
+                else _estimate_model_vram_mb(other)
+            )
             if other_mb is None:
                 log.warning(
                     "VRAM estimate for co-resident %s unavailable; not "
@@ -470,15 +627,39 @@ class Router:
                 )
                 continue
             used_mb += other_mb
+            breakdown.append(f"{name} ~{other_mb} MiB")
         if used_mb > target_gpu.vram_mb:
+            detail = ""
+            if getattr(target, "always_resident", False) and used_mb > target_mb:
+                # The pinned path cannot resolve this by evicting, so say what
+                # the choice actually is rather than leaving "not enough VRAM"
+                # to be read as a dead end.
+                detail = (
+                    f". {target.name!r} is pinned, so it loads alongside what is "
+                    "already resident instead of evicting it. Either stop the "
+                    "other model, give this one a smaller footprint (a lower "
+                    "`ctx` for ASR, a quantized checkpoint for TTS), or "
+                    "re-register it with --swappable to let it evict again"
+                )
+            # Itemised, because the total on its own is unactionable: a
+            # co-resident that is being over-estimated is invisible in a single
+            # number, and the fix (a `vram_mb` override, a smaller ctx, a
+            # different model) depends entirely on which one it is.
+            residents = "; ".join(breakdown) if breakdown else "none"
             raise RuntimeError(
                 f"model {target.name!r} needs ~{target_mb} MiB on GPU "
                 f"{target_gpu.pci_slot} but only {target_gpu.vram_mb} MiB is available "
-                f"(estimated total with co-residents: {used_mb} MiB)"
+                f"(estimated total {used_mb} MiB = {target.name} ~{target_mb} MiB "
+                f"+ co-residents [{residents}]){detail}. These are estimates; if one "
+                "is wrong for your setup, pin it with `vram_mb` in that model's "
+                "config entry"
             )
 
     async def _evict_for(
-        self, target: ModelConfig, target_gpu: GPUConfig, drain_seconds: float = 30.0
+        self,
+        target: ModelConfig | AudioModelConfig,
+        target_gpu: GPUConfig,
+        drain_seconds: float = 30.0,
     ) -> None:
         """Stop the right neighbours so the target can have its GPU.
 
@@ -491,19 +672,39 @@ class Router:
         through the lockless fast path while we wait, which is exactly why
         the drain is bounded rather than a wait-for-zero.
         """
+        if getattr(target, "always_resident", False):
+            # A pinned model is declared to *coexist*, so loading one evicts
+            # nothing. Protecting it from eviction is only half the promise:
+            # if the first voice command still displaced the LLM, the utterance
+            # would cost exactly the cold start pinning exists to avoid, and
+            # the model would simply be pinned in the wrong place afterwards.
+            # Whether it actually fits alongside is _check_vram_fit's call,
+            # which runs next and now sees the incumbent as a real co-resident.
+            log.debug("%s is pinned; loading it evicts nothing", target.name)
+            return
+
         single = self.cfg.server.single_resident
         for name, srv in self._servers.items():
             if name == target.name:
                 continue
             if not srv.is_running:
                 continue
-            other_model = next((m for m in self.cfg.models if m.name == name), None)
+            other_model = self._entry_for(name)
             if other_model is None:
                 self._stopping.add(name)
                 try:
                     await srv.astop()
                 finally:
                     self._stopping.discard(name)
+                continue
+            if getattr(other_model, "always_resident", False):
+                # A pinned model (an ASR backend serving voice commands, say)
+                # keeps its VRAM through every swap. Evicting it would make a
+                # single utterance cost two cold starts: one to load the LLM
+                # that displaced it, one to load it again for the next
+                # utterance. Its footprint is still charged to the GPU budget
+                # in _check_vram_fit, so this cannot silently overcommit.
+                log.debug("not evicting pinned model %s for %s", name, target.name)
                 continue
             if single or other_model.gpu_pci_slot == target_gpu.pci_slot:
                 deadline = time.monotonic() + drain_seconds
@@ -588,13 +789,22 @@ class Router:
                 finally:
                     self._stopping.discard(name)
             self._servers.pop(name, None)
-            cfg_model = next((m for m in self.cfg.models if m.name == name), None)
+            cfg_model = self._entry_for(name)
             if cfg_model is None:
                 return False, was_running
             gpu = self.cfg.find_gpu(cfg_model.gpu_pci_slot)
             if gpu is None:
                 return False, was_running
-            plan = build_plan(self.cfg, cfg_model, gpu, host=self.cfg.server.host)
+            try:
+                if isinstance(cfg_model, AudioModelConfig):
+                    # For TTS this also rewrites the generated voice table,
+                    # which is how an edited voice reaches the subprocess.
+                    plan = build_audio_plan(self.cfg, cfg_model, gpu, host=self.cfg.server.host)
+                else:
+                    plan = build_plan(self.cfg, cfg_model, gpu, host=self.cfg.server.host)
+            except RuntimeError as exc:
+                log.warning("rebuild %s: not launchable: %s", name, exc)
+                return False, was_running
             self._servers[name] = LlamaServer(plan, name=name)
             return True, was_running
 

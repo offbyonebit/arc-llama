@@ -5,6 +5,123 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Speech-to-text.** `POST /v1/audio/transcriptions` is now served alongside
+  your LLMs, so one endpoint covers both chat and STT for clients like Home
+  Assistant. Accepts multipart uploads (the OpenAI/Whisper convention) and the
+  JSON server-local-path form, and passes `stream=true` through to models
+  registered with `--mode streaming`. Backed by `llama-server -m … --mmproj …`,
+  which upstream gained along with Qwen3-ASR support — the binary you already
+  have, with a **SYCL** build, reusing the arch env profiles and device
+  selector.
+- **Text-to-speech.** `POST /v1/audio/speech` implements OpenAI's shape
+  (`input`, `voice`, `response_format`, `speed`, `instructions`) and returns
+  encoded audio, so the OpenAI SDKs and Home Assistant's TTS platform work
+  unmodified. `wav`/`pcm` are written from the standard library and always
+  work; `mp3`/`opus`/`aac`/`flac` go through libsndfile with an `ffmpeg`
+  fallback.
+- **Pluggable TTS engines.** An engine is one class — `build_plan` says how to
+  launch a backend, `build_payload` maps an OpenAI speech body onto it — and
+  registering it in `arc_llama/tts/` is the whole integration. The router
+  lifecycle, eviction, VRAM fit guard, endpoint and in-flight accounting are
+  engine-agnostic, and nothing outside that package dispatches on an engine
+  name. `arc-llama audio engines` lists what a build has.
+- **OmniVoice** ([k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice)) as the
+  first TTS engine: zero-shot voice cloning and voice design across 600+
+  languages. It is a Python library rather than a binary, so arc-llama runs it
+  in a sidecar under its own interpreter (`paths.tts_python`, or
+  `arc-llama audio set-python`) — keeping torch and transformers out of
+  arc-llama's environment, and letting eviction actually return its VRAM.
+  A model may be named by Hugging Face repo id; the engine resolves it.
+- **A voice registry.** `arc-llama audio voice add/list/rm` registers voices
+  cloned from a reference clip (`--ref-audio`, `--ref-text`) or designed from
+  attributes (`--instruct`). Voices are top-level config, not per-model, so the
+  same clip names the same voice across engines. `--alias` makes clients that
+  hardcode OpenAI voice ids resolve to yours, and an unrecognised `voice` falls
+  back to the model's `default_voice` rather than failing the request. Adding a
+  voice reaches a running backend without a reload. `--auto` registers a name
+  for the model's own voice, which is what a fine-tuned model wants — its
+  speaker is in the weights, so a clone or design prompt would fight it. Encoded reference prompts
+  are cached per model, so the first use pays the encode and later starts do not.
+- **Quantized (torchao int8) speech models.** A directory containing
+  `quantized_state.pt` is detected and loaded by materialising the base model,
+  re-applying `quantize_()` to `llm` and `audio_heads`, and reading the saved
+  tensors into that structure — `from_pretrained` cannot do it alone, because
+  quantized Linear weights are tensor subclasses that `save_pretrained` will
+  not serialise. `base_model` and `compile` are settable via `--option`, and
+  `dtype` defaults to `bfloat16` for such checkpoints. Missing or mismatched
+  weights are a hard startup failure rather than a silent fall back to the
+  base model, which would serve fluent audio in the wrong voice.
+- A `tts` optional dependency group (`pip install "arc-llama[tts]"`) covering
+  omnivoice, torch, torchaudio, torchao, numpy and soundfile. For work in this
+  repo, `tool.uv.sources` routes torch/torchao/Triton to Intel's XPU index so
+  `uv sync --extra tts` does not silently install the CUDA build.
+- `arc-llama audio add <hf-spec> --from-hf` downloads an ASR repo's weights
+  *and* its `mmproj-*.gguf` projector together and wires both up; for local
+  files the projector is auto-detected when it sits beside the weights.
+- Qwen3-ASR's native output framing (`language English<asr_text>…`, which
+  llama.cpp forwards verbatim per ggml-org/llama.cpp#26749) is stripped from
+  transcripts by default, since it otherwise breaks intent matching in voice
+  assistants. Disable with `--no-strip-markers`.
+- New `[[audio_models]]` and `[[voices]]` config tables, and the
+  `arc-llama audio` command group. Audio models live in their own table so
+  `scan`, `tune` and the auto-tuner never pick one up.
+- `ServerCaps` now probes for `--mmproj`, so a `llama-server` built without
+  multimodal support is refused at registration and at launch with an
+  actionable message rather than silently transcribing nonsense.
+- `LaunchPlan` carries an optional `health_timeout`. A speech backend may
+  import torch and download several GB before answering `/health`, which the
+  120 s budget sized for SYCL JIT does not cover — and a timeout firing
+  mid-download looks exactly like a backend that never started.
+
+### Fixed
+- **ASR models no longer allocate a context they never use.** `llama-server`
+  defaults to `-c 0` ("the GGUF's trained context") and Qwen3-ASR advertises
+  65536, so a 1.7B q8 model was reserving several GB of KV cache — more VRAM
+  than the 27B beside it. arc-llama now pins `-c` (4096 by default, in the
+  recipe) and `-np 1`, and the fit guard accounts for the KV cache instead of
+  just on-disk size.
+- **Speech models are no longer over-charged against the VRAM budget.** A
+  Hugging Face cache stores each weight once in `blobs/` and exposes it through
+  `snapshots/<rev>/` as a symlink; `Path.stat()` follows symlinks, so the size
+  walk counted every byte twice and the fit guard refused LLM loads that fit
+  with room to spare. Sizes are now de-duplicated by inode, and only the
+  checked-out revision is measured rather than every revision in the cache.
+- **A TTS model addressed by Hugging Face repo id is measured at all.** The
+  cache lookup guarded with `os.sep in repo_id`, which is always true on POSIX
+  — `os.sep` is the same `/` a repo id uses — so it rejected every repo id and
+  returned "size unknown" for precisely the models it exists to size.
+- The VRAM fit guard's error is itemised: it names each co-resident and its
+  estimate instead of only a total, since which model is mis-estimated decides
+  the fix, and points at `vram_mb` as the override.
+- Audio launch failures explain themselves: `/admin/status` carries a
+  `launch_error` per model (shown in the web UI), and a sidecar that dies on
+  `ModuleNotFoundError: omnivoice` or a torch without XPU support now comes
+  with the fix rather than a bare traceback.
+
+### Changed
+- Audio models are **pinned by default** (`always_resident`), in both
+  directions: they are exempt from single-resident eviction, *and* loading one
+  evicts nothing. Being merely un-evictable was not enough — the first speech
+  request still displaced the LLM, so the utterance paid exactly the cold start
+  pinning exists to avoid and the speech model ended up pinned in its place.
+  Footprints are still charged against the GPU's VRAM budget, and a pinned
+  model that cannot fit alongside is refused with its options named rather than
+  evicting its way in. `arc-llama audio add --swappable` opts out.
+- `arc-llama doctor` reports the speech backends in use: whether `llama-server`
+  has multimodal support, missing model or projector paths, missing voice
+  reference clips, and each TTS engine's own prerequisites — for a Python
+  engine, that its interpreter can actually import it.
+- `arc-llama scan` now skips audio GGUFs instead of registering them as LLMs
+  with a meaningless recipe: `mmproj-*.gguf` projectors, GGUFs with no
+  `general.architecture`, and ASR weights sitting beside a projector.
+  (Qwen3-ASR reports `architecture: qwen3vl`, so metadata alone cannot
+  distinguish it.)
+- Config schema version 2, adding `[[voices]]` and the TTS recipe fields
+  (`python`, `device`, `dtype`, the `default_*` request fallbacks, `options`).
+
 ## [0.7.0] - 2026-08-19
 
 ### Added

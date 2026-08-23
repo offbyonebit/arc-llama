@@ -45,6 +45,11 @@ something useful before lunch.
   multi-resident if you have headroom.
 - **OpenAI-compatible API** at `http://127.0.0.1:11437/v1/...`. Plug it into
   Open WebUI, OpenCode, anything that speaks OpenAI.
+- **Speech on the same port** , `/v1/audio/transcriptions` backed by
+  `llama-server` (Qwen3-ASR, SYCL included) and `/v1/audio/speech` backed by a
+  pluggable TTS engine ([OmniVoice](https://github.com/k2-fsa/OmniVoice) today,
+  with voice cloning). Speech backends stay pinned in VRAM so a voice command
+  never cold-starts your LLM. See [Speech](#speech).
 - **A web UI** at `http://127.0.0.1:11437/` , ships with the install. Model
   picker, load/stop buttons, **inline ctx + KV-quant editing**, GPU + VRAM
   panel. Pure HTML/JS, no build step.
@@ -199,6 +204,245 @@ The default swap policy is **single-resident across all GPUs** , pick a model,
 the router stops anything else first. Flip `server.single_resident = false` in
 the config if you want different-GPU models to coexist.
 
+## Speech
+
+arc-llama serves both audio endpoints alongside your LLM, so one port covers
+the chat, the STT and the TTS needs of something like Home Assistant:
+
+| | Endpoint | Engine | Runs on |
+|---|---|---|---|
+| Speech to text | `/v1/audio/transcriptions` | `llamacpp` | your existing `llama-server`, **SYCL** included |
+| Text to speech | `/v1/audio/speech` | `omnivoice` (pluggable) | a Python sidecar under its own interpreter |
+
+Both directions share the same registry, ports, GPU binding, VRAM accounting
+and load/evict lifecycle as your chat models — an audio model is just an entry
+with a `task`.
+
+### Speech to text
+
+```bash
+# Downloads the weights *and* the audio projector, then registers both
+arc-llama audio add ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0 --from-hf \
+  --name qwen3-asr --alias whisper-1
+
+# Or point at files you already have (the mmproj is auto-detected if it
+# sits beside the weights as mmproj-<name>.gguf)
+arc-llama audio add ~/models/Qwen3-ASR-0.6B-Q8_0.gguf --name qwen3-asr
+
+arc-llama audio list
+```
+
+Transcription always runs on `llama-server`. It is the binary you already
+have, it is the only ASR runtime with a SYCL build, and it inherits the arch
+env profiles and device selector the LLM path uses.
+
+llama.cpp keeps the audio encoder in a separate `mmproj-*.gguf`. It is
+required, not optional: without it `llama-server` loads the model as a plain
+text LLM and transcription returns fluent nonsense rather than failing, so
+arc-llama refuses to register a transcription model without one. `--from-hf`
+picks the projector matching your weights' quant — a bf16 projector next to
+q8_0 weights works but costs about twice the VRAM for no accuracy you asked
+for.
+
+> [!IMPORTANT]
+> **arc-llama pins `-c` for ASR models, and you want it to.** `llama-server`
+> defaults to `-c 0`, meaning "whatever the GGUF was trained for", and
+> Qwen3-ASR advertises 65536 — that allocates several GB of KV cache in front
+> of under 2 GB of weights, so a 1.7B transcription model ends up occupying
+> more VRAM than the 27B it sits next to. The default here is 4096, which
+> covers minutes of speech. Raise it in the recipe for long-form dictation:
+>
+> ```toml
+> [audio_models.recipe]
+> ctx = 8192
+> cache_type_k = "q8_0"
+> cache_type_v = "q8_0"
+> ```
+
+> [!NOTE]
+> Qwen3-ASR emits its transcripts as `language English<asr_text>the actual
+> words`, and llama.cpp forwards that verbatim
+> ([#26749](https://github.com/ggml-org/llama.cpp/issues/26749)) — which a
+> Home Assistant voice pipeline then tries to match as part of your command.
+> arc-llama strips the framing by default; pass `--no-strip-markers` to keep
+> the raw output. Streamed responses (`stream=true`) are forwarded raw.
+
+Transcribe with either the multipart upload (what Home Assistant, Open WebUI
+and the OpenAI SDKs send) or the JSON form:
+
+```bash
+curl http://127.0.0.1:11437/v1/audio/transcriptions \
+  -F model=qwen3-asr \
+  -F file=@speech.wav
+```
+
+Add `-F stream=true` for incremental deltas; that needs a model registered
+with `--mode streaming`.
+
+### Text to speech
+
+TTS is served by a **pluggable engine**. [OmniVoice](https://github.com/k2-fsa/OmniVoice)
+ships today — zero-shot voice cloning across 600+ languages — and
+`arc-llama audio engines` lists what your build has.
+
+OmniVoice is a Python library, not a binary, and it pulls in torch and
+transformers. arc-llama depends on neither and does not want to, so the model
+runs in a small sidecar process under **its own interpreter**. Two ways to set
+that up:
+
+```bash
+# A. Separate environment (recommended): keeps torch out of arc-llama's venv
+python -m venv ~/venvs/omnivoice
+~/venvs/omnivoice/bin/pip install omnivoice \
+  --extra-index-url https://download.pytorch.org/whl/xpu
+arc-llama audio set-python ~/venvs/omnivoice/bin/python
+
+# B. One environment: install the extra, and skip set-python entirely
+pip install "arc-llama[tts]" \
+  --extra-index-url https://download.pytorch.org/whl/xpu
+```
+
+> [!IMPORTANT]
+> **Pass the XPU index.** PyTorch distinguishes its accelerator builds only by
+> a local version tag (`2.11.0+xpu`) and by which index serves them, never by
+> package name — so a plain `pip install torch` on an Arc box pulls the CUDA
+> build: several GB of NVIDIA runtime that can never touch your GPU. Working
+> in this repo instead? `uv sync --extra tts` already routes torch, torchao
+> and Triton to Intel's index via `tool.uv.sources`.
+
+Then register the model. The Hugging Face repo id is fine — the engine
+resolves and downloads it itself:
+
+```bash
+arc-llama audio add k2-fsa/OmniVoice --task tts --name omnivoice --alias tts-1
+
+# Optional: fewer diffusion steps trades a little quality for latency
+arc-llama audio add k2-fsa/OmniVoice --task tts --option num_step=16
+```
+
+#### Voices
+
+The OpenAI `voice` field resolves against a registry you control. A voice is
+either **cloned** from a reference clip or **designed** from attributes:
+
+```bash
+# Clone: 3–10 s of clean speech. Supplying --ref-text is worth the typing —
+# without it the backend loads Whisper to transcribe the clip on first use.
+arc-llama audio voice add glados \
+  --ref-audio ~/voices/glados.wav \
+  --ref-text "All right, look. We've both said a lot of things." \
+  --alias alloy
+
+# Design: no reference audio at all
+arc-llama audio voice add narrator --instruct "male, low pitch, british accent"
+
+arc-llama audio voice list
+```
+
+**A fine-tuned model needs no voice at all.** If you trained the speaker into
+the weights, it is already the model's voice — register nothing and any `voice`
+a client sends is ignored, which is what you want, since OpenAI clients are
+obliged to send one. Give it a name only if you want `voice: "glados"` to be
+explicit alongside other voices:
+
+```bash
+arc-llama audio voice add glados --auto
+```
+
+Do *not* give a fine-tune a clone or design voice as its `default_voice`: that
+layers a prompt on top of weights that already encode the speaker, and the
+prompt wins.
+
+`--alias` is what makes hardcoded clients work: something that always sends
+OpenAI's `alloy` gets your GLaDOS. An unrecognised voice falls back to the
+model's `default_voice` rather than erroring, because a substituted voice is a
+far better failure for a speech client than none at all. Adding a voice takes
+effect on the next request — no model reload.
+
+```bash
+curl http://127.0.0.1:11437/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "omnivoice", "input": "Oh. It'\''s you.", "voice": "glados"}' \
+  --output hello.mp3
+```
+
+`input`, `voice`, `response_format` (`mp3`/`opus`/`aac`/`flac`/`wav`/`pcm`),
+`speed` and `instructions` all behave as OpenAI documents them. `wav` and
+`pcm` are written from the standard library and always work; the compressed
+formats go through libsndfile and fall back to `ffmpeg`, so install ffmpeg if
+you want `mp3` (the OpenAI default) to be available.
+
+#### Quantized models
+
+A torchao-quantized checkpoint is picked up automatically — point `--task tts`
+at the directory and arc-llama does the rest:
+
+```bash
+arc-llama audio add ~/models/OmniVoice_INT8 --task tts --name glados-tts
+```
+
+Detection is by the presence of `quantized_state.pt`, because that file is
+what makes the directory unloadable any other way. `torchao`'s `quantize_()`
+replaces Linear weights with tensor subclasses that `save_pretrained` cannot
+serialise, so quantization scripts emit a `torch.save` state dict beside an
+otherwise normal model directory — config, tokenizer, `audio_tokenizer/`, but
+no `model.safetensors`. `from_pretrained` alone therefore has nothing to load.
+arc-llama instead materialises the base model, re-applies `quantize_()` to
+`llm` and `audio_heads` to recreate the same module shapes, and reads the
+saved tensors into that.
+
+The base defaults to `k2-fsa/OmniVoice`; override it if you quantized from a
+fine-tune, and `dtype` defaults to `bfloat16` for a quantized checkpoint
+because that is what the tensors carry:
+
+```bash
+arc-llama audio add ~/models/OmniVoice_INT8 --task tts \
+  --option base_model=me/OmniVoice-glados \
+  --option compile=true
+```
+
+> [!IMPORTANT]
+> If the weights are missing, arc-llama **refuses to start** rather than
+> warning and continuing on the base model. Falling back there does not
+> produce an obvious failure — it produces fluent audio in the wrong voice,
+> which is much harder to notice than a backend that will not come up. A
+> checkpoint that shares no parameter names with the model is rejected for the
+> same reason: `load_state_dict(strict=False)` is required here (the audio
+> tokenizer is not in the file) and would otherwise report success having
+> loaded nothing.
+
+#### Adding an engine
+
+An engine is one class: `build_plan` says how to launch a backend and
+`build_payload` maps an OpenAI speech body onto it. Register it in
+`arc_llama/tts/` and everything else — the router lifecycle, eviction, the
+VRAM fit guard, the endpoint, in-flight accounting — works unchanged, because
+nothing outside that package dispatches on an engine name. A `llama-tts`
+engine would be a natural next one.
+
+### Both directions
+
+**Audio models are pinned by default**, which cuts both ways: they are exempt
+from the single-resident swap policy, *and* loading one evicts nothing. A small
+speech model displacing your LLM would make every voice command pay a full cold
+start on the next reply, which is the whole thing pinning exists to avoid — so
+a pinned model is a declared co-resident in both directions.
+
+Their footprint is still charged against the GPU's VRAM budget, so nothing
+overcommits silently: if the speech model genuinely does not fit alongside
+what is loaded, the load is refused with the options spelled out rather than
+resolved by evicting. Pass `--swappable` at registration to opt back into
+swapping — then it evicts, and can be evicted, like any other model.
+
+There is deliberately no equivalent flag for LLMs. Pinning those too would
+disable single-residency altogether; the intended shape is a small speech model
+resident beside whichever LLM is current.
+
+Either way each audio model gets its own backend subprocess on its own port,
+so `load`, `stop`, drain and the health gate behave exactly as they do for a
+chat model. Run `arc-llama doctor` to check an engine's prerequisites — for a
+Python engine it verifies the interpreter can actually import it.
+
 ## Upstreams
 
 arc-llama can merge models from other OpenAI-compatible endpoints (e.g. Ollama,
@@ -238,6 +482,9 @@ single_resident = true
 llama_server = "/usr/local/bin/llama-server"   # Windows: "C:\\...\\llama-server.exe"
 models_dir   = "~/.local/share/arc-llama/models" # Windows: "%LOCALAPPDATA%\\arc-llama\\models"
 state_dir    = "~/.local/state/arc-llama"        # Windows: "%LOCALAPPDATA%\\arc-llama"
+# Optional: interpreter for a Python TTS backend (OmniVoice). Leave empty when
+# arc-llama's own environment has it, e.g. after `pip install arc-llama[tts]`.
+tts_python   = "~/venvs/omnivoice/bin/python"
 
 [tune]
 auto         = true      # idle-time background sweeps
@@ -268,6 +515,62 @@ cache_type_v     = "q8_0"
 n_gpu_layers     = 999
 parallel         = 1
 extra_flags      = []
+
+[[audio_models]]
+name              = "qwen3-asr"
+display_name      = "Qwen3 ASR 0.6B"
+path              = "/home/me/models/Qwen3-ASR-0.6B-Q8_0.gguf"
+gpu_pci_slot      = "0000:03:00.0"
+port              = 18090
+engine            = "llamacpp"   # asr: always llamacpp. tts: a TTS engine
+                                 # name, e.g. "omnivoice"
+task              = "asr"        # asr | tts
+mode              = "offline"    # offline | streaming
+aliases           = ["whisper-1"]
+always_resident   = true         # exempt from single-resident eviction
+strip_asr_markers = true         # drop Qwen3-ASR's "language X<asr_text>" framing
+# vram_mb         = 1200         # declared footprint for the fit guard
+
+# Launch knobs live here, exactly as they do for [models.recipe].
+[audio_models.recipe]
+mmproj            = "/home/me/models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"  # asr: required
+ctx               = 4096         # asr: -c. Never left to llama.cpp's
+                                 # default of 0 ("use the GGUF's 65536").
+cache_type_k      = "f16"
+cache_type_v      = "f16"
+n_gpu_layers      = 999
+extra_flags       = []
+
+[[audio_models]]
+name              = "omnivoice"
+path              = "k2-fsa/OmniVoice"   # repo id; the engine resolves it
+gpu_pci_slot      = "0000:03:00.0"
+port              = 18091
+engine            = "omnivoice"
+task              = "tts"
+aliases           = ["tts-1"]
+
+[audio_models.recipe]
+# python                  = "~/venvs/omnivoice/bin/python"  # overrides paths.tts_python
+device                  = "xpu"       # torch device; default xpu on a SYCL GPU
+dtype                   = "float16"
+default_voice           = "glados"    # used when `voice` matches nothing
+default_language        = "English"
+default_response_format = "mp3"       # used when the request omits it
+# Engine-specific knobs, passed through untouched. Anything only one engine
+# understands lives here rather than becoming a config field.
+options                 = { num_step = 16 }
+
+# Voices are top level, not per model: the same reference clip should still
+# name the same voice after switching engines.
+[[voices]]
+name       = "glados"
+ref_audio  = "/home/me/voices/glados.wav"
+ref_text   = "All right, look. We've both said a lot of things."
+language   = "English"
+aliases    = ["alloy"]       # so a client hardcoding OpenAI's id works
+# instruct = "female, low pitch"   # design a voice instead of cloning one
+# models   = ["omnivoice"]         # empty = usable by every TTS model
 
 [[upstreams]]
 name = "ollama"

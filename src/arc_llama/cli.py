@@ -33,6 +33,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import click
 import httpx
@@ -49,15 +50,20 @@ from arc_llama.arch import Arch, Backend, aot_arch_for
 from arc_llama.binary import detect_backends, detect_llama_server_backend
 from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import (
+    AUDIO_ENGINE_LLAMACPP,
     Config,
     default_config_path,
     init_config_from_detection,
     load_config,
 )
 from arc_llama.detect import DetectedGPU, detect_gpus, lspci_intel_gpus
+from arc_llama.launcher import resolve_binary
 from arc_llama.models import (
+    add_audio_model,
     add_local_model,
+    add_voice,
     discover_ggufs,
+    download_asr_from_hf,
     download_from_hf,
     parse_hf_spec,
     register_discovered,
@@ -73,7 +79,12 @@ from arc_llama.platform_checks import (
     rebar_likely_enabled,
     user_in_groups,
 )
+from arc_llama.server_caps import probe_server_caps
 from arc_llama.skills import load_skills
+from arc_llama.tts import TTS_ENGINE_OMNIVOICE
+from arc_llama.tts import engine_names as tts_engine_names
+from arc_llama.tts import engines as tts_engines
+from arc_llama.tts import get_engine as get_tts_engine
 
 console = Console()
 
@@ -610,6 +621,78 @@ def doctor(ctx: click.Context) -> None:
             severity="warn",
             hint="Run arc-llama init.",
         )
+
+    # Audio backends, only when the user has actually asked for audio.
+    if cfg is not None and cfg.audio_models:
+        console.print("\n  [bold]audio[/bold]")
+
+        if any(m.task == "asr" for m in cfg.audio_models):
+            caps = probe_server_caps(cfg.paths.llama_server)
+            if caps.probed and not caps.supports_mmproj:
+                console.print(
+                    f"    [red]{Path(cfg.paths.llama_server).name} has no --mmproj[/red] "
+                    "(built without multimodal support)"
+                )
+                report.add(
+                    "llama_server_mmproj",
+                    False,
+                    "llama-server lacks --mmproj; cannot serve ASR",
+                    severity="warn",
+                    hint="Update it with `arc-llama install-runtime`.",
+                )
+            elif caps.probed:
+                console.print("    [green]llama-server has --mmproj[/green] (multimodal build)")
+
+        # Each TTS engine checks its own prerequisites: arc-llama cannot know
+        # what OmniVoice needs without importing torch, and the next engine
+        # will need something else again.
+        for m in cfg.audio_models:
+            if m.task != "tts":
+                continue
+            engine = get_tts_engine(m.engine)
+            if engine is None:
+                console.print(
+                    f"    [red]unknown TTS engine[/red] {m.engine!r} for {m.name}"
+                )
+                report.add(
+                    f"audio model {m.name}",
+                    False,
+                    f"unknown TTS engine {m.engine!r}",
+                    severity="fail",
+                    hint=f"Known engines: {', '.join(tts_engine_names()) or '(none)'}.",
+                )
+                continue
+            problems = engine.preflight(cfg, m)
+            for problem in problems:
+                console.print(f"    [yellow]{m.name}[/yellow]: {problem}")
+                report.add(f"audio model {m.name}", False, problem, severity="warn")
+            if not problems:
+                console.print(
+                    f"    [green]{m.name}[/green] ready on the {m.engine} engine"
+                )
+
+        for m in cfg.audio_models:
+            targets = [("model path", m.path)] if m.task == "asr" else []
+            targets.append(("mmproj", m.audio_recipe().mmproj))
+            for label, target in targets:
+                if target and not Path(target).expanduser().exists():
+                    console.print(f"    [red]missing {label}[/red] {m.name}: {target}")
+                    report.add(
+                        f"audio model {m.name}",
+                        False,
+                        f"{label} not found: {target}",
+                        severity="warn",
+                    )
+
+        for v in cfg.voices:
+            if v.ref_audio and not Path(v.ref_audio).expanduser().exists():
+                console.print(f"    [red]missing reference audio[/red] {v.name}: {v.ref_audio}")
+                report.add(
+                    f"voice {v.name}",
+                    False,
+                    f"reference audio not found: {v.ref_audio}",
+                    severity="warn",
+                )
 
     # Summary of competitive-inference gates
     fails = report.failures
@@ -1775,6 +1858,552 @@ WantedBy=default.target
 # ===========================================================================
 # upstream
 # ===========================================================================
+
+
+@cli.group("audio")
+def audio_group() -> None:
+    """Manage speech models: transcription (STT) and synthesis (TTS)."""
+
+
+def _parse_options(pairs: tuple[str, ...]) -> dict[str, Any]:
+    """Turn repeated `--option key=value` flags into the recipe's options bag.
+
+    Values are parsed as JSON when they can be, so `num_step=16` arrives as an
+    int and `normalize_text=true` as a bool. An engine that wants a string
+    keeps one, because a bare word is not valid JSON and falls through.
+    """
+    options: dict[str, Any] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise click.BadParameter(f"--option expects key=value, got {pair!r}")
+        key, _, value = pair.partition("=")
+        try:
+            options[key.strip()] = json.loads(value)
+        except json.JSONDecodeError:
+            options[key.strip()] = value
+    return options
+
+
+@audio_group.command("engines")
+def audio_engines() -> None:
+    """List the TTS engines this build can serve."""
+    table = Table(title="TTS engines")
+    table.add_column("name")
+    table.add_column("description")
+    for engine in tts_engines():
+        table.add_row(engine.name, engine.description)
+    console.print(table)
+    console.print(
+        "\n[dim]Transcription always runs on llama-server: it is the only ASR "
+        "runtime with a SYCL build.[/dim]"
+    )
+
+
+@audio_group.command("add")
+@click.argument("source")
+@click.option(
+    "--task",
+    type=click.Choice(["asr", "tts"]),
+    default="asr",
+    help="Which OpenAI endpoint this model serves: /v1/audio/transcriptions "
+    "or /v1/audio/speech.",
+)
+@click.option(
+    "--engine",
+    default=None,
+    help="Runtime that serves this model. ASR is always llamacpp; for TTS see "
+    "`arc-llama audio engines` (default: omnivoice).",
+)
+@click.option(
+    "--mmproj",
+    default=None,
+    help="ASR: path to the audio projector GGUF (mmproj-*.gguf). "
+    "Auto-resolved from a sibling file or an --from-hf download.",
+)
+@click.option(
+    "--from-hf",
+    is_flag=True,
+    help="Treat SOURCE as a Hugging Face spec (`org/repo` or `org/repo:Q8_0`) "
+    "and download the weights and the projector together.",
+)
+@click.option("--hf-token", default=None, help="HF token for gated repos.")
+@click.option("--ctx", "ctx_len", type=int, default=0, help="ASR: context length (-c).")
+@click.option(
+    "--no-strip-markers",
+    is_flag=True,
+    help="Keep the model's raw output framing. By default arc-llama strips "
+    "Qwen3-ASR's `language English<asr_text>` prefix, which llama.cpp "
+    "forwards verbatim and which breaks intent matching in Home Assistant.",
+)
+@click.option(
+    "--python",
+    "python_bin",
+    default=None,
+    help="TTS: interpreter for this model's backend, overriding paths.tts_python.",
+)
+@click.option(
+    "--device",
+    default=None,
+    help="TTS: compute device as the engine names it (xpu, cuda:0, cpu). "
+    "Default: xpu on a SYCL GPU.",
+)
+@click.option("--dtype", default=None, help="TTS: weight dtype (default: float16).")
+@click.option(
+    "--voice",
+    "default_voice",
+    default=None,
+    help="TTS: voice used when a request's `voice` matches nothing registered.",
+)
+@click.option(
+    "--language", default=None, help="TTS: language used when a request does not say."
+)
+@click.option(
+    "--response-format",
+    default=None,
+    help="TTS: encoding used when a request omits response_format (default: mp3).",
+)
+@click.option(
+    "--option",
+    "options",
+    multiple=True,
+    help="TTS: engine-specific knob as key=value (repeatable), e.g. "
+    "--option num_step=16.",
+)
+@click.option("--name", default=None, help="Short name (default: derived from SOURCE).")
+@click.option(
+    "--mode",
+    type=click.Choice(["offline", "streaming"]),
+    default="offline",
+    help="Streaming is required for stream=true transcriptions.",
+)
+@click.option(
+    "--gpu",
+    "gpu_pci_slot",
+    default=None,
+    help="PCI slot of the GPU to bind to (default: first enabled GPU).",
+)
+@click.option("--port", type=int, default=None, help="Backend port for this model's process.")
+@click.option("--display-name", default="", help="Human-friendly name.")
+@click.option(
+    "--alias",
+    "aliases",
+    multiple=True,
+    help="Extra match strings (repeatable). Add `whisper-1` or `tts-1` for "
+    "clients that hardcode OpenAI's model ids.",
+)
+@click.option(
+    "--swappable",
+    is_flag=True,
+    help="Let this model be evicted by the single-resident swap policy. By "
+    "default audio models stay pinned so a speech request never cold-starts "
+    "your LLM.",
+)
+@click.option(
+    "--vram-mb",
+    type=int,
+    default=None,
+    help="Declared VRAM footprint for the load-time fit guard (default: "
+    "estimated from the model size on disk).",
+)
+@click.pass_context
+def audio_add(
+    ctx: click.Context,
+    source: str,
+    task: str,
+    engine: str | None,
+    mmproj: str | None,
+    from_hf: bool,
+    hf_token: str | None,
+    ctx_len: int,
+    no_strip_markers: bool,
+    python_bin: str | None,
+    device: str | None,
+    dtype: str | None,
+    default_voice: str | None,
+    language: str | None,
+    response_format: str | None,
+    options: tuple[str, ...],
+    name: str | None,
+    mode: str,
+    gpu_pci_slot: str | None,
+    port: int | None,
+    display_name: str,
+    aliases: tuple[str, ...],
+    swappable: bool,
+    vram_mb: int | None,
+) -> None:
+    """Register an audio model.
+
+    SOURCE is a .gguf file, a model directory, a Hugging Face spec with
+    --from-hf (e.g. ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0), or — for a TTS engine
+    that resolves them itself — a plain repo id such as k2-fsa/OmniVoice.
+    """
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    if not cfg.gpus:
+        console.print("[red]No GPUs in config — run [bold]arc-llama init[/bold] first.[/red]")
+        sys.exit(1)
+
+    if gpu_pci_slot is None:
+        enabled = [g for g in cfg.gpus if g.enabled]
+        if not enabled:
+            console.print("[red]No enabled GPUs in config.[/red]")
+            sys.exit(1)
+        gpu_pci_slot = enabled[0].pci_slot
+
+    if engine is None:
+        engine = AUDIO_ENGINE_LLAMACPP if task == "asr" else TTS_ENGINE_OMNIVOICE
+
+    local_candidate = Path(source).expanduser()
+    if task == "tts":
+        # A TTS engine may resolve a repo id itself, so an argument that is not
+        # a local path is passed straight through rather than downloaded here:
+        # the engine knows the repo layout and this command does not.
+        derived = name or _slugify_for_name(
+            local_candidate.name if local_candidate.exists() else source.split("/")[-1], ""
+        )
+    else:
+        treat_as_hf = from_hf or (not local_candidate.exists() and "/" in source)
+        if treat_as_hf:
+            try:
+                spec = parse_hf_spec(source)
+            except ValueError as e:
+                console.print(f"[red]{e}[/red]")
+                sys.exit(1)
+            target_dir = Path(cfg.paths.models_dir).expanduser() / spec.repo.split("/")[-1]
+            console.print(f"[bold]Downloading[/bold] {spec.repo} (weights + mmproj) → {target_dir}")
+            try:
+                model_path, mmproj_path = download_asr_from_hf(
+                    spec, target_dir=target_dir, token=hf_token
+                )
+            except (RuntimeError, FileNotFoundError, ValueError) as e:
+                console.print(f"[red]{e}[/red]")
+                sys.exit(1)
+            source = str(model_path)
+            if mmproj is None:
+                mmproj = str(mmproj_path)
+            derived = name or _slugify_for_name(target_dir.name, model_path.name)
+        else:
+            p = local_candidate
+            derived = name or _slugify_for_name(p.stem if p.is_file() else p.name, "")
+            # A projector normally sits beside the weights under a predictable
+            # name; finding it saves the user a flag they'd otherwise have to
+            # discover from an error message.
+            if mmproj is None and p.is_file():
+                sibling = p.parent / f"mmproj-{p.name}"
+                if sibling.exists():
+                    mmproj = str(sibling)
+                    console.print(f"[dim]Found projector beside the weights: {sibling.name}[/dim]")
+
+    recipe_overrides: dict[str, Any] = {
+        "python": python_bin,
+        "device": device,
+        "dtype": dtype,
+        "default_voice": default_voice,
+        "default_language": language,
+        "default_response_format": response_format,
+        "options": _parse_options(options),
+    }
+
+    try:
+        entry = add_audio_model(
+            cfg,
+            name=derived,
+            path=source,
+            gpu_pci_slot=gpu_pci_slot,
+            engine=engine,
+            mmproj=mmproj or "",
+            task=task,
+            mode=mode,
+            port=port,
+            display_name=display_name,
+            aliases=list(aliases),
+            always_resident=not swappable,
+            vram_mb=vram_mb,
+            ctx=ctx_len,
+            recipe_overrides=recipe_overrides,
+            strip_asr_markers=not no_strip_markers,
+        )
+    except (ValueError, FileNotFoundError) as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    _save_or_die(cfg, cfg_path)
+    console.print(
+        f"[green]Registered[/green] audio model [bold]{entry.name}[/bold] "
+        f"({entry.engine}, {entry.task}, {entry.mode}) on port {entry.port}"
+    )
+    if entry.task == "asr":
+        caps = probe_server_caps(cfg.paths.llama_server)
+        if caps.probed and not caps.supports_mmproj:
+            console.print(
+                f"[yellow]{cfg.paths.llama_server} has no --mmproj, so it was "
+                "built without multimodal support and cannot serve ASR. "
+                "Update it with `arc-llama install-runtime`.[/yellow]"
+            )
+    else:
+        tts_engine = get_tts_engine(entry.engine)
+        for problem in tts_engine.preflight(cfg, entry) if tts_engine else []:
+            console.print(f"[yellow]{problem}[/yellow]")
+        if not cfg.voices:
+            console.print(
+                "[dim]No voices registered yet — requests will let the model pick "
+                "one. Add a cloned voice with:[/dim]\n"
+                "  arc-llama audio voice add glados --ref-audio ref.wav "
+                '--ref-text "the reference transcript"'
+            )
+    if not entry.always_resident:
+        console.print(
+            "[yellow]This model is swappable: a speech request will evict your "
+            "LLM, and the next chat reply will pay a full cold start.[/yellow]"
+        )
+
+
+@audio_group.command("set-python")
+@click.argument("path")
+@click.pass_context
+def audio_set_python(ctx: click.Context, path: str) -> None:
+    """Point arc-llama at the interpreter that runs a Python TTS backend.
+
+    OmniVoice pulls in torch, transformers and torchaudio, which arc-llama
+    deliberately does not depend on — so it lives in its own virtualenv and
+    this is how arc-llama finds it:
+
+        arc-llama audio set-python ~/git/OmniVoice/.venv/bin/python
+    """
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    resolved = resolve_binary(path)
+    if resolved is None:
+        console.print(
+            f"[red]Not found: {path}[/red] "
+            "(a bare name is looked up on PATH; pass a full path otherwise)"
+        )
+        sys.exit(1)
+    if not os.access(resolved, os.X_OK):
+        console.print(f"[red]Not executable: {resolved}[/red]")
+        sys.exit(1)
+    # Absolute, but deliberately NOT resolved. A virtualenv's `bin/python` is a
+    # symlink to the base interpreter, and it is the path you invoke that tells
+    # Python which prefix it is running in — following the link yields an
+    # interpreter that cannot import anything the venv installed. Storing the
+    # resolved target here silently registered a working OmniVoice env as a
+    # broken one.
+    cfg.paths.tts_python = (
+        path if os.sep not in path else str(Path(path).expanduser().absolute())
+    )
+    _save_or_die(cfg, cfg_path)
+    console.print(f"[green]tts_python[/green] = {cfg.paths.tts_python}")
+
+
+@audio_group.command("list")
+@click.pass_context
+def audio_list(ctx: click.Context) -> None:
+    """List registered audio models."""
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    if not cfg.audio_models:
+        console.print("No audio models registered. Add one with `arc-llama audio add`.")
+        return
+    table = Table(title="Audio models")
+    table.add_column("name")
+    table.add_column("task")
+    table.add_column("engine")
+    table.add_column("detail")
+    table.add_column("mode")
+    table.add_column("port")
+    table.add_column("pinned")
+    table.add_column("path")
+    for m in cfg.audio_models:
+        recipe = m.audio_recipe()
+        if m.task == "asr":
+            detail = Path(recipe.mmproj).name if recipe.mmproj else "—"
+        else:
+            detail = recipe.device or "auto"
+        table.add_row(
+            m.name,
+            m.task,
+            m.engine,
+            detail,
+            m.mode,
+            str(m.port),
+            "yes" if m.always_resident else "no",
+            m.path,
+        )
+    console.print(table)
+
+
+@audio_group.command("rm")
+@click.argument("name")
+@click.pass_context
+def audio_rm(ctx: click.Context, name: str) -> None:
+    """Unregister an audio model."""
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    before = len(cfg.audio_models)
+    cfg.audio_models = [m for m in cfg.audio_models if m.name != name]
+    if len(cfg.audio_models) == before:
+        console.print(f"[red]Unknown audio model: {name}[/red]")
+        sys.exit(1)
+    _save_or_die(cfg, cfg_path)
+    console.print(f"[green]Removed[/green] audio model {name}")
+
+
+@audio_group.group("voice")
+def voice_group() -> None:
+    """Manage the named voices that `/v1/audio/speech` resolves."""
+
+
+@voice_group.command("add")
+@click.argument("name")
+@click.option(
+    "--ref-audio",
+    default="",
+    help="Reference clip to clone: 3–10 s of clean speech in the target language.",
+)
+@click.option(
+    "--ref-text",
+    default="",
+    help="Transcript of --ref-audio. Omitting it makes the backend transcribe "
+    "the clip with Whisper on first use, which loads a second model onto the GPU.",
+)
+@click.option(
+    "--instruct",
+    default="",
+    help="Design a voice from attributes instead of cloning, e.g. "
+    "'female, low pitch, british accent'. Ignored when --ref-audio is given.",
+)
+@click.option(
+    "--auto",
+    is_flag=True,
+    help="The model's own voice, with no prompt. Use this for a fine-tuned "
+    "model whose speaker is baked into the weights — a clone or design prompt "
+    "on top would fight the training.",
+)
+@click.option("--language", default="", help="Language this voice speaks, e.g. English.")
+@click.option(
+    "--model",
+    "models",
+    multiple=True,
+    help="Restrict this voice to specific TTS models (repeatable). "
+    "Default: available to all of them.",
+)
+@click.option("--display-name", default="", help="Human-friendly name.")
+@click.option(
+    "--alias",
+    "aliases",
+    multiple=True,
+    help="Extra match strings (repeatable). Add `alloy` for clients that "
+    "hardcode one of OpenAI's voice ids.",
+)
+@click.pass_context
+def voice_add(
+    ctx: click.Context,
+    name: str,
+    ref_audio: str,
+    ref_text: str,
+    instruct: str,
+    auto: bool,
+    language: str,
+    models: tuple[str, ...],
+    display_name: str,
+    aliases: tuple[str, ...],
+) -> None:
+    """Register a named voice.
+
+    Either clone one from a reference clip:
+
+        arc-llama audio voice add glados --ref-audio ref.wav \\
+            --ref-text "All right, look. We've both said a lot of things."
+
+    design one from attributes:
+
+        arc-llama audio voice add narrator --instruct "male, low pitch, british accent"
+
+    or name the model's own voice, for a fine-tune that already speaks it:
+
+        arc-llama audio voice add glados --auto
+    """
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    try:
+        voice = add_voice(
+            cfg,
+            name=name,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            instruct=instruct,
+            language=language,
+            auto=auto,
+            models=list(models),
+            display_name=display_name,
+            aliases=list(aliases),
+        )
+    except (ValueError, FileNotFoundError) as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    _save_or_die(cfg, cfg_path)
+    mode = "clone" if voice.ref_audio else ("design" if voice.instruct else "auto")
+    console.print(f"[green]Registered[/green] voice [bold]{voice.name}[/bold] ({mode})")
+    if voice.ref_audio and not voice.ref_text:
+        console.print(
+            "[yellow]No --ref-text, so the backend will transcribe the clip with "
+            "Whisper the first time this voice is used — a second model on the "
+            "GPU and a slower first request. Supplying the transcript avoids "
+            "both.[/yellow]"
+        )
+
+
+@voice_group.command("list")
+@click.pass_context
+def voice_list(ctx: click.Context) -> None:
+    """List registered voices."""
+    cfg = load_config(ctx.obj["config_path"])
+    if not cfg.voices:
+        console.print(
+            "No voices registered. Speech requests will let the model pick a "
+            "voice. Add one with `arc-llama audio voice add`."
+        )
+        return
+    table = Table(title="Voices")
+    table.add_column("name")
+    table.add_column("mode")
+    table.add_column("language")
+    table.add_column("models")
+    table.add_column("aliases")
+    table.add_column("reference / attributes")
+    for v in cfg.voices:
+        if v.ref_audio:
+            mode, detail = "clone", Path(v.ref_audio).name
+        elif v.instruct:
+            mode, detail = "design", v.instruct
+        else:
+            mode, detail = "auto", "—"
+        table.add_row(
+            v.name,
+            mode,
+            v.language or "—",
+            ", ".join(v.models) or "all",
+            ", ".join(v.aliases) or "—",
+            detail,
+        )
+    console.print(table)
+
+
+@voice_group.command("rm")
+@click.argument("name")
+@click.pass_context
+def voice_rm(ctx: click.Context, name: str) -> None:
+    """Unregister a voice."""
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    before = len(cfg.voices)
+    cfg.voices = [v for v in cfg.voices if v.name != name]
+    if len(cfg.voices) == before:
+        console.print(f"[red]Unknown voice: {name}[/red]")
+        sys.exit(1)
+    _save_or_die(cfg, cfg_path)
+    console.print(f"[green]Removed[/green] voice {name}")
 
 
 @cli.group("upstream")

@@ -24,7 +24,7 @@ import logging
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -35,14 +35,21 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+# `request.form()` yields Starlette's UploadFile. fastapi.UploadFile is a
+# *subclass* of it, so isinstance() against the FastAPI one silently misses
+# every real upload — match the base class instead.
+from starlette.datastructures import UploadFile as FormUploadFile
+
 from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import ChatMessage, ChatStore
-from arc_llama.config import Config, load_config
+from arc_llama.config import AudioModelConfig, Config, load_config
 from arc_llama.router import Router
 from arc_llama.skills import load_skills
+from arc_llama.tts import engine_names as tts_engine_names
+from arc_llama.tts import get_engine as get_tts_engine
 from arc_llama.upstream import UpstreamManager
 
 log = logging.getLogger("arc_llama.server")
@@ -60,6 +67,22 @@ def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
             "connection",
         )
     }
+
+
+def _loaded_model_names(rt: Router) -> list[str]:
+    """Names of every backend — LLM or audio — that passed its health check.
+
+    "Loaded" means the health check passed, not merely that a process exists:
+    during a cold start (tens of seconds) or a crash-respawn the subprocess is
+    alive but the port is not serving, and reporting that as loaded misleads
+    dashboards and scripts that gate on it.
+    """
+    names = [m.name for m in rt.all_models()] + [m.name for m in rt.all_audio_models()]
+    return [
+        name
+        for name in names
+        if rt._servers.get(name) and rt._servers[name].is_running and rt._servers[name].ready
+    ]
 
 
 async def _require_admin(request: Request) -> None:
@@ -143,13 +166,7 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
         # exists: during a cold start (tens of seconds) or a crash-respawn the
         # subprocess is alive but the port is not serving, and reporting that
         # as loaded misleads dashboards and scripts that gate on it.
-        loaded = [
-            m.name
-            for m in rt.all_models()
-            if rt._servers.get(m.name)
-            and rt._servers[m.name].is_running
-            and rt._servers[m.name].ready
-        ]
+        loaded = _loaded_model_names(rt)
         return {
             "status": "ok",
             "uptime_seconds": round(uptime, 2),
@@ -191,13 +208,7 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
         # exists: during a cold start (tens of seconds) or a crash-respawn the
         # subprocess is alive but the port is not serving, and reporting that
         # as loaded misleads dashboards and scripts that gate on it.
-        loaded = [
-            m.name
-            for m in rt.all_models()
-            if rt._servers.get(m.name)
-            and rt._servers[m.name].is_running
-            and rt._servers[m.name].ready
-        ]
+        loaded = _loaded_model_names(rt)
         return {
             "uptime_seconds": round(uptime, 2),
             "loads": rt.metrics["loads"],
@@ -252,6 +263,27 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
                             "metadata": {"canonical": m.name},
                         }
                     )
+        # Audio models (transcription and speech backends)
+        for am in rt.all_audio_models():
+            srv = rt._servers.get(am.name)
+            data.append(
+                {
+                    "id": am.name,
+                    "object": "model",
+                    "owned_by": "arc-llama-audio",
+                    "created": 0,
+                    "metadata": {
+                        "display_name": am.display_name,
+                        "path": am.path,
+                        "gpu_pci_slot": am.gpu_pci_slot,
+                        "loaded": bool(srv and srv.is_running and srv.ready),
+                        "aliases": list(am.aliases),
+                        "engine": am.engine,
+                        "task": am.task,
+                        "mode": am.mode,
+                    },
+                }
+            )
         # Upstream models
         try:
             upstream_models = await mgr.models()
@@ -280,6 +312,28 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
     @app.post("/v1/embeddings")
     async def embeddings(request: Request):
         return await _proxy_post(request, "/v1/embeddings", streaming_ok=False)
+
+    @app.post("/v1/audio/transcriptions")
+    async def audio_transcriptions(request: Request):
+        """OpenAI-compatible speech-to-text, served by a llama-server backend.
+
+        Accepts both shapes the backend accepts: a `multipart/form-data` upload
+        (what Home Assistant, Open WebUI and the OpenAI SDKs send) and a JSON
+        body naming a server-local path.
+        """
+        return await _proxy_audio_post(request, "/v1/audio/transcriptions", task="asr")
+
+    @app.post("/v1/audio/speech")
+    async def audio_speech(request: Request):
+        """OpenAI-compatible text-to-speech.
+
+        Takes OpenAI's body — `input`, `voice`, `response_format`, `speed`,
+        `instructions` — and answers with the encoded audio as raw bytes, so
+        the OpenAI SDKs and Home Assistant's TTS platform work unmodified.
+        Which engine actually synthesises it is a property of the registered
+        model, not of this route.
+        """
+        return await _proxy_speech_post(request)
 
     @app.post("/v1/agent")
     async def agent_endpoint(request: Request):
@@ -693,6 +747,29 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
             }
             for g in c.gpus
         ]
+        audio_models = []
+        for am in rt.all_audio_models():
+            srv = rt._servers.get(am.name)
+            running = bool(srv and srv.is_running)
+            audio_models.append(
+                {
+                    "name": am.name,
+                    "display_name": am.display_name,
+                    "path": am.path,
+                    "gpu_pci_slot": am.gpu_pci_slot,
+                    "port": am.port,
+                    "loaded": bool(srv is not None and running and srv.ready),
+                    "pid": getattr(getattr(srv, "process", None), "pid", None) if running else None,
+                    "engine": am.engine,
+                    "mmproj": am.audio_recipe().mmproj,
+                    "task": am.task,
+                    "mode": am.mode,
+                    "always_resident": am.always_resident,
+                    "aliases": list(am.aliases),
+                    "launchable": srv is not None,
+                    "launch_error": getattr(rt, "audio_launch_errors", {}).get(am.name),
+                }
+            )
         mgr: UpstreamManager = request.app.state.upstream_mgr
         return {
             "server": {
@@ -703,6 +780,18 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
             },
             "gpus": gpus,
             "models": models,
+            "audio_models": audio_models,
+            "voices": [
+                {
+                    "name": v.name,
+                    "display_name": v.display_name,
+                    "mode": "clone" if v.ref_audio else ("design" if v.instruct else "auto"),
+                    "language": v.language,
+                    "models": list(v.models),
+                    "aliases": list(v.aliases),
+                }
+                for v in c.voices
+            ],
             "upstreams": mgr.upstreams_status(),
         }
 
@@ -737,7 +826,8 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
             raise HTTPException(
                 status_code=400, detail=f"Upstream model cannot be stopped locally: {name!r}"
             )
-        if name not in {m.name for m in rt.all_models()}:
+        known = {m.name for m in rt.all_models()} | {m.name for m in rt.all_audio_models()}
+        if name not in known:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
         was_running = await rt.stop_one(name)
         return {"name": name, "was_running": was_running, "loaded": False}
@@ -1075,6 +1165,428 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
 
     return app
+
+
+# Uploaded audio is buffered in memory to be re-encoded, so the request body
+# needs its own ceiling. A minute of 16 kHz mono WAV is under 2 MB; this is
+# generous for a dictation or a long meeting recording without letting a
+# bogus Content-Length exhaust the host.
+_MAX_AUDIO_UPLOAD_BYTES = 100 * 1024 * 1024
+
+# A speech request is text, so the ceiling is small on purpose: it is the one
+# audio route where a client can ask for unbounded GPU time with a few bytes.
+_MAX_SPEECH_BODY_BYTES = 64 * 1024
+
+# Generous, because it covers a first synthesis on a cold diffusion model as
+# well as a long transcription. Not None: an unbounded wait on a wedged
+# backend holds an in-flight slot open forever, which is what stops the
+# auto-tuner from ever running again.
+_AUDIO_REQUEST_TIMEOUT = 600.0
+
+_NO_ASR_MODELS_DETAIL = (
+    "No transcription models are registered. Add one with "
+    "`arc-llama audio add <model.gguf> --mmproj mmproj-<model>.gguf`, or with "
+    "`--from-hf ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0` to download a pair."
+)
+
+_NO_TTS_MODELS_DETAIL = (
+    "No text-to-speech models are registered. Add one with "
+    "`arc-llama audio add k2-fsa/OmniVoice --task tts --engine omnivoice`."
+)
+
+# Qwen3-ASR's native output framing. `<asr_text>` is a real token in its
+# vocabulary, and the model prefixes each transcript with a detected-language
+# announcement: `language English<asr_text>the actual words`. llama.cpp
+# forwards that verbatim (ggml-org/llama.cpp#26749).
+_ASR_TEXT_MARKER = "<asr_text>"
+_ASR_AUDIO_TOKENS = ("<|audio_start|>", "<|audio_end|>", "<|audio_pad|>")
+
+
+def strip_asr_markers(text: str) -> str:
+    """Remove a transcription model's output framing from *text*.
+
+    Everything up to and including the last `<asr_text>` is the model
+    announcing what it is about to do ("language English"), not speech that
+    anyone said. A voice assistant matching intents against the raw string
+    fails on every utterance, so drop it.
+
+    Splitting on the *last* marker rather than the first is deliberate: it
+    degrades to a no-op on any model that never emits one, and a transcript
+    that genuinely contained the literal token would be truncated — which
+    cannot happen, because it is a reserved token the tokenizer never
+    produces from audio.
+    """
+    if _ASR_TEXT_MARKER in text:
+        text = text.rsplit(_ASR_TEXT_MARKER, 1)[1]
+    for token in _ASR_AUDIO_TOKENS:
+        text = text.replace(token, "")
+    return text.strip()
+
+
+def _sanitize_transcription(content: bytes) -> bytes:
+    """Apply ``strip_asr_markers`` to a transcription response body.
+
+    Returns the body untouched if it is not the JSON `{"text": ...}` shape —
+    an error payload or an unexpected schema is the backend's to explain, and
+    rewriting it would only obscure the real failure.
+    """
+    try:
+        body = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return content
+    if not isinstance(body, dict) or not isinstance(body.get("text"), str):
+        return content
+    cleaned = strip_asr_markers(body["text"])
+    if cleaned == body["text"]:
+        return content
+    body["text"] = cleaned
+    return json.dumps(body).encode("utf-8")
+
+
+def _resolve_audio_model(cfg: Config, query: str, task: str):
+    """Pick the audio model a request is asking for.
+
+    An empty `model` resolves to the sole registered model for the task when
+    there is exactly one — clients in the wild hardcode OpenAI's `whisper-1`
+    or `tts-1` or omit the field entirely, and a single-model box has no
+    ambiguity to protect. With several registered the request has to say which.
+    """
+    candidates = [m for m in cfg.audio_models if m.task == task]
+    if query:
+        found = cfg.find_audio_model(query)
+        if found is not None:
+            return found
+        if len(candidates) == 1:
+            log.info(
+                "audio request named unknown model %r; using the only "
+                "registered %s model %r. Add %r to its aliases to silence this.",
+                query, task, candidates[0].name, query,
+            )
+            return candidates[0]
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _require_audio_model(
+    cfg: Config, query: str, task: str, none_registered_detail: str
+) -> AudioModelConfig:
+    """``_resolve_audio_model``, but as an HTTP error when it cannot.
+
+    The two audio endpoints fail the same way for the same reasons, and the
+    distinction that matters to the caller — "you have none of these" (501,
+    here is how to add one) versus "not that one" (404, here are the ones you
+    have) — is worth keeping identical between them.
+    """
+    candidates = [m for m in cfg.audio_models if m.task == task]
+    if not candidates:
+        raise HTTPException(status_code=501, detail=none_registered_detail)
+    model = _resolve_audio_model(cfg, query, task)
+    if model is None:
+        known = ", ".join(m.name for m in candidates)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown {task} model: {query!r}. Registered {task} models: {known}",
+        )
+    return model
+
+
+async def _forward_audio(
+    request: Request,
+    model: AudioModelConfig,
+    target_path: str,
+    build_kwargs: Callable[[AudioModelConfig], dict[str, Any]],
+    *,
+    want_stream: bool = False,
+    unavailable_detail: str = "",
+    sanitize: Callable[[bytes], bytes] | None = None,
+):
+    """Start the backend serving *model* and forward one request to it.
+
+    Kept apart from ``_proxy_post`` rather than folded into it. That path is
+    JSON-only by construction — it reads `model` out of a parsed body and
+    forwards the original bytes — while the audio routes have to understand
+    multipart uploads and binary responses, and this function carries a set of
+    hard-won in-flight/cancellation invariants that are not worth re-opening
+    for a second body format.
+
+    ``build_kwargs`` receives the *resolved* model, because the backend only
+    answers to its own id: a client may address a model by any alias arc-llama
+    accepts, and both the multipart `model` field and the JSON body have to be
+    rewritten to the canonical one before the request goes out.
+    """
+    rt: Router = request.app.state.router
+
+    rt.inflight += 1
+    streaming_response_started = False
+    acquired_model: str | None = None
+    try:
+        try:
+            resolved, srv = await rt.ensure_active(model.name, acquire=True)
+        except KeyError:
+            raise HTTPException(
+                status_code=503,
+                detail=unavailable_detail
+                or f"Audio model {model.name!r} is registered but not launchable.",
+            ) from None
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        acquired_model = resolved.name
+        if not isinstance(resolved, AudioModelConfig):
+            # ensure_active resolves by name across both registries, and
+            # find_any_model tries LLMs first. Registration refuses a name
+            # that is already taken, so this needs a hand-edited config —
+            # in which case an audio request is about to be answered by a
+            # chat model, and saying so beats transcribing gibberish.
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"{resolved.name!r} is registered in both [[models]] and "
+                    "[[audio_models]]; rename one so audio requests reach the "
+                    "audio backend."
+                ),
+            )
+        target_url = f"{srv.plan.backend_url}{target_path}"
+        request_kwargs = build_kwargs(resolved)
+
+        if want_stream:
+            # Streamed deltas are forwarded raw, so `strip_asr_markers` does
+            # not apply: the framing arrives split across chunks and rewriting
+            # it would mean buffering the stream, which defeats the point of
+            # asking for one. Clients that need clean text should not stream.
+            client = httpx.AsyncClient(timeout=None)
+            try:
+                req = client.build_request("POST", target_url, **request_kwargs)
+                upstream = await client.send(req, stream=True)
+            except BaseException:
+                await client.aclose()
+                raise
+
+            released = False
+
+            async def _release() -> None:
+                """Close the upstream and end the in-flight window, once.
+
+                Same reasoning as the streaming chat path: the counter must
+                drop even when the body generator raises, because a leaked
+                in-flight count disables background auto-tune permanently.
+                """
+                nonlocal released
+                if released:
+                    return
+                released = True
+                if rt.inflight > 0:
+                    rt.inflight -= 1
+                else:
+                    log.warning("audio proxy: inflight already 0 at release; not decrementing")
+                if acquired_model is not None:
+                    rt.release_model(acquired_model)
+                rt.last_activity = time.time()
+                try:
+                    await upstream.aclose()
+                except Exception:
+                    log.debug("audio proxy: upstream close failed", exc_info=True)
+                try:
+                    await client.aclose()
+                except Exception:
+                    log.debug("audio proxy: client close failed", exc_info=True)
+
+            async def body_iter():
+                try:
+                    async for chunk in upstream.aiter_raw():
+                        yield chunk
+                finally:
+                    await _release()
+
+            streaming_response_started = True
+            return StreamingResponse(
+                body_iter(),
+                status_code=upstream.status_code,
+                headers=_strip_response_headers(dict(upstream.headers)),
+                media_type=upstream.headers.get("content-type", "text/event-stream"),
+                background=BackgroundTask(_release),
+            )
+
+        async with httpx.AsyncClient(timeout=_AUDIO_REQUEST_TIMEOUT) as client:
+            r = await client.post(target_url, **request_kwargs)
+        rt.last_activity = time.time()
+        content = r.content
+        if sanitize is not None and r.status_code == 200:
+            content = sanitize(content)
+        return Response(
+            content=content,
+            status_code=r.status_code,
+            headers=_strip_response_headers(dict(r.headers)),
+            media_type=r.headers.get("content-type", "application/json"),
+        )
+    finally:
+        if not streaming_response_started:
+            rt.inflight -= 1
+            if acquired_model is not None:
+                rt.release_model(acquired_model)
+
+
+async def _proxy_audio_post(request: Request, target_path: str, task: str):
+    """Forward a transcription request to the llama-server backend serving it.
+
+    Multipart bodies are re-encoded rather than passed through, because the
+    `model` field has to be rewritten to the backend's own id.
+    """
+    cfg: Config = request.app.state.cfg
+
+    content_type = request.headers.get("content-type", "")
+    is_multipart = content_type.lower().startswith("multipart/form-data")
+
+    # Refuse an oversized upload from the declared length, before the body is
+    # read. Checking only after reading would mean buffering the very payload
+    # the limit exists to refuse.
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            if int(declared) > _MAX_AUDIO_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        "Audio upload must be under "
+                        f"{_MAX_AUDIO_UPLOAD_BYTES // (1024 * 1024)} MB"
+                    ),
+                )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+
+    body_bytes = b""
+    form_fields: dict[str, str] = {}
+    upload: tuple[str, bytes, str] | None = None
+
+    if is_multipart:
+        try:
+            form = await request.form()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid multipart body: {e}") from e
+        try:
+            for key, value in form.multi_items():
+                if isinstance(value, FormUploadFile):
+                    if key != "file":
+                        continue
+                    content = await value.read()
+                    if len(content) > _MAX_AUDIO_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "Audio upload must be under "
+                                f"{_MAX_AUDIO_UPLOAD_BYTES // (1024 * 1024)} MB"
+                            ),
+                        )
+                    upload = (
+                        value.filename or "audio.wav",
+                        content,
+                        value.content_type or "application/octet-stream",
+                    )
+                else:
+                    form_fields[key] = str(value)
+        finally:
+            await form.close()
+        if upload is None:
+            raise HTTPException(status_code=400, detail="Missing 'file' in multipart body")
+        model_query = form_fields.get("model", "")
+    else:
+        body_bytes = await request.body()
+        try:
+            body = json.loads(body_bytes) if body_bytes else {}
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        model_query = str(body.get("model", ""))
+
+    model = _require_audio_model(cfg, model_query, task, _NO_ASR_MODELS_DETAIL)
+
+    want_stream = str(form_fields.get("stream", "")).lower() == "true"
+    if want_stream and model.mode != "streaming":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model {model.name!r} is configured mode='offline'; "
+                "stream=true needs a model registered with --mode streaming."
+            ),
+        )
+
+    def _kwargs(resolved: AudioModelConfig) -> dict[str, Any]:
+        if is_multipart:
+            assert upload is not None
+            return {"data": {**form_fields, "model": resolved.name}, "files": {"file": upload}}
+        parsed = json.loads(body_bytes) if body_bytes else {}
+        parsed["model"] = resolved.name
+        return {"json": parsed}
+
+    return await _forward_audio(
+        request,
+        model,
+        target_path,
+        _kwargs,
+        want_stream=want_stream,
+        unavailable_detail=(
+            f"Audio model {model.name!r} is registered but not launchable. "
+            "Check that paths.llama_server points at a llama.cpp build with "
+            "multimodal (--mmproj) support and that the entry's mmproj exists."
+        ),
+        sanitize=_sanitize_transcription if model.strip_asr_markers else None,
+    )
+
+
+async def _proxy_speech_post(request: Request):
+    """Forward an OpenAI `/v1/audio/speech` request to its TTS backend.
+
+    The OpenAI body is translated by the model's engine rather than here, so
+    the endpoint stays the same shape whichever engine is loaded — that
+    translation is the whole reason engines exist, and folding a second
+    request format into this function would undo it.
+    """
+    cfg: Config = request.app.state.cfg
+
+    body_bytes = await request.body()
+    if len(body_bytes) > _MAX_SPEECH_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Speech request must be under {_MAX_SPEECH_BODY_BYTES // 1024} KB",
+        )
+    try:
+        body = json.loads(body_bytes) if body_bytes else {}
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+
+    text = body.get("input")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="'input' must be a non-empty string")
+
+    model = _require_audio_model(cfg, str(body.get("model", "")), "tts", _NO_TTS_MODELS_DETAIL)
+
+    engine = get_tts_engine(model.engine)
+    if engine is None:
+        # Only reachable via a hand-edited config: registration refuses an
+        # unknown engine, and the loader drops entries it cannot serve.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Model {model.name!r} names TTS engine {model.engine!r}, which is "
+                f"not registered. Known engines: {', '.join(tts_engine_names()) or '(none)'}."
+            ),
+        )
+
+    return await _forward_audio(
+        request,
+        model,
+        engine.speech_path,
+        lambda resolved: {"json": engine.build_payload(resolved, body)},
+        unavailable_detail=(
+            f"TTS model {model.name!r} is registered but not launchable. "
+            "Check `arc-llama doctor` — a Python engine needs `paths.tts_python` "
+            "pointing at an interpreter that can import it."
+        ),
+    )
 
 
 async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = True):

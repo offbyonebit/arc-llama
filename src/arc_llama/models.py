@@ -19,8 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from arc_llama.config import (
+    ASR_ENGINES,
+    AUDIO_ENGINE_LLAMACPP,
+    AudioModelConfig,
     Config,
     ModelConfig,
+    VoiceConfig,
 )
 from arc_llama.gguf_meta import (
     has_mtp_heads,
@@ -119,6 +123,189 @@ def _short_name_from(repo: str, file: str | None) -> str:
         if m:
             base = f"{base}-{m.group(1).lower()}"
     return base or "model"
+
+
+def add_audio_model(
+    cfg: Config,
+    *,
+    name: str,
+    path: str,
+    gpu_pci_slot: str,
+    engine: str = AUDIO_ENGINE_LLAMACPP,
+    mmproj: str = "",
+    task: str = "asr",
+    mode: str = "offline",
+    port: int | None = None,
+    display_name: str = "",
+    aliases: list[str] | None = None,
+    always_resident: bool = True,
+    vram_mb: int | None = None,
+    ctx: int = 0,
+    recipe_overrides: dict[str, Any] | None = None,
+    strip_asr_markers: bool = True,
+) -> AudioModelConfig:
+    """Register an audio model in the config.
+
+    There is no recipe to derive the way there is for an LLM: what an audio
+    backend needs is a task, an engine and a model. So this validates,
+    allocates a port, and stores what the user told us — with per-engine
+    validation delegated to the engine itself, so that adding one does not mean
+    editing this function.
+
+    Ports and names are allocated across *both* registries. They share one
+    `/v1/models` namespace and one router process map, so a collision would
+    make one of the two unreachable in a way that only shows up at request
+    time.
+    """
+    from arc_llama.tts import engine_names, get_engine
+
+    if not NAME_RE.match(name):
+        raise ValueError(f"Model name '{name}' must match [a-z0-9][a-z0-9._-]*")
+    if task not in ("asr", "tts"):
+        raise ValueError(f"task must be 'asr' or 'tts', not {task!r}")
+    if mode not in ("offline", "streaming"):
+        raise ValueError(f"mode must be 'offline' or 'streaming', not {mode!r}")
+
+    tts_engine = None
+    if task == "tts":
+        tts_engine = get_engine(engine)
+        if tts_engine is None:
+            known = ", ".join(engine_names()) or "(none)"
+            raise ValueError(
+                f"Unknown TTS engine {engine!r}. Registered engines: {known}."
+            )
+    elif engine not in ASR_ENGINES:
+        raise ValueError(
+            f"engine must be one of {list(ASR_ENGINES)} for task='asr', not {engine!r}."
+        )
+
+    if task == "asr":
+        if not mmproj:
+            raise ValueError(
+                "A transcription model needs --mmproj, the audio projector GGUF "
+                "published beside the weights (mmproj-*.gguf). Without it "
+                "llama-server loads a plain text LLM and transcription returns "
+                "confident nonsense rather than failing."
+            )
+        mm = Path(mmproj).expanduser().resolve()
+        if not mm.exists():
+            raise FileNotFoundError(f"mmproj not found: {mm}")
+        mmproj = str(mm)
+
+    p = Path(path).expanduser()
+    if p.exists():
+        p = p.resolve()
+        stored_path = str(p)
+    elif tts_engine is not None and tts_engine.accepts_remote_path:
+        # OmniVoice is normally addressed by Hugging Face repo id, which the
+        # engine resolves (and downloads) itself on first start. Refusing it
+        # here would make the documented way of registering the model fail.
+        stored_path = path
+    else:
+        raise FileNotFoundError(f"Model path not found: {p}")
+    gpu = cfg.find_gpu(gpu_pci_slot)
+    if gpu is None:
+        raise ValueError(f"GPU {gpu_pci_slot} not in config — run `arc-llama init` first.")
+    used_names = {m.name for m in cfg.models} | {m.name for m in cfg.audio_models}
+    if name in used_names:
+        raise ValueError(f"Model name '{name}' already registered.")
+    used_ports = {m.port for m in cfg.models} | {m.port for m in cfg.audio_models}
+    port = port or _next_free_port(used_ports)
+    if port in used_ports:
+        raise ValueError(f"Port {port} already in use by another model.")
+    recipe: dict[str, Any] = {}
+    if mmproj:
+        recipe["mmproj"] = mmproj
+    if ctx:
+        recipe["ctx"] = ctx
+    for key, value in (recipe_overrides or {}).items():
+        if value not in (None, "", {}, []):
+            recipe[key] = value
+    entry = AudioModelConfig(
+        name=name,
+        path=stored_path,
+        port=port,
+        gpu_pci_slot=gpu_pci_slot,
+        engine=engine,
+        task=task,
+        mode=mode,
+        recipe=recipe,
+        display_name=display_name or name,
+        aliases=list(aliases or []),
+        always_resident=always_resident,
+        vram_mb=vram_mb,
+        strip_asr_markers=strip_asr_markers,
+    )
+    if tts_engine is not None:
+        # Engine-specific checks run while the user is still at the prompt and
+        # can fix the problem, rather than at first request.
+        tts_engine.validate(entry)
+    cfg.audio_models.append(entry)
+    return entry
+
+
+def add_voice(
+    cfg: Config,
+    *,
+    name: str,
+    ref_audio: str = "",
+    ref_text: str = "",
+    instruct: str = "",
+    language: str = "",
+    auto: bool = False,
+    models: list[str] | None = None,
+    display_name: str = "",
+    aliases: list[str] | None = None,
+) -> VoiceConfig:
+    """Register a named voice for `/v1/audio/speech`.
+
+    A voice is cloned from a reference clip, designed from attributes, or
+    ``auto`` — the model's own voice, with no prompt at all. That last one is
+    what a *fine-tuned* model wants: its speaker is in the weights, so adding a
+    clone or design prompt on top fights the training rather than helping.
+
+    ``auto`` has to be asked for explicitly, because a voice with no reference
+    and no attributes is otherwise indistinguishable from one whose fields were
+    forgotten — and silently registering a name that does nothing is a much
+    worse outcome than an error.
+    """
+    if not NAME_RE.match(name):
+        raise ValueError(f"Voice name '{name}' must match [a-z0-9][a-z0-9._-]*")
+    if any(v.name == name for v in cfg.voices):
+        raise ValueError(f"Voice '{name}' already registered.")
+    if auto and (ref_audio or instruct):
+        raise ValueError(
+            "--auto means the model supplies the voice itself, so it cannot be "
+            "combined with --ref-audio or --instruct."
+        )
+    if not auto and not ref_audio and not instruct:
+        raise ValueError(
+            "A voice needs --ref-audio (clone a reference clip), --instruct "
+            "(design one from attributes, e.g. 'female, low pitch, british "
+            "accent'), or --auto (the model's own voice, for a fine-tune whose "
+            "speaker is already in the weights)."
+        )
+    resolved_ref = ""
+    if ref_audio:
+        clip = Path(ref_audio).expanduser()
+        if not clip.exists():
+            raise FileNotFoundError(f"Reference audio not found: {clip}")
+        resolved_ref = str(clip.resolve())
+    for model_name in models or []:
+        if cfg.find_audio_model(model_name) is None:
+            raise ValueError(f"Unknown audio model: {model_name}")
+    voice = VoiceConfig(
+        name=name,
+        ref_audio=resolved_ref,
+        ref_text=ref_text,
+        instruct=instruct,
+        language=language,
+        models=list(models or []),
+        display_name=display_name or name,
+        aliases=list(aliases or []),
+    )
+    cfg.voices.append(voice)
+    return voice
 
 
 def add_local_model(
@@ -367,6 +554,52 @@ def looks_like_draft(path: Path | str, siblings: list[Path] | None = None) -> bo
     return False
 
 
+def is_audio_gguf(path: Path | str, cfg: Config | None = None) -> bool:
+    """True if `path` is an audio model's GGUF rather than a chat LLM's.
+
+    A scan of the models directory happily finds Qwen3-ASR next to Qwen3.
+    Registering one as an LLM is not a harmless mistake: it gets a KV-cache
+    class, a context length sized to VRAM and a place in the auto-tuner's
+    candidate list, and every one of those is meaningless.
+
+    Four signals, cheapest first:
+
+    1. Already registered as (or living under) an audio model's path.
+    2. Named `mmproj-*.gguf` — a projector is never a standalone model,
+       whatever it projects for.
+    3. No `general.architecture` in its metadata: llama.cpp requires that key
+       to pick an implementation, so a GGUF without one is not something the
+       LLM path can load at all.
+    4. An ASR-looking name *with* a projector sibling. Qwen3-ASR reports
+       `architecture: qwen3vl`, so metadata alone cannot tell it from a
+       vision-language chat model — but a vision model registered for chat is
+       a legitimate thing to do, while an ASR model registered for chat is
+       not, and only the latter's name says `asr`.
+    """
+    p = Path(path)
+    if cfg is not None:
+        for am in cfg.audio_models:
+            for known in (am.path, am.audio_recipe().mmproj):
+                if not known:
+                    continue
+                candidate = Path(known).expanduser()
+                try:
+                    if p == candidate.resolve() or candidate in p.parents:
+                        return True
+                except OSError:
+                    continue
+    if p.name.lower().startswith("mmproj-"):
+        return True
+    if "asr" in p.stem.lower() and (p.parent / f"mmproj-{p.name}").exists():
+        return True
+    meta = read_gguf_meta(p)
+    if not meta:
+        # Unreadable is not the same as audio; leave that judgement to the
+        # existing registration path, which already tolerates thin metadata.
+        return False
+    return not meta.get("architecture")
+
+
 def infer_kv_class(filename: str) -> str:
     """Guess the kv_class for VRAM estimation from the GGUF filename."""
     for pattern, kv_class in _KV_CLASS_PATTERNS:
@@ -550,6 +783,9 @@ def register_discovered(
         if looks_like_draft(rp):
             log.info("skipping %s (speculative draft for a sibling model)", rp.name)
             continue
+        if is_audio_gguf(rp, cfg):
+            log.info("skipping %s (audio model, not a chat LLM)", rp.name)
+            continue
         kv_class = resolve_kv_class(rp)
         trained_ctx = trained_context_length(rp)
         recipe = default_recipe(
@@ -698,3 +934,87 @@ def download_from_hf(
             token=token,
         )
     )
+
+
+def download_asr_from_hf(
+    spec: HFModelSpec,
+    *,
+    target_dir: Path,
+    token: str | None = None,
+) -> tuple[Path, Path]:
+    """Download an ASR repo's weights *and* its audio projector.
+
+    Returns ``(model_path, mmproj_path)``. Separate from
+    ``download_from_hf`` because an ASR repo holds two files per quant
+    (`Qwen3-ASR-0.6B-Q8_0.gguf` and `mmproj-Qwen3-ASR-0.6B-Q8_0.gguf`) and
+    the generic path would return whichever sorted first — a coin flip
+    between the model and its projector.
+    """
+    target_dir = Path(target_dir).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+    except ImportError as e:
+        raise RuntimeError(
+            "huggingface-hub is required for downloads. Install it with "
+            "`pip install huggingface-hub`, or download the weights and the "
+            "mmproj yourself and pass --mmproj."
+        ) from e
+
+    api = HfApi(token=token)
+    files = [f for f in api.list_repo_files(spec.repo) if f.endswith(".gguf")]
+    weights = [f for f in files if not Path(f).name.lower().startswith("mmproj")]
+    projectors = [f for f in files if Path(f).name.lower().startswith("mmproj")]
+    if not projectors:
+        raise FileNotFoundError(
+            f"{spec.repo} has no mmproj-*.gguf, so it is not an ASR/multimodal "
+            "repo. Register it as a normal model with `arc-llama add`."
+        )
+
+    def _pick(candidates: list[str], what: str) -> str:
+        if spec.file:
+            exact = [f for f in candidates if Path(f).name == Path(spec.file).name]
+            if exact:
+                return exact[0]
+        if spec.quant:
+            ql = spec.quant.lower()
+            matches = [f for f in candidates if ql in f.lower()]
+            if not matches:
+                raise FileNotFoundError(
+                    f"No {what} in {spec.repo} matched quant hint "
+                    f"'{spec.quant}'. Available: {', '.join(sorted(candidates))}"
+                )
+            return sorted(matches)[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ValueError(
+            f"{spec.repo} has {len(candidates)} {what} files; pick a quant with "
+            f"`{spec.repo}:Q8_0`. Available: {', '.join(sorted(candidates))}"
+        )
+
+    model_file = _pick(weights, "weights")
+    # Match the projector to the chosen quant where possible: a bf16 mmproj
+    # beside q8_0 weights works but wastes VRAM for no accuracy anyone asked
+    # for. Fall back to the sole projector when names don't line up.
+    stem_quant = spec.quant or ""
+    if not stem_quant:
+        for candidate in ("q8_0", "bf16", "f16"):
+            if candidate in Path(model_file).name.lower():
+                stem_quant = candidate
+                break
+    matched = [f for f in projectors if stem_quant and stem_quant in f.lower()]
+    mmproj_file = sorted(matched)[0] if matched else sorted(projectors)[0]
+
+    paths = []
+    for filename in (model_file, mmproj_file):
+        paths.append(
+            Path(
+                hf_hub_download(
+                    repo_id=spec.repo,
+                    filename=filename,
+                    local_dir=str(target_dir),
+                    token=token,
+                )
+            )
+        )
+    return paths[0], paths[1]

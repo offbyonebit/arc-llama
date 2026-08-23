@@ -195,8 +195,12 @@ class TestBuildPlan:
         assert "--flash-attn" not in plan.argv
         assert "-fa" not in plan.argv
 
-    def test_vulkan_q8_auto_injects_flash_attn(self):
-        cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
+    def test_vulkan_q8_auto_injects_flash_attn(self, tmp_path):
+        # Must be a path that cannot be a working llama-server. Naming a real
+        # location like /bin/llama-server made this test pass only on machines
+        # that don't have llama.cpp installed — i.e. CI but not a dev box.
+        missing = tmp_path / "not-a-llama-server"
+        cfg = Config(paths=type("P", (), {"llama_server": str(missing)})())
         model = ModelConfig(
             name="m",
             path="/m.gguf",
@@ -212,9 +216,8 @@ class TestBuildPlan:
         )
         plan = build_plan(cfg, model, gpu)
         assert "--flash-attn" in plan.argv
-        # /bin/llama-server is not a real llama-server, so the Vulkan index
-        # cannot be resolved and the variable is deliberately left unset
-        # rather than guessed from sycl_index.
+        # The binary cannot be queried for its device list, so the Vulkan index
+        # is deliberately left unset rather than guessed from sycl_index.
         assert "GGML_VK_VISIBLE_DEVICES" not in plan.env
 
     def test_vulkan_q8_with_flash_attn_already_set(self):

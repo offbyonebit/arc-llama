@@ -31,6 +31,11 @@ class ServerCaps:
     supports_flash_attn: bool = True
     flash_attn_takes_value: bool = True
     """True: `-fa {on,off,auto}` (new style). False: boolean `-fa` (old style)."""
+    supports_mmproj: bool = True
+    """True when the binary has `--mmproj`, i.e. it was built with multimodal
+    (mtmd) support. Serving an ASR model needs it: `/v1/audio/transcriptions`
+    turns the upload into a chat completion carrying an audio media marker,
+    which only a build that can load an audio projector can answer."""
     probed: bool = False
     """False when the probe failed and these are optimistic defaults."""
 
@@ -44,16 +49,27 @@ _cache: dict[tuple[str, float], ServerCaps] = {}
 
 
 def _parse_help(help_text: str) -> ServerCaps:
+    has_mmproj = "--mmproj" in help_text
     idx = help_text.find("--flash-attn")
     if idx < 0:
-        return ServerCaps(supports_flash_attn=False, flash_attn_takes_value=False, probed=True)
+        return ServerCaps(
+            supports_flash_attn=False,
+            flash_attn_takes_value=False,
+            supports_mmproj=has_mmproj,
+            probed=True,
+        )
     # New-style help reads: "-fa, --flash-attn FA  set Flash Attention use
     # ('on', 'off', or 'auto', default: 'auto')". Old-style: "-fa, --flash-attn
     # enable Flash Attention (default: disabled)". 'auto' in the option's help
     # window is the discriminator.
     window = help_text[idx : idx + 240]
     takes_value = "auto" in window
-    return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, probed=True)
+    return ServerCaps(
+        supports_flash_attn=True,
+        flash_attn_takes_value=takes_value,
+        supports_mmproj=has_mmproj,
+        probed=True,
+    )
 
 
 def probe_server_caps(llama_server: str) -> ServerCaps:

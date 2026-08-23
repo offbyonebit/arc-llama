@@ -63,7 +63,7 @@ else:
 from arc_llama.arch import Arch, Backend
 from arc_llama.recipes import KVCacheType, LaunchRecipe
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 
 _save_locks: dict[str, threading.Lock] = {}
 
@@ -137,6 +137,18 @@ class UpstreamConfig:
 class PathsConfig:
     llama_server: str = "llama-server"
     """Path to the llama-server binary. Plain `llama-server` resolves via PATH."""
+    tts_python: str = ""
+    """Interpreter used to run a Python-based TTS backend (e.g. OmniVoice).
+
+    OmniVoice pulls in torch, transformers and torchaudio; arc-llama depends on
+    none of those and has no business forcing them into its own environment. So
+    a speech engine runs out of its own virtualenv and arc-llama only needs to
+    know which interpreter that is — `~/git/OmniVoice/.venv/bin/python`, say.
+
+    Empty means "use the interpreter running arc-llama", which is correct only
+    when the two happen to share an environment. A model's
+    `recipe.python` overrides this per entry.
+    """
     models_dir: str = field(default_factory=lambda: str(default_models_dir()))
     state_dir: str = field(default_factory=lambda: str(default_state_dir()))
     skills_dir: str = field(default_factory=lambda: str(default_skills_dir()))
@@ -296,6 +308,244 @@ class ModelConfig:
         )
 
 
+AUDIO_ENGINE_LLAMACPP = "llamacpp"
+
+ASR_ENGINES = (AUDIO_ENGINE_LLAMACPP,)
+"""Runtimes that can serve `/v1/audio/transcriptions`.
+
+Only llama-server. It is the binary an Arc box already has, it is the only one
+with a SYCL build, and it inherits the arch env profiles and the device
+selector. TTS engines are not listed here: they are discovered from
+``arc_llama.tts``, which config cannot import without a cycle and does not need
+to — nothing in this module dispatches on an engine name.
+"""
+
+DEFAULT_ASR_CTX = 4096
+"""Context length for a transcription model when the recipe doesn't say.
+
+This must be set explicitly, because llama-server's `-c` default is `0`,
+meaning "whatever the GGUF was trained for" — and Qwen3-ASR advertises 65536.
+That sizes a ~7 GB KV cache for a 1.7B model whose weights are under 2 GB,
+which looks like a runaway leak and is really just an unasked-for context.
+A single utterance is a few hundred audio tokens plus its transcript, so 4096
+covers minutes of speech; raise it in the recipe for long-form dictation.
+"""
+
+
+_AUDIO_RECIPE_KEYS = (
+    "mmproj",
+    "ctx",
+    "n_gpu_layers",
+    "cache_type_k",
+    "cache_type_v",
+    "threads",
+    "extra_flags",
+    "python",
+    "device",
+    "dtype",
+    "default_voice",
+    "default_language",
+    "default_response_format",
+    "options",
+)
+
+
+@dataclass
+class AudioRecipe:
+    """Resolved launch knobs for one audio model.
+
+    Engine-specific fields are inert for the other engine rather than an
+    error: swapping `engine` on an existing entry should not mean rewriting
+    the recipe from scratch.
+    """
+
+    mmproj: str = ""
+    ctx: int = DEFAULT_ASR_CTX
+    n_gpu_layers: int = 999
+    cache_type_k: str = "f16"
+    cache_type_v: str = "f16"
+    threads: int = 1
+    extra_flags: list[str] = field(default_factory=list)
+
+    # -- TTS --------------------------------------------------------
+    python: str = ""
+    """Interpreter for a Python TTS backend, overriding `paths.tts_python`."""
+    device: str = ""
+    """Compute device as the engine names it (`xpu`, `cuda:0`, `cpu`).
+
+    Empty lets the engine choose from the GPU's configured backend, which is
+    `xpu` for the SYCL cards this project exists for.
+    """
+    dtype: str = ""
+    """Weight dtype for a torch-based engine (e.g. `float16`, `bfloat16`).
+
+    Empty lets the engine pick, which it needs to do: a quantized checkpoint
+    dictates the dtype of the base model it was derived from, and getting that
+    wrong is a dtype mismatch on the first matmul rather than a slow path.
+    """
+    default_voice: str = ""
+    """Voice used when a request's `voice` field matches nothing registered."""
+    default_language: str = ""
+    """Language used when a request does not say (e.g. `English`)."""
+    default_response_format: str = "mp3"
+    """Encoding used when a request omits `response_format`, matching OpenAI."""
+    options: dict[str, Any] = field(default_factory=dict)
+    """Engine-specific knobs, passed through untouched.
+
+    Anything only one engine understands lives here rather than becoming a
+    field: OmniVoice's `num_step` and `normalize_text` mean nothing to a
+    `llama-tts` backend, and a shared dataclass that grows a field per engine
+    stops being a shared dataclass. Adding an engine should not need an edit
+    to this file.
+    """
+
+
+@dataclass
+class AudioModelConfig:
+    """One audio model, served by its own backend subprocess.
+
+    Covers both directions, because they share everything except the endpoint
+    they answer on: the same registry, ports, GPU binding, launch/health/evict
+    lifecycle and VRAM accounting.
+
+      * **`task = "asr"`** — speech to text on `/v1/audio/transcriptions`,
+        always `engine = "llamacpp"`: `llama-server -m model.gguf --mmproj
+        proj.gguf`. That is the binary an Arc box already has, it is the only
+        transcription runtime with a **SYCL** build, and it inherits the arch
+        env profiles and the device selector.
+      * **`task = "tts"`** — text to speech on `/v1/audio/speech`, served by
+        whichever engine is named in ``engine``. Those come from
+        ``arc_llama.tts``, which owns both how the backend is launched and how
+        an OpenAI request is translated for it; `omnivoice` is the one shipped
+        today.
+
+    Deliberately not a ``ModelConfig``: the tuner's whole surface (KV-cache
+    sweeps, ctx-vs-VRAM recipes, benchmark prompts) is meaningless for a
+    transcription model, and giving audio models fields the tuner reads would
+    let a sweep pick up something it cannot benchmark. Keeping them in their
+    own table also stops `arc-llama scan` from ever treating one as an LLM.
+    """
+
+    name: str  # short id, also URL-safe (e.g. "qwen3-asr")
+    path: str  # model directory or .gguf file
+    port: int  # backend port for this model's backend process
+    gpu_pci_slot: str  # which detected GPU to bind to
+    engine: str = "llamacpp"
+    """Which runtime serves this model.
+
+    `llamacpp` for `task = "asr"`; for `task = "tts"` it is the name of a
+    registered TTS engine (see ``arc_llama.tts``), e.g. `omnivoice`.
+    """
+    task: str = "asr"
+    """`asr` or `tts`. Decides which OpenAI endpoint routes here."""
+    mode: str = "offline"
+    """`offline` or `streaming`. Streaming is required for `stream=true`
+    transcriptions, and only for models whose backend can produce incremental
+    deltas."""
+    recipe: dict[str, Any] = field(default_factory=dict)
+    """How to launch this model, in the same place `[models.recipe]` keeps it.
+
+    Everything that shapes the process goes here — `mmproj`, `ctx`,
+    `n_gpu_layers`, `cache_type_k`/`cache_type_v`, `extra_flags` for ASR;
+    `python`, `device`, `dtype`, the `default_*` request fallbacks and an
+    `options` bag for TTS. The body above stays identity and routing policy,
+    so the two model tables read the same way. See ``audio_recipe`` for the
+    defaults.
+    """
+    strip_asr_markers: bool = True
+    """Strip Qwen3-ASR's native output framing from the transcript.
+
+    Qwen3-ASR emits `language English<asr_text>the actual words`, and
+    llama.cpp forwards it verbatim (ggml-org/llama.cpp#26749, still open).
+    A Home Assistant voice pipeline then tries to match that prefix as part
+    of the command and fails. Stripping is on by default and is a no-op for
+    any model that does not emit the marker.
+    """
+    display_name: str = ""
+    aliases: list[str] = field(default_factory=list)
+    """Extra strings that should match this model in the OpenAI `model` field.
+    Register `whisper-1` here if a client hardcodes OpenAI's STT model id."""
+    always_resident: bool = True
+    """Exempt this model from single-resident eviction.
+
+    An ASR model is small (Qwen3-ASR-0.6B q8 is well under 1 GB) and is used
+    in short bursts between LLM turns. Letting it evict a 20 GB LLM — which
+    then pays a full cold start on the next reply — trades seconds of VRAM
+    saving for tens of seconds of latency on every utterance. Its footprint
+    still counts against the GPU budget when an LLM load is checked for fit.
+    """
+    vram_mb: int | None = None
+    """Declared VRAM footprint, overriding the load-time fit guard's estimate.
+
+    A TTS model has no llama.cpp-style tensor table to measure, and a
+    safetensors directory's on-disk size is a poor proxy once weights are
+    requantized at load. None means "estimate from the path and the recipe".
+    """
+
+    def audio_recipe(self) -> AudioRecipe:
+        """The launch recipe with defaults filled in."""
+        r = self.recipe or {}
+        return AudioRecipe(
+            mmproj=str(r.get("mmproj", "")),
+            ctx=int(r.get("ctx", DEFAULT_ASR_CTX)),
+            n_gpu_layers=int(r.get("n_gpu_layers", 999)),
+            cache_type_k=str(r.get("cache_type_k", "f16")),
+            cache_type_v=str(r.get("cache_type_v", "f16")),
+            threads=int(r.get("threads", 1)),
+            extra_flags=list(r.get("extra_flags", [])),
+            python=str(r.get("python", "")),
+            device=str(r.get("device", "")),
+            dtype=str(r.get("dtype", "")),
+            default_voice=str(r.get("default_voice", "")),
+            default_language=str(r.get("default_language", "")),
+            default_response_format=str(r.get("default_response_format", "mp3")),
+            options=dict(r.get("options", {})),
+        )
+
+
+@dataclass
+class VoiceConfig:
+    """A named voice, resolvable from the OpenAI `voice` request field.
+
+    Kept in its own top-level table rather than nested under a model, because a
+    voice is a property of the speaker and not of the runtime: the same
+    reference clip should still name the same voice after switching engines,
+    and a client that says `voice = "glados"` should not have to know which
+    backend is loaded. ``models`` narrows it when that is not true.
+
+    Which fields are set decides the synthesis mode. `ref_audio` (with or
+    without `ref_text`) clones; `instruct` alone designs a voice from
+    attributes; neither lets the model pick one itself.
+    """
+
+    name: str
+    ref_audio: str = ""
+    """Reference clip to clone, 3–10 s of clean speech."""
+    ref_text: str = ""
+    """Transcript of `ref_audio`. Empty makes the engine transcribe it with
+    Whisper on first use, which costs a second model on the GPU — so supplying
+    it is worth the typing."""
+    instruct: str = ""
+    """Voice-design attributes, e.g. `female, low pitch, british accent`.
+    Ignored when `ref_audio` is set: cloning already fixes the speaker."""
+    language: str = ""
+    """Language this voice is meant to speak, e.g. `English`."""
+    prompt_file: str = ""
+    """Where the engine caches the encoded reference.
+
+    Encoding a reference clip is not free and its result never changes, so the
+    first use writes it here and later starts load it back instead of decoding
+    (and possibly re-transcribing) the audio again. Empty means the engine
+    picks a path under the state dir.
+    """
+    models: list[str] = field(default_factory=list)
+    """TTS model names this voice applies to. Empty means all of them."""
+    display_name: str = ""
+    aliases: list[str] = field(default_factory=list)
+    """Extra strings that resolve to this voice. Register `alloy` here for
+    clients that hardcode one of OpenAI's voice ids."""
+
+
 @dataclass
 class Config:
     version: int = CONFIG_VERSION
@@ -306,6 +556,8 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     gpus: list[GPUConfig] = field(default_factory=list)
     models: list[ModelConfig] = field(default_factory=list)
+    audio_models: list[AudioModelConfig] = field(default_factory=list)
+    voices: list[VoiceConfig] = field(default_factory=list)
     upstreams: list[UpstreamConfig] = field(default_factory=list)
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     profiles: list[ProfileConfig] = field(default_factory=list)
@@ -367,25 +619,37 @@ class Config:
         substring on display_name and basename(path) — so the OpenAI request body's
         `model` field can be the GGUF filename, the short name, or a friendly alias.
         """
+        return _find_entry(self.models, query)
+
+    def find_audio_model(self, query: str) -> AudioModelConfig | None:
+        """Same matching rules as ``find_model``, over the audio registry."""
+        return _find_entry(self.audio_models, query)
+
+    def find_voice(self, query: str) -> VoiceConfig | None:
+        """Match a `voice` request field against name/display_name/aliases."""
         if not query:
             return None
-        for m in self.models:
-            if m.name == query:
-                return m
-        for m in self.models:
-            if query in m.aliases:
-                return m
+        for v in self.voices:
+            if v.name == query:
+                return v
         ql = query.lower()
-        for m in self.models:
-            haystacks = [
-                m.name.lower(),
-                m.display_name.lower(),
-                Path(m.path).name.lower(),
-                *(a.lower() for a in m.aliases),
-            ]
-            if any(ql in h for h in haystacks):
-                return m
+        for v in self.voices:
+            if ql == v.name.lower() or any(ql == a.lower() for a in v.aliases):
+                return v
         return None
+
+    def voices_for(self, model_name: str) -> list[VoiceConfig]:
+        """Voices usable by the TTS model called *model_name*."""
+        return [v for v in self.voices if not v.models or model_name in v.models]
+
+    def find_any_model(self, query: str) -> ModelConfig | AudioModelConfig | None:
+        """Resolve *query* against both registries, LLMs first.
+
+        Names are unique across the two tables (registration refuses a
+        collision), so the order only decides which one wins a loose
+        substring match — and an LLM is the commoner intent.
+        """
+        return self.find_model(query) or self.find_audio_model(query)
 
     def find_gpu(self, pci_slot: str) -> GPUConfig | None:
         for g in self.gpus:
@@ -407,6 +671,8 @@ class Config:
             "agent": asdict(self.agent),
             "gpus": [asdict(g) for g in self.gpus],
             "models": [asdict(m) for m in self.models],
+            "audio_models": [asdict(m) for m in self.audio_models],
+            "voices": [asdict(v) for v in self.voices],
             "upstreams": [asdict(u) for u in self.upstreams],
             "mcp_servers": [asdict(s) for s in self.mcp_servers],
             "profiles": [asdict(p) for p in self.profiles],
@@ -509,6 +775,36 @@ class Config:
         return path
 
 
+def _find_entry(entries: list[Any], query: str) -> Any | None:
+    """Match *query* against a list of model entries.
+
+    Exact name first, then exact alias, then case-insensitive substring over
+    name / display_name / basename(path) / aliases. Shared by the LLM and
+    audio registries so a client's `model` field resolves the same way in
+    both — an id that works on /v1/chat/completions should not need
+    different spelling on /v1/audio/transcriptions.
+    """
+    if not query:
+        return None
+    for m in entries:
+        if m.name == query:
+            return m
+    for m in entries:
+        if query in m.aliases:
+            return m
+    ql = query.lower()
+    for m in entries:
+        haystacks = [
+            m.name.lower(),
+            m.display_name.lower(),
+            Path(m.path).name.lower(),
+            *(a.lower() for a in m.aliases),
+        ]
+        if any(ql in h for h in haystacks):
+            return m
+    return None
+
+
 def _strip_none(obj: Any) -> Any:
     """Recursively remove dict keys whose value is None.
 
@@ -561,6 +857,8 @@ def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
     raw.setdefault("agent", {})
     raw.setdefault("gpus", [])
     raw.setdefault("models", [])
+    raw.setdefault("audio_models", [])
+    raw.setdefault("voices", [])
     raw.setdefault("upstreams", [])
     raw.setdefault("mcp_servers", [])
     raw.setdefault("profiles", [])
@@ -592,6 +890,17 @@ def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
     if "admin_token" not in server:
         server["admin_token"] = None
 
+    # Audio launch knobs moved from the entry body into [audio_models.recipe]
+    # so the two model tables read the same way. Lift them rather than making
+    # anyone who tried the first cut hand-edit their config.
+    for audio in raw.get("audio_models", []):
+        if not isinstance(audio, dict):
+            continue
+        recipe = audio.setdefault("recipe", {})
+        for key in _AUDIO_RECIPE_KEYS:
+            if key in audio:
+                recipe.setdefault(key, audio.pop(key))
+
     # Ensure model defaults that were introduced across releases.
     for model in raw.get("models", []):
         if not isinstance(model, dict):
@@ -621,6 +930,10 @@ def validate_config(raw: dict[str, Any]) -> None:
         raise ValueError("config 'gpus' must be an array")
     if not isinstance(raw.get("models", []), list):
         raise ValueError("config 'models' must be an array")
+    if not isinstance(raw.get("audio_models", []), list):
+        raise ValueError("config 'audio_models' must be an array")
+    if not isinstance(raw.get("voices", []), list):
+        raise ValueError("config 'voices' must be an array")
     if not isinstance(raw.get("upstreams", []), list):
         raise ValueError("config 'upstreams' must be an array")
     if not isinstance(raw.get("mcp_servers", []), list):
@@ -706,6 +1019,11 @@ def load_config(path: Path | None = None) -> Config:
         agent=AgentConfig(**_filter_fields(AgentConfig, top.get("agent", {}))),
         gpus=[GPUConfig(**_filter_fields(GPUConfig, g)) for g in top.get("gpus", [])],
         models=[ModelConfig(**_filter_fields(ModelConfig, m)) for m in top.get("models", [])],
+        audio_models=[
+            AudioModelConfig(**_filter_fields(AudioModelConfig, m))
+            for m in top.get("audio_models", [])
+        ],
+        voices=[VoiceConfig(**_filter_fields(VoiceConfig, v)) for v in top.get("voices", [])],
         upstreams=[
             UpstreamConfig(**_filter_fields(UpstreamConfig, u)) for u in top.get("upstreams", [])
         ],

@@ -67,6 +67,9 @@ class FakeRouter:
     def all_models(self):
         return [self.model]
 
+    def all_audio_models(self):
+        return list(self.cfg.audio_models)
+
     async def ensure_active(self, query, *, acquire: bool = False):
         if query not in {"qwen", "qwen.gguf"}:
             raise KeyError(query)

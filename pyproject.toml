@@ -43,6 +43,37 @@ semantic = [
 mcp = [
     "mcp>=1.0",
 ]
+tts = [
+    # Text-to-speech via the `omnivoice` engine. Optional on purpose: this pulls
+    # torch and transformers, which arc-llama itself has no use for, and an
+    # install that wants only the LLM router should not pay several GB for it.
+    #
+    # Installing this extra is the *single-environment* setup — the OmniVoice
+    # sidecar then runs under arc-llama's own interpreter and `paths.tts_python`
+    # can stay empty. The split setup (a separate OmniVoice virtualenv, pointed
+    # at with `arc-llama audio set-python`) needs none of this and is the better
+    # choice when you do not want torch in the same place as the router.
+    "omnivoice>=0.2.1",
+    # >=2.10 is where torch switched its Triton pin from `pytorch-triton-xpu`
+    # to `triton-xpu`; naming exactly one of them below keeps the resolver from
+    # having to satisfy both. The upper bound is torchaudio's: PyPI ships it up
+    # to 2.11 while Intel's torch runs ahead to 2.12, and the two must agree on
+    # a minor version.
+    "torch>=2.10,<2.12",
+    "torchaudio>=2.10,<2.12",
+    # torch's own Triton build, published only on Intel's index and not on PyPI.
+    # It is named here rather than left to torch's metadata because
+    # `tool.uv.sources` rewrites the project's own requirements only — a
+    # transitive pin would still be looked up on PyPI, where it does not exist.
+    "triton-xpu; sys_platform == 'linux' or sys_platform == 'win32'",
+    # Quantized-model support (int8/int4 weights), so a speech model can be run
+    # under a smaller VRAM budget alongside an LLM.
+    "torchao>=0.7",
+    # Imported directly by the sidecar to encode WAV/FLAC/Opus and to clip
+    # samples, rather than reached through omnivoice, so declared directly.
+    "numpy>=1.24",
+    "soundfile>=0.12",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -58,6 +89,62 @@ arc-llama = "arc_llama.cli:main"
 [project.urls]
 Homepage = "https://github.com/offbyonebit/arc-llama"
 Issues = "https://github.com/offbyonebit/arc-llama/issues"
+
+[tool.uv]
+# Intel's XPU wheels (and their pinned `pytorch-triton-xpu`) are built for
+# cp310–cp314. Without a bound, uv also resolves a Python 3.15 split, finds no
+# XPU triton there, and fails the whole lock — reported against `torch`, which
+# reads as "XPU torch does not exist" rather than "not for that interpreter".
+#
+# This bounds the *lockfile* only. `requires-python` stays >=3.10 with no
+# ceiling, so installing arc-llama on a newer interpreter is still fine; it is
+# only the `tts` extra that has nothing to offer there yet. Raise this when
+# Intel publishes cp315 wheels.
+environments = [
+    "python_full_version < '3.15'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+# Only consulted for the packages routed to it below, so the rest of the
+# dependency tree keeps resolving from PyPI.
+explicit = true
+
+# PyTorch publishes one wheel per accelerator, distinguished only by a local
+# version tag (`2.11.0+xpu`) and by which index serves it — never by package
+# name. So the plain `torch` on PyPI is the CUDA build, and installing the
+# `tts` extra on an Arc box would otherwise pull ~3 GB of NVIDIA runtime that
+# can never touch the GPU. These sources point the resolver at Intel's index.
+#
+# They apply to work done *on* this project (`uv sync --extra tts`) only:
+# `tool.uv.sources` is not published metadata, so a downstream `pip install
+# arc-llama[tts]` still resolves from PyPI. See the README for the install
+# line that names the XPU index explicitly.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-xpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchao = [
+    { index = "pytorch-xpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+# Windows only. Intel ships XPU torchaudio for Windows tracking current torch,
+# but the Linux XPU builds stop at 2.7.0 — routing Linux here would pin torch
+# back to 2.7.x to match it. On Linux the ordinary PyPI torchaudio is correct:
+# it requires an exact `torch==X.Y.Z`, and PEP 440 matches that against the
+# `X.Y.Z+xpu` wheel above, since a specifier without a local segment ignores
+# one on the candidate.
+torchaudio = [
+    { index = "pytorch-xpu", marker = "sys_platform == 'win32'" },
+]
+# torch's own Triton dependency, published only on the same index and not on
+# PyPI at all. Without this route the resolver looks it up there, finds
+# nothing, and reports the failure against `torch` — which reads as "no XPU
+# torch exists" rather than "one of its pins is unreachable". Unmarked because
+# the XPU torch wheels pin it on Windows as well as Linux.
+triton-xpu = [
+    { index = "pytorch-xpu" },
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/arc_llama"]
@@ -80,6 +167,24 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N"]
 ignore = ["E501"]
+
+[tool.mypy]
+# Deliberately no global strictness change here: this section exists only to
+# teach mypy about imports it cannot possibly resolve.
+
+# The TTS sidecars under src/arc_llama/tts/sidecars/ are not run by arc-llama's
+# interpreter. They are standalone scripts executed by whatever virtualenv has
+# the model framework installed, precisely so arc-llama itself never depends on
+# torch and friends. Their logic is still worth type-checking, so ignore the
+# missing stubs rather than excluding the files.
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "torchao.*",
+    "omnivoice.*",
+    "soundfile",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

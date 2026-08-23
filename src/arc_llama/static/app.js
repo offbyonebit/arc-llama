@@ -83,10 +83,11 @@ function render(s) {
   // Models
   const modelBody = $("#models tbody");
   modelBody.innerHTML = "";
-  if (!s.models || s.models.length === 0) {
+  const audio = s.audio_models || [];
+  if ((!s.models || s.models.length === 0) && audio.length === 0) {
     renderEmpty(modelBody, 8, "No models registered", "Click Scan for models to discover GGUF files, or add upstream endpoints in config.");
   } else {
-    for (const m of s.models) {
+    for (const m of s.models || []) {
       const tr = document.createElement("tr");
       if (editingModel === m.name) {
         renderEditRow(tr, m);
@@ -95,7 +96,54 @@ function render(s) {
       }
       modelBody.appendChild(tr);
     }
+    // Speech backends (STT and TTS). No ctx/KV to show or edit — their launch
+    // config is an engine/task/mode triple, not a llama.cpp recipe.
+    for (const m of audio) {
+      const tr = document.createElement("tr");
+      renderAudioRow(tr, m);
+      modelBody.appendChild(tr);
+    }
   }
+}
+
+function renderAudioRow(tr, m) {
+  tr.className = m.loaded ? "bright" : "dim";
+  const pill = m.loaded
+    ? '<span class="pill loaded">loaded</span>'
+    : '<span class="pill idle">idle</span>';
+  const pinned = m.always_resident ? ' <span class="upstream-hint" title="Exempt from single-resident eviction">pinned</span>' : "";
+  tr.innerHTML = `
+    <td>${pill}</td>
+    <td><strong>${m.name}</strong> <span class="upstream-hint" title="${m.engine || ""}">${m.task || "audio"}</span>${pinned}</td>
+    <td class="mono">${m.gpu_pci_slot || "—"}</td>
+    <td class="mono">${m.port || "—"}</td>
+    <td class="mono">—</td>
+    <td class="mono">${m.mode || "—"}</td>
+    <td class="path" title="${m.path || ""}">${fmtPath(m.path)}</td>
+    <td class="actions"></td>
+  `;
+  const actions = tr.querySelector(".actions");
+  const wrap = document.createElement("div");
+  wrap.className = "row-actions";
+  if (!m.launchable) {
+    const note = document.createElement("span");
+    note.className = "upstream-link";
+    note.title = m.launch_error || "This model has no runnable backend.";
+    note.textContent = "not launchable";
+    wrap.appendChild(note);
+  } else if (m.loaded) {
+    const stop = document.createElement("button");
+    stop.className = "danger";
+    stop.textContent = "Stop";
+    stop.onclick = () => postAction(`/admin/stop/${encodeURIComponent(m.name)}`, "Stop");
+    wrap.appendChild(stop);
+  } else {
+    const load = document.createElement("button");
+    load.textContent = "Load";
+    load.onclick = () => postAction(`/admin/load/${encodeURIComponent(m.name)}`, "Load");
+    wrap.appendChild(load);
+  }
+  actions.appendChild(wrap);
 }
 
 function renderEmpty(tbody, colspan, title, hint) {
