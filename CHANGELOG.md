@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-02
+
+### Added
+- Safe speculative decoding for registered models. `arc-llama speculative` discovers conservative same-family drafts, validates the installed llama.cpp capability surface, and falls back to target-only inference when a requested mode is unsupported.
+- Community tune-recipe registry. Bundled recipes can be inspected with `arc-llama recipes lookup`, refreshed with `arc-llama recipes update`, and contributed explicitly with `arc-llama tune --share`; no recipe data is uploaded automatically.
+- Open WebUI and LM Studio integration documentation, a Docker Compose stack, CORS support, and a Compose health check.
+
+### Fixed
+- Preserve configured speculative decoding after a failed llama.cpp capability probe.
+- Use numeric `video` and `render` group IDs in Docker Compose so GPU device access works consistently on Linux hosts.
+
 ## [0.7.1] - 2026-08-24
 
 ### Fixed

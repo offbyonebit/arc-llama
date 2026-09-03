@@ -15,7 +15,7 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Status: 0.6.2.** Tested end-to-end on Battlemage B60 on Linux and Windows:
+> **Status: 0.8.0.** Tested end-to-end on Battlemage B60 on Linux and Windows:
 > `arc-llama install-runtime` fetches a portable Vulkan `llama-server` and
 > serves real inference with no oneAPI install or source build. HF download,
 > streaming, and the OpenAI-compatible API all pass. Other SKUs (A770, A380,
@@ -187,8 +187,6 @@ arc-llama also probes your `llama-server --help` once per binary to emit the
 right flag dialect (`-fa on|off|auto` on current builds vs boolean `-fa` on
 pre-b6300 ones), so hand-built and prebuilt binaries both work.
 
-## Multi-GPU
-
 ## Speculative decoding
 
 Arc Llama supports llama.cpp's native speculative-decoding modes when the
@@ -212,6 +210,8 @@ candidate but does not claim a speedup: benchmark it on your own hardware
 before relying on it. Cross-vendor or cross-GPU draft/target pipelines are not
 implemented; verification remains inside one llama-server process.
 
+## Multi-GPU
+
 `arc-llama init` registers every Intel GPU it finds. Each model in the config
 is bound to a specific PCI slot, and the SYCL device selector
 (`ONEAPI_DEVICE_SELECTOR=level_zero:N`) is set per-model. Add your second card,
@@ -221,6 +221,21 @@ either GPU.
 The default swap policy is **single-resident across all GPUs** , pick a model,
 the router stops anything else first. Flip `server.single_resident = false` in
 the config if you want different-GPU models to coexist.
+
+## Community recipes
+
+The bundled community registry lets you reuse recipes measured on matching Arc
+hardware without making networking part of normal inference:
+
+```bash
+arc-llama recipes lookup qwen3-7b  # inspect a matching bundled/local recipe
+arc-llama recipes update           # explicitly fetch a newer registry
+arc-llama tune qwen3-7b --share    # write a validated submission and PR link
+```
+
+`--share` is opt-in and only writes a local JSON submission. Review and submit
+the generated pull request yourself; Arc Llama never uploads measurements
+automatically.
 
 ## Upstreams
 
