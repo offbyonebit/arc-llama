@@ -6,7 +6,6 @@ Full docker compose + Open WebUI UI is manual (see PR test plan).
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,7 +14,8 @@ import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
-from arc_llama.cli import cli, serve as serve_cmd
+from arc_llama.cli import cli
+from arc_llama.cli import serve as serve_cmd
 from arc_llama.config import Config, GPUConfig, ModelConfig, ServerConfig, UpstreamConfig
 from arc_llama.server import create_app
 
@@ -88,10 +88,27 @@ def test_cors_allows_cross_origin(gguf: Path):
                 },
             )
             assert pre.status_code in (200, 204)
-            assert pre.headers.get("access-control-allow-origin") == "*"
+            assert pre.headers.get("access-control-allow-origin") == "http://localhost:3000"
             r = client.get("/v1/models", headers={"Origin": "http://localhost:3000"})
             assert r.status_code == 200
-            assert r.headers.get("access-control-allow-origin") == "*"
+            assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+def test_cors_rejects_unconfigured_cross_origin(gguf: Path):
+    import arc_llama.server as server_mod
+
+    with patch.object(server_mod, "Router", FakeRouter), \
+         patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
+        app = create_app(_cfg(gguf))
+        with TestClient(app) as client:
+            pre = client.options(
+                "/v1/models",
+                headers={
+                    "Origin": "http://evil.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            assert "access-control-allow-origin" not in pre.headers
 
 
 def test_list_models_created_from_gguf_mtime(gguf: Path):
@@ -156,3 +173,33 @@ def test_docker_compose_yml_present():
     assert "/dev/dri" in text
     # Prefer python healthcheck (curl not in runtime image)
     assert "python3" in text
+
+
+def test_dockerfile_healthcheck_does_not_require_curl():
+    """The runtime image ships python3 but not curl; the HEALTHCHECK must not
+    depend on curl or the container will never report healthy."""
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = root / "Dockerfile"
+    assert dockerfile.is_file()
+    text = dockerfile.read_text()
+    assert "HEALTHCHECK" in text
+    healthcheck_lines = [
+        line for line in text.splitlines() if "HEALTHCHECK" in line or "CMD" in line
+    ]
+    assert healthcheck_lines, "no HEALTHCHECK command found"
+    assert all("curl" not in line for line in healthcheck_lines)
+    assert any("python3" in line for line in healthcheck_lines)
+    assert any("/health" in line for line in healthcheck_lines)
+
+
+def test_changelog_has_no_duplicate_heading():
+    """Regression: a duplicated [0.6.0] heading slipped into CHANGELOG.md."""
+    root = Path(__file__).resolve().parents[1]
+    changelog = root / "CHANGELOG.md"
+    assert changelog.is_file()
+    headings = [
+        line.strip()
+        for line in changelog.read_text().splitlines()
+        if line.startswith("## [")
+    ]
+    assert len(headings) == len(set(headings)), f"duplicate headings: {headings}"

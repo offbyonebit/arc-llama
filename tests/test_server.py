@@ -465,6 +465,46 @@ def test_session_token_served_to_loopback_peer(monkeypatch):
     assert r.json()["admin_token"] == "secret"
 
 
+def test_session_token_refused_for_cross_origin_loopback_peer(monkeypatch):
+    """A cross-origin browser request from a loopback peer must not leak the token.
+
+    A malicious page the user visits can issue a fetch() to the loopback server;
+    the TCP peer is 127.0.0.1 so the loopback check alone would pass, and the
+    permissive CORS policy would let the page read the token back. The Origin
+    header (present on cross-origin browser requests) must be rejected.
+    """
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    cfg = Config(server=ServerConfig(admin_token="secret"))
+    app = create_app(cfg)
+
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+        r = client.get(
+            "/admin/session-token",
+            headers={"Origin": "http://evil.example.com"},
+        )
+    assert r.status_code == 403
+
+
+def test_session_token_allowed_for_same_origin_loopback_peer(monkeypatch):
+    """The bundled UI (same origin, no Origin header) still bootstraps itself."""
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    cfg = Config(server=ServerConfig(admin_token="secret"))
+    app = create_app(cfg)
+
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+        r = client.get("/admin/session-token")
+    assert r.status_code == 200
+    assert r.json()["admin_token"] == "secret"
+
+
 def test_session_token_refused_for_non_loopback_peer(monkeypatch):
     import arc_llama.server as server_mod
 

@@ -96,9 +96,10 @@ ENV ARC_LLAMA_SERVER=/usr/local/bin/llama-server
 # Default port
 EXPOSE 11437
 
-# Health check
+# Health check. The runtime image has python3 but not curl, so probe /health
+# with the stdlib instead of depending on an extra package.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:11437/health || exit 1
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11437/health', timeout=3)" || exit 1
 
 # Default entrypoint runs init + serve if no config exists, else just serve
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
