@@ -71,6 +71,9 @@ packages = ["src/arc_llama"]
 # shipped in the 0.6.1 sdist and its absolute symlinks broke the wheel build.
 exclude = [
     ".venv*",
+    "work/",
+    "dist/",
+    ".pytest-*",
     "*.egg-info",
     "AUTOTUNE_*.md",
     "EOF",
