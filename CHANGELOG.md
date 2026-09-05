@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Preserve configured speculative decoding after a failed llama.cpp capability probe.
 - Use numeric `video` and `render` group IDs in Docker Compose so GPU device access works consistently on Linux hosts.
+- Fix Windows runtime installation when GitHub's latest release has no binary assets.
+- Keep Windows Rich diagnostics printable on legacy code pages.
+- Verify Windows Vulkan and SYCL inference, including streaming requests, on Battlemage B60.
 
 ## [0.7.1] - 2026-08-24
 

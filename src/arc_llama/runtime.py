@@ -117,6 +117,30 @@ def resolve_release(client: httpx.Client, version: str) -> dict:
     return r.json()
 
 
+def _resolve_windows_release_with_asset(
+    client: httpx.Client, arch: str, backend: str
+) -> dict:
+    """Find the newest Windows release that actually ships a runtime asset.
+
+    GitHub's ``/releases/latest`` currently points at a lightweight v0.4.0
+    release with no binary assets.  Windows prebuilt binaries continue to be
+    published on the rolling ``bNNNNN`` releases, so ``latest`` needs this
+    Windows-only fallback.  Linux resolution is intentionally unchanged.
+    """
+    url = f"{GITHUB_API}/repos/{LLAMA_CPP_REPO}/releases?per_page=30"
+    response = client.get(url)
+    response.raise_for_status()
+    for release in response.json():
+        try:
+            select_asset(release, "windows", arch, backend)
+        except RuntimeInstallError:
+            continue
+        return release
+    raise RuntimeInstallError(
+        f"No Windows {backend} runtime asset found in the recent llama.cpp releases."
+    )
+
+
 def download_asset(
     client: httpx.Client,
     asset: RuntimeAsset,
@@ -235,7 +259,14 @@ def install_runtime(
     assert client is not None
     try:
         release = resolve_release(client, version)
-        asset = select_asset(release, os_name, arch, backend)
+        try:
+            asset = select_asset(release, os_name, arch, backend)
+        except RuntimeInstallError:
+            if os_name == "windows" and version in ("latest", "", None):
+                release = _resolve_windows_release_with_asset(client, arch, backend)
+                asset = select_asset(release, os_name, arch, backend)
+            else:
+                raise
         install_dir = dest / f"llama-{asset.tag}-{backend}"
 
         # Short-circuit: reuse existing install when not forced.

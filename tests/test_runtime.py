@@ -11,6 +11,7 @@ import pytest
 from arc_llama.arch import Backend
 from arc_llama.runtime import (
     RuntimeInstallError,
+    _resolve_windows_release_with_asset,
     asset_suffix,
     extract_archive,
     host_platform,
@@ -91,6 +92,55 @@ def test_select_asset_matches():
     assert asset.url == "http://x/v"
     assert asset.size == 123
     assert asset.tag == "b10092"
+
+
+def test_select_asset_matches_current_windows_release_name():
+    release = {
+        "tag_name": "b10819",
+        "assets": [
+            {
+                "name": "llama-b10819-bin-win-vulkan-x64.zip",
+                "browser_download_url": "http://x/v",
+                "size": 123,
+            },
+        ],
+    }
+    asset = select_asset(release, "windows", "x64", "vulkan")
+    assert asset.name == "llama-b10819-bin-win-vulkan-x64.zip"
+
+
+def test_windows_latest_fallback_skips_assetless_latest_release():
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class Client:
+        def get(self, url):
+            assert url.endswith("/releases?per_page=30")
+            return Response(
+                [
+                    {"tag_name": "v0.4.0", "assets": []},
+                    {
+                        "tag_name": "b10819",
+                        "assets": [
+                            {
+                                "name": "llama-b10819-bin-win-vulkan-x64.zip",
+                                "browser_download_url": "http://x/v",
+                                "size": 123,
+                            }
+                        ],
+                    },
+                ]
+            )
+
+    release = _resolve_windows_release_with_asset(Client(), "x64", "vulkan")
+    assert release["tag_name"] == "b10819"
 
 
 def test_select_asset_missing_raises():

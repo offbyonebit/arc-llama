@@ -15,11 +15,12 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Status: 0.8.0.** Tested end-to-end on Battlemage B60 on Linux; Windows
-> re-test is pending (last Windows-verified release: 0.6.2):
+> **Status: 0.8.0.** Tested end-to-end on Battlemage B60 on Linux and Windows:
 > `arc-llama install-runtime` fetches a portable Vulkan `llama-server` and
-> serves real inference with no oneAPI install or source build. HF download,
-> streaming, and the OpenAI-compatible API all pass. Other SKUs (A770, A380,
+> serves real inference with no oneAPI install or source build. The Windows
+> SYCL runtime also passes GPU discovery, model startup, streaming, and the
+> OpenAI-compatible API. HF download, streaming, and the OpenAI-compatible
+> API all pass. Other SKUs (A770, A380,
 > B580) need community confirmation -- open an issue if something breaks on
 > your card.
 

@@ -76,9 +76,30 @@ from arc_llama.platform_checks import (
 )
 from arc_llama.skills import load_skills
 
-console = Console()
-
 _IS_WINDOWS = sys.platform == "win32"
+
+
+def _configure_windows_stdio() -> None:
+    """Keep Rich diagnostics printable on legacy Windows consoles.
+
+    Windows PowerShell/console hosts can expose cp1252 streams even though
+    the diagnostic text contains Unicode markers such as arrows and em dashes.
+    Use UTF-8 where the stream supports reconfiguration and replace any
+    remaining unrepresentable characters instead of crashing the command.
+    """
+    if not _IS_WINDOWS:
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
+_configure_windows_stdio()
+console = Console()
 
 
 class _JsonFormatter(logging.Formatter):
