@@ -40,9 +40,9 @@ import logging
 import mmap
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 log = logging.getLogger("arc_llama.binary_caps")
 
