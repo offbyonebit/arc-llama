@@ -75,6 +75,21 @@ class TestProbe:
         assert not caps.probed
 
     @_skip_on_windows
+    def test_nonzero_help_exit_gives_optimistic_defaults(self, tmp_path):
+        script = tmp_path / "llama-server"
+        script.write_text(
+            "#!/bin/sh\n"
+            "echo 'terminate called after throwing a SYCL exception' >&2\n"
+            "exit 134\n"
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        caps = probe_server_caps(str(script))
+
+        assert caps == DEFAULT_CAPS
+        assert not caps.probed
+
+    @_skip_on_windows
     def test_cache_invalidated_on_mtime_change(self, tmp_path):
         path = self._fake_server(tmp_path, OLD_STYLE_HELP)
         assert not probe_server_caps(path).flash_attn_takes_value

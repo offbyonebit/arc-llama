@@ -385,6 +385,48 @@ docker run ... \
   arc-llama:latest
 ```
 
+## Open WebUI
+
+[Open WebUI](https://github.com/open-webui/open-webui) is a self-hosted ChatGPT-style interface. arc-llama speaks the OpenAI API, so they wire together directly.
+
+### One command with docker compose
+
+```bash
+# GGUF models from $HOME/models; Open WebUI at http://localhost:3000
+docker compose up
+
+# Or point at a different model directory
+MODELS_DIR=/mnt/data/models docker compose up
+```
+
+The first time you open `http://localhost:3000` you'll create a local admin account. arc-llama's models appear automatically in the model picker.
+
+### Manual (bare-metal `arc-llama serve`)
+
+1. Run `arc-llama serve` (listening on `127.0.0.1:11437` by default)
+2. In Open WebUI → **Settings → Admin Panel → Connections**, add an OpenAI connection:
+   - **Base URL:** `http://127.0.0.1:11437/v1`
+   - **API Key:** any non-empty string (arc-llama does not validate keys)
+3. Models appear immediately in the chat model picker.
+
+If Open WebUI and arc-llama are on different machines, replace `127.0.0.1` with the host IP and run `arc-llama serve --host 0.0.0.0` (or set `ARC_LLAMA_HOST=0.0.0.0`).
+
+## LMStudio
+
+LMStudio's local server (port 1234 by default) exposes an OpenAI-compatible API. Add it as an arc-llama upstream and its models appear alongside your local Arc models in a single endpoint — useful for running a second model on a CPU or a different GPU while your Arc card handles local GGUF inference.
+
+```bash
+# LMStudio running on the same machine
+arc-llama upstream add lmstudio http://127.0.0.1:1234
+
+# LMStudio on the host from inside a Docker container
+docker compose exec arc-llama arc-llama upstream add lmstudio http://host.docker.internal:1234
+```
+
+LMStudio models appear in `/v1/models` with `owned_by: "upstream:lmstudio"` and requests are proxied transparently — no local llama-server is started for them.
+
+To point Open WebUI (or any other client) at arc-llama only, and let it discover both local Arc models and LMStudio models through the same `/v1` endpoint, no extra configuration is needed — the model list is already merged.
+
 ## Roadmap
 
 - ~~HF model download (`arc-llama add org/repo:quant --from-hf`).~~ ✅

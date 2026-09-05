@@ -1156,8 +1156,8 @@ def _print_serve_banner(cfg: Config) -> None:
 
 
 @cli.command("serve")
-@click.option("--host", default=None, help="Override server host.")
-@click.option("--port", type=int, default=None, help="Override server port.")
+@click.option("--host", default=None, envvar="ARC_LLAMA_HOST", help="Override server host (env: ARC_LLAMA_HOST).")
+@click.option("--port", type=int, default=None, envvar="ARC_LLAMA_PORT", help="Override server port (env: ARC_LLAMA_PORT).")
 @click.option(
     "--profile",
     default=None,

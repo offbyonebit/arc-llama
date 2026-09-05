@@ -569,3 +569,106 @@ class TestRecipeToDict:
         assert back.temp == 0.7
         assert back.top_p == 0.9
         assert back.top_k == 40
+class TestXmxSdpaGating:
+    """The oneDNN/XMX SDPA path must only be selected when provably available.
+
+    Measured on an Arc Pro B60 whose llama.cpp had GGML_SYCL_DNN=ON but where
+    find_package(DNNL) failed (path compiled out): forcing `-fa on` cost ~10-11%
+    decode at shallow context and gained nothing on prefill. So anything short
+    of a positive detection must keep the previous defaults.
+    """
+
+    B60 = dict(arch=Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=4 * 1024)
+
+    @staticmethod
+    def _caps(**kw):
+        from arc_llama.binary_caps import SyclCaps
+
+        return SyclCaps(**kw)
+
+    def test_no_binary_path_keeps_previous_defaults(self):
+        """Callers that don't pass llama_server must see zero behaviour change."""
+        r = default_recipe(**self.B60)
+        assert r.cache_type_k is KVCacheType.Q8_0
+        assert r.flash_attn == "auto"
+
+    def test_onednn_present_selects_f16_and_fa_on(self):
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            return_value=self._caps(has_onednn_sdpa=True, has_symbols=True, probed=True),
+        ):
+            r = default_recipe(**self.B60, llama_server="/fake/llama-server")
+        assert r.cache_type_k is KVCacheType.F16
+        assert r.cache_type_v is KVCacheType.F16
+        assert r.flash_attn == "on"
+
+    def test_onednn_absent_keeps_q8_and_does_not_force_fa(self):
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            return_value=self._caps(has_onednn_sdpa=False, has_symbols=True, probed=True),
+        ):
+            r = default_recipe(**self.B60, llama_server="/fake/llama-server")
+        assert r.cache_type_k is KVCacheType.Q8_0
+        assert r.flash_attn == "auto"
+
+    def test_unknown_onednn_is_treated_as_absent(self):
+        """A stripped binary reports None; guessing 'present' would regress it."""
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            return_value=self._caps(has_onednn_sdpa=None, has_symbols=False, probed=True),
+        ):
+            r = default_recipe(**self.B60, llama_server="/fake/llama-server")
+        assert r.cache_type_k is KVCacheType.Q8_0
+        assert r.flash_attn == "auto"
+
+    def test_tight_vram_keeps_q8_even_with_onednn(self):
+        """f16 KV doubles KV bytes; not worth it if context collapses."""
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            return_value=self._caps(has_onednn_sdpa=True, has_symbols=True, probed=True),
+        ):
+            r = default_recipe(
+                arch=Arch.BATTLEMAGE,
+                vram_mb=8 * 1024,
+                model_file_mb=7 * 1024,
+                llama_server="/fake/llama-server",
+            )
+        assert r.cache_type_k is KVCacheType.Q8_0
+
+    def test_alchemist_never_takes_the_xmx_path(self):
+        """Xe-HPG has no XMX SDPA measurements; do not extrapolate from Xe2."""
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            return_value=self._caps(has_onednn_sdpa=True, has_symbols=True, probed=True),
+        ):
+            r = default_recipe(
+                arch=Arch.ALCHEMIST,
+                vram_mb=16 * 1024,
+                model_file_mb=4 * 1024,
+                llama_server="/fake/llama-server",
+            )
+        assert r.cache_type_k is KVCacheType.Q8_0
+        assert r.flash_attn == "auto"
+
+    def test_unknown_arch_never_takes_the_xmx_path(self):
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            return_value=self._caps(has_onednn_sdpa=True, has_symbols=True, probed=True),
+        ):
+            r = default_recipe(
+                arch=Arch.UNKNOWN,
+                vram_mb=24 * 1024,
+                model_file_mb=4 * 1024,
+                llama_server="/fake/llama-server",
+            )
+        assert r.cache_type_k is KVCacheType.Q8_0
+
+    def test_probe_failure_does_not_break_registration(self):
+        """A broken/missing binary must never make model registration explode."""
+        with patch(
+            "arc_llama.binary_caps.probe_sycl_caps",
+            side_effect=OSError("boom"),
+        ):
+            r = default_recipe(**self.B60, llama_server="/fake/llama-server")
+        assert r.cache_type_k is KVCacheType.Q8_0
+        assert r.flash_attn == "auto"

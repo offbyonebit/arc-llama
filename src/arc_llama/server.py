@@ -21,6 +21,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import secrets
 import time
 import uuid
@@ -31,6 +32,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -41,6 +43,7 @@ from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
+from arc_llama.plugins import load_plugins, register_plugins, shutdown_plugins, startup_plugins
 from arc_llama.router import Router
 from arc_llama.skills import load_skills
 from arc_llama.upstream import UpstreamManager
@@ -60,6 +63,47 @@ def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
             "connection",
         )
     }
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+
+
+def _cors_origins() -> list[str]:
+    """Return explicitly allowed browser origins for the OpenAI API.
+
+    The compose example uses Open WebUI on localhost:3000. Deployments with a
+    different browser origin can opt in through ``ARC_LLAMA_CORS_ORIGINS`` as a
+    comma-separated list; an empty value disables cross-origin browser access.
+    """
+    configured = os.environ.get("ARC_LLAMA_CORS_ORIGINS")
+    if configured is not None:
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+def _origin_host(origin: str) -> str | None:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(origin).hostname
+    except Exception:
+        return None
+
+
+def _is_cross_origin(request: Request) -> bool:
+    """True when the request carries an Origin header from a non-loopback host.
+
+    Browsers attach an ``Origin`` header to cross-origin requests. A same-origin
+    request (the bundled UI) or a non-browser client (curl, the TUI) sends no
+    ``Origin``, so those are never treated as cross-origin. This lets us refuse
+    cross-origin access to the token-leaking ``/admin/session-token`` endpoint
+    without breaking local development or the OpenAI-compatible ``/v1`` surface.
+    """
+    origin = request.headers.get("Origin")
+    if not origin:
+        return False
+    host = _origin_host(origin)
+    return host is not None and host not in _LOOPBACK_HOSTS
 
 
 async def _require_admin(request: Request) -> None:
@@ -82,11 +126,23 @@ async def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
-def create_app(cfg: Config | None = None, config_path: Path | None = None) -> FastAPI:
+def create_app(
+    cfg: Config | None = None,
+    config_path: Path | None = None,
+    plugins: list[Any] | None = None,
+) -> FastAPI:
     cfg = cfg or load_config()
     state_dir = None
     if cfg.paths.state_dir:
         state_dir = Path(cfg.paths.state_dir).expanduser()
+
+    # Discover and instantiate plugins lazily. ``plugins`` is an explicit
+    # override for tests; when None we discover from installed entry points.
+    # Discovery happens here (app creation), not at import time, so optional
+    # plugin dependencies are never pulled in just by importing arc_llama.
+    if plugins is None:
+        plugins = load_plugins()
+    app_plugins: list[Any] = list(plugins)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -125,14 +181,27 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
             app.state.tuner = tuner
         try:
             await app.state.mcp_manager.start()
+            await startup_plugins(app_plugins, app)
             yield
         finally:
+            await shutdown_plugins(app_plugins, app)
             if tuner is not None:
                 await tuner.stop()
             await app.state.mcp_manager.stop()
             await app.state.router.shutdown()
 
     app = FastAPI(title="arc-llama", version="0.1.0", lifespan=lifespan)
+
+    # Register plugin routes before the static mount so plugin paths are not
+    # shadowed by the catch-all web UI. A plugin failure here is isolated.
+    register_plugins(app, app_plugins)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:
@@ -176,6 +245,12 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
         peer = request.client.host if request.client else ""
         if peer not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
             raise HTTPException(status_code=403, detail="Loopback connections only")
+        # A cross-origin browser request (e.g. a malicious page on another host
+        # that the user happens to visit) would otherwise be able to read the
+        # admin token back via CORS and then drive the admin surface. Refuse
+        # any request that carries a non-loopback Origin header.
+        if _is_cross_origin(request):
+            raise HTTPException(status_code=403, detail="Cross-origin requests are not allowed")
         c: Config = request.app.state.cfg
         return {"admin_token": c.server.admin_token}
 
@@ -226,12 +301,16 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
         # Local models
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
+            try:
+                created = int(os.path.getmtime(m.path))
+            except OSError:
+                created = 0
             data.append(
                 {
                     "id": m.name,
                     "object": "model",
                     "owned_by": "arc-llama",
-                    "created": 0,
+                    "created": created,
                     "metadata": {
                         "display_name": m.display_name,
                         "path": m.path,
@@ -248,10 +327,10 @@ def create_app(cfg: Config | None = None, config_path: Path | None = None) -> Fa
                             "id": alias,
                             "object": "model",
                             "owned_by": "arc-llama-alias",
-                            "created": 0,
+                            "created": created,
                             "metadata": {"canonical": m.name},
                         }
-                    )
+                )
         # Upstream models
         try:
             upstream_models = await mgr.models()

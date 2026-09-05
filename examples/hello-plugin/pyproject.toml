@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arc-llama-hello-plugin"
+version = "0.1.0"
+description = "Tiny example plugin for arc-llama"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."arc_llama.plugins"]
+hello = "arc_llama_hello_plugin:create_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arc_llama_hello_plugin"]
