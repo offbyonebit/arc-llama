@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-05
+
+### Added
+- Safe speculative decoding for registered models, with capability validation and target-only fallback when a requested mode is unsupported.
+- A community tune-recipe registry, with explicit lookup, refresh, and share commands. Measurements are never uploaded automatically.
+- An installable plugin extension point for adding routes and lifecycle integrations without changing the inference core.
+- Open WebUI and LM Studio integration documentation, a Docker Compose stack, CORS support, and a Compose health check.
+
+### Fixed
+- Preserve configured speculative decoding after a failed llama.cpp capability probe.
+- Use numeric `video` and `render` group IDs in Docker Compose so GPU device access works consistently on Linux hosts.
+
 ## [0.7.1] - 2026-08-24
 
 ### Fixed
