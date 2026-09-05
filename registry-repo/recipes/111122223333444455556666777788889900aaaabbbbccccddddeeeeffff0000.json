@@ -1,0 +1,15 @@
+{
+  "fingerprint": "111122223333444455556666777788889900aaaabbbbccccddddeeeeffff0000",
+  "recipe": {
+    "kv": "q8_0",
+    "fa": "auto",
+    "ubatch": 1024,
+    "batch": 2048
+  },
+  "prompt_eval_tok_s": 421.3,
+  "generation_tok_s": 19.8,
+  "gpu_name": "Arc Pro B60",
+  "arc_llama_version": "0.7.1",
+  "submits": 1,
+  "schema": 1
+}

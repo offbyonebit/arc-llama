@@ -1,0 +1,63 @@
+name: recipes
+
+on:
+  push:
+    branches: [main]
+    paths: ["recipes/**", "scripts/aggregate.py", ".github/workflows/recipes.yml"]
+  pull_request:
+    paths: ["recipes/**", "scripts/aggregate.py", ".github/workflows/recipes.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate every submission
+        run: python scripts/validate.py
+
+  aggregate:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build bundled recipes.json
+        run: python scripts/aggregate.py
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: recipes.json
+          path: dist/recipes.json
+
+  release:
+    needs: aggregate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/aggregate.py
+      - name: Commit refreshed bundle to the repo
+        run: |
+          git config user.name "arc-llama recipes bot"
+          git config user.email "actions@github.com"
+          git add dist/recipes.json
+          git diff --cached --quiet || git commit -m "regenerate recipes.json"
+          git push
+      - name: Attach to rolling 'latest' release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: registry
+          files: dist/recipes.json
+          make_latest: true

@@ -62,6 +62,9 @@ Issues = "https://github.com/offbyonebit/arc-llama/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/arc_llama"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/arc_llama/data/recipes.json" = "src/arc_llama/data/recipes.json"
+
 [tool.hatch.build.targets.sdist]
 # .gitignore is honoured by default but only covers .venv/; keep every
 # local venv, cache, and stray note file out of the sdist — .venv-test/

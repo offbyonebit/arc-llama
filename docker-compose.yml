@@ -13,8 +13,8 @@
 #   docker compose exec arc-llama arc-llama upstream add lmstudio http://host.docker.internal:1234
 #
 # GPU access requires the host user to be in the render and video groups.
-# If group_add names don't resolve in the container, replace them with GIDs
-# (check with: getent group render video).
+# Numeric defaults match Ubuntu; override them for another host with VIDEO_GID
+# and RENDER_GID (check with: getent group video render).
 
 services:
   arc-llama:
@@ -29,8 +29,8 @@ services:
     devices:
       - /dev/dri:/dev/dri
     group_add:
-      - video
-      - render
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"
     healthcheck:
       # Runtime image has python3 but not curl (Dockerfile HEALTHCHECK is
       # similarly aspirational). Use python so depends_on: service_healthy works.

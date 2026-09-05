@@ -327,6 +327,31 @@ def build_plan(
         )
         recipe.flash_attn = None
 
+    # Generic draft models are stored by registry name, never by an opaque
+    # path. Resolve only at launch so renames/path moves have one authority.
+    draft_name = (model.recipe or {}).get("spec_draft_name")
+    if draft_name:
+        draft = cfg.find_model(str(draft_name))
+        if draft is None or draft.name == model.name:
+            log.warning("[%s] registered speculative draft %r is unavailable; disabling speculation", model.name, draft_name)
+            recipe.spec_type = None
+            recipe.spec_draft_model = None
+        else:
+            recipe.spec_draft_model = draft.path
+            recipe.spec_type = recipe.spec_type or "draft-simple"
+
+    if recipe.spec_type and not caps.supports_speculative:
+        log.warning("[%s] %s has no --spec-type; starting target-only", model.name, cfg.paths.llama_server)
+        recipe.spec_type = None
+        recipe.spec_draft_model = None
+    elif recipe.spec_type is not None and recipe.spec_type.startswith("ngram-") and not caps.supports_ngram:
+        log.warning("[%s] %s has no n-gram speculation; starting target-only", model.name, cfg.paths.llama_server)
+        recipe.spec_type = None
+    elif recipe.spec_draft_model and not caps.supports_draft_model:
+        log.warning("[%s] %s has no --spec-draft-model; starting target-only", model.name, cfg.paths.llama_server)
+        recipe.spec_type = None
+        recipe.spec_draft_model = None
+
     argv: list[str] = [
         cfg.paths.llama_server,
         "-m", model.path,

@@ -35,13 +35,33 @@ class ServerCaps:
     """True: `-fa {on,off,auto}` (new style). False: boolean `-fa` (old style)."""
     probed: bool = False
     """False when the probe failed and these are optimistic defaults."""
+    supports_speculative: bool = False
+    """Whether this binary exposes llama.cpp's ``--spec-type`` interface."""
+    supports_draft_model: bool = False
+    supports_ngram: bool = False
 
 
-#: Assumed when the probe can't run (missing binary, timeout, non-zero exit).
-#: Modern syntax is the safe guess: `-fa auto` is also that style's default, so
-#: worst case on an unprobeable old binary we only emit flags the user
-#: explicitly set.
-DEFAULT_CAPS = ServerCaps()
+def format_speculation_capability(caps: ServerCaps) -> str:
+    """Format the actionable speculative-decoding capability result."""
+    if not caps.probed:
+        return "unknown (could not run llama-server --help)"
+    if not caps.supports_speculative:
+        return "unavailable (missing --spec-type)"
+    return (
+        "available "
+        f"(draft-model: {'yes' if caps.supports_draft_model else 'no'}, "
+        f"n-gram: {'yes' if caps.supports_ngram else 'no'})"
+    )
+
+
+#: Assumed when the probe can't run (missing binary, timeout). Modern syntax
+#: is the safe guess: `-fa auto` is also that style's default, so worst case
+#: on an unprobeable old binary we only emit flags the user explicitly set.
+DEFAULT_CAPS = ServerCaps(
+    supports_speculative=True,
+    supports_draft_model=True,
+    supports_ngram=True,
+)
 
 _cache: dict[tuple[str, float], ServerCaps] = {}
 
@@ -49,14 +69,28 @@ _cache: dict[tuple[str, float], ServerCaps] = {}
 def _parse_help(help_text: str) -> ServerCaps:
     idx = help_text.find("--flash-attn")
     if idx < 0:
-        return ServerCaps(supports_flash_attn=False, flash_attn_takes_value=False, probed=True)
+        return ServerCaps(
+            supports_flash_attn=False,
+            flash_attn_takes_value=False,
+            probed=True,
+            supports_speculative="--spec-type" in help_text,
+            supports_draft_model="--spec-draft-model" in help_text,
+            supports_ngram="ngram" in help_text.lower() and "--spec-type" in help_text,
+        )
     # New-style help reads: "-fa, --flash-attn FA  set Flash Attention use
     # ('on', 'off', or 'auto', default: 'auto')". Old-style: "-fa, --flash-attn
     # enable Flash Attention (default: disabled)". 'auto' in the option's help
     # window is the discriminator.
     window = help_text[idx : idx + 240]
     takes_value = "auto" in window
-    return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, probed=True)
+    return ServerCaps(
+        supports_flash_attn=True,
+        flash_attn_takes_value=takes_value,
+        probed=True,
+        supports_speculative="--spec-type" in help_text,
+        supports_draft_model="--spec-draft-model" in help_text,
+        supports_ngram="ngram" in help_text.lower() and "--spec-type" in help_text,
+    )
 
 
 def probe_server_caps(llama_server: str) -> ServerCaps:

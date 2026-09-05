@@ -189,6 +189,29 @@ pre-b6300 ones), so hand-built and prebuilt binaries both work.
 
 ## Multi-GPU
 
+## Speculative decoding
+
+Arc Llama supports llama.cpp's native speculative-decoding modes when the
+installed `llama-server` advertises them. Existing MTP GGUFs continue to be
+auto-configured. For ordinary models, register a smaller model from the same
+family and let Arc Llama choose it conservatively:
+
+```bash
+arc-llama speculative qwen3-30b --dry-run
+arc-llama speculative qwen3-30b --auto
+# or: arc-llama speculative qwen3-30b --draft qwen3-4b
+arc-llama speculative qwen3-30b --ngram
+```
+
+Drafts are stored by registered model name and resolved only when the target
+starts. They must use a tokenizer compatible with the target; using a smaller
+model from the same family is a candidate, not proof. Arc Llama checks the llama.cpp help surface and falls back to normal
+target-only inference if the requested flags are unavailable. Same-GPU drafts
+can be slower or consume too much VRAM, so `--auto` selects a plausible local
+candidate but does not claim a speedup: benchmark it on your own hardware
+before relying on it. Cross-vendor or cross-GPU draft/target pipelines are not
+implemented; verification remains inside one llama-server process.
+
 `arc-llama init` registers every Intel GPU it finds. Each model in the config
 is bound to a specific PCI slot, and the SYCL device selector
 (`ONEAPI_DEVICE_SELECTOR=level_zero:N`) is set per-model. Add your second card,

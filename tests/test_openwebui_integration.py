@@ -171,6 +171,8 @@ def test_docker_compose_yml_present():
     assert "ARC_LLAMA_HOST" in text
     assert "OPENAI_API_BASE_URL" in text
     assert "/dev/dri" in text
+    assert "VIDEO_GID" in text
+    assert "RENDER_GID" in text
     # Prefer python healthcheck (curl not in runtime image)
     assert "python3" in text
 
