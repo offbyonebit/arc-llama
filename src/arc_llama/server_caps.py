@@ -9,9 +9,11 @@ breaks launches today is `--flash-attn`:
   * new builds: `-fa {on,off,auto}`, default *auto* — bare `-fa` is a
     parse error.
 
-We run `llama-server --help` once (no GPU touched, returns immediately) and
+We run `llama-server --help` once (no model loaded, returns immediately) and
 sniff the help text. Results are cached per (path, mtime) so config reloads
-and repeated launches don't re-exec.
+and repeated launches don't re-exec. Some SYCL builds still initialize enough
+runtime during help to abort when no GPU is visible, so a non-zero help exit is
+treated like any other failed probe.
 """
 from __future__ import annotations
 
@@ -35,9 +37,10 @@ class ServerCaps:
     """False when the probe failed and these are optimistic defaults."""
 
 
-#: Assumed when the probe can't run (missing binary, timeout). Modern syntax
-#: is the safe guess: `-fa auto` is also that style's default, so worst case
-#: on an unprobeable old binary we only emit flags the user explicitly set.
+#: Assumed when the probe can't run (missing binary, timeout, non-zero exit).
+#: Modern syntax is the safe guess: `-fa auto` is also that style's default, so
+#: worst case on an unprobeable old binary we only emit flags the user
+#: explicitly set.
 DEFAULT_CAPS = ServerCaps()
 
 _cache: dict[tuple[str, float], ServerCaps] = {}
@@ -75,7 +78,18 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
             text=True,
             timeout=_HELP_TIMEOUT_S,
         )
-        caps = _parse_help(proc.stdout + proc.stderr)
+        if proc.returncode == 0:
+            caps = _parse_help(proc.stdout + proc.stderr)
+        else:
+            output = (proc.stderr or proc.stdout).strip().splitlines()
+            detail = f": {output[-1]}" if output else ""
+            log.warning(
+                "%s --help exited with code %s%s; assuming modern flag syntax",
+                llama_server,
+                proc.returncode,
+                detail,
+            )
+            caps = DEFAULT_CAPS
     except (OSError, subprocess.TimeoutExpired) as e:
         log.warning("could not probe %s (%s); assuming modern flag syntax", llama_server, e)
         caps = DEFAULT_CAPS
