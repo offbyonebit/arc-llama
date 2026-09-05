@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arc-llama"
-version = "0.7.1"
+version = "0.8.0"
 description = "Plug-and-play llama.cpp runtime for Intel Arc GPUs. Auto-detects your card, picks safe SYCL defaults, and exposes an OpenAI-compatible API."
 readme = "README.md"
 license = { text = "MIT" }
