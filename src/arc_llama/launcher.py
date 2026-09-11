@@ -498,6 +498,11 @@ class LlamaServer:
         all_lines = text.splitlines()
         return "\n".join(all_lines[-lines:])
 
+    @property
+    def log_path(self) -> Path | None:
+        """Path retaining this process's detailed output, when logging is enabled."""
+        return self._log_path
+
     def stop(self, drain_seconds: float = 3.0) -> None:
         self.ready = False
         if not self.is_running:

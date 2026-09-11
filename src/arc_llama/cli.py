@@ -2,6 +2,7 @@
 
 Top-level commands:
 
+  arc-llama run        One-command setup: detect, runtime, model, fit, serve.
   arc-llama init       Auto-detect GPUs and write an initial config.
   arc-llama doctor     Diagnose the local environment (drivers, oneAPI, perms).
   arc-llama list       List registered models and their state.
@@ -30,7 +31,6 @@ import os
 import platform
 import shutil
 import sys
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -42,15 +42,11 @@ from rich.table import Table
 
 from arc_llama import __version__
 from arc_llama import benchmark as benchmark_mod
-from arc_llama.agent import run_agent
-from arc_llama.agent.checkpoints import CheckpointStore
-from arc_llama.agent.interactive import InteractiveAgent
-from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.arch import Arch, Backend, aot_arch_for
 from arc_llama.binary import detect_backends, detect_llama_server_backend
-from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import (
     Config,
+    ModelConfig,
     default_config_path,
     init_config_from_detection,
     load_config,
@@ -58,10 +54,9 @@ from arc_llama.config import (
 from arc_llama.detect import DetectedGPU, detect_gpus, lspci_intel_gpus
 from arc_llama.models import (
     add_local_model,
-    discover_ggufs,
     download_from_hf,
     parse_hf_spec,
-    register_discovered,
+    scan_models,
 )
 from arc_llama.platform_checks import (
     DoctorReport,
@@ -74,19 +69,12 @@ from arc_llama.platform_checks import (
     rebar_likely_enabled,
     user_in_groups,
 )
-from arc_llama.skills import load_skills
 
 _IS_WINDOWS = sys.platform == "win32"
 
 
 def _configure_windows_stdio() -> None:
-    """Keep Rich diagnostics printable on legacy Windows consoles.
-
-    Windows PowerShell/console hosts can expose cp1252 streams even though
-    the diagnostic text contains Unicode markers such as arrows and em dashes.
-    Use UTF-8 where the stream supports reconfiguration and replace any
-    remaining unrepresentable characters instead of crashing the command.
-    """
+    """Keep Rich diagnostics printable on legacy Windows consoles."""
     if not _IS_WINDOWS:
         return
     for stream in (sys.stdout, sys.stderr):
@@ -161,6 +149,16 @@ def _resolve_llama_server(explicit: str | None) -> str:
     return "llama-server"  # leave as-is; PATH at runtime may resolve
 
 
+def _configured_runtime(cfg: Config) -> Path | None:
+    """Resolve the configured llama-server without executing it."""
+    configured = cfg.paths.llama_server
+    candidate = Path(configured).expanduser()
+    if candidate.is_file():
+        return candidate.resolve()
+    found = shutil.which(configured)
+    return Path(found).resolve() if found else None
+
+
 # ===========================================================================
 # Top-level group
 # ===========================================================================
@@ -179,7 +177,7 @@ def _resolve_llama_server(explicit: str | None) -> str:
 )
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool, config_path: Path | None) -> None:
-    """Plug-and-play llama.cpp runtime for Intel Arc GPUs."""
+    """The easiest efficient path from an Intel Arc GPU to local inference."""
     _setup_logging(verbose)
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path or default_config_path()
@@ -994,11 +992,42 @@ def _slugify_for_name(parent: str, file: str) -> str:
 # ===========================================================================
 
 
+def _persist_scan_roots(cfg: Config, extras: list[Path]) -> list[str]:
+    """Persist explicit scan roots into paths.scan_paths (deduped).
+
+    Returns the string forms newly added to the config. Already-listed
+    roots (or roots equal to models_dir) are left alone, so a repeated
+    `scan /srv/models` is a no-op rather than a growing list.
+    """
+    added: list[str] = []
+    known: set[str] = set()
+    for s in cfg.paths.scan_paths:
+        try:
+            known.add(str(Path(s).expanduser().resolve()))
+        except OSError:
+            known.add(s)
+    try:
+        models_dir_r = str(Path(cfg.paths.models_dir).expanduser().resolve())
+    except OSError:
+        models_dir_r = cfg.paths.models_dir
+    for p in extras:
+        try:
+            r = p.expanduser().resolve()
+            key = str(r)
+            display = str(r)
+        except OSError:
+            key = display = str(p)
+        if key in known or key == models_dir_r:
+            continue
+        known.add(key)
+        cfg.paths.scan_paths.append(display)
+        added.append(display)
+    return added
+
+
 def _do_scan(cfg: Config, extra_paths: list[Path]) -> list:
-    found = discover_ggufs(cfg, extra_paths=extra_paths)
-    if not found:
-        return []
-    return register_discovered(cfg, found)
+    result = scan_models(cfg, extra_paths)
+    return result.new
 
 
 @cli.command("scan")
@@ -1010,6 +1039,11 @@ def _do_scan(cfg: Config, extra_paths: list[Path]) -> list:
     help="Bind newly discovered models to this PCI slot (default: first enabled GPU).",
 )
 @click.option(
+    "--prune/--no-prune",
+    default=False,
+    help="Also remove registered models whose GGUF no longer exists (default: off).",
+)
+@click.option(
     "--persist/--no-persist",
     default=True,
     help="Save the resulting config to disk (default: on). Disable for a dry-run.",
@@ -1019,34 +1053,77 @@ def scan_cmd(
     ctx: click.Context,
     paths: tuple[str, ...],
     gpu_pci_slot: str | None,
+    prune: bool,
     persist: bool,
 ) -> None:
-    """Walk scan paths for GGUFs and auto-register anything new."""
+    """Walk scan paths for GGUFs and auto-register anything new.
+
+    Prints counts for new, unchanged, skipped (auxiliary) and stale
+    (missing-file) entries. Default is non-destructive: stale entries are
+    only reported. Pass --prune to remove them from the config. Explicit
+    directory arguments are persisted to paths.scan_paths so future scans
+    (including zero-config scan at startup) cover them too.
+    """
     cfg_path: Path = ctx.obj["config_path"]
     cfg = load_config(cfg_path)
     if not cfg.gpus:
         console.print("[red]No GPUs in config — run [bold]arc-llama init[/bold] first.[/red]")
         sys.exit(1)
     extras = [Path(p) for p in paths]
-    found = discover_ggufs(cfg, extra_paths=extras)
-    if not found:
-        scanned = [cfg.paths.models_dir, *cfg.paths.scan_paths, *paths]
-        console.print("[yellow]No GGUFs found.[/yellow] Scanned: " + ", ".join(scanned))
-        return
+    new_roots = _persist_scan_roots(cfg, extras)
     try:
-        added = register_discovered(cfg, found, gpu_pci_slot=gpu_pci_slot)
+        result = scan_models(cfg, extras, gpu_pci_slot=gpu_pci_slot, prune=prune)
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
-    if not added:
-        console.print(f"[dim]Found {len(found)} GGUF(s); all already registered.[/dim]")
-        return
+
+    # Counts: always print, so a no-op scan still tells the user what happened.
+    color = "green" if result.new or result.pruned else "dim"
+    console.print(f"[{color}]Scan: {result.counts_line()}.[/{color}]")
+
+    if result.new:
+        console.print(
+            f"[green]Registered {len(result.new)} new model(s):[/green] "
+            + ", ".join(m.name for m in result.new)
+        )
+    if result.skipped_aux:
+        console.print(
+            "[dim]Skipped auxiliary GGUFs (mmproj/MTP sidecars): "
+            + ", ".join(p.name for p in result.skipped_aux)
+            + "[/dim]"
+        )
+    if result.skipped_dirs:
+        console.print(
+            "[dim]Skipped directories (cache/aux): "
+            + ", ".join(p.name for p in result.skipped_dirs)
+            + "[/dim]"
+        )
+    if result.pruned:
+        console.print(
+            f"[green]Pruned {len(result.pruned)} stale model(s):[/green] "
+            + ", ".join(m.name for m in result.pruned)
+        )
+    elif result.stale:
+        names = ", ".join(m.name for m in result.stale)
+        console.print(
+            f"[yellow]{len(result.stale)} registered model(s) point at missing files: "
+            f"{names}. Re-run with --prune to remove them.[/yellow]"
+        )
+    if new_roots:
+        console.print(
+            "[dim]Added to paths.scan_paths"
+            + (" (NOT saved — --no-persist)" if not persist else "")
+            + ": "
+            + ", ".join(str(Path(r).expanduser()) for r in new_roots)
+            + "[/dim]"
+        )
+    if not result.new and not result.pruned and not result.stale and not result.skipped_aux:
+        scanned = [cfg.paths.models_dir, *cfg.paths.scan_paths]
+        console.print("[dim]Scanned: " + ", ".join(scanned) + "[/dim]")
+
     if persist:
         _save_or_die(cfg, cfg_path)
-    console.print(
-        f"[green]Registered {len(added)} new model(s):[/green] " + ", ".join(m.name for m in added)
-    )
-    if not persist:
+    else:
         console.print("[dim]--no-persist: config NOT saved.[/dim]")
 
 
@@ -1177,6 +1254,377 @@ def _print_serve_banner(cfg: Config) -> None:
         console.print("  [dim]no models registered — `arc-llama add` something first[/dim]")
 
 
+def _bootstrap_run_config(config_path: Path) -> Config:
+    """Load a usable config, detecting Arc GPUs when first-run state is absent."""
+    created = not config_path.exists()
+    cfg = load_config(config_path)
+    if cfg.gpus:
+        return cfg
+
+    console.print("[bold blue]1/4[/bold blue] Detecting Intel Arc hardware ...")
+    detected = detect_gpus()
+    if not detected:
+        raise click.ClickException(
+            "No Intel Arc GPU was detected. Run `arc-llama doctor` for driver, "
+            "permissions, and ReBAR guidance."
+        )
+    detected_cfg = init_config_from_detection(detected, llama_server_path=None)
+    cfg.gpus = detected_cfg.gpus
+    if created:
+        # Retain Config's platform-aware default paths while using the detected
+        # GPU set. Existing config files keep every user setting unchanged.
+        cfg.paths = detected_cfg.paths
+    _save_or_die(cfg, config_path)
+    names = ", ".join(g.name or g.pci_slot for g in cfg.gpus if g.enabled)
+    console.print(f"  [green]ready[/green] {names} · config {config_path}")
+    return cfg
+
+
+def _run_backend(
+    requested: str | None,
+    available: set[Backend],
+) -> tuple[str, bool]:
+    """Choose a backend for the polished path and report explicit selection."""
+    if requested is not None:
+        return requested, True
+    if Backend.SYCL in available:
+        return Backend.SYCL.value, False
+    if Backend.VULKAN in available:
+        return Backend.VULKAN.value, False
+    # A fresh or incomplete machine gets the dependency-light path. Users can
+    # opt into SYCL explicitly; an existing recognised SYCL install is kept.
+    return Backend.VULKAN.value, False
+
+
+def _ensure_run_runtime(
+    cfg: Config,
+    config_path: Path,
+    *,
+    current: Path | None,
+    available: set[Backend],
+    backend: str,
+    backend_explicit: bool,
+    version: str,
+    may_install: bool,
+) -> Path:
+    """Resolve or install a compatible runtime for ``arc-llama run``."""
+    if current is not None:
+        if Backend(backend) in available or (not available and not backend_explicit):
+            changed = cfg.paths.llama_server != str(current)
+            cfg.paths.llama_server = str(current)
+            for gpu in cfg.gpus:
+                if gpu.enabled and gpu.backend != backend:
+                    gpu.backend = backend
+                    changed = True
+            if changed:
+                _save_or_die(cfg, config_path)
+            console.print(
+                f"[bold blue]2/4[/bold blue] Runtime [green]ready[/green] · {backend} · {current}"
+            )
+            return current
+
+    if not may_install:
+        detail = "not installed" if current is None else f"does not provide {backend}"
+        raise click.ClickException(
+            f"The configured llama-server is {detail}. Remove --no-install-runtime "
+            f"or run `arc-llama install-runtime --backend {backend}`."
+        )
+
+    console.print(f"[bold blue]2/4[/bold blue] Installing verified {backend} llama-server ...")
+    from rich.progress import BarColumn, DownloadColumn, Progress, TaskProgressColumn
+
+    from arc_llama.runtime import RuntimeInstallError, install_runtime
+
+    progress = Progress(BarColumn(), DownloadColumn(), TaskProgressColumn(), console=console)
+    state: dict[str, Any] = {"task_id": None}
+
+    def on_progress(done: int, total: int) -> None:
+        if state["task_id"] is None:
+            state["task_id"] = progress.add_task("runtime", total=total or 1)
+        progress.update(state["task_id"], completed=done)
+
+    try:
+        with progress:
+            result = install_runtime(
+                backend=backend,
+                version=version,
+                cfg=cfg,
+                set_default=True,
+                config_path=config_path,
+                on_progress=on_progress,
+            )
+    except RuntimeInstallError as exc:
+        raise click.ClickException(f"Runtime installation failed: {exc}") from exc
+    except Exception as exc:
+        raise click.ClickException(f"Runtime installation failed: {exc}") from exc
+    console.print(f"  [green]verified[/green] llama.cpp {result.tag} · {result.binary_path}")
+    return result.binary_path
+
+
+def _run_gpu(cfg: Config, requested: str | None) -> str:
+    if requested is not None:
+        gpu = cfg.find_gpu(requested)
+        if gpu is None or not gpu.enabled:
+            raise click.ClickException(f"GPU {requested!r} is not enabled in the config.")
+        return gpu.pci_slot
+    enabled = next((gpu for gpu in cfg.gpus if gpu.enabled), None)
+    if enabled is None:
+        raise click.ClickException("No enabled Intel GPU is configured.")
+    return enabled.pci_slot
+
+
+def _existing_model_for_path(cfg: Config, path: Path) -> ModelConfig | None:
+    resolved = path.resolve()
+    for model in cfg.models:
+        try:
+            if Path(model.path).resolve() == resolved:
+                return model
+        except OSError:
+            continue
+    return None
+
+
+def _prepare_run_model(
+    cfg: Config,
+    config_path: Path,
+    *,
+    source: str | None,
+    name: str | None,
+    gpu_pci_slot: str,
+    hf_token: str | None,
+) -> ModelConfig:
+    """Resolve an existing model, local GGUF, HF spec, or discovered singleton."""
+    if source is None:
+        added = _do_scan(cfg, [])
+        if added:
+            _save_or_die(cfg, config_path)
+        if len(cfg.models) == 1:
+            model = cfg.models[0]
+            console.print(f"[bold blue]3/4[/bold blue] Model [green]ready[/green] · {model.name}")
+            return model
+        if not cfg.models:
+            raise click.ClickException(
+                "No GGUF model was found. Pass a local file or Hugging Face spec, for "
+                "example `arc-llama run /models/qwen.gguf` or "
+                "`arc-llama run unsloth/Qwen3-8B-GGUF:Q4_K_M`."
+            )
+        choices = ", ".join(model.name for model in cfg.models[:8])
+        raise click.ClickException(f"More than one model is registered; choose one: {choices}")
+
+    existing = cfg.find_model(source)
+    local = Path(source).expanduser()
+    if existing is not None and not local.exists():
+        console.print(f"[bold blue]3/4[/bold blue] Model [green]ready[/green] · {existing.name}")
+        return existing
+
+    if local.exists():
+        path = local.resolve()
+        derived_name = name or _slugify_for_name(path.parent.name, path.name)
+    elif "/" in source:
+        try:
+            spec = parse_hf_spec(source)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        target_dir = Path(cfg.paths.models_dir).expanduser() / spec.repo.split("/")[-1]
+        console.print(f"[bold blue]3/4[/bold blue] Downloading {spec.repo} → {target_dir}")
+        try:
+            path = download_from_hf(spec, target_dir=target_dir, token=hf_token)
+        except (RuntimeError, FileNotFoundError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        derived_name = name or _slugify_for_name(target_dir.name, path.name)
+    else:
+        raise click.ClickException(
+            f"Unknown model {source!r}. Pass a registered name, local GGUF path, "
+            "or Hugging Face `org/repo:Q4_K_M` spec."
+        )
+
+    already = _existing_model_for_path(cfg, path)
+    if already is not None:
+        console.print(f"[bold blue]3/4[/bold blue] Model [green]ready[/green] · {already.name}")
+        return already
+    try:
+        model = add_local_model(
+            cfg,
+            name=derived_name,
+            path=str(path),
+            gpu_pci_slot=gpu_pci_slot,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _save_or_die(cfg, config_path)
+    console.print(f"  [green]registered[/green] {model.name} · {path.name}")
+    return model
+
+
+def _print_run_readiness(cfg: Config, model: ModelConfig) -> bool:
+    """Print the launch contract and return whether the model is estimated to fit."""
+    gpu = cfg.find_gpu(model.gpu_pci_slot)
+    recipe = model.launch_recipe()
+    estimate: int | None = None
+    try:
+        from arc_llama.router import _estimate_model_vram_mb, estimate_model_vram_quick_mb
+
+        estimate = estimate_model_vram_quick_mb(model)
+        if estimate is None:
+            estimate = _estimate_model_vram_mb(model)
+    except Exception as exc:  # noqa: BLE001 - readiness is useful even without an estimate
+        logging.getLogger("arc_llama.cli").debug("VRAM readiness estimate failed: %s", exc)
+
+    try:
+        file_gib = Path(model.path).stat().st_size / (1024**3)
+    except OSError as exc:
+        raise click.ClickException(f"Model file is not readable: {model.path}") from exc
+    kv = (
+        recipe.cache_type_k.value
+        if recipe.cache_type_k == recipe.cache_type_v
+        else f"{recipe.cache_type_k.value}/{recipe.cache_type_v.value}"
+    )
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="dim")
+    table.add_column()
+    table.add_row("Model", f"{model.display_name or model.name} ({file_gib:.1f} GiB)")
+    table.add_row("GPU", (gpu.name or gpu.pci_slot) if gpu is not None else model.gpu_pci_slot)
+    table.add_row("Recipe", f"ctx {recipe.ctx:,} · KV {kv} · backend {gpu.backend if gpu else '?'}")
+    fits = True
+    if estimate is not None and gpu is not None and gpu.vram_mb:
+        headroom = gpu.vram_mb - estimate
+        fits = headroom >= 0
+        if fits and headroom >= max(768, int(gpu.vram_mb * 0.08)):
+            fit_text = f"[green]comfortable[/green] · {estimate:,}/{gpu.vram_mb:,} MiB"
+        elif fits:
+            fit_text = f"[yellow]tight[/yellow] · {estimate:,}/{gpu.vram_mb:,} MiB"
+        else:
+            fit_text = f"[red]too large[/red] · {estimate:,}/{gpu.vram_mb:,} MiB"
+        table.add_row("Estimated fit", fit_text)
+    else:
+        table.add_row("Estimated fit", "[yellow]unknown; llama-server will verify at load[/yellow]")
+    console.print("[bold blue]4/4[/bold blue] Launch plan")
+    console.print(table)
+    return fits
+
+
+@cli.command("run")
+@click.argument("source", required=False)
+@click.option("--name", default=None, help="Name to register a new model under.")
+@click.option("--gpu", "gpu_pci_slot", default=None, help="Enabled GPU PCI slot to use.")
+@click.option(
+    "--backend",
+    type=click.Choice([Backend.VULKAN.value, Backend.SYCL.value]),
+    default=None,
+    help="Runtime backend. Fresh installs default to portable Vulkan.",
+)
+@click.option(
+    "--runtime-version",
+    default="latest",
+    show_default=True,
+    help="llama.cpp release tag used when a runtime must be installed.",
+)
+@click.option(
+    "--install-runtime/--no-install-runtime",
+    default=True,
+    help="Automatically install a compatible verified runtime when needed.",
+)
+@click.option("--hf-token", default=None, help="Hugging Face token for gated repositories.")
+@click.option("--host", default=None, help="Override the OpenAI server host.")
+@click.option("--port", type=int, default=None, help="Override the OpenAI server port.")
+@click.option(
+    "--auto-tune/--no-auto-tune",
+    default=None,
+    help="Override background tuning for this run.",
+)
+@click.option(
+    "--setup-only",
+    is_flag=True,
+    help="Prepare and validate everything, print the launch plan, then exit.",
+)
+@click.pass_context
+def run_cmd(
+    ctx: click.Context,
+    source: str | None,
+    name: str | None,
+    gpu_pci_slot: str | None,
+    backend: str | None,
+    runtime_version: str,
+    install_runtime: bool,
+    hf_token: str | None,
+    host: str | None,
+    port: int | None,
+    auto_tune: bool | None,
+    setup_only: bool,
+) -> None:
+    """Go from an Arc GPU and MODEL/GGUF/HF spec to a ready inference API.
+
+    With no SOURCE, uses the only registered/discovered model. This command
+    composes first-run detection, verified runtime installation, model
+    registration, fit validation, and ``serve``; the lower-level commands
+    remain available for explicit control.
+    """
+    config_path: Path = ctx.obj["config_path"]
+    cfg = _bootstrap_run_config(config_path)
+    current_runtime = _configured_runtime(cfg)
+    available_backends = detect_backends(current_runtime) if current_runtime is not None else set()
+    selected_backend, backend_explicit = _run_backend(backend, available_backends)
+    _ensure_run_runtime(
+        cfg,
+        config_path,
+        current=current_runtime,
+        available=available_backends,
+        backend=selected_backend,
+        backend_explicit=backend_explicit,
+        version=runtime_version,
+        may_install=install_runtime,
+    )
+    selected_gpu = _run_gpu(cfg, gpu_pci_slot)
+    model = _prepare_run_model(
+        cfg,
+        config_path,
+        source=source,
+        name=name,
+        gpu_pci_slot=selected_gpu,
+        hf_token=hf_token,
+    )
+    if gpu_pci_slot is not None and model.gpu_pci_slot != selected_gpu:
+        model.gpu_pci_slot = selected_gpu
+        _save_or_die(cfg, config_path)
+    model_gpu = cfg.find_gpu(model.gpu_pci_slot)
+    if model_gpu is not None and model_gpu.backend != selected_backend:
+        model_gpu.backend = selected_backend
+        _save_or_die(cfg, config_path)
+    if not _print_run_readiness(cfg, model):
+        raise click.ClickException(
+            "This recipe is estimated to exceed GPU VRAM. Choose a smaller "
+            "quantization/model or reduce context before serving."
+        )
+
+    serve_host = host or cfg.server.host
+    serve_port = port or cfg.server.port
+    display_host = "127.0.0.1" if serve_host in ("0.0.0.0", "::") else serve_host
+    console.print()
+    console.print(
+        f"[bold green]Arc inference is ready[/bold green] · model [bold]{model.name}[/bold]"
+    )
+    console.print(f"  OpenAI base URL  [cyan]http://{display_host}:{serve_port}/v1[/cyan]")
+    console.print(f"  Web UI           [cyan]http://{display_host}:{serve_port}/[/cyan]")
+    if setup_only:
+        console.print(
+            "  [dim]Setup-only complete. Run the same command without --setup-only to serve.[/dim]"
+        )
+        return
+
+    console.print(
+        "  [dim]Press Ctrl+C to stop. The first request loads the selected model.[/dim]\n"
+    )
+    ctx.invoke(
+        serve,
+        host=host,
+        port=port,
+        profile=None,
+        admin_token=None,
+        scan=False,
+        auto_tune=auto_tune,
+    )
+
+
 @cli.command("serve")
 @click.option(
     "--host",
@@ -1194,15 +1642,12 @@ def _print_serve_banner(cfg: Config) -> None:
 @click.option(
     "--profile",
     default=None,
-    help="Active MCP profile name (overrides agent.profile in config).",
+    help="Active integration profile name.",
 )
 @click.option(
     "--admin-token",
     default=None,
-    help=(
-        "Bearer token required for admin endpoints and auto_confirm agent runs "
-        "(overrides config; also settable via ARC_LLAMA_ADMIN_TOKEN)."
-    ),
+    help="Bearer token required for admin endpoints (also ARC_LLAMA_ADMIN_TOKEN).",
 )
 @click.option(
     "--scan/--no-scan",
@@ -1276,8 +1721,7 @@ def serve(
     )
     console.print(
         f"[dim]Admin authentication is enabled via {token_source}. "
-        "Admin endpoints and auto_confirm agent runs require "
-        "'Authorization: Bearer <token>'.[/dim]"
+        "Admin endpoints require 'Authorization: Bearer <token>'.[/dim]"
     )
     _print_serve_banner(cfg)
     try:
@@ -1650,6 +2094,7 @@ def _emit_recipe_submission(ctx: click.Context, cfg: Any, report: Any) -> None:
     from arc_llama import workload as workload_mod
     from arc_llama.recipe_share import (
         build_pr_body,
+        llama_server_build_identity,
         share_fingerprint,
         submission_document,
         validate_submission,
@@ -1668,6 +2113,7 @@ def _emit_recipe_submission(ctx: click.Context, cfg: Any, report: Any) -> None:
         tune_schema_version=3,
         vram_mb=(gpu.vram_mb if gpu is not None and gpu.vram_mb is not None else 0),
     )
+    provenance = llama_server_build_identity(cfg.paths.llama_server)
     best = report.best
     doc = submission_document(
         fingerprint=fp,
@@ -1676,6 +2122,7 @@ def _emit_recipe_submission(ctx: click.Context, cfg: Any, report: Any) -> None:
         generation_tok_s=(getattr(best, "generation_tok_s", None) if best else None),
         gpu_name=(gpu.name if gpu else ""),
         arc_llama_version=__version__,
+        provenance=provenance,
     )
     problems = validate_submission(doc)
     if problems:
@@ -1738,17 +2185,212 @@ def recipes_lookup(ctx: click.Context, model: str) -> None:
     )
     entry = RecipeRegistry().lookup(fp)
     if entry is None:
-        console.print(f"[yellow]No community recipe for {fp[:16]}… — run `arc-llama tune` to measure one.[/yellow]")
+        console.print(
+            f"[yellow]No community recipe for {fp[:16]}… — run `arc-llama tune` to measure one.[/yellow]"
+        )
         sys.exit(1)
     console.print(f"[bold]{entry.submits} measurement(s)[/bold] for {fp[:16]}…")
+    console.print(f"  confidence: {entry.confidence_score:.0%}")
     if entry.gpu_name:
         console.print(f"  gpu: {entry.gpu_name}")
+    if entry.provenance:
+        build = entry.provenance.get("llama_server_git") or entry.provenance.get(
+            "llama_server_version", "unknown"
+        )
+        console.print(
+            f"  provenance: {entry.provenance.get('llama_server_backend', '?')} / {build}"
+        )
     if entry.prompt_eval_tok_s or entry.generation_tok_s:
         console.print(
             f"  measured: {entry.prompt_eval_tok_s or '?'} pp tok/s · "
             f"{entry.generation_tok_s or '?'} gen tok/s"
         )
     console.print(f"  recipe: [dim]{json.dumps(entry.edits, sort_keys=True)}[/dim]")
+
+
+@recipes_group.command("apply")
+@click.argument("model")
+@click.option(
+    "--server",
+    "server_url",
+    default=None,
+    help="Base URL of a running arc-llama server.",
+)
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    help="A/B benchmark the current and shared recipes, rolling back unless the shared recipe wins.",
+)
+@click.option(
+    "--min-improvement",
+    type=click.FloatRange(min=0.0),
+    default=0.01,
+    show_default=True,
+    help="Minimum fractional A/B score improvement required to keep the recipe.",
+)
+@click.option(
+    "--min-confidence",
+    type=click.FloatRange(min=0.0, max=1.0),
+    default=0.5,
+    show_default=True,
+)
+@click.option(
+    "--allow-unverified",
+    is_flag=True,
+    help="Allow missing or mismatched llama-server provenance; A/B verification is still recommended.",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Show the decision and edits without changing anything."
+)
+@click.pass_context
+def recipes_apply(
+    ctx: click.Context,
+    model: str,
+    server_url: str | None,
+    verify: bool,
+    min_improvement: float,
+    min_confidence: float,
+    allow_unverified: bool,
+    dry_run: bool,
+) -> None:
+    """Safely apply a community recipe, optionally proving it locally first."""
+    from arc_llama import workload as workload_mod
+    from arc_llama.recipe_share import (
+        RecipeRegistry,
+        benchmark_improvement,
+        llama_server_build_identity,
+        provenance_matches_local,
+        share_fingerprint,
+        shared_recipe_edits_to_model_recipe,
+    )
+    from arc_llama.tune import _apply_edits, _restore_edits, _restore_final_state
+
+    cfg = load_config(ctx.obj["config_path"])
+    m = cfg.find_model(model)
+    if m is None:
+        raise click.ClickException(f"model {model!r} is not registered")
+    gpu = cfg.find_gpu(m.gpu_pci_slot)
+    fp = share_fingerprint(
+        gpu_arch=(gpu.arch if gpu else "unknown"),
+        backend=(gpu.backend if gpu else "sycl"),
+        model_class=(m.kv_class or "default"),
+        workload_key=workload_mod.fingerprint_key(cfg.workload),
+        tune_schema_version=3,
+        vram_mb=(gpu.vram_mb if gpu and gpu.vram_mb else 0),
+    )
+    entry = RecipeRegistry().lookup(fp)
+    if entry is None:
+        raise click.ClickException(f"no community recipe for {fp[:16]}…")
+    if entry.confidence_score < min_confidence:
+        raise click.ClickException(
+            f"recipe confidence {entry.confidence_score:.0%} is below "
+            f"the required {min_confidence:.0%}"
+        )
+
+    local = llama_server_build_identity(cfg.paths.llama_server)
+    provenance_ok = provenance_matches_local(
+        entry.provenance,
+        llama_server_version=local.get("llama_server_version"),
+        llama_server_git=local.get("llama_server_git"),
+        llama_server_backend=local.get("llama_server_backend"),
+    )
+    if not provenance_ok and not allow_unverified:
+        raise click.ClickException(
+            "shared recipe provenance does not match this llama-server build; "
+            "use --allow-unverified to rely on local A/B verification"
+        )
+
+    edits = shared_recipe_edits_to_model_recipe(entry.edits)
+    console.print(
+        f"[bold]Community recipe[/bold] {fp[:16]}… "
+        f"(confidence {entry.confidence_score:.0%}, "
+        f"provenance {'matched' if provenance_ok else 'unverified'})"
+    )
+    console.print(f"  edits: [dim]{json.dumps(edits, sort_keys=True)}[/dim]")
+    if dry_run:
+        return
+
+    url = _server_url_from(ctx, server_url)
+    headers = (
+        {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+    )
+
+    async def _run() -> tuple[bool, float | None, str | None]:
+        touched = set(edits)
+        restore = _restore_edits(dict(m.recipe or {}), touched)
+        accepted = False
+        candidate_applied = False
+        failure: str | None = None
+        gain: float | None = None
+        baseline = None
+        if verify:
+            baseline = await benchmark_mod.benchmark_model(
+                url,
+                model,
+                prompt_tokens=cfg.tune.prompt_tokens,
+                gen_tokens=cfg.tune.gen_tokens,
+                cfg=cfg,
+            )
+            if baseline.error:
+                return False, None, f"baseline benchmark failed: {baseline.error}"
+
+        async with httpx.AsyncClient(base_url=url, timeout=600.0, headers=headers) as client:
+            try:
+                failure = await _apply_edits(client, model, edits)
+                if failure:
+                    return False, None, failure
+                candidate_applied = True
+                if not verify:
+                    accepted = True
+                    return True, None, None
+                candidate = await benchmark_mod.benchmark_model(
+                    url,
+                    model,
+                    prompt_tokens=cfg.tune.prompt_tokens,
+                    gen_tokens=cfg.tune.gen_tokens,
+                    cfg=cfg,
+                )
+                if candidate.error:
+                    failure = f"candidate benchmark failed: {candidate.error}"
+                    return False, None, failure
+                gain = benchmark_improvement(
+                    baseline,
+                    candidate,
+                    target=workload_mod.tune_target(cfg),
+                    priority=workload_mod.score_priority(cfg),
+                )
+                if gain is None:
+                    failure = "could not score the baseline and candidate benchmarks"
+                    return False, None, failure
+                accepted = gain >= min_improvement
+                if not accepted:
+                    failure = (
+                        f"shared recipe improved the workload score by {gain:.1%}; "
+                        f"required {min_improvement:.1%}"
+                    )
+                return accepted, gain, failure
+            finally:
+                if candidate_applied and not accepted:
+                    restore_error = await _restore_final_state(client, model, restore, cfg=None)
+                    if restore_error:
+                        raise RuntimeError(
+                            f"recipe was rejected but rollback failed: {restore_error}"
+                        )
+
+    try:
+        accepted, gain, failure = asyncio.run(_run())
+    except KeyboardInterrupt:
+        raise click.ClickException("recipe verification interrupted") from None
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not accepted:
+        raise click.ClickException(f"{failure}; original recipe restored")
+    if gain is None:
+        console.print(f"[green]Applied shared recipe to {model}.[/green]")
+    else:
+        console.print(
+            f"[green]Applied shared recipe to {model}; local A/B score improved {gain:.1%}.[/green]"
+        )
 
 
 @recipes_group.command("update")
@@ -1762,23 +2404,34 @@ def recipes_update(ctx: click.Context, url: str | None) -> None:
     """Refresh the local registry from the community release asset."""
     import httpx as _httpx
 
-    from arc_llama.recipe_share import DEFAULT_REGISTRY_URL, _user_override_path
+    from arc_llama.recipe_share import (
+        DEFAULT_REGISTRY_URL,
+        MAX_REGISTRY_BYTES,
+        RegistryValidationError,
+        _user_override_path,
+        parse_registry_bytes,
+        write_registry_atomic,
+    )
 
     src = url or DEFAULT_REGISTRY_URL
     dest = _user_override_path()
     console.print(f"Fetching {src} …")
     try:
-        resp = _httpx.get(src, follow_redirects=True, timeout=30)
-        resp.raise_for_status()
-        doc = resp.json()
-    except Exception as e:
+        payload = bytearray()
+        with _httpx.stream("GET", src, follow_redirects=True, timeout=30) as resp:
+            resp.raise_for_status()
+            content_length = resp.headers.get("content-length")
+            if content_length is not None and int(content_length) > MAX_REGISTRY_BYTES:
+                raise RegistryValidationError("downloaded registry exceeds the 16 MiB limit")
+            for chunk in resp.iter_bytes():
+                payload.extend(chunk)
+                if len(payload) > MAX_REGISTRY_BYTES:
+                    raise RegistryValidationError("downloaded registry exceeds the 16 MiB limit")
+        doc = parse_registry_bytes(bytes(payload))
+        write_registry_atomic(doc, dest)
+    except (OSError, ValueError, _httpx.HTTPError, RegistryValidationError) as e:
         console.print(f"[red]Download failed: {e}[/red]")
         sys.exit(1)
-    if not isinstance(doc, dict) or not isinstance(doc.get("recipes"), dict):
-        console.print("[red]Downloaded file is not a valid registry.[/red]")
-        sys.exit(1)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
     n = len(doc["recipes"])
     console.print(f"[green]Saved {n} recipe(s) to {dest}[/green]")
 
@@ -1920,10 +2573,26 @@ def install_runtime_cmd(ctx, backend, runtime_version, dest, set_default, force)
 @click.option("--status", "show_status", is_flag=True, help="Show support and saved recipe.")
 @click.option("--dry-run", is_flag=True, help="Show safe candidates without changing config.")
 @click.option("--off", "turn_off", is_flag=True, help="Disable speculative decoding.")
-@click.option("--auto", "auto_select", is_flag=True, help="Choose the safest registered draft candidate.")
+@click.option(
+    "--auto", "auto_select", is_flag=True, help="Choose the safest registered draft candidate."
+)
 @click.option("--draft", "draft_name", default=None, help="Registered model name to use as draft.")
-@click.option("--ngram", "use_ngram", is_flag=True, help="Use llama.cpp n-gram speculation when supported.")
+@click.option(
+    "--ngram", "use_ngram", is_flag=True, help="Use llama.cpp n-gram speculation when supported."
+)
 @click.option("--draft-tokens", default=4, show_default=True, type=click.IntRange(1, 16))
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    help="A/B benchmark target-only versus speculation and roll back unless it is faster.",
+)
+@click.option(
+    "--min-speedup",
+    type=click.FloatRange(min=0.0),
+    default=0.02,
+    show_default=True,
+    help="Minimum generation-speed improvement required by --verify.",
+)
 @click.pass_context
 def speculative_cmd(
     ctx: click.Context,
@@ -1935,15 +2604,14 @@ def speculative_cmd(
     draft_name: str | None,
     use_ngram: bool,
     draft_tokens: int,
+    verify: bool,
+    min_speedup: float,
 ) -> None:
-    """Configure safe native llama.cpp speculation for a registered MODEL.
-
-    ``--auto`` only chooses a conservative, compatible-looking local draft;
-    it deliberately does not claim a speedup. Run ``benchmark`` after the
-    model is loaded before relying on the result.
-    """
+    """Configure native llama.cpp speculation and prove the speedup locally."""
+    from arc_llama.recipe_share import benchmark_improvement
     from arc_llama.server_caps import format_speculation_capability, probe_server_caps
     from arc_llama.speculation import discover_drafts
+    from arc_llama.tune import _apply_edits, _restore_final_state
 
     cfg_path: Path = ctx.obj["config_path"]
     cfg = load_config(cfg_path)
@@ -1964,42 +2632,169 @@ def speculative_cmd(
         console.print(f"  configured: {recipe.get('spec_type', 'off')}")
         if recipe.get("spec_draft_name"):
             console.print(f"  draft: {recipe['spec_draft_name']}")
+        if recipe.get("speculation_result"):
+            console.print(f"  verification: {recipe['speculation_result']}")
         if candidates:
             console.print("  draft candidates:")
             for c in candidates:
                 marker = "fit" if c.fits else "does not fit"
                 console.print(f"    {c.name}: ~{c.estimated_mb} MiB ({marker}; {c.reason})")
         else:
-            console.print("  draft candidates: none (only smaller same-family registered models qualify)")
+            console.print(
+                "  draft candidates: none (only smaller same-family registered models qualify)"
+            )
         if dry_run or show_status or not any((turn_off, auto_select, draft_name, use_ngram)):
             return
 
     if turn_off:
-        for key in ("spec_type", "spec_draft_name", "spec_draft_model", "spec_draft_ngl", "spec_draft_n_max"):
+        for key in (
+            "spec_type",
+            "spec_draft_name",
+            "spec_draft_model",
+            "spec_draft_ngl",
+            "spec_draft_n_max",
+        ):
             recipe.pop(key, None)
         recipe["speculation_result"] = "disabled by user"
-    elif use_ngram:
+        _save_or_die(cfg, cfg_path)
+        console.print(f"[green]Disabled speculation for {target.name}.[/green]")
+        return
+
+    proposed: dict[str, Any]
+    description: str
+    if use_ngram:
         if not caps.supports_ngram:
-            raise click.ClickException("installed llama-server does not advertise n-gram speculation")
-        recipe.update({"spec_type": "ngram-simple", "spec_draft_n_max": draft_tokens})
-        recipe.pop("spec_draft_name", None)
-        recipe.pop("spec_draft_model", None)
-        recipe["speculation_result"] = "n-gram selected; benchmark before relying on it"
+            raise click.ClickException(
+                "installed llama-server does not advertise n-gram speculation"
+            )
+        proposed = {
+            "spec_type": "ngram-simple",
+            "spec_draft_name": None,
+            "spec_draft_n_max": draft_tokens,
+        }
+        description = f"n-gram/{draft_tokens}"
     else:
-        chosen = cfg.find_model(draft_name) if draft_name else next((c for c in candidates if c.fits), None)
-        if chosen is None:
-            raise click.ClickException("no fitting registered draft candidate; add a smaller same-family model or use --ngram")
-        if not isinstance(chosen, type(target)):
-            chosen = cfg.find_model(chosen.name)
-        if chosen is None or chosen.name == target.name:
-            raise click.ClickException("draft must be another registered model")
+        candidate = (
+            next((c for c in candidates if c.name == draft_name and c.fits), None)
+            if draft_name
+            else next((c for c in candidates if c.fits), None)
+        )
+        if candidate is None:
+            raise click.ClickException(
+                "no fitting registered draft candidate; add a smaller same-family model or use --ngram"
+            )
         if not caps.supports_draft_model:
-            raise click.ClickException("installed llama-server does not advertise --spec-draft-model")
-        recipe.update({"spec_type": "draft-simple", "spec_draft_name": chosen.name, "spec_draft_n_max": draft_tokens})
+            raise click.ClickException(
+                "installed llama-server does not advertise --spec-draft-model"
+            )
+        proposed = {
+            "spec_type": "draft-simple",
+            "spec_draft_name": candidate.name,
+            "spec_draft_n_max": draft_tokens,
+        }
+        description = f"draft {candidate.name}/{draft_tokens}"
+
+    if not verify:
+        for key, value in proposed.items():
+            if value is None:
+                recipe.pop(key, None)
+            else:
+                recipe[key] = value
         recipe.pop("spec_draft_model", None)
-        recipe["speculation_result"] = f"draft {chosen.name} selected; benchmark before relying on it"
+        recipe["speculation_result"] = f"{description} selected without A/B verification"
+        _save_or_die(cfg, cfg_path)
+        console.print(f"[green]Saved speculation recipe for {target.name}.[/green]")
+        return
+
+    url = _server_url_from(ctx, None)
+    headers = (
+        {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+    )
+    original = dict(recipe)
+    restore = {
+        "spec_type": original.get("spec_type"),
+        "spec_draft_name": original.get("spec_draft_name"),
+        "spec_draft_n_max": original.get("spec_draft_n_max"),
+        "speculation_result": original.get("speculation_result"),
+    }
+    target_only = {
+        "spec_type": None,
+        "spec_draft_name": None,
+        "spec_draft_n_max": None,
+        "speculation_result": None,
+    }
+
+    async def _verify() -> tuple[bool, float | None, str | None]:
+        accepted = False
+        changed = False
+        async with httpx.AsyncClient(base_url=url, timeout=600.0, headers=headers) as client:
+            try:
+                error = await _apply_edits(client, target.name, target_only)
+                if error:
+                    return False, None, error
+                changed = True
+                baseline = await benchmark_mod.benchmark_model(
+                    url,
+                    target.name,
+                    prompt_tokens=cfg.tune.prompt_tokens,
+                    gen_tokens=cfg.tune.gen_tokens,
+                    cfg=cfg,
+                )
+                if baseline.error:
+                    return False, None, f"target-only benchmark failed: {baseline.error}"
+                error = await _apply_edits(client, target.name, proposed)
+                if error:
+                    return False, None, error
+                candidate_result = await benchmark_mod.benchmark_model(
+                    url,
+                    target.name,
+                    prompt_tokens=cfg.tune.prompt_tokens,
+                    gen_tokens=cfg.tune.gen_tokens,
+                    cfg=cfg,
+                )
+                if candidate_result.error:
+                    return False, None, f"speculation benchmark failed: {candidate_result.error}"
+                gain = benchmark_improvement(baseline, candidate_result, target="generation")
+                if gain is None:
+                    return False, None, "could not score speculative benchmark"
+                accepted = gain >= min_speedup
+                if not accepted:
+                    return (
+                        False,
+                        gain,
+                        f"generation improved {gain:.1%}; required {min_speedup:.1%}",
+                    )
+                return True, gain, None
+            finally:
+                if changed and not accepted:
+                    restore_error = await _restore_final_state(
+                        client, target.name, restore, cfg=None
+                    )
+                    if restore_error:
+                        raise RuntimeError(
+                            f"speculation rejected but rollback failed: {restore_error}"
+                        )
+
+    try:
+        accepted, gain, failure = asyncio.run(_verify())
+    except KeyboardInterrupt:
+        raise click.ClickException("speculation verification interrupted") from None
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not accepted:
+        raise click.ClickException(f"{failure}; original speculation recipe restored")
+
+    for key, value in proposed.items():
+        if value is None:
+            recipe.pop(key, None)
+        else:
+            recipe[key] = value
+    recipe.pop("spec_draft_model", None)
+    recipe["speculation_result"] = f"{description} verified at {gain:.1%} generation speedup"
     _save_or_die(cfg, cfg_path)
-    console.print(f"[green]Saved speculation recipe for {target.name}.[/green]")
+    console.print(
+        f"[green]Saved verified speculation for {target.name}: {gain:.1%} faster generation.[/green]"
+    )
 
 
 # ===========================================================================
@@ -2146,6 +2941,9 @@ def _state_dir_from_config(cfg: Config) -> Path | None:
 @asynccontextmanager
 async def _agent_tool_context(cfg: Config, profile: str | None):
     """Load skills and start the active profile's MCP servers for a CLI agent run."""
+    from arc_llama.agent.mcp_client import MCPClientManager
+    from arc_llama.skills import load_skills
+
     load_skills(cfg.paths.skills_dir)
     manager = MCPClientManager(cfg.active_mcp_servers(profile))
     try:
@@ -2238,6 +3036,12 @@ def agent_cmd(
     Requires a running `arc-llama serve` instance. The agent streams events to
     the terminal and prompts for confirmation before destructive tools.
     """
+    import uuid
+
+    from arc_llama.agent import run_agent
+    from arc_llama.agent.checkpoints import CheckpointStore
+    from arc_llama.chat_store import ChatMessage, ChatStore
+
     cfg = load_config(ctx.obj["config_path"])
     if base_url is None:
         base_url = f"http://{cfg.server.host}:{cfg.server.port}"
@@ -2350,6 +3154,12 @@ def code_cmd(
     Requires a running `arc-llama serve` instance. Type messages and the agent
     will use tools across multiple turns. Special commands start with `/`.
     """
+    import uuid
+
+    from arc_llama.agent.checkpoints import CheckpointStore
+    from arc_llama.agent.interactive import InteractiveAgent
+    from arc_llama.chat_store import ChatMessage, ChatStore
+
     cfg = load_config(ctx.obj["config_path"])
     if base_url is None:
         base_url = f"http://{cfg.server.host}:{cfg.server.port}"

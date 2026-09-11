@@ -1,4 +1,5 @@
 """Tests for arc_llama.recipes — VRAM math, recipe generation, KV sizing."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -29,6 +30,18 @@ class TestEstimateKvBytes:
     def test_unknown_class_fallback(self):
         # Unknown kv_class falls back to default f16 per-token
         assert estimate_kv_bytes(1000, KVCacheType.F16, "no_such_class") == 1000 * 70 * 1024
+
+    def test_metadata_estimate_overrides_family_bucket(self):
+        assert (
+            estimate_kv_bytes(1000, KVCacheType.F16, "default", f16_bytes_per_token=16 * 1024)
+            == 1000 * 16 * 1024
+        )
+
+    def test_invalid_metadata_estimate_falls_back(self):
+        assert (
+            estimate_kv_bytes(1000, KVCacheType.F16, "default", f16_bytes_per_token=0)
+            == 1000 * 70 * 1024
+        )
 
 
 class TestSuggestCtx:
@@ -164,12 +177,15 @@ class TestSuggestCtx:
 
     def test_parallel_does_not_raise_ctx_above_cap(self):
         """A roomy card still clamps to ctx_cap regardless of parallel."""
-        assert suggest_ctx(
-            vram_mb=24 * 1024,
-            model_file_mb=4 * 1024,
-            kv_type=KVCacheType.Q8_0,
-            parallel=1,
-        ) == DEFAULT_CTX_CAP
+        assert (
+            suggest_ctx(
+                vram_mb=24 * 1024,
+                model_file_mb=4 * 1024,
+                kv_type=KVCacheType.Q8_0,
+                parallel=1,
+            )
+            == DEFAULT_CTX_CAP
+        )
 
     def test_non_positive_parallel_treated_as_one(self):
         base = suggest_ctx(
@@ -178,18 +194,40 @@ class TestSuggestCtx:
             kv_type=KVCacheType.Q8_0,
             parallel=1,
         )
-        assert suggest_ctx(
-            vram_mb=24 * 1024,
-            model_file_mb=4 * 1024,
-            kv_type=KVCacheType.Q8_0,
-            parallel=0,
-        ) == base
-        assert suggest_ctx(
-            vram_mb=24 * 1024,
-            model_file_mb=4 * 1024,
-            kv_type=KVCacheType.Q8_0,
-            parallel=-3,
-        ) == base
+        assert (
+            suggest_ctx(
+                vram_mb=24 * 1024,
+                model_file_mb=4 * 1024,
+                kv_type=KVCacheType.Q8_0,
+                parallel=0,
+            )
+            == base
+        )
+        assert (
+            suggest_ctx(
+                vram_mb=24 * 1024,
+                model_file_mb=4 * 1024,
+                kv_type=KVCacheType.Q8_0,
+                parallel=-3,
+            )
+            == base
+        )
+
+    def test_metadata_geometry_allows_larger_safe_context(self):
+        family_ctx = suggest_ctx(
+            vram_mb=8 * 1024,
+            model_file_mb=6 * 1024,
+            kv_type=KVCacheType.F16,
+            ctx_cap=1_000_000,
+        )
+        metadata_ctx = suggest_ctx(
+            vram_mb=8 * 1024,
+            model_file_mb=6 * 1024,
+            kv_type=KVCacheType.F16,
+            ctx_cap=1_000_000,
+            f16_bytes_per_token=16 * 1024,
+        )
+        assert metadata_ctx > family_ctx
 
 
 class TestDefaultRecipe:
@@ -327,9 +365,11 @@ class TestDefaultRecipe:
 
     def test_default_recipe_passes_parallel_to_suggest_ctx(self, monkeypatch):
         calls = []
+
         def _recording_suggest_ctx(**kwargs):
             calls.append(kwargs)
             return 8192
+
         monkeypatch.setattr("arc_llama.recipes.suggest_ctx", _recording_suggest_ctx)
 
         r = default_recipe(
@@ -341,9 +381,11 @@ class TestDefaultRecipe:
 
     def test_default_recipe_honours_parallel_parameter(self, monkeypatch):
         calls = []
+
         def _recording_suggest_ctx(**kwargs):
             calls.append(kwargs)
             return 8192
+
         monkeypatch.setattr("arc_llama.recipes.suggest_ctx", _recording_suggest_ctx)
 
         r = default_recipe(
@@ -393,16 +435,26 @@ class TestLaunchRecipeArgv:
         )
         argv = r.to_argv()
         assert argv == [
-            "-ngl", "999",
-            "-c", "32768",
-            "--parallel", "2",
-            "--cache-type-k", "q8_0",
-            "--cache-type-v", "q5_1",
-            "-t", "8",
-            "--temp", "0.7",
-            "--top-p", "0.9",
-            "--top-k", "40",
-            "--reasoning", "off",
+            "-ngl",
+            "999",
+            "-c",
+            "32768",
+            "--parallel",
+            "2",
+            "--cache-type-k",
+            "q8_0",
+            "--cache-type-v",
+            "q5_1",
+            "-t",
+            "8",
+            "--temp",
+            "0.7",
+            "--top-p",
+            "0.9",
+            "--top-k",
+            "40",
+            "--reasoning",
+            "off",
         ]
 
     def test_optional_fields_omitted(self):
@@ -521,7 +573,10 @@ class TestRecipeToDict:
 
         r = default_recipe(Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=4 * 1024)
         mc = ModelConfig(
-            name="m", path="/x.gguf", port=1, gpu_pci_slot="0000:03:00.0",
+            name="m",
+            path="/x.gguf",
+            port=1,
+            gpu_pci_slot="0000:03:00.0",
             recipe=recipe_to_dict(r),
         )
         back = mc.launch_recipe()
@@ -561,7 +616,10 @@ class TestRecipeToDict:
 
         r = LaunchRecipe(threads=8, temp=0.7, top_p=0.9, top_k=40)
         mc = ModelConfig(
-            name="m", path="/x.gguf", port=1, gpu_pci_slot="0000:03:00.0",
+            name="m",
+            path="/x.gguf",
+            port=1,
+            gpu_pci_slot="0000:03:00.0",
             recipe=recipe_to_dict(r),
         )
         back = mc.launch_recipe()
@@ -569,6 +627,8 @@ class TestRecipeToDict:
         assert back.temp == 0.7
         assert back.top_p == 0.9
         assert back.top_k == 40
+
+
 class TestXmxSdpaGating:
     """The oneDNN/XMX SDPA path must only be selected when provably available.
 

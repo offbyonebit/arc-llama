@@ -23,7 +23,7 @@ enabled    = true
 [[models]]
 name             = "qwen3.6-27b"
 display_name     = "Qwen 3.6 27B (dense)"
-path             = "/mnt/storage/models/qwen3.6-27b/Qwen3.6-27B-Q4_K_M.gguf"
+path             = "/path/to/models/qwen3.6-27b/Qwen3.6-27B-Q4_K_M.gguf"
 gpu_pci_slot     = "0000:03:00.0"
 port             = 8083
 kv_class         = "default"

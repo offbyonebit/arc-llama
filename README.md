@@ -28,7 +28,7 @@ something useful before lunch.
 
 - **Auto-discovery of GPUs *and models*.** `arc-llama init` finds your Intel
   card and walks the configured scan paths for `.gguf` files, registering
-  every one with a sensible recipe , context length sized to your VRAM,
+  every one with a sensible recipe, context length sized to your VRAM,
   KV-cache class inferred from the filename. You should never need
   `arc-llama add` for a GGUF that's already on disk.
 - **Auto-discovery** of every Intel GPU on the host (`Alchemist`, `Battlemage`,
@@ -59,6 +59,26 @@ something useful before lunch.
   you're never locked into a specific build.
 
 ## Quick start
+
+The polished path is one command. `SOURCE` may be a registered model name, a
+local GGUF, or an explicit Hugging Face GGUF/quant specification:
+
+```bash
+pip install arc-llama
+arc-llama run /path/to/Qwen3-8B-Q4_K_M.gguf
+
+# Also valid after registration, or for a Hugging Face download:
+arc-llama run qwen3-8b-q4_k_m
+arc-llama run unsloth/Qwen3-8B-GGUF:Q4_K_M
+```
+
+On a fresh machine, `run` detects the Arc GPU, installs and verifies the
+portable Vulkan llama-server, registers the model with a VRAM-sized recipe,
+prints the fit estimate and endpoints, then serves. An existing recognised
+SYCL runtime is preserved. Use `--setup-only` to prepare and inspect the launch
+plan without starting the service, or `--backend sycl` to request SYCL.
+
+The individual steps remain available when you want explicit control:
 
 ```bash
 # 1. Install
@@ -176,6 +196,12 @@ arc-llama tune qwen3-7b
 arc-llama tune qwen3-7b --target generation   # optimise chat latency only
 arc-llama tune qwen3-7b --dry-run             # look, don't touch
 arc-llama tune --status                       # print state, no sweep
+
+# Reuse a community result safely. The default path checks confidence and
+# llama-server provenance, benchmarks current vs shared, and rolls back unless
+# the shared recipe improves the configured workload score.
+arc-llama recipes lookup qwen3-7b
+arc-llama recipes apply qwen3-7b
 ```
 
 Manual `tune` needs a running `arc-llama serve` so measurements inherit the
@@ -200,18 +226,22 @@ family and let Arc Llama choose it conservatively:
 
 ```bash
 arc-llama speculative qwen3-30b --dry-run
-arc-llama speculative qwen3-30b --auto
+arc-llama speculative qwen3-30b --auto   # target-only vs draft A/B; keeps only a win
 # or: arc-llama speculative qwen3-30b --draft qwen3-4b
 arc-llama speculative qwen3-30b --ngram
 ```
 
 Drafts are stored by registered model name and resolved only when the target
-starts. They must use a tokenizer compatible with the target; using a smaller
-model from the same family is a candidate, not proof. Arc Llama checks the llama.cpp help surface and falls back to normal
+starts. They must use a tokenizer compatible with the target. Arc Llama hashes
+the tokenizer-defining GGUF metadata and rejects a known mismatch; older GGUFs
+without enough tokenizer metadata remain explicitly unverified. By default the
+command then benchmarks target-only inference against the proposed speculation
+recipe and restores the original unless generation improves by at least 2%.
+Pass `--no-verify` only when you intentionally want to save an unmeasured
+configuration. Arc Llama checks the llama.cpp help surface and falls back to normal
 target-only inference if the requested flags are unavailable. Same-GPU drafts
-can be slower or consume too much VRAM, so `--auto` selects a plausible local
-candidate but does not claim a speedup: benchmark it on your own hardware
-before relying on it. Cross-vendor or cross-GPU draft/target pipelines are not
+can be slower or consume too much VRAM, which is why the measured gate remains
+authoritative. Cross-vendor or cross-GPU draft/target pipelines are not
 implemented; verification remains inside one llama-server process.
 
 `arc-llama init` registers every Intel GPU it finds. Each model in the config
@@ -378,6 +408,31 @@ Two front-ends are bundled and both talk to the same admin endpoints
 
 Both use brightness/dim for status (loaded vs idle) , no red/green palettes.
 
+## Connect a frontend
+
+The dashboard has a **Connect a frontend** button that opens a guided
+integration panel for three choices — Open WebUI, Ollama, and any
+OpenAI-compatible client. The panel is copy-only: it shows the exact values
+to paste (derived from your configured host/port) with copy buttons, checks
+whether Ollama is reachable locally, and lists your already-registered
+upstreams. It never sends credentials anywhere and never signs in to or
+modifies an external Open WebUI account.
+
+- **Open WebUI** — Shows the exact Base URL (`http://127.0.0.1:11437/v1` by
+  default) with a copy button, plus API-key guidance (any non-empty string
+  works). If the server binds all interfaces, the panel also notes which
+  address to substitute when connecting from another machine.
+- **Ollama** — Explains the existing `arc-llama upstream add` flow and
+  provides a copyable command; registered upstreams are never overwritten.
+- **OpenAI-compatible client** — Shows the OpenAI base URL and a copyable
+  `curl` example (POSIX and Windows variants) that exercises
+  `/v1/chat/completions`.
+
+The data comes from a read-only `GET /admin/integration` endpoint (admin
+token-gated like the other admin reads). Everything works offline: the
+panel uses no external assets and only probes the local Ollama default
+address.
+
 ## Container
 
 A Dockerfile is included that builds llama-server with the SYCL backend
@@ -452,16 +507,36 @@ LMStudio models appear in `/v1/models` with `owned_by: "upstream:lmstudio"` and 
 
 To point Open WebUI (or any other client) at arc-llama only, and let it discover both local Arc models and LMStudio models through the same `/v1` endpoint, no extra configuration is needed — the model list is already merged.
 
-## Roadmap
+## Path to 1.0
 
-- ~~HF model download (`arc-llama add org/repo:quant --from-hf`).~~ ✅
-- ~~Streaming response forwarding (`stream: true`).~~ ✅
-- ~~Container image with `llama-server` + arc-llama prebuilt.~~ ✅
-- ~~`arc-llama benchmark` , quick prompt-eval/gen tok/s harness.~~ ✅
-- ~~`arc-llama tune` , measure-and-persist recipe autotuner.~~ ✅
-- ~~`arc-llama install-runtime` , download a prebuilt llama-server (Vulkan-first).~~ ✅
-- ~~`arc-llama tune --all` , sweep every registered model in one run.~~ ✅
-- ~~Background auto-tune on first use, aborting on new requests.~~ ✅
+The core inference path is in place. The remaining work is focused on making
+the first-run experience predictable, expanding real-hardware validation, and
+defining the compatibility promises that begin with 1.0.
+
+- [x] Hugging Face GGUF download and local model registration.
+- [x] Streaming OpenAI-compatible responses.
+- [x] Portable Vulkan runtime installation and optional SYCL support.
+- [x] Model benchmarking and measured recipe autotuning.
+- [x] Background autotuning that yields to real requests.
+- [x] Container and Open WebUI integration.
+- [ ] Polish the one-command first-run experience for Intel Arc.
+- [ ] Validate clean installation and inference on consumer Arc GPUs.
+- [x] Define the supported OpenAI API and configuration compatibility contract.
+- [x] Harden remote-access defaults and security documentation.
+- [x] Clarify experimental and optional features before 1.0.
+- [ ] Improve diagnostics for model-startup and GPU-runtime failures.
+- [x] Complete a repeatable release-candidate validation checklist.
+- [ ] Run a 0.9 release-candidate stabilization period before 1.0.
+
+The unchecked items will be linked to public tracking issues as they are
+opened. Multi-GPU support remains available for testing but is not a blocker
+for the initial single-GPU 1.0 release.
+
+See the [compatibility contract](docs/compatibility.md), [remote-access and
+security guidance](docs/security.md), and [release-candidate
+checklist](docs/release-checklist.md) for the concrete promises and validation
+matrix. The detailed implementation sequence and release gates are in the
+[1.0 release plan](docs/1.0-plan.md).
 
 ## Contributing
 

@@ -21,13 +21,16 @@ from pathlib import Path
 from typing import Any
 
 from arc_llama.config import Config, GPUConfig, ModelConfig
+from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
+    kv_bytes_per_token_f16,
     override_tensor_saved_bytes,
     scan_weight_tensors,
     weight_tensor_table,
 )
 from arc_llama.launcher import LlamaServer, build_plan
+from arc_llama.preflight import preflight_launch
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
 log = logging.getLogger("arc_llama.router")
@@ -35,6 +38,39 @@ log = logging.getLogger("arc_llama.router")
 # Rough overhead budgets for VRAM estimation (MiB).
 _VRAM_COMPUTE_BUFFER_MB = 768
 _VRAM_SAFETY_MARGIN_MB = 256
+
+
+def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
+    """Conservative constant-time fit estimate for a launch-plan preview.
+
+    Dense GGUF weight storage is already packed in the representation loaded
+    by llama.cpp, so file size plus KV, compute, and safety allocations is a
+    useful preview without walking every tensor. MoE/regex offload changes the
+    resident weight set and deliberately falls back to the exact estimator.
+    The router's admission guard continues to use ``_estimate_model_vram_mb``;
+    this helper only removes a multi-second scan from user-facing setup.
+    """
+    recipe = model.recipe or {}
+    if recipe.get("n_cpu_moe") or recipe.get("override_tensor"):
+        return None
+    try:
+        size = Path(model.path).stat().st_size
+    except OSError:
+        return None
+    mib = 1_048_576
+    weight_mb = (size + mib - 1) // mib
+    ctx = int(recipe.get("ctx", 8192))
+    kv_type = KVCacheType(recipe.get("cache_type_k", "f16"))
+    kv_mb = (
+        estimate_kv_bytes(
+            ctx,
+            kv_type,
+            model.kv_class,
+            kv_bytes_per_token_f16(model.path),
+        )
+        // mib
+    )
+    return weight_mb + kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
 
 
 def _estimate_model_vram_mb(
@@ -124,7 +160,12 @@ def _estimate_model_vram_mb(
     weight_mb = weight_bytes // (1_048_576)
     eff_ctx = ctx if ctx is not None else int(recipe.get("ctx", 8192))
     eff_kv = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_k", "f16"))
-    kv_mb = estimate_kv_bytes(eff_ctx, eff_kv, model.kv_class) // (1_048_576)
+    kv_mb = estimate_kv_bytes(
+        eff_ctx,
+        eff_kv,
+        model.kv_class,
+        kv_bytes_per_token_f16(model.path),
+    ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
     return weight_mb + kv_mb + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
@@ -160,7 +201,12 @@ def min_moe_offload_layers(
     recipe = model.recipe or {}
     eff_ctx = ctx if ctx is not None else int(recipe.get("ctx", 8192))
     eff_kv = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_k", "f16"))
-    kv_mb = estimate_kv_bytes(eff_ctx, eff_kv, model.kv_class) // (1_048_576)
+    kv_mb = estimate_kv_bytes(
+        eff_ctx,
+        eff_kv,
+        model.kv_class,
+        kv_bytes_per_token_f16(model.path),
+    ) // (1_048_576)
     fixed_mb = kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
     n_layers = max(expert_by_layer) + 1
     # Saved bytes grow monotonically with N, so a linear scan from 0 finds
@@ -365,6 +411,17 @@ class Router:
             # Another task may have finished loading while we waited.
             resolved = self.resolve(query)
             if resolved is None:
+                configured = self.cfg.find_model(query)
+                if configured is not None:
+                    raise StartupFailureError(
+                        "gpu_unavailable",
+                        f"Configured GPU is unavailable: {configured.gpu_pci_slot}.",
+                        "Assign the model to an available enabled GPU and retry.",
+                        details={
+                            "model": configured.name,
+                            "gpu": configured.gpu_pci_slot,
+                        },
+                    )
                 raise KeyError(f"Unknown model: {query!r}")
             target_model, target_gpu, target_srv = resolved
 
@@ -377,8 +434,6 @@ class Router:
                         self.acquire_model(loaded_model.name)
                     return loaded_model, loaded_srv
 
-            await self._evict_for(target_model, target_gpu)
-
             if (
                 target_srv.is_running
                 and target_srv.ready
@@ -388,10 +443,15 @@ class Router:
                     self.acquire_model(target_model.name)
                 return target_model, target_srv
 
-            # estimate_weight_vram_bytes reads GGUF metadata synchronously;
-            # run the whole fit check in a thread so a multi-second disk read
-            # cannot stall the event loop (and /admin/tune/status with it).
+            # Reject predictable failures before evicting a healthy resident.
+            # File and runtime checks are blocking filesystem operations, and
+            # the fit estimate may scan GGUF metadata, so keep both off-loop.
+            await asyncio.to_thread(
+                preflight_launch, target_model, target_gpu, target_srv.plan
+            )
             await asyncio.to_thread(self._check_vram_fit, target_model, target_gpu)
+
+            await self._evict_for(target_model, target_gpu)
 
             # We are the one responsible for starting.
             log.info("loading model %s on GPU %s ...", target_model.name, target_gpu.pci_slot)
@@ -399,7 +459,22 @@ class Router:
             future: asyncio.Future[tuple[ModelConfig, LlamaServer]] = loop.create_future()
             self._loading_futures[target_model.name] = future
             try:
-                target_srv.start(log_dir=self.log_dir)
+                try:
+                    target_srv.start(log_dir=self.log_dir)
+                except OSError as exc:
+                    category = "runtime_missing" if isinstance(exc, FileNotFoundError) else "process_exited"
+                    raise StartupFailureError(
+                        category,
+                        f"llama-server could not start for {target_model.name}: {exc}.",
+                        "Check the configured runtime and its required libraries, then retry.",
+                        details={
+                            "model": target_model.name,
+                            "backend": target_gpu.backend,
+                            "gpu": target_gpu.pci_slot,
+                            "argv": target_srv.plan.argv,
+                            "reason": str(exc),
+                        },
+                    ) from exc
                 ready = await target_srv.wait_ready()
                 if not ready:
                     tail = target_srv.tail_log(lines=40)
@@ -409,10 +484,38 @@ class Router:
                     )
                     target_srv.stop()
                     self.metrics["last_error"] = f"{target_model.name} did not become healthy"
-                    detail = f"llama-server for {target_model.name} did not become healthy"
-                    if tail:
-                        detail += "\n\n--- last log lines ---\n" + tail
-                    raise RuntimeError(detail)
+                    process = getattr(target_srv, "process", None)
+                    exit_code = process.poll() if process is not None else None
+                    category = "process_exited" if exit_code is not None else "startup_timeout"
+                    failure = StartupFailureError(
+                        category,
+                        (
+                            f"llama-server exited while loading {target_model.name}."
+                            if exit_code is not None
+                            else f"llama-server timed out while loading {target_model.name}."
+                        ),
+                        "Open the retained model log, correct the reported problem, and retry.",
+                        details={
+                            "model": target_model.name,
+                            "backend": target_gpu.backend,
+                            "gpu": target_gpu.pci_slot,
+                            "argv": target_srv.plan.argv,
+                            "exit_code": exit_code,
+                            "log_path": (
+                                str(getattr(target_srv, "log_path", None))
+                                if getattr(target_srv, "log_path", None)
+                                else None
+                            ),
+                            "log_tail": tail,
+                        },
+                    )
+                    log.error(
+                        "startup diagnostic %s: %s details=%r",
+                        failure.diagnostics_id,
+                        failure.message,
+                        failure.details,
+                    )
+                    raise failure
                 self.metrics["loads"] += 1
                 self.metrics["last_load_at"] = time.time()
                 self.metrics["last_error"] = None
@@ -430,6 +533,12 @@ class Router:
                     # surface a 503 with real diagnostics rather than a bare
                     # "did not become healthy".
                     future.set_exception(exc)
+                    # The starter raises ``exc`` directly. If no concurrent
+                    # request joined this future, nobody awaits it and asyncio
+                    # otherwise emits "Future exception was never retrieved".
+                    # Retrieving it here only marks it observed; existing and
+                    # later waiters still receive the same exception.
+                    future.exception()
                 raise
             finally:
                 self._loading_futures.pop(target_model.name, None)
@@ -471,10 +580,22 @@ class Router:
                 continue
             used_mb += other_mb
         if used_mb > target_gpu.vram_mb:
-            raise RuntimeError(
+            message = (
                 f"model {target.name!r} needs ~{target_mb} MiB on GPU "
                 f"{target_gpu.pci_slot} but only {target_gpu.vram_mb} MiB is available "
                 f"(estimated total with co-residents: {used_mb} MiB)"
+            )
+            raise StartupFailureError(
+                "out_of_memory",
+                message,
+                "Reduce context or GPU layers, enable expert offload, or choose a smaller model.",
+                details={
+                    "model": target.name,
+                    "gpu": target_gpu.pci_slot,
+                    "estimated_model_mb": target_mb,
+                    "estimated_total_mb": used_mb,
+                    "available_mb": target_gpu.vram_mb,
+                },
             )
 
     async def _evict_for(

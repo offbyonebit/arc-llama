@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Add `arc-llama run [MODEL|GGUF|HF_SPEC]`, a guarded one-command path that
+  detects Arc hardware, installs a verified runtime when needed, registers or
+  discovers a model, reports its context/KV/backend and estimated VRAM fit,
+  prints the OpenAI/UI endpoints, and starts serving.
+- Read exact GGUF context, tokenizer, tensor, and KV-cache metadata to improve
+  fit estimates and reject known speculative-decoding tokenizer mismatches.
+- Add measured A/B gates for speculative decoding and community recipes, with
+  automatic rollback unless the candidate improves the configured workload.
+- Add llama-server build provenance and confidence scoring to shared recipes;
+  aggregate only measurements from matching recipe/build groups using medians.
+- Redesign the model manager around first-run readiness and model selection,
+  and keep chat model/settings state synchronized with it.
+- Add a documented contract for integrating a separate audio companion service.
+
+### Changed
+
+- Fresh `run` setups default to portable Vulkan while preserving a recognised
+  existing SYCL runtime. `--setup-only` validates the full launch plan without
+  starting a service, and clearly oversized recipes are stopped before launch.
+- Benchmark measurements use reported token counts and expose steadier summary
+  data for recipe and speculative-decoding comparisons.
+- Bundle the pinned Markdown and syntax-highlighting browser assets so the local
+  UI works offline.
+
+### Fixed
+
+- Avoid leaked asyncio future exceptions after a failed model start.
+- Bound binary discovery work and deduplicate candidates by filesystem identity.
+- Advertise the installed Arc Llama version through the FastAPI application.
+
+### Security
+
+- Verify downloaded runtime asset sizes and SHA-256 digests when available,
+  reject unsafe archive members, and publish installations atomically.
+- Fully validate downloaded community registries, bound their size and values,
+  and install them atomically without replacing a known-good registry on error.
+- Escape raw model HTML and reject unsafe Markdown link and image protocols in
+  the chat UI.
+
+### Testing
+
+- Add bare-wheel CI checks on Linux and Windows and static browser-script tests.
+
+## [0.8.1] - 2026-09-05
+
+### Fixed
+
+- Fix Windows runtime installation when GitHub's latest release has no binary assets.
+- Keep Windows Rich diagnostics printable on legacy code pages.
+- Verify Windows Vulkan and SYCL inference, including streaming requests, on Battlemage B60.
+
 ## [0.8.0] - 2026-09-05
 
 ### Added
@@ -16,9 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Preserve configured speculative decoding after a failed llama.cpp capability probe.
 - Use numeric `video` and `render` group IDs in Docker Compose so GPU device access works consistently on Linux hosts.
-- Fix Windows runtime installation when GitHub's latest release has no binary assets.
-- Keep Windows Rich diagnostics printable on legacy code pages.
-- Verify Windows Vulkan and SYCL inference, including streaming requests, on Battlemage B60.
 
 ## [0.7.1] - 2026-08-24
 

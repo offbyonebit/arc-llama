@@ -1,4 +1,13 @@
 const $ = (sel) => document.querySelector(sel);
+const THEME_KEY = "arc-llama-theme";
+function applyTheme(theme) {
+  const dark = theme !== "light";
+  if (document.documentElement) document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const toggle = $("#theme-toggle");
+  if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
+  if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
+}
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
 const chatLog = $("#chat-log");
 const emptyState = $("#empty-state");
 const modelSelect = $("#model-select");
@@ -78,7 +87,8 @@ if (typeof marked !== "undefined") {
     mangle: false,
   });
 }
-const mdRenderer = {
+const mdRenderer = typeof marked !== "undefined" ? new marked.Renderer() : {};
+Object.assign(mdRenderer, {
   code(code, language) {
     const validLang = language && hljs.getLanguage(language) ? language : "plaintext";
     const highlighted = hljs.highlight(code, { language: validLang }).value;
@@ -91,7 +101,13 @@ const mdRenderer = {
   html(text) {
     return escapeHtml(text);
   },
-};
+  link(href, title, text) {
+    return ArcMarkdownSafety.link(href, title, text);
+  },
+  image(href, title, text) {
+    return ArcMarkdownSafety.image(href, title, text);
+  },
+});
 
 function attachCopyButtons(root) {
   for (const btn of root.querySelectorAll(".copy-code-btn")) {
@@ -124,6 +140,13 @@ settingsToggle.addEventListener("click", () => {
   settingsToggle.classList.toggle("open", open);
   if (open) renderSettingsPanel();
 });
+
+function openSettingsFromLink() {
+  if (new URLSearchParams(window.location.search).get("settings") !== "1") return;
+  settingsPanel.classList.add("open");
+  settingsToggle.classList.add("open");
+  renderSettingsPanel();
+}
 
 historyToggle.addEventListener("click", async () => {
   const open = historyPanel.classList.toggle("open");
@@ -619,7 +642,7 @@ async function importChatsFromFile() {
 
 function renderSettingsPanel() {
   const m = models.find(m => m.id === selectedModel);
-  sModelName.textContent = selectedModel || "—";
+  sModelName.textContent = selectedModel || "Not selected";
   if (!m || (m.owned_by && m.owned_by.startsWith("upstream:"))) {
     sFields.innerHTML = '<div class="s-upstream">Settings not available for upstream models.</div>';
     return;
@@ -716,7 +739,8 @@ async function fetchModels() {
 }
 
 function renderModelPicker() {
-  const current = selectedModel || modelSelect.value;
+  const requested = new URLSearchParams(window.location.search).get("model");
+  const current = requested || selectedModel || sessionStorage.getItem("arc-llama-selected-model") || modelSelect.value;
   modelSelect.innerHTML = "";
   if (models.length === 0) {
     const opt = document.createElement("option");
@@ -725,7 +749,7 @@ function renderModelPicker() {
     opt.selected = true;
     modelSelect.appendChild(opt);
     selectedModel = null;
-    updateStatus("swapping");
+    updateStatus("unavailable");
     return;
   }
   for (const m of models) {
@@ -741,6 +765,8 @@ function renderModelPicker() {
     selectedModel = models[0].id;
     modelSelect.value = selectedModel;
   }
+  if (selectedModel) sessionStorage.setItem("arc-llama-selected-model", selectedModel);
+  openSettingsFromLink();
 }
 
 async function fetchStatus() {
@@ -761,15 +787,16 @@ async function fetchStatus() {
       return m;
     });
     updatePickerStatus();
+    if (settingsPanel.classList.contains("open")) renderSettingsPanel();
   } catch (e) {
-    // silent — the chat endpoint will surface real errors
+    // silent: the chat endpoint will surface real errors
   }
 }
 
 function updatePickerStatus() {
   const m = models.find(m => m.id === selectedModel);
   if (!m) {
-    updateStatus("swapping");
+    updateStatus("unavailable");
     return;
   }
   if (loadingModel === selectedModel) {
@@ -777,7 +804,7 @@ function updatePickerStatus() {
   } else if (m.loaded) {
     updateStatus("ready");
   } else {
-    updateStatus("swapping");
+    updateStatus("idle");
   }
 }
 
@@ -788,6 +815,7 @@ function updateStatus(state) {
 
 modelSelect.addEventListener("change", () => {
   selectedModel = modelSelect.value;
+  sessionStorage.setItem("arc-llama-selected-model", selectedModel);
   loadingModel = null;
   updatePickerStatus();
   if (settingsPanel.classList.contains("open")) renderSettingsPanel();
@@ -1030,18 +1058,20 @@ function parseThinking(text) {
   let thinking = "";
   let content = text;
   const thinkMatches = [...text.matchAll(/<think>([\s\S]*?)<\/think>/g)];
-  for (const m of thinkMatches) thinking += (thinking ? "\n" : "") + m[1];
+  // Reasoning arrives in small SSE deltas. Preserve the model's whitespace;
+  // adding a newline for every delta turns normal prose into a column.
+  for (const m of thinkMatches) thinking += m[1];
   content = content.replace(/<think>[\s\S]*?<\/think>/g, "");
   const thinkingMatches = [...text.matchAll(/<thinking>([\s\S]*?)<\/thinking>/g)];
-  for (const m of thinkingMatches) thinking += (thinking ? "\n" : "") + m[1];
+  for (const m of thinkingMatches) thinking += m[1];
   content = content.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
   const unclosedThink = content.match(/<think>([\s\S]*)$/);
   const unclosedThinking = content.match(/<thinking>([\s\S]*)$/);
   if (unclosedThink) {
-    thinking += (thinking ? "\n" : "") + unclosedThink[1];
+    thinking += unclosedThink[1];
     content = content.replace(/<think>[\s\S]*$/, "");
   } else if (unclosedThinking) {
-    thinking += (thinking ? "\n" : "") + unclosedThinking[1];
+    thinking += unclosedThinking[1];
     content = content.replace(/<thinking>[\s\S]*$/, "");
   }
   return { thinking: thinking.trim(), content: content.trimEnd(), hasPartialTag: false };
@@ -1077,12 +1107,7 @@ function renderMarkdown(container, text) {
 }
 
 function escapeHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return ArcMarkdownSafety.escapeHtml(s);
 }
 
 function renderThinking(messageDiv, thinkingText) {
@@ -1387,7 +1412,7 @@ function renderHelpMessage() {
   content.className = "content";
   let html = "";
   for (const cmd of SLASH_COMMANDS) {
-    html += `<p><code>/${cmd.name}</code> <strong>—</strong> ${escapeHtml(cmd.desc)}</p>`;
+    html += `<p><code>/${cmd.name}</code> <strong>-</strong> ${escapeHtml(cmd.desc)}</p>`;
   }
   content.innerHTML = html;
   div.appendChild(content);
@@ -1528,6 +1553,8 @@ sendButton.addEventListener("click", async () => {
   sendMessage();
 });
 
+$("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
+
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 96) + "px";
@@ -1537,6 +1564,7 @@ input.addEventListener("input", () => {
 (async function init() {
   await initAdminToken();
   await fetchModels();
+  await fetchStatus();
   await loadFolders();
   await syncChatsFromServer();
   statusPoller = setInterval(fetchStatus, 3000);

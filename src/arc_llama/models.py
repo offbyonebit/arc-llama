@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from arc_llama.gguf_meta import (
     has_mtp_heads,
     is_hybrid_ssm,
     is_moe,
+    kv_bytes_per_token_f16,
     read_gguf_meta,
     trained_context_length,
 )
@@ -165,6 +166,7 @@ def add_local_model(
     arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
     backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
     trained_ctx = trained_context_length(p)
+    exact_kv_bytes = kv_bytes_per_token_f16(p)
     recipe = default_recipe(
         arch=arch,
         vram_mb=gpu.vram_mb or 8192,
@@ -173,6 +175,7 @@ def add_local_model(
         backend=backend,
         trained_ctx=trained_ctx,
         llama_server=cfg.paths.llama_server,
+        f16_bytes_per_token=exact_kv_bytes,
     )
     recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
     # Auto-enable draft-mtp for models that actually carry MTP heads.
@@ -422,7 +425,7 @@ def short_name_from_path(path: Path, used: set[str]) -> str:
 
     We prefer the file *stem* (e.g. `Qwen3.6-27B-Q4_K_M`) over the parent
     directory name — stems are more descriptive and survive the common case
-    where multiple GGUFs share a directory like `/mnt/storage/models/`.
+    where multiple GGUFs share a directory like `/srv/models/`.
     """
     base = re.sub(r"[^a-z0-9._-]+", "-", path.stem.lower()).strip(".-")
     # Strip noise suffixes Unsloth/quanters tend to bolt on.
@@ -446,6 +449,72 @@ def infer_display_name(path: Path) -> str:
     """A friendlier display name from a GGUF filename — stem + quant tier."""
     stem = path.stem
     return stem.replace("_", " ").replace("-", " ").strip()
+
+
+# Auxiliary GGUFs that must never be registered as standalone models.
+# Each of these ships alongside a real model and is consumed by it at load
+# time, so discovery counts them as skipped rather than new.
+_AUX_GGUF_RE = re.compile(
+    r"(^|[-_.])(mmproj|projector|clip|vision|vision[-_.]?proj(ect(ion)?)?)([-_.]|$)",
+    re.IGNORECASE,
+)
+# Multi-token-predictor draft sidecars, e.g. `model.mtp.gguf` — some vendors
+# publish the speculative draft heads under a bare `.mtp.gguf` suffix instead
+# of a `mtp-` prefix sibling.
+_MTP_SUFFIX_RE = re.compile(r"[-_.]mtp\.gguf$", re.IGNORECASE)
+# In-flight download scratch names: a partial file is not loadable yet.
+# Matches only true trailing extensions (`model.gguf.lock`), never a
+# legitimate model whose stem happens to end in `-lock`.
+_PARTIAL_FILE_RE = re.compile(
+    r"\.(partial|incomplete|lock|tmp|crdownload|download)$", re.IGNORECASE
+)
+# Cache/aux directories that discovery never descends into.
+_SKIP_DIRS = {
+    "__pycache__",
+    ".git",
+    ".cache",
+    ".ipynb_checkpoints",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".hf_transfer",
+    ".huggingface_download_cache",
+    ".lock",
+}
+
+
+def is_auxiliary_gguf(filename: str) -> bool:
+    """True if `filename` names an auxiliary GGUF rather than a model.
+
+    Covers multimodal projections (mmproj/projector/clip/vision), MTP/nextn
+    draft sidecars, and partial-download scraps. Such files live next to a
+    real model GGUF and are consumed automatically by whoever owns them:
+    a *pairable* sidecar is skipped after `find_draft_model` links it; an
+    unpairable one stays a file nobody ever loads standalone.
+    """
+    lowered = filename.lower()
+    if not lowered.endswith(".gguf"):
+        lowered = lowered + ".gguf"
+    if _MTP_SUFFIX_RE.search(lowered):
+        return True
+    stem = lowered[:-5]
+    if _AUX_GGUF_RE.search(stem):
+        return True
+    stem = _DRAFT_PREFIX_RE.sub("", stem)  # `mmproj-...` after a draft marker
+    if _AUX_GGUF_RE.search(stem):
+        return True
+    return False
+
+
+def is_partial_download(path: Path | str) -> bool:
+    """True if `path` looks like a lock/partial-download file, GGUF or not."""
+    return bool(_PARTIAL_FILE_RE.search(Path(path).name.lower()))
+
+
+def is_skipped_dir(filename: str) -> bool:
+    """True if a directory named `filename` is auxiliary (cache/VCS/...) and
+    should never be descended into during discovery."""
+    return filename in _SKIP_DIRS or filename.startswith(".gguf") and len(filename) > 5
 
 
 def _resolve_scan_paths(cfg: Config, extra: list[Path] | None = None) -> list[Path]:
@@ -474,16 +543,22 @@ def discover_ggufs(
     """Walk the configured + extra scan paths and return every *.gguf file found.
 
     Hidden dirs and symlinked dirs are skipped to avoid loops. Bounded depth
-    keeps a stray scan of `/` from running forever.
+    keeps a stray scan of `/` from running forever. Auxiliary files (mmproj
+    projections, `.mtp.gguf` sidecars, partial downloads/locks) and cache
+    directories are excluded here — use `scan_models` for per-category counts.
     """
     found: dict[Path, None] = {}
     for root in _resolve_scan_paths(cfg, extra_paths):
         for path in _walk_for_ggufs(root, max_depth):
+            if is_auxiliary_gguf(path.name) or is_partial_download(path):
+                continue
             found[path] = None
     return list(found.keys())
 
 
-def _walk_for_ggufs(root: Path, max_depth: int) -> list[Path]:
+def _walk_for_ggufs(
+    root: Path, max_depth: int, skipped_dirs: list[Path] | None = None
+) -> list[Path]:
     out: list[Path] = []
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
@@ -499,7 +574,13 @@ def _walk_for_ggufs(root: Path, max_depth: int) -> list[Path]:
             try:
                 if e.is_symlink():
                     continue
-                if e.is_dir() and depth < max_depth:
+                if e.is_dir():
+                    if depth >= max_depth:
+                        continue
+                    if is_skipped_dir(name):
+                        if skipped_dirs is not None:
+                            skipped_dirs.append(e)
+                        continue
                     stack.append((e, depth + 1))
                 elif e.is_file() and name.endswith(".gguf"):
                     out.append(e.resolve())
@@ -553,6 +634,7 @@ def register_discovered(
             continue
         kv_class = resolve_kv_class(rp)
         trained_ctx = trained_context_length(rp)
+        exact_kv_bytes = kv_bytes_per_token_f16(rp)
         recipe = default_recipe(
             arch=arch,
             vram_mb=gpu.vram_mb or 8192,
@@ -561,6 +643,7 @@ def register_discovered(
             backend=backend,
             trained_ctx=trained_ctx,
             llama_server=cfg.paths.llama_server,
+            f16_bytes_per_token=exact_kv_bytes,
         )
         recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
         # Auto-enable draft-mtp for discovered models that carry MTP heads.
@@ -645,6 +728,119 @@ def register_discovered(
             port,
         )
     return added
+
+
+@dataclass
+class ScanResult:
+    """Outcome of one discovery pass (`scan_models`).
+
+    `new` lists models registered by this scan; `unchanged` counts GGUFs
+    that already have a registered entry; `skipped_aux` counts auxiliary
+    files (mmproj projections, `.mtp` drafts, partial downloads) and
+    `skipped_dirs` the cache directories not descended into; `stale`
+    lists registered models whose files no longer exist. `pruned` is the
+    subset of `stale` actually removed by `--prune`.
+    """
+
+    new: list[ModelConfig] = field(default_factory=list)
+    unchanged: list[Path] = field(default_factory=list)
+    skipped_aux: list[Path] = field(default_factory=list)
+    skipped_dirs: list[Path] = field(default_factory=list)
+    stale: list[ModelConfig] = field(default_factory=list)
+    pruned: list[ModelConfig] = field(default_factory=list)
+
+    def counts_line(self) -> str:
+        """One-line human summary of the scan: `X new, Y unchanged, ...`."""
+        parts = [
+            f"{len(self.new)} new",
+            f"{len(self.unchanged)} unchanged",
+            f"{len(self.skipped_aux)} skipped",
+            f"{len(self.stale)} stale",
+        ]
+        if self.pruned:
+            parts.append(f"{len(self.pruned)} pruned")
+        return ", ".join(parts)
+
+
+def prune_missing_models(cfg: Config) -> list[ModelConfig]:
+    """Drop registered models whose backing GGUF no longer exists.
+
+    Returns the removed entries. Only the registry is updated — the
+    (already-missing) files are of course never touched.
+    """
+    stale: list[ModelConfig] = []
+    kept: list[ModelConfig] = []
+    for m in cfg.models:
+        try:
+            exists = Path(m.path).expanduser().exists()
+        except OSError:
+            exists = False
+        if exists:
+            kept.append(m)
+        else:
+            stale.append(m)
+    if stale:
+        cfg.models[:] = kept
+    return stale
+
+
+def find_stale_models(cfg: Config) -> list[ModelConfig]:
+    """Registered models whose backing GGUF no longer exists (no mutation)."""
+    stale: list[ModelConfig] = []
+    for m in cfg.models:
+        try:
+            exists = Path(m.path).expanduser().exists()
+        except OSError:
+            exists = False
+        if not exists:
+            stale.append(m)
+    return stale
+
+
+def scan_models(
+    cfg: Config,
+    extra_paths: list[Path] | None = None,
+    *,
+    gpu_pci_slot: str | None = None,
+    prune: bool = False,
+    max_depth: int = 4,
+) -> ScanResult:
+    """One full discovery pass: find GGUFs, register new ones, report counts.
+
+    Non-destructive by default: stale registered entries (file gone) are
+    reported in `result.stale` but only removed when `prune=True` — exactly
+    what `arc-llama scan` and its `--prune` flag expose. Registered paths
+    that still exist count as `unchanged`; auxiliary files and cache dirs
+    count as skipped and are neither registered nor traversed.
+    """
+    res = ScanResult()
+    existing_paths: set[Path] = set()
+    for m in cfg.models:
+        try:
+            existing_paths.add(Path(m.path).expanduser().resolve())
+        except OSError:
+            continue
+
+    for root in _resolve_scan_paths(cfg, extra_paths):
+        for path in _walk_for_ggufs(root, max_depth, skipped_dirs=res.skipped_dirs):
+            if is_auxiliary_gguf(path.name) or is_partial_download(path):
+                res.skipped_aux.append(path)
+                log.info("scan: skipping auxiliary file %s", path)
+                continue
+            if path in existing_paths:
+                res.unchanged.append(path)
+                continue
+            if looks_like_draft(path):
+                res.skipped_aux.append(path)
+                log.info("scan: skipping speculative draft %s", path.name)
+                continue
+            res.new.extend(register_discovered(cfg, [path], gpu_pci_slot=gpu_pci_slot))
+
+    if prune:
+        res.pruned = prune_missing_models(cfg)
+    else:
+        res.stale = find_stale_models(cfg)
+    return res
 
 
 def download_from_hf(

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
+from arc_llama import __version__
 from arc_llama.config import (
     Config,
     GPUConfig,
@@ -15,7 +18,52 @@ from arc_llama.config import (
     ServerConfig,
     TuneConfig,
 )
-from arc_llama.server import create_app
+from arc_llama.failures import StartupFailureError
+from arc_llama.server import _local_request_body, create_app
+
+
+def test_app_advertises_package_version():
+    app = create_app(Config(), plugins=[])
+    assert app.version == __version__
+
+
+def test_local_chat_defaults_to_template_aware_reasoning_parser():
+    original = {
+        "model": "gemma",
+        "messages": [{"role": "user", "content": "héllo"}],
+        "future_field": {"kept": True},
+    }
+
+    forwarded = json.loads(_local_request_body(original, "/v1/chat/completions"))
+
+    assert forwarded["reasoning_format"] == "auto"
+    assert forwarded["messages"] == original["messages"]
+    assert forwarded["future_field"] == {"kept": True}
+    assert "reasoning_format" not in original
+
+
+def test_local_chat_preserves_supported_explicit_reasoning_format():
+    body = {"model": "gemma", "messages": [], "reasoning_format": "none"}
+
+    assert json.loads(_local_request_body(body, "/v1/chat/completions")) == body
+
+
+def test_local_chat_rejects_unknown_reasoning_format():
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as caught:
+        _local_request_body(
+            {"model": "gemma", "messages": [], "reasoning_format": "mystery"},
+            "/v1/chat/completions",
+        )
+
+    assert caught.value.status_code == 400
+
+
+def test_non_chat_request_fields_pass_through_without_chat_default():
+    body = {"model": "embed", "input": "hello", "future_field": 3}
+
+    assert json.loads(_local_request_body(body, "/v1/embeddings")) == body
 
 
 class FakeServerPlan:
@@ -636,6 +684,38 @@ def test_admin_load_requires_token_when_configured(monkeypatch):
         )
 
 
+def test_admin_load_returns_structured_startup_failure(monkeypatch):
+    import arc_llama.server as server_mod
+
+    class FailingRouter(FakeRouter):
+        async def ensure_active(self, query, *, acquire=False):
+            raise StartupFailureError(
+                "model_missing",
+                "Model file not found: /models/missing.gguf.",
+                "Update the model path or remove this registration.",
+                details={"api_token": "must-not-leak"},
+                diagnostics_id="model_missing-test",
+            )
+
+    monkeypatch.setattr(server_mod, "Router", FailingRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    app = create_app(Config())
+
+    with TestClient(app) as client:
+        response = client.post("/admin/load/qwen")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "category": "model_missing",
+            "message": "Model file not found: /models/missing.gguf.",
+            "action": "Update the model path or remove this registration.",
+            "diagnostics_id": "model_missing-test",
+        }
+    }
+    assert "must-not-leak" not in response.text
+
+
 def test_agent_auto_confirm_requires_admin_token(monkeypatch):
     app = _app_with_admin_token(monkeypatch, "secret")
 
@@ -780,6 +860,52 @@ def test_admin_edit_rejects_bad_batch_size(monkeypatch, tmp_path):
     app, _cfg = _edit_app(monkeypatch, tmp_path)
     with TestClient(app) as client:
         response = client.post("/admin/models/qwen/edit", json={"batch_size": 0})
+    assert response.status_code == 400
+
+
+def test_admin_edit_can_set_and_clear_speculation(monkeypatch, tmp_path):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    cfg.models.append(
+        ModelConfig(
+            name="qwen-draft",
+            path="/models/qwen-draft.gguf",
+            port=18081,
+            gpu_pci_slot="0000:03:00.0",
+        )
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit",
+            json={
+                "spec_type": "draft-simple",
+                "spec_draft_name": "qwen-draft",
+                "spec_draft_n_max": 4,
+            },
+        )
+        assert response.status_code == 200
+        response = client.post(
+            "/admin/models/qwen/edit",
+            json={
+                "spec_type": None,
+                "spec_draft_name": None,
+                "spec_draft_n_max": None,
+            },
+        )
+    assert response.status_code == 200
+    model = cfg.find_model("qwen")
+    assert model is not None
+    assert "spec_type" not in model.recipe
+    assert "spec_draft_name" not in model.recipe
+    assert "spec_draft_n_max" not in model.recipe
+
+
+def test_admin_edit_rejects_unknown_speculative_draft(monkeypatch, tmp_path):
+    app, _cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit",
+            json={"spec_draft_name": "not-registered"},
+        )
     assert response.status_code == 400
 
 

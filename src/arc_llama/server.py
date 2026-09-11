@@ -7,6 +7,7 @@ the request body.
 Also exposes a small admin surface used by the bundled web UI and the TUI:
 
     GET  /admin/status        — full snapshot (gpus, models, who's loaded)
+    GET  /admin/integration   — read-only connection guidance for frontends
     POST /admin/load/{name}   — preload a model without sending a chat request
     POST /admin/stop/{name}   — stop one model's llama-server
     POST /admin/stop-all      — stop every running llama-server
@@ -33,22 +34,26 @@ from typing import Any
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from arc_llama import __version__
 from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
+from arc_llama.failures import StartupFailureError
 from arc_llama.plugins import load_plugins, register_plugins, shutdown_plugins, startup_plugins
 from arc_llama.router import Router
 from arc_llama.skills import load_skills
 from arc_llama.upstream import UpstreamManager
 
 log = logging.getLogger("arc_llama.server")
+
+_REASONING_FORMATS = {"auto", "none", "deepseek", "deepseek-legacy"}
 
 
 def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -63,6 +68,28 @@ def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
             "connection",
         )
     }
+
+
+def _local_request_body(body: dict[str, Any], target_path: str) -> bytes:
+    """Apply Arc Llama's stable local chat defaults and encode the request.
+
+    llama.cpp's generic ``deepseek`` default does not recognize every model's
+    channel markers. Its ``auto`` parser selects from the active chat template
+    and returns reasoning through ``reasoning_content`` for streaming and
+    non-streaming requests. Explicit supported values remain available for
+    clients that need llama.cpp's raw or legacy behavior.
+    """
+    if target_path == "/v1/chat/completions":
+        requested = body.get("reasoning_format")
+        if requested is None:
+            body = {**body, "reasoning_format": "auto"}
+        elif not isinstance(requested, str) or requested not in _REASONING_FORMATS:
+            allowed = ", ".join(sorted(_REASONING_FORMATS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported reasoning_format {requested!r}. Choose one of: {allowed}.",
+            )
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
@@ -166,7 +193,6 @@ def create_app(
         app.state.mcp_manager = MCPClientManager(cfg.active_mcp_servers())
         tuner: Any | None = None
         if getattr(cfg, "tune", None) and cfg.tune.auto:
-            from arc_llama import __version__
             from arc_llama.autotune import start_autotuner
             from arc_llama.config import default_config_path
 
@@ -190,7 +216,7 @@ def create_app(
             await app.state.mcp_manager.stop()
             await app.state.router.shutdown()
 
-    app = FastAPI(title="arc-llama", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="arc-llama", version=__version__, lifespan=lifespan)
 
     # Register plugin routes before the static mount so plugin paths are not
     # shadowed by the catch-all web UI. A plugin failure here is isolated.
@@ -330,7 +356,7 @@ def create_app(
                             "created": created,
                             "metadata": {"canonical": m.name},
                         }
-                )
+                    )
         # Upstream models
         try:
             upstream_models = await mgr.models()
@@ -738,11 +764,16 @@ def create_app(
             r = m.recipe or {}
             running = bool(srv and srv.is_running)
             loaded = bool(srv and srv.is_running and srv.ready)
+            try:
+                model_file_mb = (Path(m.path).stat().st_size + 1_048_575) // 1_048_576
+            except OSError:
+                model_file_mb = None
             models.append(
                 {
                     "name": m.name,
                     "display_name": m.display_name,
                     "path": m.path,
+                    "model_file_mb": model_file_mb,
                     "gpu_pci_slot": m.gpu_pci_slot,
                     "port": m.port,
                     "loaded": loaded,
@@ -785,10 +816,28 @@ def create_app(
             "upstreams": mgr.upstreams_status(),
         }
 
+    @app.get("/admin/integration")
+    async def admin_integration(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        """Read-only discovery for the dashboard's Connect-a-frontend panel.
+
+        Returns the base URL a client should paste, loopback Ollama
+        reachability, and registered upstreams. The bundled UI renders this
+        as copy-only guidance — nothing here transmits credentials, mutates
+        config, or touches external Open WebUI accounts. ``integration`` is
+        imported lazily so importing ``arc_llama.server`` stays cheap.
+        """
+        from arc_llama.integration import integration_payload, probe_ollama
+
+        c: Config = request.app.state.cfg
+        ollama = await probe_ollama()
+        return integration_payload(c, ollama)
+
     @app.post("/admin/load/{name}")
     async def admin_load(
         name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict:
+    ) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -799,6 +848,8 @@ def create_app(
             model, srv = await rt.ensure_active(name)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}") from None
+        except StartupFailureError as e:
+            return JSONResponse(status_code=e.http_status, content=e.to_dict())
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         # ensure_active only returns once wait_ready has passed, so ready is
@@ -925,7 +976,8 @@ def create_app(
 
         Body is a partial recipe dict — only provided fields change. Recognised
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
-        `spec_type`, `ubatch_size`, `batch_size`, `flash_attn` (null clears),
+        `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `ubatch_size`,
+        `batch_size`, `flash_attn` (null clears),
         `n_cpu_moe` (null or 0 clears), `override_tensor` (list of regex
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
         cleared and vice versa: the two flags are alternative means to the
@@ -1005,9 +1057,61 @@ def create_app(
             model.kv_class = v
             changed.append("kv_class")
         if "spec_type" in body:
-            v = str(body["spec_type"])
-            recipe["spec_type"] = v
+            v = body["spec_type"]
+            if v is None or v == "":
+                recipe.pop("spec_type", None)
+            elif (
+                isinstance(v, str) and len(v) <= 64 and all(ch.isalnum() or ch in "-_" for ch in v)
+            ):
+                # llama.cpp adds speculation strategies faster than arc-llama
+                # releases. Keep this future-compatible while rejecting values
+                # that cannot be one argv atom.
+                recipe["spec_type"] = v
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="spec_type must be a short strategy name or null",
+                )
             changed.append("spec_type")
+        if "spec_draft_name" in body:
+            v = body["spec_draft_name"]
+            if v is None or v == "":
+                recipe.pop("spec_draft_name", None)
+            else:
+                draft_name = str(v)
+                if draft_name == name or c.find_model(draft_name) is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="spec_draft_name must name another registered model",
+                    )
+                recipe["spec_draft_name"] = draft_name
+            changed.append("spec_draft_name")
+        if "spec_draft_n_max" in body:
+            v = body["spec_draft_n_max"]
+            if v is None:
+                recipe.pop("spec_draft_n_max", None)
+            else:
+                try:
+                    draft_n = int(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400, detail="spec_draft_n_max must be an integer or null"
+                    ) from None
+                if not (1 <= draft_n <= 16):
+                    raise HTTPException(status_code=400, detail="spec_draft_n_max must be 1..16")
+                recipe["spec_draft_n_max"] = draft_n
+            changed.append("spec_draft_n_max")
+        if "speculation_result" in body:
+            v = body["speculation_result"]
+            if v is None or v == "":
+                recipe.pop("speculation_result", None)
+            elif isinstance(v, str):
+                recipe["speculation_result"] = v[:512]
+            else:
+                raise HTTPException(
+                    status_code=400, detail="speculation_result must be a string or null"
+                )
+            changed.append("speculation_result")
         if "ubatch_size" in body:
             try:
                 ub = int(body["ubatch_size"])
@@ -1258,6 +1362,8 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             model, srv = await rt.ensure_active(model_query, acquire=True)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_query!r}") from None
+        except StartupFailureError as e:
+            return JSONResponse(status_code=e.http_status, content=e.to_dict())
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         acquired_model = model.name
@@ -1269,6 +1375,7 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             tuner.bump_use(model.name)
         target_url = f"{srv.plan.backend_url}{target_path}"
         want_stream = streaming_ok and bool(body.get("stream"))
+        body_bytes = _local_request_body(body, target_path)
         fwd_headers = {"Content-Type": "application/json"}
 
         async def _complete() -> None:

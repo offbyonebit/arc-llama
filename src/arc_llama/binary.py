@@ -73,7 +73,7 @@ def _scan_with_strings(path: Path) -> set[Backend]:
 
 
 def _scan_with_python(path: Path, chunk_size: int = 1_048_576) -> set[Backend]:
-    """Pure-Python fallback that scans the binary for backend markers."""
+    """Scan backend markers without materialising a binary's printable strings."""
     found: set[Backend] = set()
     with path.open("rb") as fh:
         while chunk := fh.read(chunk_size):
@@ -86,11 +86,18 @@ def _scan_with_python(path: Path, chunk_size: int = 1_048_576) -> set[Backend]:
 
 
 def _scan_file(path: Path) -> set[Backend]:
-    """Scan a single file for backend markers, falling back to pure Python."""
+    """Scan one file, preferring the bounded-memory Python hot path.
+
+    GNU ``strings`` was originally assumed faster, but it emits and captures
+    the complete printable contents before we inspect it. Current SYCL shared
+    libraries are large enough that a chunked byte scan is substantially
+    faster and avoids a multi-second first-run pause. Keep ``strings`` as a
+    compatibility fallback for unusual files the direct reader cannot open.
+    """
     try:
-        return _scan_with_strings(path)
-    except (FileNotFoundError, RuntimeError, subprocess.SubprocessError):
         return _scan_with_python(path)
+    except OSError:
+        return _scan_with_strings(path)
 
 
 def detect_backends(binary_path: str | Path) -> set[Backend]:
@@ -118,10 +125,21 @@ def detect_backends(binary_path: str | Path) -> set[Backend]:
             siblings += sorted(path.parent.parent.glob("lib/libggml*.so*")) + sorted(
                 path.parent.parent.glob("lib/*/libggml-*.so*")
             )
+    seen_files: set[tuple[int, int]] = set()
+    try:
+        binary_stat = path.stat()
+        seen_files.add((binary_stat.st_dev, binary_stat.st_ino))
+    except OSError:
+        pass
     for sibling in siblings:
         if not sibling.is_file() or sibling == path:
             continue
         try:
+            sibling_stat = sibling.stat()
+            identity = (sibling_stat.st_dev, sibling_stat.st_ino)
+            if identity in seen_files:
+                continue
+            seen_files.add(identity)
             found |= _scan_file(sibling)
         except OSError:
             continue
@@ -163,9 +181,7 @@ def _name_tokens(name: str) -> set[str]:
     return {t for t in re.split(r"[^0-9a-z]+", name.lower()) if t}
 
 
-def list_vulkan_devices(
-    binary_path: str | Path, *, timeout: float = 30.0
-) -> list[tuple[int, str]]:
+def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0) -> list[tuple[int, str]]:
     """Return [(vulkan_index, device_name)] as reported by ``--list-devices``.
 
     Returns an empty list if the binary cannot be run or prints nothing we
@@ -190,9 +206,7 @@ def list_vulkan_devices(
     return devices
 
 
-def resolve_vulkan_index(
-    devices: list[tuple[int, str]], *, gpu_name: str = ""
-) -> int | None:
+def resolve_vulkan_index(devices: list[tuple[int, str]], *, gpu_name: str = "") -> int | None:
     """Pick the Vulkan index for an Intel GPU out of ``devices``.
 
     Vulkan enumerates every vendor, so the Arc card is not necessarily index 0.

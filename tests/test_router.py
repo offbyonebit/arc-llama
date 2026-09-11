@@ -5,7 +5,39 @@ import time
 
 import pytest
 
-from arc_llama.router import Router
+from arc_llama.config import ModelConfig
+from arc_llama.failures import StartupFailureError
+from arc_llama.router import Router, estimate_model_vram_quick_mb
+
+
+def test_quick_vram_estimate_uses_file_kv_and_fixed_overhead(tmp_path, monkeypatch):
+    model_file = tmp_path / "dense.gguf"
+    model_file.write_bytes(b"x" * (1_048_576 + 1))
+    model = ModelConfig(
+        name="dense",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        recipe={"ctx": 8192, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+    )
+    monkeypatch.setattr("arc_llama.router.kv_bytes_per_token_f16", lambda _path: 1024)
+
+    # 2 MiB rounded-up weights + 4 MiB q8 KV + 768 MiB compute + 256 MiB safety.
+    assert estimate_model_vram_quick_mb(model) == 1030
+
+
+def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
+    model_file = tmp_path / "moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    model = ModelConfig(
+        name="moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        recipe={"n_cpu_moe": 12},
+    )
+
+    assert estimate_model_vram_quick_mb(model) is None
 
 
 class FakeServer:
@@ -42,7 +74,9 @@ class FakeServer:
         self.stop()
 
 
-async def test_single_resident_policy_stops_other_models_before_starting_target(tmp_path, monkeypatch):
+async def test_single_resident_policy_stops_other_models_before_starting_target(
+    tmp_path, monkeypatch
+):
     from conftest import make_config
 
     import arc_llama.router as router_mod
@@ -93,6 +127,32 @@ async def test_vram_guard_refuses_oversized_model(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="needs ~"):
         await rt.ensure_active("qwen")
     assert FakeServer.starts == []
+
+
+async def test_preflight_failure_does_not_evict_healthy_resident(tmp_path, monkeypatch):
+    from conftest import make_config
+
+    import arc_llama.router as router_mod
+
+    FakeServer.starts = []
+    FakeServer.stops = []
+    cfg = make_config(tmp_path, single_resident=True)
+    monkeypatch.setattr(router_mod, "LlamaServer", FakeServer)
+    rt = Router(cfg)
+    await rt.ensure_active("qwen")
+
+    def reject_gemma(model, _gpu, _plan):
+        if model.name == "gemma":
+            raise StartupFailureError(
+                "model_missing", "Model file not found.", "Update the model path."
+            )
+
+    monkeypatch.setattr(router_mod, "preflight_launch", reject_gemma)
+    with pytest.raises(StartupFailureError):
+        await rt.ensure_active("gemma")
+
+    assert rt._servers["qwen"].is_running
+    assert FakeServer.stops == []
 
 
 async def test_metrics_increment_on_load_and_stop(tmp_path, monkeypatch):
@@ -250,15 +310,43 @@ async def test_failed_load_raises_with_log_tail_and_waiter_fails_fast(tmp_path, 
     # A waiter arriving mid-load must get the same RuntimeError (which
     # _proxy_post turns into a 503), promptly — not hang for a fresh budget.
     t0 = time.monotonic()
-    with pytest.raises(RuntimeError, match="did not become healthy"):
+    with pytest.raises(StartupFailureError, match="timed out while loading"):
         await rt.ensure_active("qwen")
     assert time.monotonic() - t0 < 5
 
-    # The starter's error carries the llama-server log tail for diagnostics,
-    # and waiters see the same detail via the shared future.
-    with pytest.raises(RuntimeError, match="failed to bind port"):
+    # The starter's structured error retains the log tail without placing it
+    # in the concise public message, and waiters receive the same failure.
+    with pytest.raises(StartupFailureError) as caught:
         await starter
+    assert "failed to bind port" in caught.value.details["log_tail"]
     assert rt.metrics["load_errors"] >= 1
+
+
+async def test_failed_load_without_waiter_does_not_leak_future_exception(tmp_path, monkeypatch):
+    """A lone failed starter must not trigger asyncio's unhandled-future warning."""
+    from conftest import make_config
+
+    import arc_llama.router as router_mod
+
+    cfg = make_config(tmp_path, single_resident=False)
+    monkeypatch.setattr(router_mod, "LlamaServer", NeverReadyServer)
+    rt = Router(cfg)
+    loop = asyncio.get_running_loop()
+    contexts = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+    try:
+        with pytest.raises(StartupFailureError, match="timed out while loading"):
+            await rt.ensure_active("qwen")
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert not [
+        context
+        for context in contexts
+        if context.get("message") == "Future exception was never retrieved"
+    ]
 
 
 async def test_warm_request_does_not_block_on_router_lock(tmp_path, monkeypatch):
