@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import errno
 import logging
 import os
 import signal
@@ -23,11 +24,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+try:  # pragma: no cover - import availability differs by platform
+    fcntl = __import__("fcntl")
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
 import httpx
 
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
 from arc_llama.binary import list_vulkan_devices, resolve_vulkan_index
-from arc_llama.config import Config, GPUConfig, ModelConfig
+from arc_llama.config import Config, GPUConfig, ModelConfig, default_state_dir
 from arc_llama.gguf_meta import has_mtp_heads
 from arc_llama.platform_checks import (
     oneapi_runtime_env_needed,
@@ -135,6 +141,9 @@ class LaunchPlan:
     cwd: str | None = None
     health_url: str = ""
     backend_url: str = ""
+    # Held by the parent for the lifetime of the child when single-resident
+    # mode is enabled. This coordinates separate arc-llama processes too.
+    resident_lock_path: Path | None = None
 
 
 # Environment variables that only make sense for the SYCL backend; they can
@@ -365,6 +374,8 @@ def build_plan(
         env=env,
         backend_url=backend_url,
         health_url=f"{backend_url}/health",
+        resident_lock_path=(Path(getattr(cfg.paths, "state_dir", default_state_dir())) / "llama-server.lock"
+                            if cfg.server.single_resident else None),
     )
 
 
@@ -383,6 +394,7 @@ class LlamaServer:
         self.ready: bool = False
         self._log_file: Any = None  # file handle opened in start(), closed in stop()
         self._log_path: Path | None = None
+        self._resident_lock: Any = None
 
     @property
     def is_running(self) -> bool:
@@ -405,6 +417,22 @@ class LlamaServer:
             log_file = open(log_path, "ab")
             stdout = log_file
             stderr = subprocess.STDOUT
+        if self.plan.resident_lock_path is not None and fcntl is not None:
+            lock_path = self.plan.resident_lock_path
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = open(lock_path, "a+")
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                lock_file.close()
+                if log_file is not None:
+                    log_file.close()
+                raise OSError(
+                    errno.EBUSY,
+                    "another arc-llama process already owns the single-resident "
+                    f"llama-server lock ({lock_path})",
+                ) from exc
+            self._resident_lock = lock_file
         log.info("[%s] starting: %s", self.name, " ".join(self.plan.argv))
         popen_kwargs: dict[str, Any] = {}
         if _IS_WINDOWS:
@@ -431,9 +459,20 @@ class LlamaServer:
                 except Exception:
                     pass
             self._log_path = None
+            self._release_resident_lock()
             raise
         self._log_file = log_file
         self.started_at = time.time()
+
+    def _release_resident_lock(self) -> None:
+        lock_file = self._resident_lock
+        self._resident_lock = None
+        if lock_file is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
 
     async def wait_ready(self, timeout: float = DEFAULT_HEALTH_TIMEOUT) -> bool:
         deadline = time.time() + timeout
@@ -506,6 +545,9 @@ class LlamaServer:
     def stop(self, drain_seconds: float = 3.0) -> None:
         self.ready = False
         if not self.is_running:
+            # The child may have exited between the health check and cleanup;
+            # release our parent-held coordination lock in that case too.
+            self._release_resident_lock()
             return
         proc = self.process
         assert proc is not None
@@ -560,6 +602,7 @@ class LlamaServer:
             except Exception:
                 pass
             self._log_file = None
+        self._release_resident_lock()
 
     async def astop(self, drain_seconds: float = 3.0) -> None:
         """Async version of stop() for callers running on the event loop.

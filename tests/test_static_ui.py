@@ -38,6 +38,13 @@ def test_assistant_bubbles_do_not_use_the_stray_accent_rule() -> None:
     css = (STATIC / "chat.css").read_text()
     assert "border-left: 3px solid var(--accent)" not in css
     assert ".message.assistant" in css
+
+
+def test_advanced_details_state_is_preserved_across_model_rerenders() -> None:
+    js = (STATIC / "app.js").read_text()
+    assert "const openDetailModels = new Set()" in js
+    assert "details.open = openDetailModels.has(model.name)" in js
+    assert 'details.addEventListener("toggle"' in js
 NODE = shutil.which("node")
 
 

@@ -18,6 +18,7 @@ let selectedModel = null;
 let adminToken = null;
 let fetching = false;
 let scanning = false;
+const openDetailModels = new Set();
 
 const fmtGiB = (mb) => mb == null ? "Unknown" : `${(mb / MIB).toFixed(mb >= MIB ? 1 : 0)} GiB`;
 const fmtCtx = (ctx) => ctx ? `${Number(ctx).toLocaleString()} tokens` : "Default context";
@@ -86,6 +87,11 @@ function button(label, className, onClick) {
 function createDetails(model, gpu) {
   const details = document.createElement("details");
   details.className = "advanced-details";
+  details.open = openDetailModels.has(model.name);
+  details.addEventListener("toggle", () => {
+    if (details.open) openDetailModels.add(model.name);
+    else openDetailModels.delete(model.name);
+  });
   // Do not let opening this disclosure also select and re-render its card.
   details.addEventListener("click", (event) => event.stopPropagation());
   details.addEventListener("keydown", (event) => event.stopPropagation());
