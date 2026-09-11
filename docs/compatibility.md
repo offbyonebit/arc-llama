@@ -32,6 +32,19 @@ by a particular llama.cpp build remains conditional on that build. The `/admin`,
 `/v1/agent`, and `/v1/chats` routes are Arc Llama extensions and are versioned
 with this project rather than the OpenAI API.
 
+## Ollama-compatible API
+
+Arc Llama also provides a small compatibility surface for Ollama-aware clients:
+
+- `GET /api/tags` returns registered local and upstream models.
+- `POST /api/chat` accepts Ollama `messages` requests and supports JSON or
+  newline-delimited streaming responses.
+- `POST /api/generate` accepts an Ollama `prompt` and supports JSON or
+  newline-delimited streaming responses.
+
+The Ollama routes translate requests into Arc Llama's existing model router;
+they do not implement Ollama model storage, Modelfiles, or runtime management.
+
 ## Configuration compatibility
 
 Existing documented keys are preserved throughout the 0.9 line. New optional

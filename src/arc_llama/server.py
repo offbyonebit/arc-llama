@@ -340,6 +340,7 @@ def create_app(
                     "metadata": {
                         "display_name": m.display_name,
                         "path": m.path,
+                        "model_file_mb": getattr(m, "model_file_mb", None),
                         "gpu_pci_slot": m.gpu_pci_slot,
                         "loaded": bool(srv and srv.is_running and srv.ready),
                         "aliases": list(m.aliases),
@@ -385,6 +386,46 @@ def create_app(
     @app.post("/v1/embeddings")
     async def embeddings(request: Request):
         return await _proxy_post(request, "/v1/embeddings", streaming_ok=False)
+
+    @app.get("/api/tags")
+    async def ollama_tags(request: Request) -> dict:
+        """Return the registry in Ollama's model-list shape."""
+        models = await list_models(request)
+        return {
+            "models": [
+                {
+                    "name": item["id"],
+                    "model": item["id"],
+                    "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.get("created", 0))),
+                    "size": int(item.get("metadata", {}).get("model_file_mb", 0) or 0) * 1024 * 1024,
+                    "digest": "",
+                    "details": {"family": item.get("owned_by", "arc-llama")},
+                }
+                for item in models["data"]
+            ]
+        }
+
+    @app.post("/api/chat")
+    async def ollama_chat(request: Request):
+        body = await _read_json_body(request)
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail="Ollama chat requests require a messages array")
+        payload = _ollama_to_openai(body, messages=messages)
+        request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
+        response = await _proxy_post(request, "/v1/chat/completions")
+        return _openai_response_as_ollama(response, body.get("model", ""), generate=False)
+
+    @app.post("/api/generate")
+    async def ollama_generate(request: Request):
+        body = await _read_json_body(request)
+        prompt = body.get("prompt", "")
+        if not isinstance(prompt, str):
+            raise HTTPException(status_code=400, detail="Ollama generate requests require a string prompt")
+        payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
+        request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
+        response = await _proxy_post(request, "/v1/completions")
+        return _openai_response_as_ollama(response, body.get("model", ""), generate=True)
 
     @app.post("/v1/agent")
     async def agent_endpoint(request: Request):
@@ -1258,6 +1299,77 @@ def create_app(
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
 
     return app
+
+
+async def _read_json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = json.loads(await request.body())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    return body
+
+
+def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any]) -> dict[str, Any]:
+    raw_options = body.get("options")
+    options: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
+    payload: dict[str, Any] = {"model": body.get("model", ""), "messages": messages, "stream": bool(body.get("stream", True))}
+    for ollama_key, openai_key in (("temperature", "temperature"), ("top_p", "top_p"), ("stop", "stop")):
+        if ollama_key in options:
+            payload[openai_key] = options[ollama_key]
+    if "num_predict" in options:
+        payload["max_tokens"] = options["num_predict"]
+    return payload
+
+
+def _openai_response_as_ollama(response: Response, model: str, *, generate: bool):
+    if response.status_code >= 400:
+        try:
+            detail = json.loads(bytes(response.body)).get("detail", "Upstream request failed")
+        except (TypeError, json.JSONDecodeError):
+            detail = "Upstream request failed"
+        return JSONResponse({"error": str(detail)}, status_code=response.status_code)
+    if isinstance(response, StreamingResponse):
+        async def stream() -> AsyncIterator[bytes]:
+            buffer = b""
+            async for chunk in response.body_iterator:  # type: ignore[attr-defined]
+                buffer += chunk.encode() if isinstance(chunk, str) else bytes(chunk)
+                while b"\n\n" in buffer:
+                    raw, buffer = buffer.split(b"\n\n", 1)
+                    for line in raw.splitlines():
+                        if not line.startswith(b"data:"):
+                            continue
+                        text = line[5:].strip()
+                        if text == b"[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(text)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = (obj.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        value = delta.get("content") if not generate else choice.get("text", "")
+                        if value:
+                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "message": {"role": "assistant", "content": value}, "response": value if generate else "", "done": False}) + "\n").encode()
+                        if choice.get("finish_reason"):
+                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice["finish_reason"]}) + "\n").encode()
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
+    try:
+        obj = json.loads(bytes(response.body))
+    except (TypeError, json.JSONDecodeError):
+        return response
+    choice = (obj.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = choice.get("text", "") if generate else message.get("content", "")
+    result: dict[str, Any] = {"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice.get("finish_reason")}
+    if generate:
+        result["response"] = content
+    else:
+        result["message"] = {"role": message.get("role", "assistant"), "content": content}
+        if message.get("reasoning_content"):
+            result["message"]["thinking"] = message["reasoning_content"]
+    return JSONResponse(result, status_code=response.status_code)
 
 
 async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = True):
