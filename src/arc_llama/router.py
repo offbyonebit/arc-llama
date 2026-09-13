@@ -547,7 +547,11 @@ class Router:
         """Refuse to load *target* if its estimated VRAM won't fit on target_gpu.
 
         In multi-resident mode this also accounts for other loaded models that
-        share the same GPU.
+        share the same GPU. In single-resident mode, other loaded models are
+        guaranteed to be evicted before the target starts, so they must not be
+        counted against the target's admission check. Counting them here
+        rejects valid model switches before ``_evict_for`` gets a chance to
+        unload the incumbent.
         """
         if not target_gpu.vram_mb:
             return
@@ -566,6 +570,8 @@ class Router:
         used_mb = target_mb
         for name, srv in self._servers.items():
             if name == target.name or not srv.is_running:
+                continue
+            if self.cfg.server.single_resident:
                 continue
             other = next((m for m in self.cfg.models if m.name == name), None)
             if other is None or other.gpu_pci_slot != target_gpu.pci_slot:

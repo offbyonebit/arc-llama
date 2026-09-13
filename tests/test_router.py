@@ -129,6 +129,30 @@ async def test_vram_guard_refuses_oversized_model(tmp_path, monkeypatch):
     assert FakeServer.starts == []
 
 
+def test_single_resident_vram_guard_ignores_incumbent_that_will_be_evicted(
+    tmp_path, monkeypatch
+):
+    from conftest import make_config
+
+    import arc_llama.router as router_mod
+
+    FakeServer.starts = []
+    FakeServer.stops = []
+    cfg = make_config(tmp_path, single_resident=True)
+    monkeypatch.setattr(router_mod, "LlamaServer", FakeServer)
+
+    # Each model fits alone, but the pair does not. A single-resident swap
+    # must admit the target because the incumbent is stopped first.
+    sizes = {"qwen": 14_000, "gemma": 14_000}
+    monkeypatch.setattr(router_mod, "_estimate_model_vram_mb", lambda model: sizes[model.name])
+    rt = Router(cfg)
+
+    cfg.models[1].gpu_pci_slot = cfg.models[0].gpu_pci_slot
+    incumbent = rt._servers["qwen"]
+    incumbent.running = True
+    rt._check_vram_fit(cfg.models[1], cfg.gpus[0])
+
+
 async def test_preflight_failure_does_not_evict_healthy_resident(tmp_path, monkeypatch):
     from conftest import make_config
 
