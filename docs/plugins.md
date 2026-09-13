@@ -19,9 +19,35 @@ A plugin is any object exposing:
 | `register(app)` | sync | once, at app creation — add FastAPI routes here |
 | `startup(app)` | sync or async | inside the app lifespan, on start |
 | `shutdown(app)` | sync or async | inside the app lifespan, on stop |
+| `info()` | sync, optional | best-effort UI metadata, read after loading |
 
 `startup` and `shutdown` are optional. Every hook is isolated: an exception in
 one plugin is logged and does not affect the core or other plugins.
+
+## Optional UI metadata: `info()`
+
+To appear with more than just a status line in dashboards (the bundled web
+UI's *Plugins* panel, `GET /admin/plugins`), a plugin may expose an `info()`
+hook returning a JSON-serializable dict:
+
+```python
+class AudioPlugin(Plugin):
+    name = "audio"
+
+    def info(self) -> dict:
+        return {
+            "version": "1.2.0",                  # optional str
+            "description": "Transcription routes",  # optional str
+            "ui": {"panel": "Audio", "url": "/audio"},  # optional, any JSON
+            "api": ["/v1/audio/transcriptions"],  # optional, any JSON
+        }
+```
+
+The hook is purely advisory: it is read defensively after loading, a missing
+or failing hook simply omits those fields, and it never influences loading
+or startup. Anything the server cannot render is ignored; the catalog shape
+is always `name` plus a stable `status` key (`registered`, `active`, or
+`error`), with every other field passed through from `info()` untouched.
 
 The simplest plugin subclasses `arc_llama.plugins.Plugin`:
 
@@ -63,6 +89,17 @@ class AudioPlugin(Plugin):
    web UI is mounted, so plugin routes are not shadowed by the catch-all UI.
 
 4. `startup_plugins` / `shutdown_plugins` run inside the app lifespan.
+
+### Web UI and `GET /admin/plugins`
+
+The bundled web UI shows a *Plugins* panel on the dashboard, populated from
+`GET /admin/plugins`. That route is read-only and returns the catalog of
+plugins discovered at app creation: each entry carries at minimum the
+plugin's `name` and a `status` key, plus whatever metadata the plugin
+publishes through its optional `info()` hook (typically `version`,
+`description`, `ui`, and `api`). A plugin whose `register` hook raised is
+reported with `status: "error"` instead of being hidden. The route never
+runs plugin code and serves an empty list when no plugins are installed.
 
 ### Enabling / disabling
 

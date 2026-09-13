@@ -8,6 +8,7 @@ Also exposes a small admin surface used by the bundled web UI and the TUI:
 
     GET  /admin/status        — full snapshot (gpus, models, who's loaded)
     GET  /admin/integration   — read-only connection guidance for frontends
+    GET  /admin/plugins       — catalog of installed plugins (UI panel)
     POST /admin/load/{name}   — preload a model without sending a chat request
     POST /admin/stop/{name}   — stop one model's llama-server
     POST /admin/stop-all      — stop every running llama-server
@@ -46,7 +47,13 @@ from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
-from arc_llama.plugins import load_plugins, register_plugins, shutdown_plugins, startup_plugins
+from arc_llama.plugins import (
+    build_catalog,
+    load_plugins,
+    register_plugins,
+    shutdown_plugins,
+    startup_plugins,
+)
 from arc_llama.router import Router
 from arc_llama.skills import load_skills
 from arc_llama.upstream import UpstreamManager
@@ -230,6 +237,9 @@ def create_app(
 
     # Register plugin routes before the static mount so plugin paths are not
     # shadowed by the catch-all web UI. A plugin failure here is isolated.
+    # Status is recorded per app (not per lifespan) because register() runs
+    # now, before the lifespan starts; /admin/plugins reads it later.
+    app.state.plugin_status = {}
     register_plugins(app, app_plugins)
 
     app.add_middleware(
@@ -884,6 +894,21 @@ def create_app(
         c: Config = request.app.state.cfg
         ollama = await probe_ollama()
         return integration_payload(c, ollama)
+
+    @app.get("/admin/plugins")
+    async def admin_plugins(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        """Catalog installed plugins for the dashboard's Plugins panel.
+
+        Read-only and reflective: it reports what was discovered at app
+        creation, a stable per-plugin status key, and whatever metadata each
+        plugin chooses to publish through its optional ``info()`` hook.
+        Plugins written against the original contract simply appear with
+        name and status only. No plugin code runs while serving this route.
+        """
+        statuses: dict[str, str] = getattr(request.app.state, "plugin_status", {})
+        return {"plugins": build_catalog(app_plugins, statuses)}
 
     @app.post("/admin/load/{name}")
     async def admin_load(

@@ -392,6 +392,7 @@ function render() {
   renderReadiness();
   renderSystemReadiness();
   renderStart();
+  renderPlugins();
 }
 
 async function fetchStatus(force = false) {
@@ -482,6 +483,84 @@ async function stopAll() {
     setFooter(error.message, true);
   } finally {
     buttonNode.disabled = false;
+  }
+}
+
+// Plugins panel. The backend's /admin/plugins catalog reflects what was
+// discovered at app creation; here we only render it. Fetch failures are
+// isolated: the panel quietly stays empty and the rest of the page is
+// unaffected.
+let pluginList = null;
+
+const PLUGIN_LABELS = {
+  active: "Active",
+  error: "Failed to load",
+  registered: "Registered",
+};
+
+function pluginStatusLabel(status) {
+  return PLUGIN_LABELS[status] || "Registered";
+}
+
+function createPluginCard(plugin) {
+  const card = document.createElement("article");
+  card.className = "plugin-card";
+
+  const body = document.createElement("div");
+  body.className = "plugin-card-main";
+  const title = document.createElement("h3");
+  title.textContent = plugin.name;
+  body.appendChild(title);
+  if (plugin.description) {
+    const description = document.createElement("p");
+    description.className = "plugin-meta";
+    description.textContent = plugin.description;
+    body.appendChild(description);
+  }
+  const extra = [plugin.version ? `v${plugin.version}` : null, plugin.ui ? `UI: ${plugin.ui}` : null, plugin.api ? `API: ${plugin.api}` : null]
+    .filter(Boolean)
+    .join(" · ");
+  if (extra) {
+    const meta = document.createElement("p");
+    meta.className = "plugin-meta";
+    meta.textContent = extra;
+    body.appendChild(meta);
+  }
+
+  const side = document.createElement("div");
+  side.className = "plugin-card-side";
+  const pill = document.createElement("span");
+  pill.className = `status-pill ${plugin.status === "error" ? "error" : "ready"}`;
+  pill.textContent = pluginStatusLabel(plugin.status);
+  side.appendChild(pill);
+
+  card.append(body, side);
+  return card;
+}
+
+function renderPlugins() {
+  const list = $("#plugin-list");
+  if (!list || pluginList == null) return;
+  list.replaceChildren();
+  if (!pluginList.length) {
+    const empty = document.createElement("p");
+    empty.className = "plugin-empty";
+    empty.textContent = "No plugins installed. Add-ons exposing an arc_llama.plugins entry point appear here.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const plugin of pluginList) list.appendChild(createPluginCard(plugin));
+}
+
+async function fetchPlugins() {
+  try {
+    const response = await fetch("/admin/plugins", { headers: authHeaders() });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const data = await response.json();
+    pluginList = data.plugins || [];
+    renderPlugins();
+  } catch (_) {
+    // Keep whatever was shown before; discovery is best-effort.
   }
 }
 
@@ -630,5 +709,6 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
 (async () => {
   await initAdminToken();
   await fetchStatus(true);
+  fetchPlugins();
   setInterval(fetchStatus, 5000);
 })();

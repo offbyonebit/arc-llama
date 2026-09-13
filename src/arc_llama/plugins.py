@@ -35,6 +35,12 @@ The contract is deliberately tiny. A plugin is any object exposing:
 ``startup``/``shutdown`` may be sync or async. Every hook is isolated: an
 exception in one plugin is logged and does not affect the core or other
 plugins.
+
+For UIs that present installed plugins, a plugin may additionally expose an
+optional ``info()`` hook returning a JSON-serializable metadata dict (for
+example ``{"version": ..., "description": ..., "ui": ...}``). The hook is
+checked defensively: a missing one simply omits those fields, and a failing
+one is logged and ignored so metadata can never break plugin loading.
 """
 
 from __future__ import annotations
@@ -63,6 +69,16 @@ class Plugin:
 
     def register(self, app: FastAPI) -> None:
         """Add routes/middleware to the app. Called once, before startup."""
+
+    def info(self) -> dict[str, Any]:
+        """Return UI-facing plugin metadata (optional, best effort).
+
+        The catalog treats ``version``, ``description``, ``ui``, and ``api``
+        as known optional keys; anything else JSON-serializable is passed
+        through unchanged. This hook never influences loading: the default
+        implementation returns ``{}`` and a broken override is ignored.
+        """
+        return {}
 
     def startup(self, app: FastAPI) -> None:
         """Run when the app starts. May be async."""
@@ -146,12 +162,69 @@ def load_plugins(entry_points: Any = None, *, enabled: set[str] | None = None) -
 
 
 def register_plugins(app: FastAPI, plugins: list[Any]) -> None:
-    """Call ``register`` on every plugin, isolating failures."""
+    """Call ``register`` on every plugin, isolating failures.
+
+    When ``app.state.plugin_status`` exists (a dict created by the server),
+    each plugin's outcome is recorded there so the UI can present a stable
+    status key instead of guessing from logs.
+    """
     for plugin in plugins:
+        name = getattr(plugin, "name", "?")
         try:
             plugin.register(app)
+            if hasattr(app.state, "plugin_status"):
+                app.state.plugin_status[name] = "active"
         except Exception:  # noqa: BLE001
-            log.exception("plugin %s register() failed", getattr(plugin, "name", "?"))
+            log.exception("plugin %s register() failed", name)
+            if hasattr(app.state, "plugin_status"):
+                app.state.plugin_status[name] = "error"
+
+
+def plugin_info(plugin: Any) -> dict[str, Any]:
+    """Read one plugin's optional metadata, defensively.
+
+        Plugins written against the original contract have no ``info`` hook and
+        yield an empty dict; a hook that raises or returns a non-mapping is
+        dropped with a warning rather than affecting anything else. The catalog
+        treats ``version``, ``description``, ``ui``, and ``api`` as known
+        optional keys; anything else JSON-serializable is passed through as is.
+        """
+    hook = getattr(plugin, "info", None)
+    if hook is None:
+        return {}
+    try:
+        data = hook()
+    except Exception:  # noqa: BLE001 - metadata must never break the catalog
+        log.warning(
+            "plugin %s info() failed; ignoring metadata", getattr(plugin, "name", "?")
+        )
+        return {}
+    if not isinstance(data, dict):
+        log.warning("plugin %s info() returned a non-mapping; ignoring metadata", getattr(plugin, "name", "?"))
+        return {}
+    return data
+
+
+def build_catalog(plugins: list[Any], status: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Return JSON-serializable descriptors for the installed plugins.
+
+    ``status`` maps plugin names to a stable status key (e.g. ``active`` or
+    ``error``) and defaults to ``registered`` for every plugin. The base
+    shape (``name`` and ``status``) is always present; whatever the plugin's
+    optional ``info()`` hook returns is merged in unchanged, so older
+    plugins keep working unchanged and arbitrary metadata is passed through.
+    """
+    if status is None:
+        status = {}
+    catalog: list[dict[str, Any]] = []
+    for plugin in plugins:
+        name = getattr(plugin, "name", None)
+        if not name:
+            continue
+        entry: dict[str, Any] = {"name": name, "status": status.get(name, "registered")}
+        entry.update(plugin_info(plugin))
+        catalog.append(entry)
+    return catalog
 
 
 async def _run_hook(plugin: Any, hook_name: str, app: FastAPI) -> None:

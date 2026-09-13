@@ -27,7 +27,10 @@ def test_example_plugin_registers_and_runs(monkeypatch) -> None:
     from arc_llama_hello_plugin import create_plugin
 
     import arc_llama.server as server_mod
-    from tests.test_server import FakeRouter, FakeUpstreamManager
+    try:
+        from tests.test_server import FakeRouter, FakeUpstreamManager
+    except ModuleNotFoundError:  # local pytest runs without repo-root sys.path
+        from test_server import FakeRouter, FakeUpstreamManager
 
     monkeypatch.setattr(server_mod, "Router", FakeRouter)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)

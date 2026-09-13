@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `arc-llama-vision`, a bounded first-pass image-generation companion
+  scaffold: a standalone, local-first service exposing `GET /health`,
+  `GET /v1/models` with image modality metadata, and `POST /v1/images/generations`
+  over a backend-neutral adapter seam. Ships deterministic `fake` and
+  `unavailable` test backends (no model weights or ML dependencies), with a
+  documented contract for plugging in real backends; core upstream routing
+  does not yet proxy image endpoints, so clients call the companion directly.
 - Add `arc-llama run [MODEL|GGUF|HF_SPEC]`, a guarded one-command path that
   detects Arc hardware, installs a verified runtime when needed, registers or
   discovers a model, reports its context/KV/backend and estimated VRAM fit,
@@ -22,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redesign the model manager around first-run readiness and model selection,
   and keep chat model/settings state synchronized with it.
 - Add a documented contract for integrating a separate audio companion service.
+- Add a Plugins panel to the web UI, backed by the new read-only
+  `GET /admin/plugins` catalog of discovered plugins (name, stable status,
+  and any metadata published via a backward-compatible optional plugin
+  `info()` hook).
 
 ### Changed
 

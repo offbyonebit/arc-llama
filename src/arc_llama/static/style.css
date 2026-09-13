@@ -26,6 +26,7 @@
 [data-theme="light"] button:hover:not(:disabled), [data-theme="light"] .system-readiness-action .chat-action:hover { border-color: #9da7b5; background: #e3e8ef; }
 [data-theme="light"] .model-card:hover { border-color: #aeb7c4; }
 [data-theme="light"] .model-card.selected { border-color: #7d91ad; background: #e7edf6; }
+[data-theme="light"] .plugin-card { background: var(--surface); }
 [data-theme="light"] .metric { background: #f0f3f7; }
 [data-theme="light"] .primary-cta { border-color: #245fbe; background: #245fbe; color: #fff; }
 [data-theme="light"] .primary-cta:hover:not(.is-disabled) { background: #17478f; border-color: #17478f; }
@@ -117,6 +118,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .empty-icon::before, .readiness-icon::before { content: ""; position: absolute; inset: 2px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; }
 .empty-icon::before { border-style: dashed; border-top-color: currentColor; }
 .error-panel .empty-icon { color: var(--red); }
+
+.plugin-list { display: grid; gap: 6px; }
+.plugin-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 11px 18px; padding: 14px 15px; border: 1px solid var(--border-muted); border-radius: 5px; background: var(--surface); }
+.plugin-card-main h3 { margin: 0; font-size: 15px; letter-spacing: -.01em; word-break: break-word; }
+.plugin-meta { margin: 5px 0 0; color: var(--text-muted); font-size: 12px; }
+.plugin-card-side { display: flex; align-items: center; gap: 9px; }
+.plugin-empty { margin: 0; padding: 18px 15px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); font-size: 13px; }
+.status-pill.error { color: var(--red); }
+.status-pill.error::before { background: var(--red); border-color: var(--red); }
 
 .readiness-card { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(0, 1.5fr); gap: 20px 32px; padding: 21px; border: 1px solid var(--border-muted); border-radius: var(--radius); background: var(--surface); }
 .readiness-card.empty { grid-template-columns: auto minmax(0, 1fr); align-items: center; }

@@ -408,3 +408,106 @@ def test_dialog_styles_exist_for_frontend_panel():
     assert ".frontend-dialog" in css
     assert ".frontend-tab" in css
     assert ".frontend-copy" in css
+
+
+# ---------------------------------------------------------------------------
+# Plugins panel
+# ---------------------------------------------------------------------------
+
+
+def test_plugins_panel_is_present_and_labeled():
+    html = (STATIC / "index.html").read_text()
+
+    assert 'id="plugins-title"' in html
+    assert "Plugins" in html
+    assert 'id="plugin-list"' in html
+    assert "arc_llama.plugins" in html
+
+
+def test_plugins_panel_reads_admin_plugins_endpoint():
+    js = (STATIC / "app.js").read_text()
+
+    assert 'fetch("/admin/plugins"' in js
+    assert "authHeaders()" in js
+
+
+def test_plugins_panel_renders_name_status_and_optional_metadata():
+    js = (STATIC / "app.js").read_text()
+
+    assert "plugin.name" in js
+    assert "plugin.status" in js
+    assert "plugin.description" in js
+    assert "plugin.version" in js
+    assert "plugin.ui" in js
+    assert "plugin.api" in js
+
+
+def test_plugins_panel_empty_state_mentions_entry_point_discovery():
+    js = (STATIC / "app.js").read_text()
+
+    assert "No plugins installed" in js
+    assert "arc_llama.plugins" in js
+
+
+def test_plugin_fetch_failure_is_isolated():
+    js = (STATIC / "app.js").read_text()
+    block = js[js.index("async function fetchPlugins") : js.index("// Connect-a-frontend")]
+
+    # The whole request/render path is wrapped so a failing plugins fetch
+    # can never break the model panels it shares the page with.
+    assert "try {" in block
+    assert "catch (_)" in block
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_plugins_panel_lifecycle_under_stubbed_dom():
+    """Exercise renderPlugins/fetchPlugins against a stubbed DOM: metadata
+    rendering status pills, and the empty state, with fetch failures
+    leaving the page untouched."""
+    app = STATIC / "app.js"
+    program = f"""
+      const fs = require("fs");
+      const cards = [];
+      const pluginList = {{ replaceChildren() {{ cards.length = 0; }}, appendChild(node) {{ cards.push(node); }} }};
+      globalThis.document = {{
+        querySelector: (sel) => (sel === "#plugin-list" ? pluginList : null),
+        createElement: () => ({{
+          className: "", textContent: "", appendChild() {{}}, append() {{}},
+          classList: {{ add() {{}} }},
+        }}),
+      }};
+      const source = fs.readFileSync({json.dumps(str(app))}, "utf8");
+      const cut = source.indexOf('$("#connect-frontend").addEventListener');
+      (0, eval)(source.slice(0, cut));
+
+      (async () => {{
+        const out = {{}};
+        // Success with metadata: one populated plugin card.
+        globalThis.fetch = async () => ({{
+          ok: true, status: 200, json: async () => ({{
+            plugins: [{{ name: "audio", status: "active", version: "1.0", description: "Audio routes", ui: "Audio panel", api: ["/v1/audio"] }}],
+          }}),
+        }});
+        await fetchPlugins();
+        out.loadedCards = cards.length;
+        // Failure: keeps whatever was rendered, renders nothing new.
+        globalThis.fetch = async () => {{ throw new Error("down"); }};
+        await fetchPlugins();
+        out.afterFailure = cards.length;
+        // Empty catalog: exactly one empty-state note.
+        globalThis.fetch = async () => ({{
+          ok: true, status: 200, json: async () => ({{ plugins: [] }}),
+        }});
+        await fetchPlugins();
+        out.emptyCards = cards.length;
+        process.stdout.write(JSON.stringify(out));
+      }})().catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+    completed = subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True)
+    result = json.loads(completed.stdout)
+    assert result["loadedCards"] == 1
+    assert result["afterFailure"] == 1
+    assert result["emptyCards"] == 1

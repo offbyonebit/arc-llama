@@ -69,6 +69,8 @@ packages = ["src/arc_llama"]
 # .gitignore is honoured by default but only covers .venv/; keep every
 # local venv, cache, and stray note file out of the sdist — .venv-test/
 # shipped in the 0.6.1 sdist and its absolute symlinks broke the wheel build.
+# arc-llama-vision/ is a standalone companion package with its own
+# pyproject.toml; ship it outside the core distribution, like the registry.
 exclude = [
     ".venv*",
     "work/",
@@ -77,6 +79,7 @@ exclude = [
     "*.egg-info",
     "AUTOTUNE_*.md",
     "EOF",
+    "arc-llama-vision/",
 ]
 
 [tool.ruff]
