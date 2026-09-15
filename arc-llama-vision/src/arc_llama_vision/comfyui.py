@@ -416,9 +416,7 @@ class ComfyUIBackend(ImageBackend):
                 raise CapabilityError(
                     f"ComfyUI rejected the workflow (HTTP 400): {_error_body(exc)}"
                 ) from exc
-            raise BackendUnavailableError(
-                f"ComfyUI /prompt answered HTTP {exc.code}"
-            ) from exc
+            raise BackendUnavailableError(f"ComfyUI /prompt answered HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise BackendUnavailableError(
                 f"cannot submit to ComfyUI at {self.config.base_url}: {exc}"
@@ -435,10 +433,26 @@ class ComfyUIBackend(ImageBackend):
         so the loop looks for the prompt_id key, checks its status, and is
         bounded by ``poll_timeout``. The sleep between polls leaves the
         shared event loop free for the HTTP surface.
+
+        A submitted prompt that is absent from both the running and pending
+        queue *and* has no history entry means the backend lost it: the
+        server crashed or restarted mid-render (a GPU runtime segfault
+        looks exactly like this from HTTP). Waiting for ``poll_timeout``
+        would stall the caller for the full window against a dead render,
+        so the loop fails fast with :class:`BackendUnavailableError` after
+        a short confirmation (the poll below already re-checks history, so
+        a completed prompt is never mistaken for a lost one).
         """
         url = f"{self.config.base_url}/history/{urllib.parse.quote(prompt_id)}"
+        # ComfyUI runs one prompt at a time; a queue position is a plain
+        # prompt id string in both lists. Sampled sparsely (see below)
+        # because the authoritative completion signal is history.
+        queue_url = f"{self.config.base_url}/queue"
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.config.poll_timeout
+        # The backend may restart between consecutive polls; require the
+        # prompt to be missing twice in a row before declaring it lost.
+        lost_streak = 0
         while True:
             try:
                 body = await asyncio.to_thread(_http_json, url, timeout=_HTTP_TIMEOUT)
@@ -451,14 +465,29 @@ class ComfyUIBackend(ImageBackend):
                 status = entry.get("status")
                 status_str = status.get("status_str") if isinstance(status, dict) else None
                 if status_str == "error":
-                    raise CapabilityError(
-                        "ComfyUI reported an execution error for this workflow"
-                    )
+                    raise CapabilityError("ComfyUI reported an execution error for this workflow")
                 completed = status.get("completed", True) if isinstance(status, dict) else True
                 if completed:
                     outputs = entry.get("outputs")
                     if isinstance(outputs, dict):
                         return outputs
+            else:
+                # No history entry yet: still running or lost. Distinguish
+                # by asking the queue. Both checks are cheap JSON GETs and
+                # history remains the completion authority, so at worst this
+                # adds one request per poll interval.
+                queued = await self._prompt_in_queue(prompt_id, queue_url)
+                if queued:
+                    lost_streak = 0
+                else:
+                    lost_streak += 1
+                    if lost_streak >= 2:
+                        raise BackendUnavailableError(
+                            "ComfyUI lost the render: the queued prompt "
+                            f"{prompt_id} is neither running, pending, nor in "
+                            "history (the backend likely crashed or restarted "
+                            "mid-render)"
+                        )
             if loop.time() >= deadline:
                 raise BackendUnavailableError(
                     f"ComfyUI did not finish rendering within "
@@ -508,11 +537,8 @@ class ComfyUIBackend(ImageBackend):
 
     async def _fetch_view(self, filename: str, subfolder: str) -> bytes:
         """GET ``/view`` for the saved image bytes (SaveImage writes PNG)."""
-        url = (
-            f"{self.config.base_url}/view?"
-            + urllib.parse.urlencode(
-                {"filename": filename, "subfolder": subfolder, "type": "output"}
-            )
+        url = f"{self.config.base_url}/view?" + urllib.parse.urlencode(
+            {"filename": filename, "subfolder": subfolder, "type": "output"}
         )
         try:
             data = await asyncio.to_thread(_http_bytes, url, timeout=_HTTP_TIMEOUT)

@@ -82,6 +82,9 @@ class FakeComfy:
         if method == "GET" and "/system_stats" in url:
             self.requests.append((method, "/system_stats", None))
             return {"system": {"comfyui_version": "0.3"}}
+        if method == "GET" and "/queue" in url:
+            self.requests.append((method, "/queue", None))
+            return {"queue_running": [], "queue_pending": []}
         if method == "GET" and "/history/" in url:
             self.requests.append((method, "/history", None))
             pid = url.rsplit("/", 1)[-1]
@@ -421,10 +424,58 @@ def test_generate_with_non_png_view_response_is_capability_error(fake_comfy: Fak
 
 
 class _NeverFinishes(FakeComfy):
+    """A prompt that stays executing forever: queued, but never completes."""
+
     def _answer(self, url: str, method: str, payload: Any) -> Any:
         if method == "GET" and "/history/" in url:
             self.requests.append((method, "/history", None))
-            return {}  # the prompt never lands in history
+            return {}  # never lands in history
+        if method == "GET" and "/queue" in url:
+            self.requests.append((method, "/queue", None))
+            return {"queue_running": list(self.submitted), "queue_pending": []}
+        return super()._answer(url, method, payload)
+
+
+class _StructuredQueueNeverFinishes(_NeverFinishes):
+    """Current ComfyUI queue records contain the prompt ID in an array."""
+
+    def _answer(self, url: str, method: str, payload: Any) -> Any:
+        if method == "GET" and "/queue" in url:
+            self.requests.append((method, "/queue", None))
+            return {
+                "queue_running": [[1, "client", next(iter(self.submitted)), {}]],
+                "queue_pending": [],
+            }
+        return super()._answer(url, method, payload)
+
+
+class _CrashedAfterSubmit(FakeComfy):
+    """The backend died and restarted mid-render; the prompt is gone.
+
+    This is what a ComfyUI GPU segfault looks like over HTTP: submission
+    succeeded, then the process died, and after restart the prompt id is
+    in neither queue nor history.
+    """
+
+    def _answer(self, url: str, method: str, payload: Any) -> Any:
+        if method == "GET" and "/history/" in url:
+            self.requests.append((method, "/history", None))
+            return {}  # restarted server: no history for this prompt
+        return super()._answer(url, method, payload)  # /queue says: nothing queued
+
+
+class _RestartsThenDrops(FakeComfy):
+    """Like _CrashedAfterSubmit but the queue answer is malformed junk."""
+
+    queue_shape: Any = "not-a-dict"
+
+    def _answer(self, url: str, method: str, payload: Any) -> Any:
+        if method == "GET" and "/history/" in url:
+            self.requests.append((method, "/history", None))
+            return {}
+        if method == "GET" and "/queue" in url:
+            self.requests.append((method, "/queue", None))
+            return self.queue_shape
         return super()._answer(url, method, payload)
 
 
@@ -456,6 +507,54 @@ def test_generate_poll_timeout_is_backend_unavailable(make_comfy) -> None:
     backend = ComfyUIBackend(options={"poll_timeout": 0.05, "poll_interval": 0.01})
     with pytest.raises(BackendUnavailableError):
         asyncio.run(backend.generate("x", backend.models[0]))
+
+
+def test_generate_structured_queue_entry_is_not_declared_lost(make_comfy) -> None:
+    make_comfy(_StructuredQueueNeverFinishes)
+    backend = ComfyUIBackend(options={"poll_timeout": 0.05, "poll_interval": 0.01})
+    with pytest.raises(BackendUnavailableError) as excinfo:
+        asyncio.run(backend.generate("x", backend.models[0]))
+    assert "did not finish rendering" in str(excinfo.value)
+
+
+def test_generate_prompt_lost_after_backend_crash_fails_fast(make_comfy) -> None:
+    """A prompt in neither queue nor history is a crashed render, not an outage
+    worth waiting poll_timeout minutes for: surface 503 quickly."""
+    server = make_comfy(_CrashedAfterSubmit)
+    backend = ComfyUIBackend(options={"poll_interval": 0.01, "poll_timeout": 60})
+    with pytest.raises(BackendUnavailableError) as excinfo:
+        asyncio.run(backend.generate("x", backend.models[0]))
+    assert "lost the render" in str(excinfo.value)
+    # The queue was consulted (history miss -> queue check) before deciding.
+    assert any(r[1] == "/queue" for r in server.requests)
+
+
+def test_generate_prompt_lost_requires_two_confirmations(make_comfy) -> None:
+    """A single missed queue answer (transient gap during restart) does not
+    abandon the prompt; two in a row do."""
+    server = make_comfy(_RestartsThenDrops)
+    server.queue_shape = {"queue_running": [], "queue_pending": []}
+    backend = ComfyUIBackend(options={"poll_interval": 0.01, "poll_timeout": 60})
+    with pytest.raises(BackendUnavailableError) as excinfo:
+        asyncio.run(backend.generate("x", backend.models[0]))
+    assert "lost the render" in str(excinfo.value)
+    # Two queue checks were actually needed.
+    assert sum(1 for r in server.requests if r[1] == "/queue") >= 2
+
+
+def test_poll_treats_malformed_queue_as_not_lost(make_comfy) -> None:
+    """Unknown /queue shapes (proxied or newer servers) never trigger the
+    lost-prompt path; the poll loop keeps waiting on history instead."""
+
+    class _MalformedQueueNeverFinishes(_RestartsThenDrops):
+        queue_shape = ["weird", "shape"]
+
+    make_comfy(_MalformedQueueNeverFinishes)
+    backend = ComfyUIBackend(options={"poll_timeout": 0.05, "poll_interval": 0.01})
+    with pytest.raises(BackendUnavailableError) as excinfo:
+        asyncio.run(backend.generate("x", backend.models[0]))
+    # It waited for the full window (timeout message), not the lost message.
+    assert "did not finish rendering" in str(excinfo.value)
 
 
 def test_generate_server_gone_mid_poll_is_backend_unavailable(make_comfy) -> None:
