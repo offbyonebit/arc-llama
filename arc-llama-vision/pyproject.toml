@@ -20,7 +20,11 @@ classifiers = [
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
 ]
+
+[project.entry-points."arc_llama.plugins"]
+vision = "arc_llama_vision.plugin:create_plugin"
 
 [project.optional-dependencies]
 dev = [

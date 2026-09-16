@@ -54,6 +54,7 @@ from arc_llama.plugins import (
     shutdown_plugins,
     startup_plugins,
 )
+from arc_llama.resources import ResourceLeaseManager
 from arc_llama.router import Router
 from arc_llama.skills import load_skills
 from arc_llama.upstream import UpstreamManager
@@ -194,6 +195,11 @@ def create_app(
         app.state.upstream_mgr = UpstreamManager(cfg.upstreams)
         app.state.cfg = cfg
         app.state.started_at = time.time()
+        # Exclusive GPU arbitration for plugin tasks (vision, ...). Built
+        # after the router — it delegates all llama-server process
+        # management to it — and before plugin startup so plugins can grab
+        # it from app.state in their startup hooks.
+        app.state.resources = ResourceLeaseManager(app.state.router)
         pending_confirmations: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
@@ -909,6 +915,58 @@ def create_app(
         """
         statuses: dict[str, str] = getattr(request.app.state, "plugin_status", {})
         return {"plugins": build_catalog(app_plugins, statuses)}
+
+    def _ui_layout_path() -> Path:
+        base = state_dir or Path(".arc_llama_state")
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "ui-layout.json"
+
+    def _ui_actions() -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for plugin in build_catalog(app_plugins, getattr(app.state, "plugin_status", {})):
+            for action in plugin.get("ui", {}).get("actions", []):
+                item = dict(action)
+                item["plugin"] = plugin["name"]
+                actions.append(item)
+        return actions
+
+    @app.get("/admin/ui/layout")
+    async def get_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        actions = _ui_actions()
+        ids = {a["id"] for a in actions}
+        path = _ui_layout_path()
+        try:
+            saved = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            saved = {}
+        layout = saved.get("layout", {}) if isinstance(saved, dict) else {}
+        result = {"layout": {}, "actions": actions}
+        for placement in ("toolbar", "plugins", "chat"):
+            raw = layout.get(placement, []) if isinstance(layout, dict) else []
+            result["layout"][placement] = [x for x in raw if x in ids]
+        used = set(result["layout"]["toolbar"] + result["layout"]["plugins"])
+        for action in actions:
+            if action["id"] not in used:
+                result["layout"][action.get("placement", "plugins")].append(action["id"])
+        result["hidden"] = [x for x in (saved.get("hidden", []) if isinstance(saved, dict) else []) if x in ids]
+        return result
+
+    @app.put("/admin/ui/layout")
+    async def put_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        body = await request.json()
+        actions = _ui_actions()
+        ids = {a["id"] for a in actions}
+        layout = body.get("layout", {}) if isinstance(body, dict) else {}
+        hidden = body.get("hidden", []) if isinstance(body, dict) else []
+        if not isinstance(layout, dict) or not isinstance(hidden, list):
+            raise HTTPException(status_code=400, detail="Invalid UI layout")
+        values = [x for p in ("toolbar", "plugins", "chat") for x in layout.get(p, [])]
+        if any(not isinstance(x, str) or x not in ids for x in values + hidden) or len(values) != len(set(values)):
+            raise HTTPException(status_code=400, detail="Unknown or duplicate UI action")
+        payload = {"layout": {p: list(layout.get(p, [])) for p in ("toolbar", "plugins", "chat")}, "hidden": hidden}
+        path = _ui_layout_path()
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        return await get_ui_layout(request)
 
     @app.post("/admin/load/{name}")
     async def admin_load(

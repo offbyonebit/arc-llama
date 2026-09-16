@@ -45,7 +45,11 @@ Error mapping follows the seam contract: request-shaped problems (workflow
 rejected by ComfyUI validation, non-16-multiple sizes, executions errors
 for this prompt, non-image payloads) raise :class:`CapabilityError` (→400),
 while connectivity problems (server down, poll timeout, HTTP 5xx) raise
-:class:`BackendUnavailableError` (→503).
+:class:`BackendUnavailableError` (→503). A render whose prompt vanishes
+from the queue without a history entry (a crashed server mid-render, e.g.
+a GPU runtime fault) is an outage too and raises
+:class:`BackendUnavailableError` quickly instead of stalling until
+``poll_timeout``.
 
 Tested setup note: this adapter was exercised against a ComfyUI instance
 running FLUX.2 Klein 9B Q4 (GGUF diffusion model) with a public Q2_K
@@ -144,9 +148,7 @@ class ComfyUIConfig:
         for key, value in options.items():
             if key in _STRING_FIELDS:
                 if not isinstance(value, str) or not value.strip():
-                    raise CapabilityError(
-                        f"comfyui option {key!r} must be a non-empty string"
-                    )
+                    raise CapabilityError(f"comfyui option {key!r} must be a non-empty string")
                 setattr(cfg, _STRING_FIELDS[key], value.strip())
             elif key == "guidance":
                 cfg.guidance = _num(key, value, lo=0.0, hi=100.0)
@@ -154,18 +156,14 @@ class ComfyUIConfig:
                 if not isinstance(value, int) or isinstance(value, bool):
                     raise CapabilityError(f"comfyui option {key!r} must be an integer")
                 if not 1 <= value <= 10000:
-                    raise CapabilityError(
-                        f"comfyui option {key!r} must be between 1 and 10000"
-                    )
+                    raise CapabilityError(f"comfyui option {key!r} must be between 1 and 10000")
                 cfg.steps = value
             elif key in ("submit_timeout", "poll_timeout", "poll_interval"):
                 setattr(cfg, key, _num(key, value, lo=0.01, hi=86400.0))
             # Unknown keys are ignored on purpose (forward compatibility).
         cfg.base_url = cfg.base_url.rstrip("/")
         if not cfg.base_url.startswith(("http://", "https://")):
-            raise CapabilityError(
-                "comfyui option 'base_url' must start with http:// or https://"
-            )
+            raise CapabilityError("comfyui option 'base_url' must start with http:// or https://")
         return cfg
 
 
@@ -221,6 +219,13 @@ class ComfyUIBackend(ImageBackend):
         503), and keeps serving. This is a probe, not a claim on resources
         — the server may appear or disappear later, so every generate
         re-checks connectivity too.
+
+        Runtime-binding diagnostics live in
+        :mod:`arc_llama_vision.xpu_runtime` for launcher-side tooling: the
+        mixed SYCL/UR binding that crashes GPU renders belongs to the
+        ComfyUI process, whose pid is not exposed over HTTP, so it cannot
+        be probed from here. The poll loop below detects the *symptom*
+        (a prompt that vanishes when the backend crashes) and fails fast.
         """
         await self._probe()
 
@@ -240,9 +245,7 @@ class ComfyUIBackend(ImageBackend):
             timeout=self.config.submit_timeout,
         )
         if body is None:
-            raise BackendUnavailableError(
-                f"cannot reach ComfyUI server at {self.config.base_url}"
-            )
+            raise BackendUnavailableError(f"cannot reach ComfyUI server at {self.config.base_url}")
         return body
 
     # ------------------------------------------------------------------
@@ -262,9 +265,7 @@ class ComfyUIBackend(ImageBackend):
             # One image per render keeps per-render work bounded; the app
             # layer's default batch cap is 1 anyway. Batch rendering is a
             # capability matter, not availability.
-            raise CapabilityError(
-                "comfyui backend renders one image per request (n must be 1)"
-            )
+            raise CapabilityError("comfyui backend renders one image per request (n must be 1)")
         dims = validate_size(size) or (1024, 1024)
         width, height = dims
         if width % 16 or height % 16:
@@ -495,6 +496,31 @@ class ComfyUIBackend(ImageBackend):
                 )
             await asyncio.sleep(self.config.poll_interval)
 
+    async def _prompt_in_queue(self, prompt_id: str, queue_url: str) -> bool:
+        """Return whether ``prompt_id`` is queued (running or pending).
+
+        Unreachable states raise :class:`BackendUnavailableError`: a dead
+        server is an outage, same as a submitted render never finishing.
+        ComfyUI's queue entries are prompt-id strings; malformed shapes
+        (older/newer versions, proxies) count as not-queued rather than
+        crashing the poll loop.
+        """
+        try:
+            body = await asyncio.to_thread(_http_json, queue_url, timeout=_HTTP_TIMEOUT)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            raise BackendUnavailableError(
+                f"cannot read ComfyUI queue at {self.config.base_url}: {exc}"
+            ) from exc
+        if not isinstance(body, dict):
+            return True  # unknown shape: never claim the prompt is lost
+        for key in ("queue_running", "queue_pending"):
+            seq = body.get(key)
+            if isinstance(seq, list) and any(
+                _queue_item_contains_prompt(item, prompt_id) for item in seq
+            ):
+                return True
+        return False
+
     async def _collect_images(
         self,
         outputs: dict[str, Any],
@@ -561,6 +587,23 @@ def _http_json(url: str, *, timeout: float) -> Any:
     """GET a URL and return its parsed JSON body."""
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _queue_item_contains_prompt(item: Any, prompt_id: str) -> bool:
+    """Match ComfyUI queue entries across its string and structured shapes.
+
+    Older ComfyUI versions exposed prompt IDs directly in ``queue_running`` /
+    ``queue_pending``. Current versions return queue records containing the ID
+    alongside execution metadata, so comparing the whole record to the ID
+    incorrectly reports an active GPU render as lost.
+    """
+    if isinstance(item, str):
+        return item == prompt_id
+    if isinstance(item, dict):
+        return any(_queue_item_contains_prompt(value, prompt_id) for value in item.values())
+    if isinstance(item, (list, tuple)):
+        return any(_queue_item_contains_prompt(value, prompt_id) for value in item)
+    return False
 
 
 def _http_bytes(url: str, *, timeout: float) -> bytes:

@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Route image generation through the main chat composer: selecting the
+  Vision tool from the chat tools menu switches the composer into image
+  mode (placeholder, mode chip, and disabled attachments), the prompt is
+  typed in the main message input, and submitting posts to the existing
+  plugin generation endpoint instead of opening a separate browser prompt
+  window. Normal text chat, the loading animation, plugin error cards, and
+  the GPU/resource-lease safety contract are unchanged.
 - Fresh `run` setups default to portable Vulkan while preserving a recognised
   existing SYCL runtime. `--setup-only` validates the full launch plan without
   starting a service, and clearly oversized recipes are stopped before launch.

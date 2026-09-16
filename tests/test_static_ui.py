@@ -16,7 +16,7 @@ def test_brand_logo_is_referenced_accessibly_on_both_surfaces() -> None:
     for name in ("index.html", "chat.html"):
         html = (STATIC / name).read_text(encoding="utf-8")
         assert 'class="brand-logo"' in html
-        assert '/assets/arc-llama-logo.png?v=' in html
+        assert "/assets/arc-llama-logo.png?v=" in html
         assert 'alt="Arc Llama logo"' in html
 
     logo = STATIC / "assets" / "arc-llama-logo.png"
@@ -31,7 +31,7 @@ def test_theme_toggle_and_persistent_theme_are_present_on_both_surfaces() -> Non
         js = (STATIC / script).read_text(encoding="utf-8")
         assert 'id="theme-toggle"' in html
         assert "arc-llama-theme" in js
-        assert 'dataset.theme' in js
+        assert "dataset.theme" in js
 
 
 def test_assistant_bubbles_do_not_use_the_stray_accent_rule() -> None:
@@ -45,6 +45,8 @@ def test_advanced_details_state_is_preserved_across_model_rerenders() -> None:
     assert "const openDetailModels = new Set()" in js
     assert "details.open = openDetailModels.has(model.name)" in js
     assert 'details.addEventListener("toggle"' in js
+
+
 NODE = shutil.which("node")
 
 
@@ -82,7 +84,9 @@ def test_scan_button_relabels_and_disables_immediately():
     assert "buttonNode.disabled = true" in js
     assert 'buttonNode.setAttribute("aria-busy", "true")' in js
     assert "buttonNode.textContent = SCAN_LABEL_BUSY" in js
-    assert js.index("buttonNode.textContent = SCAN_LABEL_BUSY") < js.index('await fetch("/admin/scan"')
+    assert js.index("buttonNode.textContent = SCAN_LABEL_BUSY") < js.index(
+        'await fetch("/admin/scan"'
+    )
 
 
 def test_scan_shows_honest_indeterminate_progress():
@@ -511,3 +515,275 @@ def test_plugins_panel_lifecycle_under_stubbed_dom():
     assert result["loadedCards"] == 1
     assert result["afterFailure"] == 1
     assert result["emptyCards"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Vision image mode in the main chat composer
+# ---------------------------------------------------------------------------
+
+
+def test_image_generation_runs_through_the_main_composer():
+    """Selecting the Vision tool puts the composer into image mode; the prompt
+    is typed in the main input and submitted through the plugin generation
+    endpoint. No separate browser prompt window may be involved."""
+    js = (STATIC / "chat.js").read_text()
+
+    assert "window.prompt" not in js
+    assert "window.alert" not in js
+    # The tools-menu action selects the tool for the composer instead of
+    # dialoging for a prompt.
+    assert "selectComposerAction" in js
+    assert "action.composer?.mode" in js
+
+
+def test_vision_mode_chips_and_states_are_declared():
+    html = (STATIC / "chat.html").read_text()
+    css = (STATIC / "chat.css").read_text()
+
+    # The composer advertises image mode with a cancelable chip.
+    assert 'id="vision-mode-chip"' in html
+    assert 'id="vision-mode-chip-cancel"' in html
+    assert 'aria-label="Cancel image mode"' in html
+    # Style states for the composer and the chip exist.
+    assert ".vision-mode-chip" in css
+    assert ".vision-mode-chip[hidden]" in css
+    assert ".input-wrap.vision-mode" in css
+
+
+def test_image_mode_dispatch_preserves_normal_chat_send():
+    js = (STATIC / "chat.js").read_text()
+
+    # The dispatch order in BOTH send paths: slash commands first, then image
+    # mode, then the normal chat send. sendMessage itself guards too.
+    for marker in ("if (isComposerActionActive()) {", "sendComposerAction()"):
+        assert marker in js
+    dispatch = js[js.index("sendButton.addEventListener") :]
+    assert dispatch.index("isComposerActionActive()") < dispatch.index("sendMessage()")
+
+
+def test_vision_generation_keeps_plugin_route_and_loader_pacing():
+    js = (STATIC / "chat.js").read_text()
+
+    # The generation call still goes to the action's declared plugin route
+    # with only the prompt (server keeps the GPU lease contract).
+    body = js[
+        js.index("async function sendComposerAction") : js.index(
+            "async function loadPluginActions"
+        )
+    ]
+    assert "fetch(action.route" in body
+    assert "JSON.stringify(payload)" in body
+    assert "b64_json" in body
+    # The loading animation stays, including its minimum on-screen time.
+    assert "MIN_VISION_LOADER_MS" in body
+    assert "vision-loader" in body
+    assert '"message assistant vision-generation failed"' in body
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_vision_composer_flow_under_stubbed_dom():
+    """Drive the composer image flow end to end against a stubbed DOM:
+    selecting the Vision tool from the tools menu flips the composer into
+    image mode, Enter submits the typed prompt to the plugin route, the
+    response image is embedded in the chat log, failure surfaces an inline
+    error card without alert(), and chat mode is untouched afterwards."""
+    chat = STATIC / "chat.js"
+    safety = STATIC / "markdown_safety.js"
+    program = f"""
+      const fs = require("fs");
+      globalThis.ArcMarkdownSafety = require({json.dumps(str(safety))});
+      const calls = [];
+      let responses = [];
+      const elements = new Map();
+      const listeners = new Map();
+      function el(sel) {{
+        if (!elements.has(sel)) {{
+          elements.set(sel, {{
+            id: sel,
+            disabled: false,
+            hidden: false,
+            textContent: "",
+            value: "",
+            placeholder: "",
+            innerHTML: "",
+            className: "",
+            style: {{}},
+            dataset: {{}},
+            attributes: {{}},
+            appendChildren: [],
+            listeners: {{}},
+            scrollTop: 0,
+            scrollHeight: 100,
+            clientHeight: 100,
+            files: [],
+            classList: {{ toggle() {{}}, add() {{}}, remove() {{}}, contains() {{ return false; }} }},
+            setAttribute(name, value) {{ this.attributes[name] = value; }},
+            removeAttribute(name) {{ delete this.attributes[name]; }},
+            get parentElement() {{ return el(sel); }},
+            closest() {{ return null; }},
+            querySelector(sub) {{
+              if (sub === "#vision-mode-label") return el("vision-mode-label");
+              return el(sel + "-child-" + elements.size);
+            }},
+            querySelectorAll() {{ return []; }},
+            replaceChildren() {{ this.appendChildren.length = 0; }},
+            append(...nodes) {{ for (const n of nodes) this.appendChild(n); }},
+            appendChild(node) {{
+              if (!this.appendChildren.includes(node)) this.appendChildren.push(node);
+              return node;
+            }},
+            addEventListener(kind, fn) {{ (listeners.get(sel) || listeners.set(sel, {{}}).get(sel))[kind] = fn; }},
+            click() {{ const map = listeners.get(sel) || {{}}; if (map.click) map.click(); }},
+            focus() {{}},
+            remove() {{
+              const parent = this.parentElement;
+              const idx = parent ? parent.appendChildren.indexOf(this) : -1;
+              if (parent && idx >= 0) parent.appendChildren.splice(idx, 1);
+            }},
+          }});
+        }}
+        return elements.get(sel);
+      }}
+      const chatLog = el("#chat-log");
+      const emptyState = el("#empty-state");
+      const input = el("#message-input");
+      const inputWrap = el("#input-wrap");
+      const sendButton = el("#send-button");
+      const attachButton = el("#attach-button");
+      const visionChip = el("#vision-mode-chip");
+      const pluginActionsHost = el("#plugin-actions");
+      const pluginActionsToggle = el("#plugin-tools-toggle");
+      globalThis.document = {{
+        documentElement: el("#documentElement"),
+        activeElement: input,
+        querySelector: (sel) => el(sel),
+        querySelectorAll: () => [],
+        createElement: () => el("#created-" + elements.size),
+        addEventListener: (kind, fn) => {{
+          (listeners.get("#document") || listeners.set("#document", {{}}).get("#document"))[kind] = fn;
+        }},
+      }};
+      globalThis.fetch = async (url, init) => {{
+        calls.push({{ url, init: {{ method: init?.method || "GET", body: init?.body || null }} }});
+        const next = responses.shift();
+        if (next instanceof Error) throw next;
+        return {{ ok: next.ok, status: next.status, json: async () => next.body, text: async () => JSON.stringify(next.body) }};
+      }};
+
+      const source = fs.readFileSync({json.dumps(str(chat))}, "utf8");
+      const cut = source.indexOf("(async function init()");
+      (0, eval)(source.slice(0, cut));
+
+      (async () => {{
+        const out = {{}};
+        responses = [{{
+          ok: true, status: 200,
+          body: {{
+            layout: {{ plugins: ["vision.open"] }},
+            actions: [{{
+              id: "vision.open", label: "Vision companion", route: "/plugins/vision/generate", method: "POST",
+              composer: {{ mode: "text", result: "image", placeholder: "Describe an image…" }},
+              description: "Generate an image without competing for GPU memory",
+            }}],
+          }},
+        }}];
+        globalThis.performance = {{ now: () => 0 }};
+        globalThis.sessionStorage = {{ _s: {{}}, getItem(k) {{ return this._s[k] ?? null; }}, setItem(k, v) {{ this._s[k] = String(v); }} }};
+        globalThis.window = {{ location: {{ search: "" }} }};
+        await loadPluginActions();
+        out.toolsRendered = pluginActionsHost.appendChildren.length;
+
+        // Selecting the vision tool puts the composer into image mode with
+        // no prompt window: the click handler drives composer state only.
+        const visionButton = pluginActionsHost.appendChildren.find((n) => n.className === "plugin-action-button");
+        const originalPrompt = globalThis.prompt;
+        globalThis.prompt = () => {{ throw new Error("window.prompt must not be called"); }};
+        const originalAlert = globalThis.alert;
+        let alertWasCalled = false;
+        globalThis.alert = () => {{ alertWasCalled = true; }};
+        visionButton.click();
+
+        out.modeChipHiddenAfterSelect = visionChip.hidden;
+        out.placeholderAfterSelect = input.placeholder;
+        out.composeAttachDisabled = attachButton.disabled;
+
+        // Typing the prompt in the main input and pressing Enter routes to
+        // the plugin generation endpoint.
+        calls.length = 0;
+        responses = [{{
+          ok: true, status: 200,
+          body: {{ created: 123, data: [{{ b64_json: "aW1hZ2UtZGF0YQ==" }}] }},
+        }}];
+        input.value = "a red cube on a table";
+        const inputListeners = listeners.get("#message-input");
+        await inputListeners.keydown({{ key: "Enter", shiftKey: false, preventDefault() {{}} }});
+        out.generateCall = calls.find((c) => c.url === "/plugins/vision/generate") || null;
+        out.chatCompletionsCalls = calls.filter((c) => c.url === "/v1/chat/completions").length;
+        out.modeChipHiddenAfterSend = visionChip.hidden;
+        out.attachRestored = attachButton.disabled === false;
+        out.wrapperClass = chatLog.appendChildren.filter((n) => String(n.className).includes("vision-generation")).map((n) => n.className);
+
+        // The mode clears after sending: a plain message now uses the normal
+        // chat endpoint again, unchanged. A loaded local model and chat
+        // persistence responses keep the normal path moving far enough to
+        // reach the completions request.
+        responses = [{{ ok: true, status: 200, body: {{ data: [{{ id: "llama-test", object: "model", owned_by: "local", loaded: true }}] }} }}];
+        await fetchModels();
+        calls.length = 0;
+        responses = [
+          {{ ok: true, status: 200, body: {{ id: "chat-1", title: "hello model", created_at: 1, updated_at: 1, messages: [] }} }},
+          {{ ok: true, status: 200, body: {{ content: "", text: "" }} }},
+          {{ ok: true, status: 200, body: {{ content: "", text: "" }} }},
+        ];
+        input.value = "hello model";
+        await inputListeners.keydown({{ key: "Enter", shiftKey: false, preventDefault() {{}} }});
+        await new Promise((r) => setTimeout(r, 0));
+        out.chatCallsAfterRestore = calls.map((c) => c.url);
+
+        // Error path: failed generation surfaces an inline error card. The
+        // vision action is still rendered, so reselect it and fail POST.
+        responses = [{{
+          ok: true, status: 200,
+          body: {{ layout: {{ plugins: ["vision.open"] }}, actions: [{{ id: "vision.open", label: "Vision companion", route: "/plugins/vision/generate", method: "POST", description: "x", composer: {{ mode: "text", result: "image" }} }}] }},
+        }}];
+        await loadPluginActions();
+        const visionButton2 = pluginActionsHost.appendChildren.find((n) => n.className === "plugin-action-button");
+        responses = [{{ ok: false, status: 503, body: {{ detail: "Vision companion is not running on port 11440" }} }}];
+        input.value = "an impossible image";
+        visionButton2.click();
+        await inputListeners.keydown({{ key: "Enter", shiftKey: false, preventDefault() {{}} }});
+        out.errorsAfterFailure = chatLog.appendChildren.filter((n) => n.innerHTML && String(n.innerHTML).includes("vision-generation-error")).length;
+        out.alertWasCalled = alertWasCalled;
+        out.modeChipHiddenAfterFailure = visionChip.hidden;
+        globalThis.prompt = originalPrompt;
+        globalThis.alert = originalAlert;
+        process.stdout.write(JSON.stringify(out));
+      }})().catch((err) => {{
+        console.error(err);
+        process.exit(1);
+      }});
+    """
+    completed = subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True)
+    result = json.loads(completed.stdout)
+    assert result["toolsRendered"] == 1
+    # Selecting the tool never opens a prompt window; the composer carries mode.
+    assert result["modeChipHiddenAfterSelect"] is False
+    assert "image" in result["placeholderAfterSelect"].lower()
+    assert result["composeAttachDisabled"] is True
+    # Enter routes the typed prompt through the plugin generation endpoint.
+    gen = result["generateCall"]
+    assert gen is not None
+    assert gen["init"]["method"] == "POST"
+    assert json.loads(gen["init"]["body"]) == {"prompt": "a red cube on a table"}
+    assert result["chatCompletionsCalls"] == 0
+    # The chip clears and the wrapper completes with the returned image.
+    assert result["modeChipHiddenAfterSend"] is True
+    assert result["attachRestored"] is True
+    assert result["wrapperClass"] == ["message assistant vision-generation complete"]
+    # Normal chat behavior is preserved after the mode ends.
+    assert "/v1/chat/completions" in result["chatCallsAfterRestore"]
+    assert "/plugins/vision/generate" not in result["chatCallsAfterRestore"]
+    # Failures render an inline error card and leave composer mode; no alert dialog.
+    assert result["errorsAfterFailure"] == 1
+    assert result["alertWasCalled"] is False
+    assert result["modeChipHiddenAfterFailure"] is True

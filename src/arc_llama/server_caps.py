@@ -98,9 +98,18 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
     try:
         mtime = Path(llama_server).stat().st_mtime
     except OSError:
-        # PATH-relative binary or missing file — probe uncached each call is
-        # wasteful, so cache under mtime 0.
-        mtime = 0.0
+        # A missing configured path cannot be executable.  Avoid handing it
+        # to subprocess.run: besides being needless work, an ENOENT probe
+        # inside asyncio.to_thread can leave the executor task stuck on some
+        # Python/platform combinations.  Cache the optimistic fallback under
+        # mtime 0, matching the old failed-probe semantics.
+        key = (llama_server, 0.0)
+        hit = _cache.get(key)
+        if hit is not None:
+            return hit
+        _cache[key] = DEFAULT_CAPS
+        log.warning("could not probe %s (file does not exist); assuming modern flag syntax", llama_server)
+        return DEFAULT_CAPS
     key = (llama_server, mtime)
     hit = _cache.get(key)
     if hit is not None:

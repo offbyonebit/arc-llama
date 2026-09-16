@@ -35,10 +35,11 @@
   </section>
 
   <section class="flow-section system-readiness-section" aria-labelledby="system-readiness-title">
-    <div class="section-head compact">
+      <div class="section-head compact">
       <div>
         <h2 id="system-readiness-title">Readiness</h2>
       </div>
+      <button id="customize-ui" class="secondary">Customize UI</button>
     </div>
     <div id="system-readiness" class="system-readiness pending" aria-live="polite">
       <p>Waiting for server status</p>
@@ -72,6 +73,7 @@
       </div>
     </div>
     <div id="plugin-list" class="plugin-list" aria-live="polite"></div>
+    <div id="plugin-action-list" class="toolbar" aria-label="Plugin actions"></div>
   </section>
 
   <section class="flow-section readiness-section" aria-labelledby="readiness-title">
@@ -97,6 +99,13 @@
     <a id="chat-primary" class="primary-cta is-disabled" aria-disabled="true">Start chatting</a>
   </section>
 </main>
+
+<dialog id="ui-layout-dialog" class="frontend-dialog" aria-labelledby="ui-layout-title">
+  <div class="frontend-dialog-head"><div><p class="eyebrow">DASHBOARD</p><h2 id="ui-layout-title">Customize plugin buttons</h2></div><button id="ui-layout-close" class="ghost">Close</button></div>
+  <p class="frontend-dialog-copy">Choose where installed plugin actions appear. Use the arrows to reorder them.</p>
+  <div id="ui-layout-list" class="plugin-list"></div>
+  <div class="toolbar"><button id="ui-layout-reset" class="ghost">Restore defaults</button><button id="ui-layout-cancel" class="ghost">Cancel</button><button id="ui-layout-save" class="primary">Save layout</button></div>
+</dialog>
 
 <footer id="status-footer">
   <span class="status-dot"></span>
@@ -159,6 +168,6 @@
   <p class="frontend-hint">Prefer to type it yourself? The API listens on OpenAI paths under <span id="frontend-port-hint" class="frontend-port">…</span>.</p>
 </dialog>
 
-    <script src="/app.js?v=ui-0.14"></script>
+    <script src="/app.js?v=ui-0.16"></script>
 </body>
 </html>

@@ -21,6 +21,10 @@ models/
 
 # autotune scratch notes
 AUTOTUNE_*.md
+
+# local planning documents
+docs/roadmap-2.0.md
+
 EOF
 work/
 

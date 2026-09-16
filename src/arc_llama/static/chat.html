@@ -6,7 +6,7 @@
 <title>Chat: arc-llama</title>
 <link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
 
-<link rel="stylesheet" href="/chat.css?v=ui-0.17" />
+<link rel="stylesheet" href="/chat.css?v=ui-0.21" />
 <script src="/vendor/marked-12.0.2.min.js"></script>
 <script src="/vendor/highlight-11.9.0.min.js"></script>
 <link rel="stylesheet" href="/vendor/github-dark-11.9.0.min.css" />
@@ -26,6 +26,17 @@
 
 <div class="model-bar">
   <select id="model-select" class="model-select"></select>
+  <div id="plugin-tools" class="plugin-tools">
+    <button id="plugin-tools-toggle" class="plugin-tools-toggle" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="plugin-tools-menu">
+      <img src="/assets/arc-llama-tools.png?v=ui-0.20" alt="" aria-hidden="true" />
+      <span>Tools</span>
+      <span id="plugin-tools-count" class="plugin-tools-count">0</span>
+    </button>
+    <div id="plugin-tools-menu" class="plugin-tools-menu" role="menu" hidden>
+      <div class="plugin-tools-heading">Available tools</div>
+      <div id="plugin-actions" class="plugin-actions"></div>
+    </div>
+  </div>
   <div id="model-status" class="model-status loading">
     <span class="indicator"></span>
     <span id="status-text">loading models</span>
@@ -58,6 +69,12 @@
       </svg>
     </button>
     <div id="attachment-strip"></div>
+    <div id="vision-mode-chip" class="vision-mode-chip" hidden>
+      <span id="vision-mode-label">Image mode</span>
+      <button id="vision-mode-chip-cancel" class="vision-mode-cancel" type="button" aria-label="Cancel image mode">
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
     <textarea id="message-input" rows="1" placeholder="Message arc-llama…"></textarea>
     <button id="send-button" aria-label="Send">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
@@ -105,6 +122,6 @@
 </div>
 
     <script src="/markdown_safety.js?v=ui-0.14"></script>
-    <script src="/chat.js?v=ui-0.15"></script>
+    <script src="/chat.js?v=ui-0.21"></script>
 </body>
 </html>

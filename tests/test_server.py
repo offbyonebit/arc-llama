@@ -27,6 +27,35 @@ def test_app_advertises_package_version():
     assert app.version == __version__
 
 
+def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
+    """The lifespan must attach a GPU lease manager bound to the router."""
+    import arc_llama.server as server_mod
+    from arc_llama.resources import ResourceLeaseManager
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    app = create_app(Config())
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        mgr = app.state.resources
+        assert isinstance(mgr, ResourceLeaseManager)
+        assert mgr.router is app.state.router
+        # Normal text inference holds no lease: a proxied request leaves
+        # the manager's bookkeeping untouched.
+        assert mgr.active_leases == {}
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert response.status_code == 200
+        assert mgr.active_leases == {}
+        assert mgr.exclusive_active is False
+        assert app.state.router.inflight == 0
+
+
 def test_local_chat_defaults_to_template_aware_reasoning_parser():
     original = {
         "model": "gemma",

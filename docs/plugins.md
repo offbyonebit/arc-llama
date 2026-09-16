@@ -101,6 +101,24 @@ publishes through its optional `info()` hook (typically `version`,
 reported with `status: "error"` instead of being hidden. The route never
 runs plugin code and serves an empty list when no plugins are installed.
 
+### Declarative dashboard actions
+
+Plugins may expose buttons that users can place through the dashboard's
+**Customize UI** editor:
+
+```python
+def info(self):
+    return {"ui": {"actions": [{
+        "id": "generate", "label": "Generate image", "icon": "image",
+        "placement": "toolbar", "route": "/plugins/vision/generate",
+        "method": "POST", "composer": {"mode": "text", "result": "image"},
+    }]}}
+```
+
+The dashboard accepts only string action metadata and never executes
+plugin-supplied JavaScript. Placement and hidden state are stored through
+`/admin/ui/layout`.
+
 ### Enabling / disabling
 
 By default every discovered plugin is loaded. To restrict which plugins load,
@@ -149,3 +167,28 @@ as before.
 (anything with a `.name` and a `.load()`), so tests can exercise discovery
 without installing a package. See `tests/test_plugins.py` for a tiny fake
 plugin that registers a route and records its lifecycle hooks.
+### Composer actions
+
+Plugin UI actions can opt into the main chat composer instead of opening a
+plugin-specific page. Add a `composer` object to an action:
+
+```json
+{
+  "id": "example.run",
+  "label": "Example",
+  "route": "/plugins/example/run",
+  "method": "POST",
+  "composer": {
+    "mode": "text",
+    "placeholder": "Enter a prompt…",
+    "result": "json"
+  }
+}
+```
+
+`mode` may be `text`, `attachments`, or `custom`. Text actions use the main
+prompt field; attachment actions keep the file control enabled and receive the
+prompt plus extracted attachment text; custom actions can provide their own
+route behavior. `result` may be `image` (the built-in image renderer) or
+`json` (a compact result message). Actions without `composer` retain the
+existing route/navigation behavior, so older plugins remain compatible.

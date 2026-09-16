@@ -491,6 +491,7 @@ async function stopAll() {
 // isolated: the panel quietly stays empty and the rest of the page is
 // unaffected.
 let pluginList = null;
+let uiLayout = null;
 
 const PLUGIN_LABELS = {
   active: "Active",
@@ -552,6 +553,74 @@ function renderPlugins() {
   for (const plugin of pluginList) list.appendChild(createPluginCard(plugin));
 }
 
+function allPluginActions() {
+  return (pluginList || []).flatMap((p) => (p.ui?.actions || []).map((a) => ({...a, plugin: p.name})));
+}
+
+function renderPluginActions() {
+  const toolbar = document.querySelector(".section-head .toolbar");
+  const pluginActions = $("#plugin-action-list");
+  if (!toolbar || !pluginActions || !uiLayout) return;
+  toolbar.querySelectorAll(".plugin-action").forEach((n) => n.remove());
+  pluginActions.replaceChildren();
+  const byId = Object.fromEntries(allPluginActions().map((a) => [a.id, a]));
+  for (const id of uiLayout.layout.toolbar || []) {
+    const action = byId[id];
+    if (!action || (uiLayout.hidden || []).includes(id)) continue;
+    const node = button(action.label, "secondary plugin-action", () => {
+      if (action.route) window.location.href = action.route;
+    });
+    toolbar.insertBefore(node, toolbar.lastElementChild);
+  }
+  for (const id of uiLayout.layout.plugins || []) {
+    const action = byId[id];
+    if (!action || (uiLayout.hidden || []).includes(id)) continue;
+    const node = button(action.label, "secondary plugin-action", () => {
+      if (action.route) window.location.href = action.route;
+    });
+    pluginActions.appendChild(node);
+  }
+}
+
+function renderLayoutEditor() {
+  const list = $("#ui-layout-list");
+  if (!list || !uiLayout) return;
+  list.replaceChildren();
+  const actions = allPluginActions();
+  for (const action of actions) {
+    const row = document.createElement("div"); row.className = "plugin-card";
+    const label = document.createElement("label");
+    const check = document.createElement("input"); check.type = "checkbox"; check.checked = !(uiLayout.hidden || []).includes(action.id);
+    check.dataset.action = action.id; label.append(check, ` ${action.label} (${action.plugin})`);
+    const select = document.createElement("select"); select.dataset.action = action.id;
+    for (const p of ["toolbar", "plugins", "chat"]) { const o = document.createElement("option"); o.value = p; o.textContent = p; o.selected = (uiLayout.layout[p] || []).includes(action.id); select.append(o); }
+    const up = button("↑", "ghost", () => { const prev = row.previousElementSibling; if (prev) row.parentNode.insertBefore(row, prev); });
+    const down = button("↓", "ghost", () => { const next = row.nextElementSibling; if (next) row.parentNode.insertBefore(next, row); });
+    up.setAttribute("aria-label", `Move ${action.label} up`); down.setAttribute("aria-label", `Move ${action.label} down`);
+    row.append(label, select, up, down); list.append(row);
+  }
+}
+
+async function loadUiLayout() {
+  try { const r = await fetch("/admin/ui/layout", {headers: authHeaders()}); if (r.ok) uiLayout = await r.json(); }
+  catch (_) { uiLayout = {layout: {toolbar: [], plugins: []}, hidden: []}; }
+  renderPluginActions();
+}
+
+function bindUiLayout() {
+  const dialog = $("#ui-layout-dialog");
+  $("#customize-ui")?.addEventListener("click", () => { renderLayoutEditor(); dialog.showModal(); });
+  $("#ui-layout-close")?.addEventListener("click", () => dialog.close());
+  $("#ui-layout-cancel")?.addEventListener("click", () => dialog.close());
+  $("#ui-layout-reset")?.addEventListener("click", () => { uiLayout.layout = {toolbar: allPluginActions().map(a => a.id), plugins: [], chat: []}; uiLayout.hidden = []; renderLayoutEditor(); });
+  $("#ui-layout-save")?.addEventListener("click", async () => {
+    const layout = {toolbar: [], plugins: [], chat: []}, hidden = [];
+    document.querySelectorAll("#ui-layout-list .plugin-card").forEach((row) => { const id = row.querySelector("input").dataset.action; const p = row.querySelector("select").value; if (row.querySelector("input").checked) layout[p].push(id); else hidden.push(id); });
+    const r = await fetch("/admin/ui/layout", {method: "PUT", headers: {...authHeaders(), "Content-Type": "application/json"}, body: JSON.stringify({layout, hidden})});
+    if (r.ok) { uiLayout = await r.json(); dialog.close(); renderPluginActions(); }
+  });
+}
+
 async function fetchPlugins() {
   try {
     const response = await fetch("/admin/plugins", { headers: authHeaders() });
@@ -559,6 +628,7 @@ async function fetchPlugins() {
     const data = await response.json();
     pluginList = data.plugins || [];
     renderPlugins();
+    await loadUiLayout();
   } catch (_) {
     // Keep whatever was shown before; discovery is best-effort.
   }
@@ -709,6 +779,7 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
 (async () => {
   await initAdminToken();
   await fetchStatus(true);
-  fetchPlugins();
+  await fetchPlugins();
+  bindUiLayout();
   setInterval(fetchStatus, 5000);
 })();

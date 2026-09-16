@@ -449,7 +449,19 @@ class Router:
             await asyncio.to_thread(
                 preflight_launch, target_model, target_gpu, target_srv.plan
             )
-            await asyncio.to_thread(self._check_vram_fit, target_model, target_gpu)
+            # Configuration-only/test routes often use missing or tiny
+            # placeholder GGUFs.  Keep those fast paths inline; malformed
+            # metadata readers can otherwise strand an executor worker while
+            # this admission check waits for it. Real model files remain
+            # off-loop because their GGUF scans can be substantial.
+            try:
+                lightweight_model = Path(target_model.path).stat().st_size < 1024
+            except OSError:
+                lightweight_model = True
+            if lightweight_model:
+                self._check_vram_fit(target_model, target_gpu)
+            else:
+                await asyncio.to_thread(self._check_vram_fit, target_model, target_gpu)
 
             await self._evict_for(target_model, target_gpu)
 

@@ -323,7 +323,5 @@ def create_backend(name: str, options: dict[str, Any] | None = None) -> ImageBac
         cls = BACKEND_REGISTRY.get(name)  # type: ignore[assignment]
         if cls is None:
             known = ", ".join(sorted([*BACKEND_REGISTRY, "comfyui"]))
-            raise CapabilityError(
-                f"Unknown image backend {name!r}. Known backends: {known}"
-            )
+            raise CapabilityError(f"Unknown image backend {name!r}. Known backends: {known}")
     return cls(options)

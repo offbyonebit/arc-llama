@@ -48,6 +48,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+from copy import deepcopy
 from typing import Any
 
 from fastapi import FastAPI
@@ -55,6 +56,48 @@ from fastapi import FastAPI
 log = logging.getLogger("arc_llama.plugins")
 
 ENTRY_POINT_GROUP = "arc_llama.plugins"
+_UI_PLACEMENTS = {"toolbar", "plugins", "chat"}
+_COMPOSER_MODES = {"text", "attachments", "custom"}
+
+
+def _validated_ui(data: Any) -> dict[str, Any]:
+    """Keep plugin UI metadata declarative, small, and safe to render."""
+    if not isinstance(data, dict):
+        return {}
+    result = deepcopy(data)
+    actions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in data.get("actions", []):
+        if not isinstance(raw, dict):
+            continue
+        action_id = raw.get("id")
+        label = raw.get("label")
+        if not isinstance(action_id, str) or not action_id or action_id in seen:
+            continue
+        if not isinstance(label, str) or not label:
+            continue
+        placement = raw.get("placement", "plugins")
+        if placement not in _UI_PLACEMENTS:
+            placement = "plugins"
+        action = {"id": action_id, "label": label, "placement": placement}
+        for key in ("icon", "route", "method", "description"):
+            if isinstance(raw.get(key), str) and raw[key]:
+                action[key] = raw[key]
+        composer = raw.get("composer")
+        if isinstance(composer, dict):
+            mode = composer.get("mode")
+            if mode in _COMPOSER_MODES:
+                composer_meta: dict[str, str] = {"mode": mode}
+                for key in ("placeholder", "result"):
+                    value = composer.get(key)
+                    if isinstance(value, str) and value:
+                        composer_meta[key] = value
+                action["composer"] = composer_meta
+        seen.add(action_id)
+        actions.append(action)
+    if "actions" in data:
+        result["actions"] = actions
+    return result
 
 
 class Plugin:
@@ -202,7 +245,10 @@ def plugin_info(plugin: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         log.warning("plugin %s info() returned a non-mapping; ignoring metadata", getattr(plugin, "name", "?"))
         return {}
-    return data
+    result = deepcopy(data)
+    if "ui" in result:
+        result["ui"] = _validated_ui(result["ui"])
+    return result
 
 
 def build_catalog(plugins: list[Any], status: dict[str, str] | None = None) -> list[dict[str, Any]]:

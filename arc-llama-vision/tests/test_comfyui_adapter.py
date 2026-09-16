@@ -159,13 +159,7 @@ def test_config_defaults() -> None:
     cfg = ComfyUIConfig.from_options({})
     assert cfg.base_url == "http://127.0.0.1:8190"
     assert cfg.model_id == MODEL_ID
-    assert (
-        cfg.unet_gguf
-        and cfg.clip_gguf
-        and cfg.vae
-        and cfg.sampler
-        and cfg.filename_prefix
-    )
+    assert cfg.unet_gguf and cfg.clip_gguf and cfg.vae and cfg.sampler and cfg.filename_prefix
     assert cfg.sampler == "euler"
     assert cfg.steps == 20
     assert cfg.guidance == 5.0
@@ -245,9 +239,7 @@ def _workflow(backend: ComfyUIBackend) -> dict[str, Any]:
 
 def test_workflow_is_valid_api_format_graph(backend: ComfyUIBackend) -> None:
     wf = _workflow(backend)
-    assert set(wf) == {
-        "10", "11", "12", "20", "21", "30", "31", "32", "33", "34", "35", "36", "37"
-    }
+    assert set(wf) == {"10", "11", "12", "20", "21", "30", "31", "32", "33", "34", "35", "36", "37"}
     for node_id, node in wf.items():
         assert isinstance(node_id, str)
         assert isinstance(node["class_type"], str) and node["class_type"]
@@ -490,7 +482,11 @@ class _RejectsSubmit400(FakeComfy):
     def _answer(self, url: str, method: str, payload: Any) -> Any:
         if method == "POST" and "/prompt" in url:
             raise urllib.error.HTTPError(
-                url, 400, "invalid prompt", hdrs=None, fp=None  # type: ignore[arg-type]
+                url,
+                400,
+                "invalid prompt",
+                hdrs=None,
+                fp=None,  # type: ignore[arg-type]
             )
         return super()._answer(url, method, payload)
 

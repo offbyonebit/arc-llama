@@ -228,6 +228,45 @@ ARV_BACKEND_OPTIONS='{
 files actually present in ComfyUI's `models/unet_gguf`, `models/clip_gguf`,
 and `models/vae` directories.
 
+### Intel Arc XPU launch requirements
+
+For Intel Arc GPU inference, run ComfyUI with a PyTorch XPU build and the
+`ComfyUI-GGUF` custom node installed. Keep ComfyUI's PyTorch/SYCL/Unified
+Runtime libraries together. In particular, a system oneAPI
+`LD_LIBRARY_PATH` can cause PyTorch's bundled SYCL runtime to load a
+different oneAPI Unified Runtime; that combination can crash during the
+Flux text-encoder embedding step.
+
+Use a launcher that removes inherited compiler/library paths while retaining
+the device-selection variables:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd /path/to/ComfyUI
+
+exec env \
+  -u LD_LIBRARY_PATH \
+  -u LIBRARY_PATH \
+  -u CPATH \
+  -u CPLUS_INCLUDE_PATH \
+  -u C_INCLUDE_PATH \
+  -u PKG_CONFIG_PATH \
+  -u CMAKE_PREFIX_PATH \
+  ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-level_zero:0}" \
+  ZES_ENABLE_SYSMAN="${ZES_ENABLE_SYSMAN:-1}" \
+  SYCL_CACHE_PERSISTENT="${SYCL_CACHE_PERSISTENT:-0}" \
+  /path/to/comfyui-venv/bin/python main.py \
+  --listen 127.0.0.1 --port 8188 \
+  --extra-model-paths-config /path/to/extra_model_paths.yaml \
+  --use-pytorch-cross-attention
+```
+
+Before using the companion, verify that ComfyUI reports an XPU device in
+`/system_stats`, for example `xpu:0 Intel(R) Arc(TM) Pro B60 Graphics`.
+Do not silently fall back to CPU for production image generation: it can
+make a valid request appear hung and can take many minutes per image.
+
 How it works, end to end:
 
 1. Each request builds a minimal **API-format FLUX.2 Klein text-to-image
@@ -252,12 +291,14 @@ patch size enforced by `EmptyFlux2LatentImage`/`Flux2Scheduler`); other
 sizes return `400`.
 
 **Performance note (tested setup):** this adapter has been exercised
-against a ComfyUI instance running **FLUX.2 Klein 9B Q4** with a public
-**Q2 uncensored Qwen3 text encoder** through ComfyUI, **CPU-only**, where a
-**512x512 render at the default 20 steps took about 7 minutes**. `n` is
-fixed at 1 for this reason. No GPU support is claimed or tested here —
-device placement is entirely ComfyUI's business. Set `poll_timeout`
-generously (the 20-minute default reflects exactly this experience).
+against ComfyUI 0.20.1 with PyTorch 2.11.0+xpu on an **Intel Arc Pro B60**,
+running **FLUX.2 Klein 9B Q4** with a public **Q2 uncensored Qwen3 text
+encoder**. A real **512x512 GPU render completed in about 19 seconds at one
+step** through the Arc Llama route. The default 20-step configuration will
+take longer; `n` remains fixed at 1 to keep per-request VRAM bounded.
+Device placement is entirely ComfyUI's business, so verify `/system_stats`
+before generating. Set `poll_timeout` generously for cold starts and higher
+step counts.
 
 ## Plugging in a real backend adapter
 

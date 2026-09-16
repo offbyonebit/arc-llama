@@ -20,6 +20,31 @@ const commandPalette = $("#command-palette");
 const attachButton = $("#attach-button");
 const pdfInput = $("#pdf-input");
 const attachmentStrip = $("#attachment-strip");
+const pluginTools = $("#plugin-tools");
+const pluginToolsToggle = $("#plugin-tools-toggle");
+const pluginToolsMenu = $("#plugin-tools-menu");
+const pluginToolsCount = $("#plugin-tools-count");
+const visionModeChip = $("#vision-mode-chip");
+
+function setPluginToolsOpen(open) {
+  if (!pluginToolsMenu || !pluginToolsToggle) return;
+  pluginToolsMenu.hidden = !open;
+  pluginToolsToggle.setAttribute("aria-expanded", String(open));
+  pluginTools.classList.toggle("open", open);
+}
+
+pluginToolsToggle?.addEventListener("click", () => {
+  setPluginToolsOpen(pluginToolsMenu.hidden);
+});
+document.addEventListener("click", (event) => {
+  if (pluginTools && !pluginTools.contains(event.target)) setPluginToolsOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setPluginToolsOpen(false);
+    if (activeComposerAction && !generatingImage && document.activeElement === input) setComposerAction(null);
+  }
+});
 
 let models = [];
 let selectedModel = null;
@@ -27,6 +52,167 @@ let loadingModel = null;
 let generating = false;
 let statusPoller = null;
 let adminToken = null;
+const MIN_VISION_LOADER_MS = 850;
+
+// The user-selected image-generation tool. When set, the main composer is in
+// "image mode": typed text is the image prompt and pressing Enter submits it
+// to the plugin's generation endpoint instead of the chat model.
+let activeComposerAction = null;
+let generatingImage = false;
+
+function setComposerAction(action) {
+  activeComposerAction = action;
+  if (!action) {
+    inputWrap.classList.remove("vision-mode");
+    input.dataset.imageMode = "false";
+    input.placeholder = "Message arc-llama…";
+    input.setAttribute("aria-label", "Message arc-llama");
+    if (visionModeChip) visionModeChip.hidden = true;
+    attachButton.disabled = false;
+    return;
+  }
+  const mode = action.composer?.mode || "text";
+  inputWrap.classList.toggle("vision-mode", mode === "text");
+  input.dataset.composerMode = mode;
+  input.dataset.imageMode = String(mode === "text" && action.composer?.result === "image");
+  input.placeholder = action.composer?.placeholder || (mode === "attachments"
+    ? `Add files for ${action.label || "this tool"}…`
+    : `Enter a prompt for ${action.label || "this tool"}…`);
+  input.setAttribute("aria-label", mode === "attachments" ? "Tool input and attachments" : "Tool prompt");
+  if (visionModeChip) {
+    visionModeChip.hidden = false;
+    visionModeChip.setAttribute("aria-live", "polite");
+    const label = visionModeChip.querySelector("#vision-mode-label");
+    if (label) label.textContent = action.label ? `${action.label} mode` : "Tool mode";
+  }
+  // Attachments are chat-context extras; they have no meaning for prompts
+  // sent to the diffusion companion, so park them while the mode is on.
+  clearAttachments();
+  attachButton.disabled = mode !== "attachments";
+  hideCommandPalette();
+  setPluginToolsOpen(false);
+  input.focus();
+}
+
+function isComposerActionActive() {
+  return activeComposerAction !== null && !generating;
+}
+
+const visionModeChipCancel = $("#vision-mode-chip-cancel");
+if (visionModeChipCancel) {
+  visionModeChipCancel.addEventListener("click", () => setComposerAction(null));
+}
+
+function selectComposerAction(action) {
+  if (generating || generatingImage) return;
+  // Toggle behavior: picking the same tool twice turns image mode off.
+  if (activeComposerAction && activeComposerAction.id === action.id) {
+    setComposerAction(null);
+    return;
+  }
+  setComposerAction(action);
+}
+
+async function sendComposerAction() {
+  const action = activeComposerAction;
+  const prompt = input.value.trim();
+  if (!action || generating || generatingImage) return;
+  if (!prompt && !hasReadyAttachments()) return;
+  if (!action.route) {
+    showError("Selected tool has no route.");
+    setComposerAction(null);
+    return;
+  }
+
+  const attachmentText = buildAttachmentText();
+  const payload = { prompt };
+  if (attachmentText) payload.attachments = attachmentText;
+  clearAttachments();
+  input.value = "";
+  input.style.height = "auto";
+  createMessage("user", prompt || "Attached input");
+  hideCommandPalette();
+
+  generatingImage = true;
+  sendButton.disabled = true;
+  inputWrap.classList.add("generating");
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "message assistant vision-generation";
+  wrapper.setAttribute("role", "status");
+  wrapper.setAttribute("aria-live", "polite");
+  wrapper.innerHTML = `<div class="vision-loader" aria-label="Running ${escapeHtml(action.label || "tool")}"><div class="vision-loader-glow"></div><div class="vision-loader-core"></div><span>${escapeHtml(action.label || "Tool")} is working…</span></div>`;
+  chatLog.appendChild(wrapper); chatLog.scrollTop = chatLog.scrollHeight;
+  const loaderStartedAt = performance.now();
+  try {
+    const responsePromise = fetch(action.route, {method: action.method || "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    const response = await responsePromise;
+    const data = await response.json();
+    const remaining = MIN_VISION_LOADER_MS - (performance.now() - loaderStartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+    if (!response.ok) throw new Error(data.detail || "Tool action failed");
+    const resultType = action.composer?.result || "image";
+    if (resultType === "image") {
+      const image = data.data?.[0]?.b64_json;
+      if (!image) throw new Error("Tool returned no image");
+      wrapper.className = "message assistant vision-generation complete";
+      wrapper.replaceChildren();
+      const img = document.createElement("img"); img.src = `data:image/png;base64,${image}`; img.alt = prompt; img.style.maxWidth = "100%"; wrapper.appendChild(img);
+    } else {
+      wrapper.className = "message assistant tool-generation complete";
+      wrapper.textContent = data.output || data.text || data.message || JSON.stringify(data);
+    }
+    chatLog.appendChild(wrapper); chatLog.scrollTop = chatLog.scrollHeight;
+    setComposerAction(null);
+  } catch (error) {
+    wrapper.className = "message assistant vision-generation failed";
+    wrapper.innerHTML = `<div class="vision-generation-error"><strong>Tool action failed</strong><span>${escapeHtml(error.message)}</span></div>`;
+    setComposerAction(null);
+  }
+  finally {
+    generatingImage = false;
+    sendButton.disabled = false;
+    inputWrap.classList.remove("generating");
+    input.focus();
+  }
+}
+
+async function loadPluginActions() {
+  const host = $("#plugin-actions");
+  if (!host) return;
+  try {
+    const r = await fetch("/admin/ui/layout", {headers: authHeaders()});
+    if (!r.ok) return;
+    const data = await r.json();
+    const ids = [...(data.layout?.chat || []), ...(data.layout?.plugins || []), ...(data.layout?.toolbar || [])];
+    const hidden = new Set(data.hidden || []);
+    host.replaceChildren();
+    let visibleCount = 0;
+    for (const action of data.actions || []) {
+      if (!ids.includes(action.id) || hidden.has(action.id)) continue;
+      visibleCount += 1;
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "plugin-action-button"; button.setAttribute("role", "menuitem");
+      const icon = document.createElement("img");
+      icon.className = "plugin-action-icon";
+      icon.src = action.icon === "image" ? "/assets/arc-llama-vision.png?v=ui-0.21" : "/assets/arc-llama-tools.png?v=ui-0.21";
+      icon.alt = ""; icon.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span"); copy.className = "plugin-action-copy";
+      const label = document.createElement("strong"); label.textContent = action.label || action.id;
+      const detail = document.createElement("small"); detail.textContent = action.description || "Plugin action";
+      copy.append(label, detail); button.append(icon, copy);
+      button.addEventListener("click", () => {
+        setPluginToolsOpen(false);
+        if (action.composer?.mode) selectComposerAction(action);
+        else if (action.route) window.location.href = action.route;
+      });
+      host.appendChild(button);
+    }
+    if (pluginToolsCount) pluginToolsCount.textContent = String(visibleCount);
+    if (pluginToolsToggle) pluginToolsToggle.disabled = visibleCount === 0;
+    if (!visibleCount) setPluginToolsOpen(false);
+  } catch (_) { /* plugin actions are optional */ }
+}
 
 async function initAdminToken() {
   try {
@@ -892,6 +1078,7 @@ async function ensureModelLoaded() {
 }
 
 async function sendMessage() {
+  if (isComposerActionActive()) { sendComposerAction(); return; }
   const text = input.value.trim();
   if (generating || !selectedModel) return;
   if (!text && !hasReadyAttachments()) return;
@@ -1538,6 +1725,10 @@ input.addEventListener("keydown", async (e) => {
       hideCommandPalette();
       return;
     }
+    if (isComposerActionActive()) {
+      await sendComposerAction();
+      return;
+    }
     sendMessage();
   }
 });
@@ -1548,6 +1739,10 @@ sendButton.addEventListener("click", async () => {
     input.value = "";
     input.style.height = "auto";
     hideCommandPalette();
+    return;
+  }
+  if (isComposerActionActive()) {
+    await sendComposerAction();
     return;
   }
   sendMessage();
@@ -1563,6 +1758,7 @@ input.addEventListener("input", () => {
 
 (async function init() {
   await initAdminToken();
+  await loadPluginActions();
   await fetchModels();
   await fetchStatus();
   await loadFolders();

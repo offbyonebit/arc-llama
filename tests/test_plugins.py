@@ -356,3 +356,38 @@ def test_create_app_admin_plugins_reports_error_status(monkeypatch):
         by_name = {p["name"]: p["status"] for p in resp.json()["plugins"]}
         assert by_name["broken"] == "error"
         assert by_name["fake"] == "active"
+
+
+def test_plugin_ui_actions_preserve_generic_composer_contract():
+    class ComposerPlugin(Plugin):
+        name = "composer"
+
+        def register(self, app): ...
+
+        def info(self):
+            return {
+                "ui": {
+                    "actions": [
+                        {
+                            "id": "composer.run",
+                            "label": "Run",
+                            "description": "Use the main composer",
+                            "route": "/plugin/run",
+                            "composer": {
+                                "mode": "attachments",
+                                "placeholder": "Attach input…",
+                                "result": "json",
+                                "ignored": {"not": "serializable contract"},
+                            },
+                        }
+                    ]
+                }
+            }
+
+    action = build_catalog([ComposerPlugin()])[0]["ui"]["actions"][0]
+    assert action["description"] == "Use the main composer"
+    assert action["composer"] == {
+        "mode": "attachments",
+        "placeholder": "Attach input…",
+        "result": "json",
+    }
