@@ -15,14 +15,12 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Status: 0.8.0.** Tested end-to-end on Battlemage B60 on Linux and Windows:
-> `arc-llama install-runtime` fetches a portable Vulkan `llama-server` and
-> serves real inference with no oneAPI install or source build. The Windows
-> SYCL runtime also passes GPU discovery, model startup, streaming, and the
-> OpenAI-compatible API. HF download, streaming, and the OpenAI-compatible
-> API all pass. Other SKUs (A770, A380,
-> B580) need community confirmation -- open an issue if something breaks on
-> your card.
+> **Status: 0.9.0.dev0 — 1.0 release preparation.** Tested end-to-end on
+> Battlemage B60 on Linux and Windows. The release-prep branch includes the
+> one-command `arc-llama run` flow, verified portable runtime installation,
+> native Windows SYCL inference, streaming, Ollama-compatible endpoints, and
+> the OpenAI-compatible API. Other SKUs (A770, A380, B580) need community
+> confirmation — open an issue if something breaks on your card.
 
 ## What you get
 
@@ -47,6 +45,13 @@ something useful before lunch.
   multi-resident if you have headroom.
 - **OpenAI-compatible API** at `http://127.0.0.1:11437/v1/...`. Plug it into
   Open WebUI, OpenCode, anything that speaks OpenAI.
+- **Ollama-compatible API** at `http://127.0.0.1:11437/api/...`. Use
+  `/api/tags`, `/api/chat`, and `/api/generate` with Ollama-compatible clients;
+  see the [compatibility contract](docs/compatibility.md) for the supported
+  request and streaming behavior.
+- **Plugin extension point** for adding routes and lifecycle integrations
+  without modifying the inference core. Plugins are isolated at startup and
+  are optional; see `examples/hello-plugin` for a minimal example.
 - **A web UI** at `http://127.0.0.1:11437/` , ships with the install. Model
   picker, load/stop buttons, **inline ctx + KV-quant editing**, GPU + VRAM
   panel. Pure HTML/JS, no build step.
