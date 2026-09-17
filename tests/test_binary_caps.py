@@ -7,6 +7,7 @@ touches a GPU, or depends on the host having an Intel card.
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
@@ -74,6 +75,8 @@ def test_no_library_found_is_all_unknown(tmp_path):
 
 
 def test_resolves_symlink_chain_and_ignores_stale_versions(tmp_path):
+    if sys.platform == "win32":
+        pytest.skip("Windows symlink creation requires Developer Mode or elevated privileges")
     exe = _make_tree(tmp_path, _SYMBOLS + _Q8_FIXED + _AOT, versioned=True)
     lib = find_sycl_lib(str(exe))
     assert lib is not None

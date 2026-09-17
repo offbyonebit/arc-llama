@@ -56,6 +56,16 @@ log = logging.getLogger("arc_llama.server")
 _REASONING_FORMATS = {"auto", "none", "deepseek", "deepseek-legacy"}
 
 
+async def _iter_sse_body(response: httpx.Response):
+    """Yield an SSE response and stop once the protocol sends ``[DONE]``."""
+    tail = b""
+    async for chunk in response.aiter_raw():
+        yield chunk
+        tail = (tail + chunk)[-64:]
+        if b"data: [DONE]" in tail:
+            return
+
+
 def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
     return {
         k: v
@@ -1427,7 +1437,7 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
 
             async def upstream_body_iter():
                 try:
-                    async for chunk in upstream_resp.aiter_raw():
+                    async for chunk in _iter_sse_body(upstream_resp):
                         yield chunk
                 finally:
                     await close_upstream()
@@ -1572,7 +1582,7 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 # is still live lets the autotuner restart the backend out from
                 # under the request.
                 try:
-                    async for chunk in upstream.aiter_raw():
+                    async for chunk in _iter_sse_body(upstream):
                         yield chunk
                 finally:
                     await _release()

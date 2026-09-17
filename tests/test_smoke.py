@@ -69,10 +69,11 @@ def _wait_for_server(
 @pytest.mark.skipif(not os.environ.get("ARC_LLAMA_SMOKE_MODEL"), reason=_SKIP_REASON)
 def test_inference_smoke() -> None:
     model = os.environ["ARC_LLAMA_SMOKE_MODEL"]
-    config_path = os.environ.get(
-        "ARC_LLAMA_SMOKE_CONFIG",
-        os.path.join(_real_home(), ".config", "arc-llama", "config.toml"),
-    )
+    config_path = os.environ.get("ARC_LLAMA_SMOKE_CONFIG")
+    if not config_path:
+        from arc_llama.config import default_config_path
+
+        config_path = str(default_config_path())
     server_url = os.environ.get("ARC_LLAMA_SMOKE_URL", "http://127.0.0.1:11436")
 
     real_home = _real_home()
@@ -141,7 +142,17 @@ def test_inference_smoke() -> None:
         assert lines[-1] == "data: [DONE]", lines[-5:]
     finally:
         if sys.platform == "win32":
-            proc.terminate()
+            # Terminating the Python parent alone leaves llama-server.exe
+            # behind on Windows. Kill the full process tree by PID.
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    check=False,
+                    capture_output=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
         else:
             proc.send_signal(signal.SIGTERM)
         try:

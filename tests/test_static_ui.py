@@ -14,7 +14,7 @@ STATIC = Path(__file__).parent.parent / "src" / "arc_llama" / "static"
 
 def test_brand_logo_is_referenced_accessibly_on_both_surfaces() -> None:
     for name in ("index.html", "chat.html"):
-        html = (STATIC / name).read_text()
+        html = (STATIC / name).read_text(encoding="utf-8")
         assert 'class="brand-logo"' in html
         assert '/assets/arc-llama-logo.png?v=' in html
         assert 'alt="Arc Llama logo"' in html
@@ -27,21 +27,21 @@ def test_brand_logo_is_referenced_accessibly_on_both_surfaces() -> None:
 
 def test_theme_toggle_and_persistent_theme_are_present_on_both_surfaces() -> None:
     for name, script in (("index.html", "app.js"), ("chat.html", "chat.js")):
-        html = (STATIC / name).read_text()
-        js = (STATIC / script).read_text()
+        html = (STATIC / name).read_text(encoding="utf-8")
+        js = (STATIC / script).read_text(encoding="utf-8")
         assert 'id="theme-toggle"' in html
         assert "arc-llama-theme" in js
         assert 'dataset.theme' in js
 
 
 def test_assistant_bubbles_do_not_use_the_stray_accent_rule() -> None:
-    css = (STATIC / "chat.css").read_text()
+    css = (STATIC / "chat.css").read_text(encoding="utf-8")
     assert "border-left: 3px solid var(--accent)" not in css
     assert ".message.assistant" in css
 
 
 def test_advanced_details_state_is_preserved_across_model_rerenders() -> None:
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "const openDetailModels = new Set()" in js
     assert "details.open = openDetailModels.has(model.name)" in js
     assert 'details.addEventListener("toggle"' in js
@@ -62,7 +62,7 @@ def test_javascript_syntax(script: Path):
 
 def test_scan_status_region_is_present_and_live():
     """The dashboard ships an accessible, polite scan status region."""
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     assert 'id="scan-status"' in html
     assert 'id="scan-status-text"' in html
@@ -72,7 +72,7 @@ def test_scan_status_region_is_present_and_live():
 
 
 def test_scan_button_relabels_and_disables_immediately():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     # The busy and idle labels are named constants so status wording,
     # button label, and tests cannot drift apart.
@@ -87,9 +87,9 @@ def test_scan_button_relabels_and_disables_immediately():
 
 def test_scan_shows_honest_indeterminate_progress():
     """The backend exposes no percentage, so the UI shows an indeterminate bar."""
-    js = (STATIC / "app.js").read_text()
-    css = (STATIC / "style.css").read_text()
-    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     # Honest wording: no invented percentage in the status copy or markup.
     assert "%" not in html.split('id="scan-status"')[1].split("</div>")[0]
@@ -103,7 +103,7 @@ def test_scan_shows_honest_indeterminate_progress():
 
 
 def test_scan_reports_success_and_error_then_restores_button_in_finally():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     scan_body = js[js.index("async function scanModels") : js.index("async function stopAll")]
 
     # Success path reports what the scan found via the live region.
@@ -224,7 +224,7 @@ EM_DASH = "—"
     ["index.html", "app.js", "chat.html", "chat.js", "style.css", "chat.css"],
 )
 def test_no_em_dashes_in_user_visible_ui_text(filename: str):
-    content = (STATIC / filename).read_text()
+    content = (STATIC / filename).read_text(encoding="utf-8")
     offending = [i for i, ch in enumerate(content) if ch == EM_DASH]
     assert not offending, (
         f"{filename} contains Unicode em dash characters at offsets {offending[:8]}; "
@@ -286,13 +286,13 @@ def test_marked_renderer_handles_safe_and_hostile_markdown():
 
 
 def test_chat_loads_safety_policy_before_renderer():
-    html = (STATIC / "chat.html").read_text()
+    html = (STATIC / "chat.html").read_text(encoding="utf-8")
     assert html.index("markdown_safety.js") < html.index("chat.js")
 
 
 def test_chat_uses_clear_on_demand_model_status():
-    chat_html = (STATIC / "chat.html").read_text()
-    chat_js = (STATIC / "chat.js").read_text()
+    chat_html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    chat_js = (STATIC / "chat.js").read_text(encoding="utf-8")
 
     assert '<span id="status-text">loading models</span>' in chat_html
     assert 'updateStatus("idle")' in chat_js
@@ -305,8 +305,8 @@ def test_chat_uses_clear_on_demand_model_status():
 
 
 def test_dashboard_offers_connect_a_frontend_action():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert 'id="connect-frontend"' in html
     assert "Connect a frontend" in html
@@ -316,7 +316,7 @@ def test_dashboard_offers_connect_a_frontend_action():
 
 
 def test_frontend_dialog_lists_three_guided_choices():
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     assert 'id="tab-openwebui"' in html
     assert 'id="tab-ollama"' in html
@@ -330,7 +330,7 @@ def test_frontend_dialog_lists_three_guided_choices():
 
 def test_frontend_dialog_uses_no_external_assets():
     """Offline usability: the dialog must rely only on the local page."""
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     dialog = html[html.index("frontend-dialog") : html.index("</dialog>")]
     assert "http://" not in dialog
     assert "https://" not in dialog
@@ -339,7 +339,7 @@ def test_frontend_dialog_uses_no_external_assets():
 
 
 def test_frontend_panel_reads_admin_integration_endpoint():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert 'fetch("/admin/integration"' in js
     assert "authHeaders()" in js
@@ -347,7 +347,7 @@ def test_frontend_panel_reads_admin_integration_endpoint():
 
 def test_frontend_copies_use_no_credentials():
     """The flow is copy-only guidance; no token fields may appear."""
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     dialog = html[html.index("frontend-dialog") : html.index("</dialog>")]
 
     assert "admin_token" not in dialog
@@ -356,8 +356,8 @@ def test_frontend_copies_use_no_credentials():
 
 
 def test_openwebui_panel_shows_copyable_base_url_and_key_guidance():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert 'id="openwebui-url"' in html
     assert 'id="copy-openwebui-url"' in html
@@ -368,8 +368,8 @@ def test_openwebui_panel_shows_copyable_base_url_and_key_guidance():
 
 
 def test_ollama_panel_uses_existing_upstream_flow_copyably():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     # The panel shows a copyable upstream add command, sourced from the
     # backend's discovery payload.
@@ -381,8 +381,8 @@ def test_ollama_panel_uses_existing_upstream_flow_copyably():
 
 
 def test_generic_panel_shows_curl_example():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert 'id="generic-url"' in html
     assert 'id="generic-curl"' in html
@@ -393,8 +393,8 @@ def test_generic_panel_shows_curl_example():
 
 
 def test_frontend_tabs_are_keyboard_accessible():
-    html = (STATIC / "index.html").read_text()
-    js = (STATIC / "app.js").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert 'role="tablist"' in html
     assert html.count('role="tab"') == 3
@@ -404,7 +404,7 @@ def test_frontend_tabs_are_keyboard_accessible():
 
 
 def test_dialog_styles_exist_for_frontend_panel():
-    css = (STATIC / "style.css").read_text()
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
     assert ".frontend-dialog" in css
     assert ".frontend-tab" in css
     assert ".frontend-copy" in css

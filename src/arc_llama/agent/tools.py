@@ -320,6 +320,30 @@ def _normalize_segment(segment: str) -> str | None:
     return " ".join(tokens).lower()
 
 
+def _prepare_windows_command(command: str) -> str:
+    """Translate the portable env wrapper for the Windows shell."""
+    if sys.platform != "win32":
+        return command
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return command
+    if not tokens or tokens[0].lower() != "env":
+        return command
+    assignments: list[str] = []
+    index = 1
+    while index < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[index]):
+        assignments.append(tokens[index])
+        index += 1
+    if index == len(tokens):
+        return command
+    wrapped = subprocess.list2cmdline(tokens[index:])
+    if not assignments:
+        return wrapped
+    setters = " && ".join(f'set "{assignment}"' for assignment in assignments)
+    return f"{setters} && {wrapped}"
+
+
 def _ensure_checkpoint(ctx: ToolContext) -> str | None:
     """Create a checkpoint before the first mutation in a run.
 
@@ -616,9 +640,10 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
     env = os.environ.copy()
     if sys.platform != "win32":
         env.update({"PS1": "", "TERM": "dumb"})
+    shell_command = _prepare_windows_command(command)
     try:
         result = subprocess.run(
-            command,
+            shell_command,
             shell=True,
             cwd=root,
             capture_output=True,
