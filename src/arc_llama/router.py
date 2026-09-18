@@ -15,7 +15,10 @@ one is currently allowed to hold its GPU's VRAM. Two policies are supported:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
+import statistics
 import time
 from pathlib import Path
 from typing import Any
@@ -38,6 +41,127 @@ log = logging.getLogger("arc_llama.router")
 # Rough overhead budgets for VRAM estimation (MiB).
 _VRAM_COMPUTE_BUFFER_MB = 768
 _VRAM_SAFETY_MARGIN_MB = 256
+
+
+def _quantile(sorted_values: list[float], q: float) -> float | None:
+    """Nearest-rank quantile over an already-sorted list; None when empty."""
+    if not sorted_values:
+        return None
+    rank = max(0, min(len(sorted_values) - 1, math.ceil(q * len(sorted_values)) - 1))
+    return sorted_values[rank]
+
+
+def summarise_seconds(values: list[float]) -> dict[str, float | int | None] | None:
+    """Bounded summary of a list of durations in seconds.
+
+    Never invents numbers: returns None when there are no samples. p50/p95
+    use nearest-rank over a copy because the source list keeps appending.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    latest = values[-1]
+    return {
+        "count": len(ordered),
+        "last_s": round(latest, 3),
+        "median_s": round(statistics.median(ordered), 3),
+        "p95_s": round(_quantile(ordered, 0.95) or 0.0, 3),
+    }
+
+
+class ModelTimings:
+    """Bounded, timestamped usage timings per model, measured from real traffic.
+
+    Every list is capped (``_CAP``) so long-lived servers cannot grow metrics
+    without bound, and ordered by age — oldest entries drop first. All values
+    come from observed requests or loads; nothing is estimated or invented:
+
+    * ``cold_starts``: start-of-load to health-ready for loads that actually
+      started a new subprocess (waited warm-ups are not cold starts).
+    * ``ttft``: request entry to first generated content, including model wait.
+    * ``generation_tok_s``: generation speed derived from the completion usage
+      object llama-server reports for a finished request, when it reports
+      completion_tokens and a measurable steady window. Absent usage means
+      absent samples; the recorder never substitutes an estimate.
+    * ``model_wait``: router admission, eviction drain and cold-start wait combined.
+      This is not a measurement of the backend inference queue.
+    """
+
+    _CAP = 64
+
+    def __init__(self, cap: int = _CAP) -> None:
+        if cap < 1:
+            raise ValueError("metrics sample cap must be positive")
+        self.cold_starts: dict[str, list[float]] = {}
+        self.ttft: dict[str, list[float]] = {}
+        self.generation_tok_s: dict[str, list[float]] = {}
+        self.queue: list[float] = []
+        self.model_wait: dict[str, list[float]] = {}
+        self._cap = cap
+
+    def _append(self, store: dict[str, list[float]], name: str, value: float) -> None:
+        if not math.isfinite(value) or value < 0:
+            return
+        if name not in store and len(store) >= 128:
+            store.pop(next(iter(store)))
+        bucket = store.setdefault(name, [])
+        bucket.append(value)
+        if len(bucket) > self._cap:
+            del bucket[:- self._cap]
+
+    def record_cold_start(self, name: str, seconds: float) -> None:
+        self._append(self.cold_starts, name, seconds)
+
+    def record_ttft(self, name: str, seconds: float) -> None:
+        self._append(self.ttft, name, seconds)
+
+    def record_generation_tok_s(self, name: str, tok_per_s: float) -> None:
+        self._append(self.generation_tok_s, name, tok_per_s)
+
+    def record_queue_wait(self, seconds: float, name: str | None = None) -> None:
+        if name is not None:
+            self._append(self.model_wait, name, seconds)
+        if not math.isfinite(seconds) or seconds < 0:
+            return
+        self.queue.append(seconds)
+        if len(self.queue) > self._cap:
+            del self.queue[: len(self.queue) - self._cap]
+
+    def snapshot(self) -> dict[str, Any]:
+        """JSON-ready timing summaries.
+
+        Shape: ``{"models": {name: {cold_start, ttft, generation_tok_s}}},
+        "queue_wait": {...}}`` with sub-keys present only where real samples
+        exist. Never invents values: absent samples mean absent keys.
+        """
+        per_model: dict[str, Any] = {}
+        names = set(self.cold_starts) | set(self.ttft) | set(self.generation_tok_s) | set(self.model_wait)
+        for name in sorted(names):
+            entry: dict[str, Any] = {}
+            cold = summarise_seconds(self.cold_starts.get(name, []))
+            ttft = summarise_seconds(self.ttft.get(name, []))
+            gen = self.generation_tok_s.get(name, [])
+            if cold:
+                entry["cold_start"] = cold
+            if ttft:
+                entry["ttft"] = ttft
+            if gen:
+                summary = summarise_seconds(gen)
+                assert summary is not None
+                entry["generation_tok_s"] = {
+                    key.replace("_s", "_tok_s"): value
+                    for key, value in summary.items()
+                }
+            wait = summarise_seconds(self.model_wait.get(name, []))
+            if wait:
+                entry["model_wait"] = wait
+            if entry:
+                per_model[name] = entry
+        out: dict[str, Any] = {"models": per_model}
+        queue = summarise_seconds(self.queue)
+        if queue:
+            out["queue_wait"] = queue
+        return out
 
 
 def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
@@ -170,6 +294,90 @@ def _estimate_model_vram_mb(
     return weight_mb + kv_mb + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
 
+_VRAM_ESTIMATE_CACHE_TTL_SECONDS = 120.0
+
+
+def estimate_model_vram_with_cache(
+    model: ModelConfig,
+    cache: dict[str, tuple[float, int | None]],
+    *,
+    ttl_seconds: float = _VRAM_ESTIMATE_CACHE_TTL_SECONDS,
+    estimator: Any = _estimate_model_vram_mb,
+) -> int | None:
+    """Cache ``_estimate_model_vram_mb(model)`` per (path, mtime) within a TTL.
+
+    The admission guard runs on every model switch; admin status now wants the
+    same number for UI display. Exact estimation walks the GGUF tensor table
+    (seconds on a large file), so a short shared cache keyed by path+mtime
+    keeps repeated /admin/status polls cheap without letting a stale value
+    survive a file swap.
+    """
+    try:
+        stat = Path(model.path).stat()
+        recipe_key = json.dumps(model.recipe or {}, sort_keys=True, default=str)
+        key = f"{model.path}:{stat.st_mtime_ns}:{stat.st_size}:{model.kv_class}:{recipe_key}"
+        now = time.monotonic()
+        hit = cache.get(key)
+        if hit is not None and now - hit[0] <= ttl_seconds:
+            return hit[1]
+        value = estimator(model)
+        cache[key] = (now, value)
+        # Bounded memory: models are few, but cap the cache anyway in case a
+        # path keeps changing mtime.
+        if len(cache) > 64:
+            for stale_key in sorted(cache, key=lambda k: cache[k][0])[: len(cache) - 64]:
+                cache.pop(stale_key, None)
+        return value
+    except OSError:
+        return None
+
+
+def model_vram_fit_info(
+    model: ModelConfig,
+    gpu: GPUConfig | None,
+    cache: dict[str, tuple[float, int | None]] | None = None,
+) -> dict[str, Any] | None:
+    """Admin-status VRAM fit preview for one model on its configured GPU.
+
+    Uses the existing estimators only — no new GGUF parsing — and reports
+    ``estimated_mb`` (model footprint), ``headroom_mb`` (VRAM left after the
+    load in single-resident mode), ``fit`` (fits/unknown) and a confidence
+    label honestly reflecting how the number was derived. Returns None when
+    nothing at all can be estimated, so callers omit the block rather than
+    render a made-up answer.
+    """
+    estimated = estimate_model_vram_quick_mb(model)
+    confidence: str | None = "estimated_from_file_size"
+    if estimated is None:
+        if cache is not None:
+            estimated = estimate_model_vram_with_cache(model, cache)
+        else:
+            estimated = _estimate_model_vram_mb(model)
+        confidence = "estimated_from_tensor_table" if estimated is not None else None
+    if estimated is None:
+        return None
+    info: dict[str, Any] = {
+        "estimated_mb": estimated,
+        "confidence": confidence,
+    }
+    if gpu is None or not gpu.vram_mb:
+        info["fit"] = None
+        return info
+    # Single-resident deployments evict neighbours first, so headroom is
+    # simply the card minus this model. In multi-resident mode co-residents
+    # share the card; without summing every loaded peer the number would be
+    # dishonest, so only single-resident reports a headroom value.
+    if getattr(gpu, "enabled", True) is False:
+        info["fit"] = False
+        info["headroom_mb"] = None
+        info["detail"] = "configured GPU is disabled"
+        return info
+    headroom = gpu.vram_mb - estimated
+    info["headroom_mb"] = headroom
+    info["fit"] = headroom >= 0
+    return info
+
+
 def min_moe_offload_layers(
     model: ModelConfig,
     vram_mb: int | None,
@@ -237,6 +445,9 @@ class Router:
             "last_load_at": None,
             "last_error": None,
         }
+        # Bounded per-model usage timings measured from real traffic; the
+        # /admin/metrics endpoint summarises them for observability.
+        self.timings = ModelTimings()
         self.last_activity: float = time.time()
         # Requests holding the GPU right now. Owned by server.py's _proxy_post:
         # incremented on request entry, decremented only when the forwarded
@@ -248,10 +459,12 @@ class Router:
         # an eviction would deadlock. Keyed by name so it survives rebuilds.
         self.model_inflight: dict[str, int] = {}
         # Models whose llama-server is being torn down right now. Set
-        # synchronously before astop() begins, while the deciding read of
-        # model_inflight is still in the same event-loop segment, so the
-        # lock-free fast path in ensure_active can never hand out a server
-        # that is already on its way down.
+        # synchronously BEFORE any drain wait begins — while the deciding
+        # read of model_inflight is still in the same event-loop segment —
+        # so the lock-free fast path in ensure_active can never hand out,
+        # prolong, or join a server that is already draining. The previous
+        # scheme marked the model only after the bounded drain slept, which
+        # let a concurrent arrival acquire and restart the teardown clock.
         self._stopping: set[str] = set()
         self._build_servers()
 
@@ -470,6 +683,7 @@ class Router:
             loop = asyncio.get_running_loop()
             future: asyncio.Future[tuple[ModelConfig, LlamaServer]] = loop.create_future()
             self._loading_futures[target_model.name] = future
+            load_started_at = time.monotonic()
             try:
                 try:
                     target_srv.start(log_dir=self.log_dir)
@@ -531,6 +745,9 @@ class Router:
                 self.metrics["loads"] += 1
                 self.metrics["last_load_at"] = time.time()
                 self.metrics["last_error"] = None
+                self.timings.record_cold_start(
+                    target_model.name, time.monotonic() - load_started_at
+                )
                 result = (target_model, target_srv)
                 future.set_result(result)
                 if acquire:
@@ -617,20 +834,27 @@ class Router:
             )
 
     async def _evict_for(
-        self, target: ModelConfig, target_gpu: GPUConfig, drain_seconds: float = 30.0
+        self, target: ModelConfig, target_gpu: GPUConfig, drain_seconds: float | None = None
     ) -> None:
         """Stop the right neighbours so the target can have its GPU.
 
         An incumbent that is still serving requests gets a bounded drain
         first: killing llama-server mid-generation errors the streaming
-        client for no reason the user can see. After ``drain_seconds`` the
-        eviction proceeds anyway — the new request asked for this GPU, and
-        blocking it behind an arbitrarily long generation would trade one
-        stall for another. New requests for the incumbent can keep arriving
-        through the lockless fast path while we wait, which is exactly why
-        the drain is bounded rather than a wait-for-zero.
+        client for no reason the user can see. The incumbent is marked as
+        draining BEFORE the first await, so new arrivals for it can never
+        extend the drain — the lock-free fast path sees the mark, skips the
+        ready shortcut, and lands on the slow path behind the swap lock
+        where it cannot acquire the draining model.
+
+        What happens when ``drain_seconds`` expires with requests still in
+        flight is decided by the explicit interrupt policy
+        (``cfg.server.switch_interrupt_policy``): the default ``reject_new``
+        refuses the switch and preserves active responses. Explicit
+        interruption policies stop the incumbent after the deadline.
         """
         single = self.cfg.server.single_resident
+        policy = self.cfg.server.switch_interrupt_policy
+        drain = self.cfg.server.switch_drain_seconds if drain_seconds is None else drain_seconds
         for name, srv in self._servers.items():
             if name == target.name:
                 continue
@@ -638,6 +862,7 @@ class Router:
                 continue
             other_model = next((m for m in self.cfg.models if m.name == name), None)
             if other_model is None:
+                # Unregistered server: no in-flight accounting exists for it.
                 self._stopping.add(name)
                 try:
                     await srv.astop()
@@ -645,29 +870,92 @@ class Router:
                     self._stopping.discard(name)
                 continue
             if single or other_model.gpu_pci_slot == target_gpu.pci_slot:
-                deadline = time.monotonic() + drain_seconds
-                while self.model_inflight.get(name, 0) > 0 and time.monotonic() < deadline:
-                    await asyncio.sleep(0.1)
-                # From the final counter read to the _stopping mark there is
-                # no await, so a lock-free fast-path acquire either landed
-                # before the read (count > 0, we keep draining) or after the
-                # mark (sees _stopping and takes the slow path). It can never
-                # slip between them and receive a server that is going down.
-                still = self.model_inflight.get(name, 0)
-                if still:
-                    log.warning(
-                        "evicting %s with %d request(s) still in flight after "
-                        "%.0fs drain; their clients will see errors",
-                        name,
-                        still,
-                        drain_seconds,
-                    )
-                log.info("evicting %s before starting %s", name, target.name)
-                self._stopping.add(name)
-                try:
-                    await srv.astop()
-                finally:
-                    self._stopping.discard(name)
+                still = await self._stop_draining(name, srv, target, drain, policy)
+                if still is None:
+                    continue
+                # still > 0: the drain expired busy and the policy said
+                # reject_new — the incumbent stays up and this switch fails
+                # with an error the caller can act on.
+                raise still
+
+    async def _stop_draining(
+        self,
+        name: str,
+        srv: LlamaServer,
+        target: ModelConfig,
+        drain_seconds: float,
+        policy: str,
+    ) -> StartupFailureError | None:
+        """Drain *name*, then stop it under *policy*.
+
+        Marks the model as draining before the first await and always clears
+        the mark in the finally block — including on cancellation, so a
+        cancelled switch can never leave the model stuck as "stopping" and
+        wedged behind the swap lock. Returns a StartupFailureError when the
+        drain expired busy and policy is ``reject_new`` (the caller re-raises
+        it); None otherwise.
+        """
+        # Mark draining synchronously: this line and the first counter read
+        # below run in one event-loop segment, so a lock-free fast-path
+        # acquire either landed before (count > 0) or will now see the mark.
+        # A concurrent arrival can never slip between the mark and the read
+        # to prolong the drain.
+        self._stopping.add(name)
+        try:
+            deadline = time.monotonic() + drain_seconds
+            while self.model_inflight.get(name, 0) > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.1, remaining))
+            still = self.model_inflight.get(name, 0)
+            if still and policy == "reject_new":
+                log.info(
+                    "switch to %s rejected: %s still has %d request(s) in "
+                    "flight after %.0fs drain (policy %s)",
+                    target.name,
+                    name,
+                    still,
+                    drain_seconds,
+                    policy,
+                )
+                return StartupFailureError(
+                    "switch_busy",
+                    (
+                        f"Cannot load {target.name!r} right now: {name!r} is "
+                        f"still serving {still} request(s) after waiting "
+                        f"{drain_seconds:.0f}s."
+                    ),
+                    (
+                        f"Let {name!r} finish, stop it manually, or raise "
+                        "server.switch_drain_seconds / switch "
+                        "server.switch_interrupt_policy for this switch."
+                    ),
+                    details={
+                        "model": target.name,
+                        "busy_model": name,
+                        "inflight": still,
+                        "drain_seconds": drain_seconds,
+                        "policy": policy,
+                    },
+                    http_status=409,
+                )
+            if still:
+                log.warning(
+                    "evicting %s with %d request(s) still in flight after "
+                    "%.0fs drain; their clients will see errors",
+                    name,
+                    still,
+                    drain_seconds,
+                )
+            log.info("evicting %s before starting %s", name, target.name)
+            await srv.astop()
+            return None
+        finally:
+            # Always clear the draining mark, whatever happened above — a
+            # stale mark would permanently refuse every future request for
+            # this model through the fast path.
+            self._stopping.discard(name)
 
     async def stop_one(self, name: str) -> bool:
         """Stop a single model's llama-server. Returns True if it was running."""
@@ -690,7 +978,7 @@ class Router:
             self.metrics["stops"] += stopped
             return stopped
 
-    async def rebuild_model(self, name: str, drain_seconds: float = 30.0) -> tuple[bool, bool]:
+    async def rebuild_model(self, name: str, drain_seconds: float | None = None) -> tuple[bool, bool]:
         """Drop and rebuild the LlamaServer for one model after a config edit.
 
         If the model is currently loaded, it's stopped first — the recipe is
@@ -699,30 +987,39 @@ class Router:
         path an instant before we took the lock (the deferred autotune
         restore racing a real request is the case that motivated this) gets
         the same bounded drain an eviction gets, instead of having its
-        generation killed mid-stream. Returns (rebuilt, was_running).
+        generation killed mid-stream. Rebuild is an admin-triggered
+        maintenance action, so the incumbent is stopped when the drain
+        expires regardless of the switch policy. Returns (rebuilt, was_running).
         """
         async with self._lock:
             old = self._servers.get(name)
             was_running = bool(old and old.is_running)
             if old is not None and old.is_running:
-                deadline = time.monotonic() + drain_seconds
-                while self.model_inflight.get(name, 0) > 0 and time.monotonic() < deadline:
-                    await asyncio.sleep(0.1)
-                still = self.model_inflight.get(name, 0)
-                if still:
-                    log.warning(
-                        "rebuild %s: stopping with %d request(s) still in "
-                        "flight after %.0fs drain; their clients will see errors",
-                        name,
-                        still,
-                        drain_seconds,
-                    )
-                # Same synchronous segment as the final counter read: a
-                # fast-path acquire either preceded it (we drained) or
-                # follows the mark (takes the slow path and waits on the
-                # lock we hold).
+                drain = (
+                    self.cfg.server.switch_drain_seconds
+                    if drain_seconds is None
+                    else drain_seconds
+                )
+                # Mark draining before the first await so concurrent arrivals
+                # cannot prolong the drain; always clean the mark on the way
+                # out, including cancellation.
                 self._stopping.add(name)
                 try:
+                    deadline = time.monotonic() + drain
+                    while self.model_inflight.get(name, 0) > 0:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(0.1, remaining))
+                    still = self.model_inflight.get(name, 0)
+                    if still:
+                        log.warning(
+                            "rebuild %s: stopping with %d request(s) still in "
+                            "flight after %.0fs drain; their clients will see errors",
+                            name,
+                            still,
+                            drain,
+                        )
                     await old.astop()
                 finally:
                     self._stopping.discard(name)

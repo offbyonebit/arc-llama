@@ -8,6 +8,7 @@ on:
 
 jobs:
   test:
+    timeout-minutes: 15
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,7 +48,36 @@ jobs:
         # coverage in an otherwise green job.
         run: pytest tests/ -q -ra --tb=short -p no:cacheprovider
 
+  browser-tests:
+    # Real-browser regression suite for the bundled web UI. Kept separate
+    # from the Python matrix: it installs playwright in browser-tests/
+    # only, runs the repository's real static files against headless
+    # Chrome, and mocks every arc-llama API endpoint deterministically.
+    name: Browser UI regression (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install playwright (sandboxed in browser-tests/)
+        run: npm ci --no-audit --no-fund
+        working-directory: browser-tests
+
+      - name: Install headless Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: browser-tests
+
+      - name: Run browser regression suite
+        run: node run.mjs
+        working-directory: browser-tests
+
   bare-install:
+    timeout-minutes: 15
     # The main job installs every dev dependency, so it cannot catch optional
     # imports or package-data failures that only affect a normal user install.
     name: Bare wheel install on ${{ matrix.os }}

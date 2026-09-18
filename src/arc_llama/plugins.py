@@ -160,7 +160,12 @@ def _instantiate(obj: Any) -> Any:
     return obj
 
 
-def load_plugins(entry_points: Any = None, *, enabled: set[str] | None = None) -> list[Any]:
+def load_plugins(
+    entry_points: Any = None,
+    *,
+    enabled: set[str] | None = None,
+    discovery: PluginDiscovery | None = None,
+) -> list[Any]:
     """Load and instantiate plugins from entry points.
 
     ``entry_points`` defaults to the installed ``arc_llama.plugins`` group.
@@ -172,36 +177,115 @@ def load_plugins(entry_points: Any = None, *, enabled: set[str] | None = None) -
     var (comma-separated names) is honoured if set, otherwise every discovered
     plugin is loaded.
 
-    A plugin that fails to import or instantiate is skipped with a warning, so
-    a broken add-on can never take the core down.
+    Every discovered plugin — including ones that failed to import,
+    instantiate, or satisfy the contract — is recorded in ``discovery``
+    (a PluginDiscovery, or a fresh one when omitted) so the admin catalog
+    can show what happened without running any plugin code. A plugin that
+    fails to import or instantiate is skipped for execution purposes, so a
+    broken add-on can never take the core down; loading never raises.
     """
     if entry_points is None:
         entry_points = discover_entry_points()
     if enabled is None:
         env = os.environ.get("ARC_LLAMA_PLUGINS")
         enabled = {n.strip() for n in env.split(",") if n.strip()} if env else None
+    if discovery is None:
+        discovery = PluginDiscovery()
 
     plugins: list[Any] = []
     for ep in entry_points:
         name = getattr(ep, "name", None) or str(ep)
         if enabled is not None and name not in enabled:
             log.debug("plugin %s not enabled; skipping", name)
+            discovery.record(
+                name, status="disabled", enabled=False, error="not in the enabled plugin list"
+            )
             continue
         try:
             obj = ep.load()
         except Exception as exc:  # noqa: BLE001 - a broken plugin must not stop core
             log.warning("plugin %s failed to import: %s", name, exc)
+            discovery.record(name, status="failed", error=f"import failed: {exc}")
             continue
         try:
             plugin = _instantiate(obj)
         except Exception as exc:  # noqa: BLE001
             log.warning("plugin %s failed to instantiate: %s", name, exc)
+            discovery.record(name, status="failed", error=f"instantiate failed: {exc}")
             continue
         if not hasattr(plugin, "register"):
             log.warning("plugin %s has no register() method; skipping", name)
+            discovery.record(
+                name, status="failed", error="no register() method; contract not satisfied"
+            )
             continue
         plugins.append(plugin)
+        discovery.record(name, status="loaded", plugin=plugin)
     return plugins
+
+
+class PluginDiscovery:
+    """Mutable record of one app creation's plugin discovery outcomes.
+
+    Keeps failed and disabled plugins visible to the admin catalog without
+    keeping any live object around: importing/instantiation failures are
+    retained as name + status + short error, and disabled ones as name +
+    ``enabled=False``. Loaded ones are retained as name + reference so
+    ``build_catalog`` can merge live metadata.
+    """
+
+    def __init__(self) -> None:
+        self._records: dict[str, dict[str, Any]] = {}
+
+    def record(
+        self,
+        name: str,
+        *,
+        status: str,
+        enabled: bool = True,
+        error: str = "",
+        plugin: Any = None,
+    ) -> None:
+        if name in self._records:
+            return
+        entry: dict[str, Any] = {
+            "name": name,
+            "status": status,
+            "enabled": enabled,
+        }
+        if error:
+            entry["error"] = str(error)[:1024]
+        if plugin is not None:
+            entry["plugin"] = plugin
+        self._records[name] = entry
+
+    def catalog(self) -> list[dict[str, Any]]:
+        """JSON-serializable descriptors for every *discovered* plugin —
+        failed and disabled included — with the same shape as
+        build_catalog, so they can be merged into one admin catalog.
+        No plugin code runs while serving this list."""
+        out: list[dict[str, Any]] = []
+        for name in sorted(self._records):
+            rec = self._records[name]
+            if rec["status"] == "loaded":
+                # Live plugins go through the normal catalog path so their
+                # register() outcome (active/error) stays authoritative.
+                continue
+            entry: dict[str, Any] = {
+                "name": name,
+                "status": rec["status"],
+            }
+            if rec.get("error"):
+                entry["error"] = rec["error"]
+            out.append(entry)
+        return out
+
+    def loaded_names(self) -> set[str]:
+        return {
+            rec["name"]
+            for rec in self._records.values()
+            if rec["status"] == "loaded"
+        }
 
 
 def register_plugins(app: FastAPI, plugins: list[Any]) -> None:
@@ -251,7 +335,11 @@ def plugin_info(plugin: Any) -> dict[str, Any]:
     return result
 
 
-def build_catalog(plugins: list[Any], status: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def build_catalog(
+    plugins: list[Any],
+    status: dict[str, str] | None = None,
+    extra: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Return JSON-serializable descriptors for the installed plugins.
 
     ``status`` maps plugin names to a stable status key (e.g. ``active`` or
@@ -259,17 +347,30 @@ def build_catalog(plugins: list[Any], status: dict[str, str] | None = None) -> l
     shape (``name`` and ``status``) is always present; whatever the plugin's
     optional ``info()`` hook returns is merged in unchanged, so older
     plugins keep working unchanged and arbitrary metadata is passed through.
+
+    ``extra`` carries additional catalog records that never run: failed and
+    disabled discovery outcomes. They are appended after the live plugins,
+    preserving their provided status keys (``disabled``, ``failed``).
+    Names already present in the live list are never duplicated.
     """
     if status is None:
         status = {}
     catalog: list[dict[str, Any]] = []
+    live_names: set[str] = set()
     for plugin in plugins:
         name = getattr(plugin, "name", None)
         if not name:
             continue
+        live_names.add(name)
         entry: dict[str, Any] = {"name": name, "status": status.get(name, "registered")}
         entry.update(plugin_info(plugin))
         catalog.append(entry)
+    for record in extra or []:
+        name = record.get("name")
+        if not isinstance(name, str) or not name or name in live_names:
+            continue
+        live_names.add(name)
+        catalog.append(dict(record))
     return catalog
 
 

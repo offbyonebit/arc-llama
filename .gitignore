@@ -38,3 +38,6 @@ work/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# browser regression suite (playwright lives in its own node_modules)
+browser-tests/node_modules/

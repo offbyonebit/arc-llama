@@ -213,9 +213,26 @@ function renderReadiness() {
 
   const metrics = document.createElement("div");
   metrics.className = "readiness-metrics";
+  const fit = model.vram_estimate;
+  let fitValue = "Unavailable";
+  let fitTone = "";
+  if (fit && fit.estimated_mb != null) {
+    const mb = fit.estimated_mb.toLocaleString();
+    if (fit.fit === true && fit.headroom_mb != null) {
+      fitValue = `Fits, ${fit.headroom_mb.toLocaleString()} MiB headroom (~${mb} MiB)`;
+      fitTone = "ok";
+    } else if (fit.fit === false) {
+      fitValue = `Does not fit (~${mb} MiB)`;
+      fitTone = "warn";
+    } else {
+      fitValue = `~${mb} MiB · ${fit.detail || "GPU capacity unknown"}`;
+    }
+  }
   const values = [
     ["Model size", model.model_file_mb != null ? `${fmtGiB(model.model_file_mb)} on disk` : "Unavailable"],
     ["GPU capacity", gpu ? `${gpu.name} · ${fmtGiB(gpu.vram_mb)}` : "GPU assignment unavailable"],
+    ["Memory fit", fitValue],
+  ["Estimate basis", fit?.confidence === "estimated_from_file_size" ? "File size + KV and overhead (approximate)" : fit ? "Model metadata and heuristic overhead (approximate)" : "Unavailable"],
     ["Context", fmtCtx(model.ctx)],
     ["Status", model.loaded ? "Loaded and ready" : "Loads when you send a message"],
   ];
@@ -225,6 +242,7 @@ function renderReadiness() {
     const term = document.createElement("span");
     term.textContent = label;
     const detail = document.createElement("strong");
+    if (label === "Memory fit" && fitTone) detail.classList.add(`tone-${fitTone}`);
     detail.textContent = value;
     item.append(term, detail);
     metrics.appendChild(item);
@@ -497,6 +515,8 @@ const PLUGIN_LABELS = {
   active: "Active",
   error: "Failed to load",
   registered: "Registered",
+  failed: "Failed to load",
+  disabled: "Disabled",
 };
 
 function pluginStatusLabel(status) {
@@ -518,7 +538,15 @@ function createPluginCard(plugin) {
     description.textContent = plugin.description;
     body.appendChild(description);
   }
-  const extra = [plugin.version ? `v${plugin.version}` : null, plugin.ui ? `UI: ${plugin.ui}` : null, plugin.api ? `API: ${plugin.api}` : null]
+  if (plugin.error) {
+    // Discovery-recorded failure: show the short error so the operator can
+    // fix it from the dashboard. No plugin code was executed to collect it.
+    const errorEl = document.createElement("p");
+    errorEl.className = "plugin-error";
+    errorEl.textContent = plugin.error;
+    body.appendChild(errorEl);
+  }
+  const extra = [plugin.version ? `v${plugin.version}` : null, plugin.ui?.actions?.length ? `${plugin.ui.actions.length} action(s)` : null]
     .filter(Boolean)
     .join(" · ");
   if (extra) {
@@ -531,7 +559,7 @@ function createPluginCard(plugin) {
   const side = document.createElement("div");
   side.className = "plugin-card-side";
   const pill = document.createElement("span");
-  pill.className = `status-pill ${plugin.status === "error" ? "error" : "ready"}`;
+  pill.className = `status-pill ${(plugin.status === "error" || plugin.status === "failed") ? "error" : (plugin.status === "disabled" ? "warn" : "ready")}`;
   pill.textContent = pluginStatusLabel(plugin.status);
   side.appendChild(pill);
 
@@ -631,6 +659,100 @@ async function fetchPlugins() {
     await loadUiLayout();
   } catch (_) {
     // Keep whatever was shown before; discovery is best-effort.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Measurements panel: real, bounded per-model usage measurements from
+// /admin/metrics. Never invents throughput: the panel renders only what the
+// server recorded from actual traffic.
+// ---------------------------------------------------------------------------
+
+function fmtSeconds(value) {
+  if (value == null) return "n/a";
+  if (value >= 10) return `${value.toFixed(0)}s`;
+  if (value >= 1) return `${value.toFixed(1)}s`;
+  return `${Math.round(value * 1000)}ms`;
+}
+
+function timingRow(label, summary, unit = "") {
+  if (!summary) return null;
+  const item = document.createElement("div");
+  item.className = "measure-row";
+  const term = document.createElement("span");
+  term.textContent = label;
+  const detail = document.createElement("strong");
+  const fmt = unit === " tok/s"
+    ? (v) => v == null ? "n/a" : Number(v).toFixed(1)
+    : fmtSeconds;
+  const suffix = unit === " tok/s" ? "tok_s" : "s";
+  detail.textContent = `median ${fmt(summary[`median_${suffix}`])}${unit} · p95 ${fmt(summary[`p95_${suffix}`])}${unit} · last ${fmt(summary[`last_${suffix}`])}${unit} (${summary.count})`;
+  item.append(term, detail);
+  return item;
+}
+
+function renderMeasurements(metrics) {
+  const host = $("#measurements");
+  if (!host) return;
+  host.replaceChildren();
+  const timings = metrics?.timings || {};
+  const timingModels = timings?.models || {};
+  const entries = Object.entries(timingModels);
+  const queue = timings?.queue_wait;
+  const tuned = (metrics?.autotune?.models || []).filter(m => m.before_after);
+
+  const card = document.createElement("div");
+  card.className = "measurements-card";
+  if (!entries.length && !queue && !tuned.length) {
+    const empty = document.createElement("p");
+    empty.className = "measurements-empty";
+    empty.textContent = "No measurements yet. Send chat messages and load models; real timings appear here.";
+    card.appendChild(empty);
+    host.appendChild(card);
+    return;
+  }
+  for (const [name, entry] of entries) {
+    const block = document.createElement("div");
+    block.className = "measure-block";
+    const title = document.createElement("h3");
+    title.textContent = name;
+    block.appendChild(title);
+    const rows = document.createElement("div");
+    rows.className = "measure-rows";
+    if (entry.cold_start) rows.appendChild(timingRow("Cold start", entry.cold_start));
+    if (entry.ttft) rows.appendChild(timingRow("Time to first token", entry.ttft));
+    if (entry.model_wait) rows.appendChild(timingRow("Model wait (load/switch included)", entry.model_wait));
+    if (entry.generation_tok_s) rows.appendChild(timingRow("Generation speed", entry.generation_tok_s, " tok/s"));
+    block.appendChild(rows);
+    card.appendChild(block);
+  }
+  if (queue) card.appendChild(timingRow("Model wait across requests (load/switch included)", queue));
+  for (const model of tuned) {
+    const result = model.before_after;
+    const block = document.createElement("div");
+    block.className = "measure-block";
+    const title = document.createElement("h3");
+    title.textContent = `${model.name} · last completed autotune this session`;
+    block.appendChild(title);
+    for (const [key, label] of [["prompt_tok_s", "Prompt processing"], ["generation_tok_s", "Generation"]]) {
+      const before = result.before?.[key], after = result.after?.[key];
+      if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
+      const row = document.createElement("p");
+      row.textContent = `${label}: ${before.toFixed(1)} → ${after.toFixed(1)} tok/s (${result.applied ? "applied" : "measured only"})`;
+      block.appendChild(row);
+    }
+    card.appendChild(block);
+  }
+  host.appendChild(card);
+}
+
+async function fetchMeasurements() {
+  try {
+    const response = await fetch("/admin/metrics", { headers: authHeaders() });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    renderMeasurements(await response.json());
+  } catch (_) {
+    // Measurements are best-effort; keep whatever was rendered.
   }
 }
 
@@ -780,6 +902,8 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
   await initAdminToken();
   await fetchStatus(true);
   await fetchPlugins();
+  await fetchMeasurements();
   bindUiLayout();
   setInterval(fetchStatus, 5000);
+  setInterval(fetchMeasurements, 15000);
 })();

@@ -734,13 +734,15 @@ def test_admin_load_returns_structured_startup_failure(monkeypatch):
         response = client.post("/admin/load/qwen")
 
     assert response.status_code == 404
-    assert response.json() == {
-        "error": {
-            "category": "model_missing",
-            "message": "Model file not found: /models/missing.gguf.",
-            "action": "Update the model path or remove this registration.",
-            "diagnostics_id": "model_missing-test",
-        }
+    body = response.json()
+    assert body["error"] == {
+        "category": "model_missing",
+        "message": "Model file not found: /models/missing.gguf.",
+        "action": "Update the model path or remove this registration.",
+        "diagnostics_id": "model_missing-test",
+        # The UI renders the redacted, bounded diagnostics behind an
+        # expandable region; secrets still never leave the process.
+        "details": {"api_token": "[REDACTED]"},
     }
     assert "must-not-leak" not in response.text
 

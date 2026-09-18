@@ -40,6 +40,7 @@ extra_flags      = ["--reasoning", "off"]
 from __future__ import annotations
 
 import logging
+import math
 import os
 import secrets
 import sys
@@ -102,6 +103,9 @@ def default_skills_dir() -> Path:
     return _xdg_config_home() / "arc-llama" / "skills"
 
 
+_SWITCH_INTERRUPT_POLICIES = frozenset({"interrupt", "prefer_new_request", "reject_new"})
+
+
 @dataclass
 class ServerConfig:
     host: str = "127.0.0.1"
@@ -115,6 +119,32 @@ class ServerConfig:
     that nobody else seems to claim."""
     """If True, only one llama-server runs at a time. If False, models share VRAM
     on a best-effort basis — set this only if you have generous VRAM headroom."""
+    switch_drain_seconds: float = 30.0
+    """Bounded grace the router gives an incumbent model's in-flight requests
+    before a switch. Configurable so a deployment with long generations can
+    extend it; the value must stay bounded so a never-ending generation can
+    never wedge every future model switch."""
+    switch_interrupt_policy: str = "reject_new"
+    """What to do when the bounded drain expires with requests still in flight
+    on the model being evicted. ``interrupt`` and ``prefer_new_request`` stop
+    the incumbent anyway (the in-flight clients see errors); the incoming
+    request wins. The default ``reject_new`` refuses the switch with an
+    actionable StartupFailureError and leaves the incumbent serving."""
+
+    def __post_init__(self) -> None:
+        if self.switch_interrupt_policy not in _SWITCH_INTERRUPT_POLICIES:
+            raise ValueError(
+                f"server.switch_interrupt_policy must be one of "
+                f"{sorted(_SWITCH_INTERRUPT_POLICIES)}, got "
+                f"{self.switch_interrupt_policy!r}"
+            )
+        if (
+            isinstance(self.switch_drain_seconds, bool)
+            or not isinstance(self.switch_drain_seconds, (int, float))
+            or not math.isfinite(self.switch_drain_seconds)
+            or self.switch_drain_seconds <= 0
+        ):
+            raise ValueError("server.switch_drain_seconds must be a positive finite number")
 
 
 @dataclass
@@ -591,6 +621,10 @@ def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
     server = raw.get("server", {})
     if "admin_token" not in server:
         server["admin_token"] = None
+    if "switch_drain_seconds" not in server:
+        server["switch_drain_seconds"] = 30.0
+    if "switch_interrupt_policy" not in server:
+        server["switch_interrupt_policy"] = "reject_new"
 
     # Ensure model defaults that were introduced across releases.
     for model in raw.get("models", []):

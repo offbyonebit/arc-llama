@@ -93,3 +93,5 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Emit thread stacks for stalled tests; CI also has a hard job deadline.
+faulthandler_timeout = 30

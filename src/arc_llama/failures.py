@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from collections.abc import Mapping, Sequence
@@ -17,6 +18,7 @@ _HTTP_STATUS = {
     "out_of_memory": 507,
     "startup_timeout": 504,
     "process_exited": 503,
+    "switch_busy": 409,
 }
 
 _SECRET_KEY = re.compile(
@@ -96,5 +98,47 @@ class StartupFailureError(RuntimeError):
             "diagnostics_id": self.diagnostics_id,
         }
         if include_details:
-            error["details"] = self.details
+            error["details"] = bounded_details(self.details)
         return {"error": error}
+
+
+# Diagnostics payloads are unbounded argv/log tails from adversarial startup
+# failures; keep responses readable and capped when they reach an API body.
+_MAX_DETAIL_CHARS = 8_000
+
+
+def bounded_details(details: Any, *, limit: int = _MAX_DETAIL_CHARS) -> dict[str, Any]:
+    """Bound diagnostics structure as well as strings before returning JSON."""
+    if not isinstance(details, Mapping):
+        return {}
+    remaining = 128
+
+    def clip(value: Any, depth: int = 0) -> Any:
+        nonlocal remaining
+        remaining -= 1
+        if remaining <= 0 or depth > 6:
+            return "[truncated]"
+        if isinstance(value, Mapping):
+            result = {}
+            for key, item in value.items():
+                if remaining <= 0:
+                    break
+                result[str(key)[:128]] = clip(item, depth + 1)
+            return result
+        if isinstance(value, (list, tuple)):
+            result_list = []
+            for item in value:
+                if remaining <= 0:
+                    break
+                result_list.append(clip(item, depth + 1))
+            return result_list
+        if isinstance(value, str):
+            return value if len(value) <= limit else value[:limit] + "[truncated]"
+        return value
+
+    result = clip(details)
+    encoded = json.dumps(result, ensure_ascii=True, default=str)
+    if len(encoded) > limit:
+        # A JSON-encoded preview can expand each character to six bytes.
+        return {"truncated": True, "preview": encoded[:max(0, (limit - 100) // 6)]}
+    return result

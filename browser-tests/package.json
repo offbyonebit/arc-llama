@@ -1,0 +1,11 @@
+{
+  "name": "arc-llama-browser-tests",
+  "private": true,
+  "description": "Real-browser regression suite for the bundled arc-llama web UI. Kept separate from the Python test suite on purpose: only this directory installs playwright, and the Python testpaths never pick these up.",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "~1.61.0"
+  }
+}

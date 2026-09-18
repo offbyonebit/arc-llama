@@ -180,6 +180,7 @@ class Autotuner:
         self._lock = asyncio.Lock()
         self._use_counts: dict[str, int] = {}
         self._last_used: dict[str, float] = {}
+        self.last_results: dict[str, dict[str, Any]] = {}
 
     def bump_use(self, model_name: str) -> None:
         """Call when a model is used by a real request.
@@ -499,6 +500,23 @@ class Autotuner:
                     workload.fingerprint_key(self.cfg.workload),
                 )
                 set_tuned_state(self.cfg, model, fp)
+                if report.baseline is not None and report.best is not None:
+                    self.last_results.pop(model.name, None)
+                    self.last_results[model.name] = {
+                        "measured_at": time.time(),
+                        "applied": report.applied,
+                        "before": {
+                            "prompt_tok_s": report.baseline.prompt_eval_tok_s,
+                            "generation_tok_s": report.baseline.generation_tok_s,
+                        },
+                        "after": {
+                            "prompt_tok_s": report.best.prompt_eval_tok_s,
+                            "generation_tok_s": report.best.generation_tok_s,
+                        },
+                        "improvement_pct": report.improvement_pct,
+                    }
+                    while len(self.last_results) > 128:
+                        self.last_results.pop(next(iter(self.last_results)))
         except asyncio.CancelledError:
             log.info("autotune: sweep of %s cancelled", model.name)
             model.tune_state = "untuned"

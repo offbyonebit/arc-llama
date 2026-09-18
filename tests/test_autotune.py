@@ -692,3 +692,30 @@ async def test_start_racing_stop_leaves_a_live_loop(cfg: Config) -> None:
     assert not tuner._stopping
     await tuner.stop()
     assert not tuner.is_running
+
+
+async def test_completed_sweep_retains_measured_before_after(cfg, monkeypatch):
+    from arc_llama.benchmark import BenchmarkResult
+
+    router = FakeRouter(cfg)
+    tuner = _make_tuner(cfg, router)
+    before = BenchmarkResult("m", 8192, "f16", "f16", 64, 32, prompt_eval_tok_s=100, generation_tok_s=20)
+    after = BenchmarkResult("m", 8192, "q8_0", "q8_0", 64, 32, prompt_eval_tok_s=120, generation_tok_s=30)
+
+    async def measured_report(*args, **kwargs):
+        return TuneReport(model="m", target="balanced", baseline=before, best=after, applied=True)
+
+    monkeypatch.setattr("arc_llama.tune.tune_model", measured_report)
+    await tuner._run_sweep(cfg.models[0])
+    result = tuner.last_results["m"]
+    assert result["before"]["generation_tok_s"] == 20
+    assert result["after"]["generation_tok_s"] == 30
+    assert result["improvement_pct"]["generation"] == 50
+    assert result["applied"] is True
+
+    async def aborted_report(*args, **kwargs):
+        return TuneReport(model="m", target="balanced", baseline=after, aborted=True)
+
+    monkeypatch.setattr("arc_llama.tune.tune_model", aborted_report)
+    await tuner._run_sweep(cfg.models[0])
+    assert tuner.last_results["m"] == result

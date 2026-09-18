@@ -551,6 +551,72 @@ main {
   word-wrap: break-word;
 }
 
+/* Structured startup-failure card: readable message + action + retry +
+ * collapsible diagnostics, rendered by showStartupFailure. */
+.load-failure-action {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.load-failure-action .fail-key { color: var(--accent-bright); font-weight: 700; }
+.load-failure-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.load-failure-id {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+.load-failure-retry {
+  appearance: none;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: var(--fg);
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.load-failure-retry:hover { background: rgba(224, 122, 95, 0.12); }
+.load-failure-details-toggle {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--fg-mute);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+.load-failure-details-toggle:hover { color: var(--fg); }
+.load-failure-details {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.load-failure-details pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--fg-mute);
+  max-height: 240px;
+  overflow: auto;
+}
+.load-failure-details[hidden] { display: none; }
+
+.message .content {
+  word-wrap: break-word;
+}
+
 .message.user .content,
 .message.system .content,
 .message.error-card .content {
@@ -1169,6 +1235,12 @@ main {
 .s-apply:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
 .s-note { font-size: 11px; color: var(--fg-mute); text-align: center; }
+.s-fit {
+  font-size: 12px;
+  color: var(--fg-mute);
+  line-height: 1.5;
+  padding: 2px 0;
+}
 .s-upstream { font-size: 13px; color: var(--fg-mute); text-align: center; padding: 20px 0; }
 .s-feedback { font-size: 12px; text-align: center; min-height: 16px; color: var(--fg-dim); }
 

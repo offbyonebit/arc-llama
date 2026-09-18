@@ -48,6 +48,7 @@ from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.plugins import (
+    PluginDiscovery,
     build_catalog,
     load_plugins,
     register_plugins,
@@ -55,8 +56,9 @@ from arc_llama.plugins import (
     startup_plugins,
 )
 from arc_llama.resources import ResourceLeaseManager
-from arc_llama.router import Router
+from arc_llama.router import Router, model_vram_fit_info
 from arc_llama.skills import load_skills
+from arc_llama.stream_metrics import StreamMetricsObserver, generation_rate
 from arc_llama.upstream import UpstreamManager
 
 log = logging.getLogger("arc_llama.server")
@@ -186,8 +188,13 @@ def create_app(
     # Discovery happens here (app creation), not at import time, so optional
     # plugin dependencies are never pulled in just by importing arc_llama.
     if plugins is None:
-        plugins = load_plugins()
-    app_plugins: list[Any] = list(plugins)
+        # Discovery records keep failed and disabled plugins visible in the
+        # admin catalog without ever running their code.
+        discovery = PluginDiscovery()
+        app_plugins: list[Any] = load_plugins(discovery=discovery)
+    else:
+        discovery = PluginDiscovery()
+        app_plugins = list(plugins)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -240,6 +247,7 @@ def create_app(
             await app.state.router.shutdown()
 
     app = FastAPI(title="arc-llama", version=__version__, lifespan=lifespan)
+    app.state.plugin_discovery = discovery
 
     # Register plugin routes before the static mount so plugin paths are not
     # shadowed by the catch-all web UI. A plugin failure here is isolated.
@@ -325,6 +333,10 @@ def create_app(
             and rt._servers[m.name].is_running
             and rt._servers[m.name].ready
         ]
+        # Test routers may predate the timings member; omit the block rather
+        # than fail the whole endpoint when it is missing.
+        timings = getattr(rt, "timings", None)
+        timings_snapshot = timings.snapshot() if timings is not None else None
         return {
             "uptime_seconds": round(uptime, 2),
             "loads": rt.metrics["loads"],
@@ -333,6 +345,22 @@ def create_app(
             "last_load_at": rt.metrics["last_load_at"],
             "last_error": rt.metrics["last_error"],
             "active_models": loaded,
+            "timings": timings_snapshot,
+            "autotune": {
+                "auto": c.tune.auto,
+                "models": [
+                    {
+                        "name": m.name,
+                        "tune_state": m.tune_state,
+                        "tuned_at": m.tuned_at,
+                        "tune_error": m.tune_error,
+                        "before_after": getattr(
+                            getattr(request.app.state, "tuner", None), "last_results", {}
+                        ).get(m.name),
+                    }
+                    for m in rt.all_models()
+                ],
+            },
             "gpus": [
                 {
                     "pci_slot": g.pci_slot,
@@ -822,9 +850,19 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/admin/status")
-    async def admin_status(request: Request, _auth: None = Depends(_require_admin)) -> dict:
+    async def admin_status(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict:
         rt: Router = request.app.state.router
         c: Config = request.app.state.cfg
+        # Reuse one VRAM-estimate cache across this snapshot (and across calls:
+        # it lives on app.state) so repeated status polls never re-scan GGUFs.
+        vram_cache: dict[str, tuple[float, int | None]] | None = getattr(
+            request.app.state, "vram_estimate_cache", None
+        )
+        if vram_cache is None:
+            vram_cache = {}
+            request.app.state.vram_estimate_cache = vram_cache
         models = []
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
@@ -835,6 +873,13 @@ def create_app(
                 model_file_mb = (Path(m.path).stat().st_size + 1_048_575) // 1_048_576
             except OSError:
                 model_file_mb = None
+            fit_info = await asyncio.to_thread(
+                model_vram_fit_info, m, c.find_gpu(m.gpu_pci_slot), vram_cache
+            )
+            if fit_info and not c.server.single_resident:
+                fit_info["headroom_mb"] = None
+                fit_info["fit"] = None
+                fit_info["detail"] = "Per-model estimate; available memory depends on co-resident models."
             models.append(
                 {
                     "name": m.name,
@@ -844,6 +889,12 @@ def create_app(
                     "gpu_pci_slot": m.gpu_pci_slot,
                     "port": m.port,
                     "loaded": loaded,
+                    "state": (
+                        "draining" if m.name in getattr(rt, "_stopping", set())
+                        else "ready" if loaded
+                        else "loading" if running
+                        else "idle"
+                    ),
                     "pid": getattr(getattr(srv, "process", None), "pid", None) if running else None,
                     "ctx": r.get("ctx"),
                     "cache_type_k": r.get("cache_type_k"),
@@ -857,6 +908,7 @@ def create_app(
                     "tuned_at": m.tuned_at,
                     "tune_error": m.tune_error,
                     "tune_fingerprint": m.tune_fingerprint,
+                    "vram_estimate": fit_info,
                 }
             )
         gpus = [
@@ -877,6 +929,8 @@ def create_app(
                 "port": c.server.port,
                 "single_resident": c.server.single_resident,
                 "auto_tune": c.tune.auto,
+                "switch_drain_seconds": c.server.switch_drain_seconds,
+                "switch_interrupt_policy": c.server.switch_interrupt_policy,
             },
             "gpus": gpus,
             "models": models,
@@ -911,10 +965,16 @@ def create_app(
         creation, a stable per-plugin status key, and whatever metadata each
         plugin chooses to publish through its optional ``info()`` hook.
         Plugins written against the original contract simply appear with
-        name and status only. No plugin code runs while serving this route.
+        name and status only. Discovery records for plugins that failed to
+        import or were disabled appear alongside with their error, without
+        any plugin code running here.
         """
         statuses: dict[str, str] = getattr(request.app.state, "plugin_status", {})
-        return {"plugins": build_catalog(app_plugins, statuses)}
+        discovery: PluginDiscovery | None = getattr(
+            request.app.state, "plugin_discovery", None
+        )
+        extra = discovery.catalog() if discovery is not None else []
+        return {"plugins": build_catalog(app_plugins, statuses, extra=extra)}
 
     def _ui_layout_path() -> Path:
         base = state_dir or Path(".arc_llama_state")
@@ -940,7 +1000,7 @@ def create_app(
         except (OSError, json.JSONDecodeError):
             saved = {}
         layout = saved.get("layout", {}) if isinstance(saved, dict) else {}
-        result = {"layout": {}, "actions": actions}
+        result: dict[str, Any] = {"layout": {}, "actions": actions}
         for placement in ("toolbar", "plugins", "chat"):
             raw = layout.get(placement, []) if isinstance(layout, dict) else []
             result["layout"][placement] = [x for x in raw if x in ids]
@@ -983,7 +1043,10 @@ def create_app(
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}") from None
         except StartupFailureError as e:
-            return JSONResponse(status_code=e.http_status, content=e.to_dict())
+            # Details come along: the UI renders them behind an expandable
+            # diagnostics region, and the payload is redacted + bounded by
+            # the failure object itself.
+            return JSONResponse(status_code=e.http_status, content=e.to_dict(include_details=True))
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         # ensure_active only returns once wait_ready has passed, so ready is
@@ -1419,8 +1482,19 @@ def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any]) -> dict[str,
 def _openai_response_as_ollama(response: Response, model: str, *, generate: bool):
     if response.status_code >= 400:
         try:
-            detail = json.loads(bytes(response.body)).get("detail", "Upstream request failed")
+            body = json.loads(bytes(response.body))
         except (TypeError, json.JSONDecodeError):
+            body = {}
+        # Structured startup failures carry their readable message under
+        # "error.message"; flat errors keep using "detail". Either way the
+        # Ollama-compat client sees one plain string, never nested JSON.
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict) and isinstance(error_obj.get("message"), str):
+                detail = error_obj["message"]
+            else:
+                detail = str(body.get("detail", "Upstream request failed"))
+        else:
             detail = "Upstream request failed"
         return JSONResponse({"error": str(detail)}, status_code=response.status_code)
     if isinstance(response, StreamingResponse):
@@ -1555,12 +1629,16 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     # under the user.
     rt.inflight += 1
     streaming_response_started = False
+    # Request-clock origin for queue/TTFT metrics. Real timestamps from real
+    # requests only; the metrics endpoint omits values with no samples.
+    request_entered_at = time.monotonic()
+    resolved_at: float | None = None
     # Set once the request has resolved to a local model, so the router can
     # answer "is this specific model still serving?" — which _evict_for and
     # rebuild_model need to drain an incumbent instead of killing its
     # generation mid-stream. The global counter cannot answer that: the
-    # evicting request holds it too. The acquisition itself happens inside
-    # ensure_active, atomically with the readiness check.
+    # evicting request itself holds it too. The acquisition itself happens
+    # inside ensure_active, atomically with the readiness check.
     acquired_model: str | None = None
     try:
         try:
@@ -1568,10 +1646,19 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_query!r}") from None
         except StartupFailureError as e:
+            # Detailed command/log diagnostics are available only on the
+            # authenticated admin load route, not the public inference API.
             return JSONResponse(status_code=e.http_status, content=e.to_dict())
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         acquired_model = model.name
+        # Queue timing: how long this request waited before it even resolved
+        # to a model (router lock, eviction drain, cold start join).
+        resolved_at = time.monotonic()
+        try:
+            rt.timings.record_queue_wait(resolved_at - request_entered_at, model.name)
+        except Exception:  # noqa: BLE001 - metrics must never break serving
+            log.debug("queue-timing record failed", exc_info=True)
         # Tell the background tuner this model was actually used by a real request.
         # Upstream models do not reach this point, so only local models can become
         # auto-tune candidates.
@@ -1656,17 +1743,27 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 except Exception:
                     log.debug("streaming proxy: client close failed", exc_info=True)
 
+            observer = StreamMetricsObserver()
+            ttft_recorded = False
+
             async def body_iter():
-                # The decrement belongs here rather than only in the
-                # BackgroundTask: this finally runs when the body is fully
-                # consumed, when the upstream errors mid-stream, and when the
-                # generator is finalized after a client disconnect. It must not
-                # run any earlier, because dropping the count while generation
-                # is still live lets the autotuner restart the backend out from
-                # under the request.
+                nonlocal ttft_recorded
+                timings = getattr(rt, "timings", None)
                 try:
                     async for chunk in _iter_sse_body(upstream):
+                        if timings is not None and upstream.status_code < 400:
+                            try:
+                                observer.feed(chunk, time.monotonic())
+                                if not ttft_recorded and observer.first_token_at is not None:
+                                    timings.record_ttft(model.name, observer.first_token_at - request_entered_at)
+                                    ttft_recorded = True
+                            except Exception:
+                                log.debug("stream metrics observation failed", exc_info=True)
+                        # Forward the original bytes immediately, including malformed
+                        # or oversized events that the observer ignores.
                         yield chunk
+                    if timings is not None and observer.generation_tok_s is not None:
+                        timings.record_generation_tok_s(model.name, observer.generation_tok_s)
                 finally:
                     await _release()
 
@@ -1682,6 +1779,14 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             )
         async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(target_url, content=body_bytes, headers=fwd_headers)
+        timings = getattr(rt, "timings", None)
+        if timings is not None and r.status_code < 400:
+            try:
+                rate = generation_rate(json.loads(r.content))
+                if rate is not None:
+                    timings.record_generation_tok_s(model.name, rate)
+            except (ValueError, TypeError, OverflowError):
+                pass
         await _complete()
         return Response(
             content=r.content,
