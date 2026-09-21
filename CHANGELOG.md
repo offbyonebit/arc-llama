@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.9.0rc1] - 2026-09-21
 
 ### Added
 
@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /admin/plugins` catalog of discovered plugins (name, stable status,
   and any metadata published via a backward-compatible optional plugin
   `info()` hook).
+- Add request timing and model resource measurements to the admin UI, with
+  cached VRAM fit estimates and clear startup failure diagnostics.
+- Record plugin discovery failures and expose plugin health and metadata so
+  optional integrations can fail independently and visibly, including their
+  advertised API routes.
 
 ### Changed
 
@@ -48,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   starting a service, and clearly oversized recipes are stopped before launch.
 - Benchmark measurements use reported token counts and expose steadier summary
   data for recipe and speculative-decoding comparisons.
+- Model switching now drains active requests according to the configured
+  interruption policy before stopping the resident backend.
+- Preserve refreshed model details and use the structured ComfyUI queue state
+  when tracking image-generation jobs.
 - Bundle the pinned Markdown and syntax-highlighting browser assets so the local
   UI works offline.
 
@@ -68,7 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
-- Add bare-wheel CI checks on Linux and Windows and static browser-script tests.
+- Add bare-wheel CI checks on Linux and Windows, a real-browser UI regression
+  suite, and static browser-script checks.
+- The Python suite, Ruff, mypy, wheel/sdist build, and browser suite pass on
+  the release branch. The maintainer reports the Windows end-to-end test run
+  for this branch also passes.
 
 ## [0.8.1] - 2026-09-05
 

@@ -15,12 +15,39 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Status: 0.9.0.dev0 — 1.0 release preparation.** Tested end-to-end on
-> Battlemage B60 on Linux and Windows. The release-prep branch includes the
-> one-command `arc-llama run` flow, verified portable runtime installation,
-> native Windows SYCL inference, streaming, Ollama-compatible endpoints, and
-> the OpenAI-compatible API. Other SKUs (A770, A380, B580) need community
-> confirmation — open an issue if something breaks on your card.
+> **Release candidate: 0.9.0rc1.** Tested end-to-end on Battlemage B60 on Linux
+> and Windows. The release-prep branch includes the one-command `arc-llama run`
+> flow, verified portable runtime installation, native Windows SYCL inference,
+> streaming, Ollama-compatible endpoints, and the OpenAI-compatible API.
+> `arc-llama install-runtime` fetches a portable Vulkan `llama-server` and
+> serves real inference with no oneAPI install or source build. The Windows
+> SYCL runtime also passes GPU discovery, model startup, streaming, and the
+> OpenAI-compatible API. HF download, streaming, and the OpenAI-compatible
+> API all pass. Other SKUs (A770, A380,
+> B580) need community confirmation -- open an issue if something breaks on
+> your card.
+
+## What's new in 0.9.0rc1
+
+- **One-command setup and launch:** `arc-llama run` accepts a registered model,
+  local GGUF, or Hugging Face GGUF source; it prepares the runtime and model,
+  checks the launch plan, and starts the server. Use `--setup-only` to inspect
+  the plan without launching.
+- **Better model-fit and optimization decisions:** GGUF metadata informs
+  context and VRAM estimates, and oversized launch plans are rejected. Shared
+  recipes and speculative-decoding settings can be A/B tested locally and
+  rolled back unless they meet the configured improvement threshold.
+- **Ollama client compatibility:** `GET /api/tags`, `POST /api/chat`, and
+  `POST /api/generate` translate requests through Arc Llama's model router.
+- **Safer model switching and better runtime visibility:** configurable
+  in-flight request draining, per-model timing metrics, VRAM-fit information,
+  and structured startup failures are available through the server and UI.
+- **Extensible integrations:** installed plugins are discovered independently;
+  the admin UI shows their status, metadata, and declared API routes.
+- **Updated web interface:** the model manager now guides first-run readiness,
+  model selection, and launch settings, with scan progress and a customizable
+  plugin-action layout. Chat adds themes, plugin tools, and saved drafts; its
+  Markdown and code-highlighting assets are bundled for offline use.
 
 ## What you get
 

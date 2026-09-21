@@ -555,6 +555,16 @@ function createPluginCard(plugin) {
     meta.textContent = extra;
     body.appendChild(meta);
   }
+  const apiRoutes = Array.isArray(plugin.api)
+    ? plugin.api.filter((route) => typeof route === "string").slice(0, 8)
+    : [];
+  if (apiRoutes.length) {
+    const api = document.createElement("p");
+    api.className = "plugin-meta";
+    const shown = apiRoutes.map((route) => route.slice(0, 128));
+    api.textContent = `API: ${shown.join(", ")}${plugin.api.length > shown.length ? ", …" : ""}`;
+    body.appendChild(api);
+  }
 
   const side = document.createElement("div");
   side.className = "plugin-card-side";
