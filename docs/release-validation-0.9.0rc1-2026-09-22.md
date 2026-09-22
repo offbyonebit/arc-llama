@@ -30,4 +30,11 @@ Built artifacts:
 - `arc_llama-0.9.0rc1-py3-none-any.whl`
 - `arc_llama-0.9.0rc1.tar.gz`
 
+## Hardware smoke test
+
+The opt-in end-to-end inference smoke test also passed on the Linux Intel Arc
+Pro B60 with the configured SYCL `llama-server` backend. It loaded the local
+`lfm2.5` model, completed non-streaming and streaming chat-completion requests,
+and shut the service down cleanly: **1 passed in 26.70s**.
+
 The working tree was clean after validation.
