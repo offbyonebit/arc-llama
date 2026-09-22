@@ -5,6 +5,7 @@ A *recipe* is the set of `llama-server` flags we'll feed for a given
 chosen to be safe rather than maximal — we'd rather start small and let the user
 crank context up than have a first-run experience that OOMs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,15 +40,15 @@ class KVCacheType(str, Enum):
 # Battlemage B60 stack. They're upper bounds for sizing; actual usage with
 # sliding-window attention (Gemma) is several × smaller again.
 KV_PER_TOKEN_F16_BYTES: dict[str, int] = {
-    "default": 70 * 1024,        # 70 KiB/token f16 — covers most ≤30B dense models
-    "moe_a3b": 20 * 1024,        # ~20 KiB — Qwen3 30B/35B-A3B-class MoE
-    "qwen3_dense": 67 * 1024,    # Qwen3 0.6B–32B dense (incl. Coder, Instruct)
-    "qwen3_27b_dense": 67 * 1024,# kept for backwards compatibility
-    "qwen2_5": 70 * 1024,        # Qwen2.5 / Qwen2.5-Coder dense
-    "gemma_swa": 16 * 1024,      # Gemma 2/3/4 interleaved sliding-window attn
-    "phi4": 72 * 1024,           # Phi-4 / Phi-4-reasoning 14.7B dense
-    "llama3": 75 * 1024,         # Llama 3.x / 4 dense & small MoE distills
-    "deepseek_r1_distill": 70 * 1024, # R1 distill on Llama/Qwen
+    "default": 70 * 1024,  # 70 KiB/token f16 — covers most ≤30B dense models
+    "moe_a3b": 20 * 1024,  # ~20 KiB — Qwen3 30B/35B-A3B-class MoE
+    "qwen3_dense": 67 * 1024,  # Qwen3 0.6B–32B dense (incl. Coder, Instruct)
+    "qwen3_27b_dense": 67 * 1024,  # kept for backwards compatibility
+    "qwen2_5": 70 * 1024,  # Qwen2.5 / Qwen2.5-Coder dense
+    "gemma_swa": 16 * 1024,  # Gemma 2/3/4 interleaved sliding-window attn
+    "phi4": 72 * 1024,  # Phi-4 / Phi-4-reasoning 14.7B dense
+    "llama3": 75 * 1024,  # Llama 3.x / 4 dense & small MoE distills
+    "deepseek_r1_distill": 70 * 1024,  # R1 distill on Llama/Qwen
 }
 
 
@@ -57,6 +58,7 @@ FLASH_ATTN_VALUES = ("on", "off", "auto")
 @dataclass
 class LaunchRecipe:
     """A complete llama-server invocation, minus the model path and port."""
+
     n_gpu_layers: int = 999
     ctx: int = 8192
     parallel: int = 1
@@ -119,11 +121,16 @@ class LaunchRecipe:
 
     def to_argv(self, fa_takes_value: bool = True) -> list[str]:
         argv = [
-            "-ngl", str(self.n_gpu_layers),
-            "-c", str(self.ctx),
-            "--parallel", str(self.parallel),
-            "--cache-type-k", self.cache_type_k.value,
-            "--cache-type-v", self.cache_type_v.value,
+            "-ngl",
+            str(self.n_gpu_layers),
+            "-c",
+            str(self.ctx),
+            "--parallel",
+            str(self.parallel),
+            "--cache-type-k",
+            self.cache_type_k.value,
+            "--cache-type-v",
+            self.cache_type_v.value,
         ]
         if self.threads is not None:
             argv += ["-t", str(self.threads)]
@@ -168,9 +175,18 @@ class LaunchRecipe:
         return argv
 
 
-def estimate_kv_bytes(ctx: int, kv_type: KVCacheType, kv_class: str = "default") -> int:
+def estimate_kv_bytes(
+    ctx: int,
+    kv_type: KVCacheType,
+    kv_class: str = "default",
+    f16_bytes_per_token: int | None = None,
+) -> int:
     """Rough estimate of KV-cache bytes at runtime."""
-    f16_per_token = KV_PER_TOKEN_F16_BYTES.get(kv_class, KV_PER_TOKEN_F16_BYTES["default"])
+    f16_per_token = (
+        f16_bytes_per_token
+        if f16_bytes_per_token is not None and f16_bytes_per_token > 0
+        else KV_PER_TOKEN_F16_BYTES.get(kv_class, KV_PER_TOKEN_F16_BYTES["default"])
+    )
     scale = {
         KVCacheType.F32: 2.0,
         KVCacheType.F16: 1.0,
@@ -200,6 +216,7 @@ def suggest_ctx(
     ctx_cap: int = DEFAULT_CTX_CAP,
     trained_ctx: int | None = None,
     parallel: int = 1,
+    f16_bytes_per_token: int | None = None,
 ) -> int:
     """Pick the largest power-of-2-ish context that fits comfortably in VRAM.
 
@@ -213,7 +230,11 @@ def suggest_ctx(
     free_for_kv = vram_mb - model_file_mb - compute_buffer_mb - safety_margin_mb
     if free_for_kv <= 0:
         return 4096  # last-resort minimum; user should pick a smaller quant
-    f16_per_token = KV_PER_TOKEN_F16_BYTES.get(kv_class, KV_PER_TOKEN_F16_BYTES["default"])
+    f16_per_token = (
+        f16_bytes_per_token
+        if f16_bytes_per_token is not None and f16_bytes_per_token > 0
+        else KV_PER_TOKEN_F16_BYTES.get(kv_class, KV_PER_TOKEN_F16_BYTES["default"])
+    )
     scale = {
         KVCacheType.F32: 2.0,
         KVCacheType.F16: 1.0,
@@ -262,6 +283,7 @@ def _xmx_sdpa_worth_it(
     vram_mb: int,
     model_file_mb: int,
     kv_class: str,
+    f16_bytes_per_token: int | None = None,
 ) -> bool:
     """True when this binary can use the XMX SDPA path *and* f16 KV still fits.
 
@@ -287,9 +309,8 @@ def _xmx_sdpa_worth_it(
         model_file_mb=model_file_mb,
         kv_type=KVCacheType.F16,
         kv_class=kv_class,
-        compute_buffer_mb=(
-            PERF_COMPUTE_BUFFER_MB if vram_mb >= PERF_UBATCH_MIN_VRAM_MB else 768
-        ),
+        compute_buffer_mb=(PERF_COMPUTE_BUFFER_MB if vram_mb >= PERF_UBATCH_MIN_VRAM_MB else 768),
+        f16_bytes_per_token=f16_bytes_per_token,
     )
     if ctx_f16 < XMX_SDPA_MIN_CTX:
         log.debug(
@@ -319,6 +340,7 @@ def default_recipe(
     trained_ctx: int | None = None,
     parallel: int = 1,
     llama_server: str | None = None,
+    f16_bytes_per_token: int | None = None,
 ) -> LaunchRecipe:
     """A safe starting recipe for a freshly added model on a given arch/backend.
 
@@ -363,6 +385,7 @@ def default_recipe(
             vram_mb=vram_mb,
             model_file_mb=model_file_mb,
             kv_class=kv_class,
+            f16_bytes_per_token=f16_bytes_per_token,
         )
     ):
         # Binary provably has oneDNN and f16 KV still affords a usable context:
@@ -394,6 +417,7 @@ def default_recipe(
         trained_ctx=trained_ctx,
         parallel=parallel,
         ctx_cap=ctx_cap,
+        f16_bytes_per_token=f16_bytes_per_token,
     )
     return LaunchRecipe(
         n_gpu_layers=999,

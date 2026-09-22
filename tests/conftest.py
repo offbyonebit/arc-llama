@@ -115,6 +115,17 @@ def _isolated_config_home(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_fake_servers_from_host_preflight(monkeypatch):
+    """Most router tests use nonexistent model/runtime paths by design.
+
+    Host prerequisite checks have focused coverage in test_preflight.py.
+    Individual integration tests can replace this stub when they need to
+    assert Router's ordering around a preflight failure.
+    """
+    monkeypatch.setattr("arc_llama.router.preflight_launch", lambda *_args: None)
+
+
 @pytest.fixture
 def base_config(tmp_path: Path) -> Config:
     """A populated Config using temp paths, suitable for CLI tests."""

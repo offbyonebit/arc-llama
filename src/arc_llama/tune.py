@@ -26,6 +26,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -513,7 +514,17 @@ async def tune_model(
 
     # MoE offload relevance reads the GGUF tensor table; keep it off the
     # event loop like the caps probe above.
-    offload_info = await asyncio.to_thread(_probe_offload_info, model, gpu)
+    # Tiny or malformed placeholder files are common in configuration tests;
+    # parse those inline so they cannot strand an executor worker in a GGUF
+    # reader while the event loop waits for the result.
+    try:
+        tiny_placeholder = Path(model.path).stat().st_size < 1024
+    except OSError:
+        tiny_placeholder = True
+    if tiny_placeholder:
+        offload_info = _probe_offload_info(model, gpu)
+    else:
+        offload_info = await asyncio.to_thread(_probe_offload_info, model, gpu)
 
     # Round 7: gather the real tensor table and generate candidate override-tensor
     # patterns. These are derived from the model's actual tensor names, not
@@ -521,7 +532,9 @@ async def tune_model(
     # can be caught before it is ever passed to llama-server.
     ot_info: _OverrideTensorInfo | None = None
     if offload_info is not None:
-        table = await asyncio.to_thread(weight_tensor_table, model.path)
+        table = weight_tensor_table(model.path) if tiny_placeholder else await asyncio.to_thread(
+            weight_tensor_table, model.path
+        )
         if table:
             ot_info = _OverrideTensorInfo(
                 table=table,

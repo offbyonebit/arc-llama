@@ -175,7 +175,7 @@ async def test_serve_load_error_counted_once(tmp_path, monkeypatch):
     monkeypatch.setattr(router_mod, "LlamaServer", NeverReadyServer)
     rt = Router(cfg)
 
-    with pytest.raises(RuntimeError, match="did not become healthy"):
+    with pytest.raises(RuntimeError, match="timed out while loading"):
         await rt.ensure_active("qwen")
     assert rt.metrics["load_errors"] == 1
 

@@ -3,17 +3,24 @@ GitHub releases, so a fresh Intel Arc user can skip installing oneAPI or buildin
 llama.cpp from source. Vulkan is the default backend because the Vulkan build is
 fully portable on Arc (no oneAPI runtime needed). SYCL is offered for max speed.
 """
+
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
 import logging
 import os
 import platform
+import re
+import shutil
 import tarfile
 import tempfile
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import httpx
 
@@ -37,6 +44,7 @@ class RuntimeAsset:
     url: str
     size: int
     tag: str
+    digest: str | None = None
 
 
 @dataclass
@@ -67,9 +75,7 @@ def host_platform() -> tuple[str, str]:
 def asset_suffix(os_name: str, arch: str, backend: str) -> str:
     """Return the exact release-asset name suffix for the given combo."""
     if backend not in ("vulkan", "sycl"):
-        raise RuntimeInstallError(
-            f"Unsupported backend '{backend}'. Choose 'vulkan' or 'sycl'."
-        )
+        raise RuntimeInstallError(f"Unsupported backend '{backend}'. Choose 'vulkan' or 'sycl'.")
     table = {
         ("linux", "x64", "vulkan"): "bin-ubuntu-vulkan-x64.tar.gz",
         ("linux", "x64", "sycl"): "bin-ubuntu-sycl-fp16-x64.tar.gz",
@@ -85,9 +91,7 @@ def asset_suffix(os_name: str, arch: str, backend: str) -> str:
     return table[key]
 
 
-def select_asset(
-    release_json: dict, os_name: str, arch: str, backend: str
-) -> RuntimeAsset:
+def select_asset(release_json: dict, os_name: str, arch: str, backend: str) -> RuntimeAsset:
     """Find the matching asset in a GitHub release JSON payload."""
     tag = release_json["tag_name"]
     suffix = asset_suffix(os_name, arch, backend)
@@ -99,6 +103,7 @@ def select_asset(
                 url=asset["browser_download_url"],
                 size=asset.get("size", 0),
                 tag=tag,
+                digest=_normalise_sha256_digest(asset.get("digest")),
             )
     raise RuntimeInstallError(
         f"No asset matching '{suffix}' in release {tag}. "
@@ -117,28 +122,46 @@ def resolve_release(client: httpx.Client, version: str) -> dict:
     return r.json()
 
 
-def _resolve_windows_release_with_asset(
-    client: httpx.Client, arch: str, backend: str
-) -> dict:
-    """Find the newest Windows release that actually ships a runtime asset.
+def _normalise_sha256_digest(value: object) -> str | None:
+    """Return a lowercase SHA-256 hex digest from GitHub's asset field.
 
-    GitHub's ``/releases/latest`` currently points at a lightweight v0.4.0
-    release with no binary assets.  Windows prebuilt binaries continue to be
-    published on the rolling ``bNNNNN`` releases, so ``latest`` needs this
-    Windows-only fallback.  Linux resolution is intentionally unchanged.
+    GitHub returns release-asset digests as ``sha256:<hex>``. Older releases
+    may have no digest, so absence remains supported, but malformed values are
+    ignored rather than accidentally treated as trusted checksums.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", value.strip())
+    return match.group(1).lower() if match else None
+
+
+def _resolve_release_with_asset(
+    client: httpx.Client, os_name: str, arch: str, backend: str
+) -> dict:
+    """Find the newest rolling release that actually ships a runtime asset.
+
+    GitHub's ``/releases/latest`` may point at a lightweight release with no
+    binary assets. Prebuilt binaries continue to be published on the rolling
+    ``bNNNNN`` releases, so ``latest`` needs to search those releases on every
+    supported platform.
     """
     url = f"{GITHUB_API}/repos/{LLAMA_CPP_REPO}/releases?per_page=30"
     response = client.get(url)
     response.raise_for_status()
     for release in response.json():
         try:
-            select_asset(release, "windows", arch, backend)
+            select_asset(release, os_name, arch, backend)
         except RuntimeInstallError:
             continue
         return release
     raise RuntimeInstallError(
-        f"No Windows {backend} runtime asset found in the recent llama.cpp releases."
+        f"No {os_name}/{arch} {backend} runtime asset found in recent llama.cpp releases."
     )
+
+
+def _resolve_windows_release_with_asset(client: httpx.Client, arch: str, backend: str) -> dict:
+    """Backward-compatible wrapper for the original Windows-only helper."""
+    return _resolve_release_with_asset(client, "windows", arch, backend)
 
 
 def download_asset(
@@ -147,17 +170,36 @@ def download_asset(
     dest_file: Path,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
-    """Stream *asset* to *dest_file*, optionally reporting progress."""
+    """Stream *asset* to *dest_file* and verify size/digest when available."""
     dest_file.parent.mkdir(parents=True, exist_ok=True)
     bytes_so_far = 0
-    with client.stream("GET", asset.url) as r:
-        r.raise_for_status()
-        with open(dest_file, "wb") as f:
-            for chunk in r.iter_bytes():
-                f.write(chunk)
-                bytes_so_far += len(chunk)
-                if on_progress is not None:
-                    on_progress(bytes_so_far, asset.size)
+    sha256 = hashlib.sha256()
+    try:
+        with client.stream("GET", asset.url) as r:
+            r.raise_for_status()
+            with open(dest_file, "wb") as f:
+                for chunk in r.iter_bytes():
+                    f.write(chunk)
+                    sha256.update(chunk)
+                    bytes_so_far += len(chunk)
+                    if on_progress is not None:
+                        on_progress(bytes_so_far, asset.size)
+        if asset.size > 0 and bytes_so_far != asset.size:
+            raise RuntimeInstallError(
+                f"Downloaded size mismatch for {asset.name}: expected {asset.size} bytes, "
+                f"got {bytes_so_far}."
+            )
+        actual_digest = sha256.hexdigest()
+        if asset.digest is not None and actual_digest != asset.digest:
+            raise RuntimeInstallError(
+                f"SHA-256 mismatch for {asset.name}: expected {asset.digest}, got {actual_digest}."
+            )
+    except BaseException:
+        # Never leave a corrupt file that a caller could mistake for a complete
+        # download. install_runtime also cleans its temporary file, but this
+        # function is public and is tested/usable independently.
+        dest_file.unlink(missing_ok=True)
+        raise
     return dest_file
 
 
@@ -172,18 +214,71 @@ def _find_llama_server(root: Path) -> Path | None:
     return candidates[0]
 
 
+def _validated_archive_path(dest_dir: Path, member_name: str) -> Path:
+    """Resolve an archive member beneath *dest_dir* or reject it.
+
+    Both separators are normalised because ZIP members created on Windows can
+    contain backslashes. Drive-qualified paths, absolute paths, and ``..`` are
+    rejected before extraction on every supported Python version.
+    """
+    normalised = member_name.replace("\\", "/")
+    if not normalised or normalised.startswith("/") or re.match(r"^[A-Za-z]:", normalised):
+        raise RuntimeInstallError(f"Unsafe archive member path: {member_name!r}")
+    parts = [part for part in normalised.split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        raise RuntimeInstallError(f"Unsafe archive member path: {member_name!r}")
+    root = dest_dir.resolve()
+    target = (root / Path(*parts)).resolve()
+    try:
+        common = Path(os.path.commonpath([root, target]))
+    except ValueError as exc:
+        raise RuntimeInstallError(f"Unsafe archive member path: {member_name!r}") from exc
+    if common != root:
+        raise RuntimeInstallError(f"Unsafe archive member path: {member_name!r}")
+    return target
+
+
+def _validate_tar_members(tf: tarfile.TarFile, dest_dir: Path) -> list[tarfile.TarInfo]:
+    members = tf.getmembers()
+    for member in members:
+        _validated_archive_path(dest_dir, member.name)
+        if member.ischr() or member.isblk() or member.isfifo():
+            raise RuntimeInstallError(f"Unsafe special file in archive: {member.name!r}")
+        if member.issym():
+            link_name = str(Path(member.name).parent / member.linkname)
+            _validated_archive_path(dest_dir, link_name)
+        elif member.islnk():
+            # Tar hard-link targets are archive-root-relative.
+            _validated_archive_path(dest_dir, member.linkname)
+    return members
+
+
 def extract_archive(archive: Path, dest_dir: Path) -> Path:
-    """Extract *archive* into *dest_dir* and return the path to the llama-server binary."""
+    """Safely extract *archive* and return its llama-server binary."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
     if name.endswith(".tar.gz") or name.endswith(".tgz"):
         with tarfile.open(archive, "r:gz") as tf:
-            try:
-                tf.extractall(dest_dir, filter="data")
-            except TypeError:
-                tf.extractall(dest_dir)
+            members = _validate_tar_members(tf, dest_dir)
+            # Python 3.12+'s data filter adds another defence layer. Our own
+            # validation above provides the equivalent path/link protection on
+            # supported Python 3.10 and 3.11 installations.
+            supports_filter = "filter" in inspect.signature(tf.extractall).parameters
+            if supports_filter:
+                # Security-maintained 3.10/3.11 releases backported the filter
+                # argument. `fully_trusted` remains usable if a downstream
+                # interpreter exposes the API without `data_filter`; our strict
+                # member validation above is still authoritative in that case.
+                filter_name: Literal["data", "fully_trusted"] = (
+                    "data" if hasattr(tarfile, "data_filter") else "fully_trusted"
+                )
+                tf.extractall(dest_dir, members=members, filter=filter_name)
+            else:  # pragma: no cover - old Python 3.10/3.11 maintenance releases
+                tf.extractall(dest_dir, members=members)
     elif name.endswith(".zip"):
         with zipfile.ZipFile(archive) as zf:
+            for member in zf.infolist():
+                _validated_archive_path(dest_dir, member.filename)
             zf.extractall(dest_dir)
     else:
         raise RuntimeInstallError(f"Unknown archive type: {archive.name}")
@@ -193,6 +288,25 @@ def extract_archive(archive: Path, dest_dir: Path) -> Path:
     if os.name == "posix":
         os.chmod(found, 0o755)
     return found
+
+
+def _publish_install(staging_dir: Path, install_dir: Path) -> None:
+    """Atomically publish a staged runtime, restoring the old one on failure."""
+    backup_dir: Path | None = None
+    if install_dir.exists():
+        backup_dir = Path(
+            tempfile.mkdtemp(prefix=f".{install_dir.name}.backup-", dir=install_dir.parent)
+        )
+        backup_dir.rmdir()
+        os.replace(install_dir, backup_dir)
+    try:
+        os.replace(staging_dir, install_dir)
+    except BaseException:
+        if backup_dir is not None and backup_dir.exists() and not install_dir.exists():
+            os.replace(backup_dir, install_dir)
+        raise
+    if backup_dir is not None:
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -238,9 +352,7 @@ def install_runtime(
         Re-download even if this version is already installed.
     """
     if backend not in ("vulkan", "sycl"):
-        raise RuntimeInstallError(
-            f"Unsupported backend '{backend}'. Choose 'vulkan' or 'sycl'."
-        )
+        raise RuntimeInstallError(f"Unsupported backend '{backend}'. Choose 'vulkan' or 'sycl'.")
 
     os_name, arch = host_platform()
 
@@ -253,17 +365,15 @@ def install_runtime(
 
     own_client = client is None
     if own_client:
-        client = httpx.Client(
-            follow_redirects=True, timeout=300.0, headers=_auth_headers()
-        )
+        client = httpx.Client(follow_redirects=True, timeout=300.0, headers=_auth_headers())
     assert client is not None
     try:
         release = resolve_release(client, version)
         try:
             asset = select_asset(release, os_name, arch, backend)
         except RuntimeInstallError:
-            if os_name == "windows" and version in ("latest", "", None):
-                release = _resolve_windows_release_with_asset(client, arch, backend)
+            if version in ("latest", "", None):
+                release = _resolve_release_with_asset(client, os_name, arch, backend)
                 asset = select_asset(release, os_name, arch, backend)
             else:
                 raise
@@ -303,23 +413,41 @@ def install_runtime(
         fd, tmp_name = tempfile.mkstemp(dir=dest, suffix=tmp_suffix)
         os.close(fd)
         tmp_path = Path(tmp_name)
+        staging_dir = Path(tempfile.mkdtemp(prefix=f".{install_dir.name}.staging-", dir=dest))
         try:
             download_asset(client, asset, tmp_path, on_progress=on_progress)
-            binary = extract_archive(tmp_path, install_dir)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+            staged_binary = extract_archive(tmp_path, staging_dir)
+            binary_relative = staged_binary.relative_to(staging_dir)
+            detected = detect_llama_server_backend(staged_binary)
+            if detected is not None and detected.value != backend:
+                raise RuntimeInstallError(
+                    f"Downloaded runtime backend '{detected.value}' does not match "
+                    f"requested backend '{backend}' for {asset.name}."
+                )
 
-        detected = detect_llama_server_backend(binary)
+            # Write the marker before publication so callers only ever see the
+            # previous complete install or this complete install.
+            marker = {
+                "schema": 1,
+                "asset": asset.name,
+                "tag": asset.tag,
+                "backend": backend,
+                "sha256": asset.digest,
+                "size": asset.size,
+            }
+            (staging_dir / ".arc-llama-runtime.json").write_text(
+                json.dumps(marker, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            _publish_install(staging_dir, install_dir)
+            binary = install_dir / binary_relative
+        finally:
+            tmp_path.unlink(missing_ok=True)
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
         if detected is None:
             log.warning("Could not detect backend of %s", binary)
-        elif detected.value != backend:
-            log.warning(
-                "Detected backend '%s' does not match requested '%s' for %s",
-                detected.value,
-                backend,
-                binary,
-            )
 
         if set_default:
             if cfg is None:

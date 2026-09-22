@@ -295,7 +295,8 @@ def _enum_pci_locations() -> list[dict]:
                                     loc = None
                                 m = loc_re.search(loc or "")
                                 if m:
-                                    bdf = tuple(map(int, m.groups()))
+                                    bus, dev, func = (int(value) for value in m.groups())
+                                    bdf = (bus, dev, func)
                                     source = "LocationInformation"
                                 else:
                                     bdf = None

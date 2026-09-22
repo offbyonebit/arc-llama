@@ -116,9 +116,7 @@ def test_sibling_scan_does_not_break_bare_binary(tmp_path):
 
 def test_backend_name_enumeration_is_not_detected(tmp_path):
     binary = _make_fake_binary(tmp_path, b"cpu only exe")
-    (tmp_path / "libggml.so").write_bytes(
-        b"available backends: cpu sycl vulkan cuda blas"
-    )
+    (tmp_path / "libggml.so").write_bytes(b"available backends: cpu sycl vulkan cuda blas")
     assert detect_backends(binary) == set()
     assert detect_llama_server_backend(binary) is None
 
@@ -134,9 +132,7 @@ def test_strong_vulkan_markers_still_detect_in_sibling(tmp_path):
 def test_vulkan_build_not_misdetected_as_sycl(tmp_path):
     binary = _make_fake_binary(tmp_path, b"cpu only exe")
     (tmp_path / "libggml.so").write_bytes(b"cpu sycl vulkan cuda")
-    (tmp_path / _sibling_lib("ggml-vulkan")).write_bytes(
-        b"libvulkan.so.1 vkGetInstanceProcAddr"
-    )
+    (tmp_path / _sibling_lib("ggml-vulkan")).write_bytes(b"libvulkan.so.1 vkGetInstanceProcAddr")
     assert detect_backends(binary) == {Backend.VULKAN}
     assert detect_llama_server_backend(binary) == Backend.VULKAN
 
@@ -155,6 +151,28 @@ def test_detects_sycl_from_system_lib_triplet_dir(tmp_path):
     lib.write_bytes(b"ggml_backend_sycl")
     assert detect_backends(binary) == {Backend.SYCL}
     assert detect_llama_server_backend(binary) == Backend.SYCL
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shared-library symlinks")
+def test_backend_scan_deduplicates_versioned_symlink_aliases(tmp_path, monkeypatch):
+    import arc_llama.binary as binary_mod
+
+    binary = _make_fake_binary(tmp_path, b"cpu only exe")
+    real = tmp_path / "libggml-sycl.so.0.19.0"
+    real.write_bytes(b"ggml_backend_sycl")
+    (tmp_path / "libggml-sycl.so.0").symlink_to(real.name)
+    (tmp_path / "libggml-sycl.so").symlink_to(real.name)
+    scanned: list[Path] = []
+    original = binary_mod._scan_file
+
+    def recording_scan(path: Path):
+        scanned.append(path)
+        return original(path)
+
+    monkeypatch.setattr(binary_mod, "_scan_file", recording_scan)
+
+    assert detect_backends(binary) == {Backend.SYCL}
+    assert len(scanned) == 2  # executable plus one shared-library inode
 
 
 class TestVulkanDeviceResolution:

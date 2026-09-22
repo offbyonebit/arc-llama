@@ -235,7 +235,6 @@ def oneapi_setvars_path() -> Path | None:
       - ``$CMPLR_ROOT/../setvars.sh`` (common when only the compiler module is active)
       - ``/opt/intel/oneapi/setvars.sh`` (standard apt install)
       - ``/usr/local/intel/oneapi/setvars.sh`` (common tarball/custom prefix)
-      - ``/mnt/storage/opt/intel/oneapi/setvars.sh`` (known dev-box prefix)
     """
     if sys.platform == "win32":
         base = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
@@ -266,7 +265,6 @@ def oneapi_setvars_path() -> Path | None:
     candidates.extend([
         Path("/opt/intel/oneapi/setvars.sh"),
         Path("/usr/local/intel/oneapi/setvars.sh"),
-        Path("/mnt/storage/opt/intel/oneapi/setvars.sh"),
     ])
     for p in candidates:
         if p.exists():
@@ -325,8 +323,6 @@ def oneapi_runtime_env_needed() -> bool:
         Path("/opt/intel/oneapi/lib/intel64"),
         Path("/usr/local/intel/oneapi/lib"),
         Path("/usr/local/intel/oneapi/lib/intel64"),
-        Path("/mnt/storage/opt/intel/oneapi/lib"),
-        Path("/mnt/storage/opt/intel/oneapi/lib/intel64"),
     ]
     oneapi_root = os.environ.get("ONEAPI_ROOT") or os.environ.get("CMPLR_ROOT")
     if oneapi_root:

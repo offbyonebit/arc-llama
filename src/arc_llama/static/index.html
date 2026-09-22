@@ -1,82 +1,183 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Model Manager — arc-llama</title>
-<link rel="stylesheet" href="/style.css" />
+<title>arc-llama: Local inference</title>
+<link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
+<link rel="stylesheet" href="/style.css?v=ui-0.14" />
 </head>
 <body>
-<header>
+<header class="app-header">
   <div class="brand">
+    <img class="brand-logo" src="/assets/arc-llama-logo.png?v=ui-0.15" data-light-src="/assets/arc-llama-logo.png?v=ui-0.15" data-dark-src="/assets/arc-llama-logo-dark.png?v=ui-0.15" alt="Arc Llama logo" width="42" height="42" />
     <h1>arc-llama</h1>
-    <span class="tagline">Model Manager</span>
+    <span class="tagline">Local inference</span>
   </div>
-  <div class="meta">
-    <span class="meta-badge"><span class="label">server</span><span id="server-info">—</span></span>
-    <span class="meta-badge"><span class="label">policy</span><span id="policy-info">—</span></span>
-    <a class="chat-link" href="/chat">Chat &rarr;</a>
-    <button id="scan" class="primary">Scan for models</button>
-    <button id="refresh" class="secondary">Refresh</button>
-    <button id="stop-all" class="danger">Stop all</button>
+  <nav class="app-nav" aria-label="Primary navigation">
+    <a class="nav-link active" href="/" aria-current="page">Models</a>
+    <a class="nav-link" id="chat-nav" href="/chat">Chat</a>
+  </nav>
+  <div class="header-actions">
+    <button id="theme-toggle" class="ghost theme-toggle" type="button" aria-label="Switch to light theme">Light theme</button>
+    <span class="server-state" id="server-state" aria-live="polite">Checking server</span>
+    <button id="stop-all" class="danger" disabled>Stop all models</button>
   </div>
 </header>
 
-<main>
-  <section>
-    <div class="section-head">
-      <h2>GPUs</h2>
-      <span class="section-hint">Detected accelerator devices</span>
-    </div>
-    <div class="card">
-      <table id="gpus">
-        <thead>
-          <tr>
-            <th>PCI</th>
-            <th>Arch</th>
-            <th>Name</th>
-            <th>SYCL</th>
-            <th>VRAM</th>
-            <th>Enabled</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+<main class="dashboard">
+  <section class="intro" aria-labelledby="page-title">
+    <div>
+      <p class="eyebrow">LOCAL INFERENCE</p>
+      <h2 id="page-title">Models</h2>
+      <p>Select a local GGUF to open chat. Nothing starts until you send a message.</p>
     </div>
   </section>
 
-  <section>
+  <section class="flow-section system-readiness-section" aria-labelledby="system-readiness-title">
+      <div class="section-head compact">
+      <div>
+        <h2 id="system-readiness-title">Readiness</h2>
+      </div>
+      <button id="customize-ui" class="secondary">Customize UI</button>
+    </div>
+    <div id="system-readiness" class="system-readiness pending" aria-live="polite">
+      <p>Waiting for server status</p>
+    </div>
+  </section>
+
+  <section class="flow-section" aria-labelledby="choose-title">
     <div class="section-head">
-      <h2>Models</h2>
-      <span class="section-hint">Local and upstream model endpoints</span>
+      <div>
+        <h2 id="choose-title">Available models</h2>
+        <p class="section-copy">Core details are visible here; launch settings stay out of the way until you need them.</p>
+      </div>
+      <div class="toolbar">
+        <button id="scan" class="secondary">Scan for models</button>
+        <button id="connect-frontend" class="secondary">Connect a frontend</button>
+        <button id="refresh" class="ghost">Refresh</button>
+      </div>
     </div>
-    <div class="card">
-      <table id="models">
-        <thead>
-          <tr>
-            <th>Status</th>
-            <th>Name</th>
-            <th>GPU</th>
-            <th>Port</th>
-            <th>ctx</th>
-            <th>K / V</th>
-            <th>Path</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <div id="scan-status" class="scan-status" role="status" aria-live="polite" hidden>
+      <span id="scan-status-text" class="scan-status-text"></span>
+      <span id="scan-progress" class="scan-progress" hidden></span>
     </div>
+    <div id="model-list" class="model-list" role="listbox" aria-label="Available local models" aria-busy="true"></div>
+  </section>
+
+  <section class="flow-section plugins-section" aria-labelledby="plugins-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="plugins-title">Plugins</h2>
+        <p class="section-copy">Installed add-ons discovered through <code>arc_llama.plugins</code>.</p>
+      </div>
+    </div>
+    <div id="plugin-list" class="plugin-list" aria-live="polite"></div>
+    <div id="plugin-action-list" class="toolbar" aria-label="Plugin actions"></div>
+  </section>
+
+  <section class="flow-section measurements-section" aria-labelledby="measurements-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="measurements-title">Measurements</h2>
+        <p class="section-copy">Real request measurements from this session: cold starts, time to first token, generation speed, and queue waits. No numbers are shown until they were actually measured.</p>
+      </div>
+    </div>
+    <div id="measurements" class="measurements" aria-live="polite"></div>
+  </section>
+
+  <section class="flow-section readiness-section" aria-labelledby="readiness-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="readiness-title">Selected model</h2>
+      </div>
+    </div>
+    <div id="readiness-card" class="readiness-card empty" aria-live="polite">
+      <div class="readiness-icon" aria-hidden="true"></div>
+      <div>
+        <h3>Select a model to see its launch settings.</h3>
+        <p>We will show its configured GPU, context, and memory capacity before you start.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="flow-section start-section" aria-labelledby="start-title">
+    <div>
+      <h2 id="start-title">Open chat</h2>
+      <p id="start-copy" class="section-copy">Select a model to continue.</p>
+    </div>
+    <a id="chat-primary" class="primary-cta is-disabled" aria-disabled="true">Start chatting</a>
   </section>
 </main>
 
+<dialog id="ui-layout-dialog" class="frontend-dialog" aria-labelledby="ui-layout-title">
+  <div class="frontend-dialog-head"><div><p class="eyebrow">DASHBOARD</p><h2 id="ui-layout-title">Customize plugin buttons</h2></div><button id="ui-layout-close" class="ghost">Close</button></div>
+  <p class="frontend-dialog-copy">Choose where installed plugin actions appear. Use the arrows to reorder them.</p>
+  <div id="ui-layout-list" class="plugin-list"></div>
+  <div class="toolbar"><button id="ui-layout-reset" class="ghost">Restore defaults</button><button id="ui-layout-cancel" class="ghost">Cancel</button><button id="ui-layout-save" class="primary">Save layout</button></div>
+</dialog>
+
 <footer id="status-footer">
   <span class="status-dot"></span>
-  <span id="last-updated">never refreshed</span>
+  <span id="last-updated">Waiting for server status</span>
   <span class="dot"></span>
-  <span>polling every 5s</span>
+  <span>Updates every 5 seconds</span>
 </footer>
 
-<script src="/app.js"></script>
+<dialog id="frontend-dialog" class="frontend-dialog" aria-labelledby="frontend-dialog-title">
+  <div class="frontend-dialog-head">
+    <div>
+      <p class="eyebrow">INTEGRATION</p>
+      <h2 id="frontend-dialog-title">Connect a frontend</h2>
+    </div>
+    <button id="frontend-close" class="ghost frontend-close" aria-label="Close">Close</button>
+  </div>
+  <p class="frontend-dialog-copy">Point a chat app at the arc-llama API running on this machine. Choose a frontend: every option is copy-only, nothing is changed for you.</p>
+  <div class="frontend-tabs" role="tablist" aria-label="Frontend choices">
+    <button role="tab" id="tab-openwebui" class="frontend-tab" aria-controls="panel-openwebui" aria-selected="true">Open WebUI</button>
+    <button role="tab" id="tab-ollama" class="frontend-tab" aria-controls="panel-ollama" aria-selected="false">Ollama</button>
+    <button role="tab" id="tab-generic" class="frontend-tab" aria-controls="panel-generic" aria-selected="false">OpenAI-compatible client</button>
+  </div>
+  <div class="frontend-panels">
+    <section id="panel-openwebui" role="tabpanel" aria-labelledby="tab-openwebui" class="frontend-panel">
+      <ol class="frontend-steps">
+        <li>In Open WebUI, open <strong>Settings → Admin Panel → Connections</strong> and add an <strong>OpenAI connection</strong>.</li>
+        <li>Paste this Base URL:</li>
+      </ol>
+      <div class="frontend-field">
+        <code id="openwebui-url" class="frontend-value">Detecting…</code>
+        <button id="copy-openwebui-url" class="secondary frontend-copy">Copy</button>
+      </div>
+      <p id="openwebui-key-note" class="frontend-note">API Key: any non-empty string; arc-llama does not validate client keys.</p>
+      <p id="openwebui-lan-note" class="frontend-note lan-note" hidden></p>
+      <p class="frontend-note">Models then appear automatically in the Open WebUI model picker. arc-llama never signs in to or modifies your Open WebUI account; you add the connection yourself.</p>
+    </section>
+    <section id="panel-ollama" role="tabpanel" aria-labelledby="tab-ollama" class="frontend-panel" hidden>
+      <p class="frontend-note">Use arc-llama's existing <strong>upstream</strong> flow to give apps that speak to Ollama (or to arc-llama's proxy of Ollama models) one merged model list.</p>
+      <p id="ollama-status" class="frontend-note">Checking for Ollama…</p>
+      <div class="frontend-field">
+        <code id="ollama-command" class="frontend-value">Detecting…</code>
+        <button id="copy-ollama-command" class="secondary frontend-copy">Copy</button>
+      </div>
+      <p class="frontend-note">Run that in a terminal next to your running <code>arc-llama serve</code> process. It only <em>adds</em> an upstream: existing upstreams and models are never overwritten.</p>
+      <p id="ollama-registered-note" class="frontend-note" hidden>Ollama is already registered as an upstream.</p>
+    </section>
+    <section id="panel-generic" role="tabpanel" aria-labelledby="tab-generic" class="frontend-panel" hidden>
+      <p class="frontend-note">Any client that speaks the OpenAI API can reach arc-llama at:</p>
+      <div class="frontend-field">
+        <code id="generic-url" class="frontend-value">Detecting…</code>
+        <button id="copy-generic-url" class="secondary frontend-copy">Copy</button>
+      </div>
+      <p class="frontend-note">Quick test with curl:</p>
+      <pre id="generic-curl" class="frontend-code"><code>Detecting…</code></pre>
+      <div class="frontend-field">
+        <button id="copy-generic-curl" class="secondary frontend-copy">Copy curl command</button>
+      </div>
+    </section>
+  </div>
+  <p class="frontend-hint">Prefer to type it yourself? The API listens on OpenAI paths under <span id="frontend-port-hint" class="frontend-port">…</span>.</p>
+</dialog>
+
+    <script src="/app.js?v=ui-0.16"></script>
 </body>
 </html>

@@ -1,4 +1,13 @@
 const $ = (sel) => document.querySelector(sel);
+const THEME_KEY = "arc-llama-theme";
+function applyTheme(theme) {
+  const dark = theme !== "light";
+  if (document.documentElement) document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const toggle = $("#theme-toggle");
+  if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
+  if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
+}
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
 const chatLog = $("#chat-log");
 const emptyState = $("#empty-state");
 const modelSelect = $("#model-select");
@@ -11,13 +20,211 @@ const commandPalette = $("#command-palette");
 const attachButton = $("#attach-button");
 const pdfInput = $("#pdf-input");
 const attachmentStrip = $("#attachment-strip");
+const pluginTools = $("#plugin-tools");
+const pluginToolsToggle = $("#plugin-tools-toggle");
+const pluginToolsMenu = $("#plugin-tools-menu");
+const pluginToolsCount = $("#plugin-tools-count");
+const visionModeChip = $("#vision-mode-chip");
+
+function setPluginToolsOpen(open) {
+  if (!pluginToolsMenu || !pluginToolsToggle) return;
+  pluginToolsMenu.hidden = !open;
+  pluginToolsToggle.setAttribute("aria-expanded", String(open));
+  pluginTools.classList.toggle("open", open);
+}
+
+pluginToolsToggle?.addEventListener("click", () => {
+  setPluginToolsOpen(pluginToolsMenu.hidden);
+});
+document.addEventListener("click", (event) => {
+  if (pluginTools && !pluginTools.contains(event.target)) setPluginToolsOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setPluginToolsOpen(false);
+    // Escape also closes the settings panel, so keyboard users can leave
+    // every overlay without reaching for the mouse.
+    if (settingsPanel && settingsPanel.classList.contains("open")) {
+      settingsPanel.classList.remove("open");
+      settingsToggle?.focus();
+    }
+    if (historyPanel && historyPanel.classList.contains("open")) {
+      historyPanel.classList.remove("open");
+    }
+    if (activeComposerAction && !generatingImage && document.activeElement === input) setComposerAction(null);
+  }
+});
 
 let models = [];
 let selectedModel = null;
 let loadingModel = null;
 let generating = false;
+let sendingMessage = false;
+let settingsDirty = false;
+let settingsDraftModel = null;
 let statusPoller = null;
 let adminToken = null;
+const MIN_VISION_LOADER_MS = 850;
+
+// The user-selected image-generation tool. When set, the main composer is in
+// "image mode": typed text is the image prompt and pressing Enter submits it
+// to the plugin's generation endpoint instead of the chat model.
+let activeComposerAction = null;
+let generatingImage = false;
+
+function setComposerAction(action) {
+  activeComposerAction = action;
+  if (!action) {
+    inputWrap.classList.remove("vision-mode");
+    input.dataset.imageMode = "false";
+    input.placeholder = "Message arc-llama…";
+    input.setAttribute("aria-label", "Message arc-llama");
+    if (visionModeChip) visionModeChip.hidden = true;
+    attachButton.disabled = false;
+    return;
+  }
+  const mode = action.composer?.mode || "text";
+  inputWrap.classList.toggle("vision-mode", mode === "text");
+  input.dataset.composerMode = mode;
+  input.dataset.imageMode = String(mode === "text" && action.composer?.result === "image");
+  input.placeholder = action.composer?.placeholder || (mode === "attachments"
+    ? `Add files for ${action.label || "this tool"}…`
+    : `Enter a prompt for ${action.label || "this tool"}…`);
+  input.setAttribute("aria-label", mode === "attachments" ? "Tool input and attachments" : "Tool prompt");
+  if (visionModeChip) {
+    visionModeChip.hidden = false;
+    visionModeChip.setAttribute("aria-live", "polite");
+    const label = visionModeChip.querySelector("#vision-mode-label");
+    if (label) label.textContent = action.label ? `${action.label} mode` : "Tool mode";
+  }
+  // Attachments are chat-context extras; they have no meaning for prompts
+  // sent to the diffusion companion, so park them while the mode is on.
+  clearAttachments();
+  attachButton.disabled = mode !== "attachments";
+  hideCommandPalette();
+  setPluginToolsOpen(false);
+  input.focus();
+}
+
+function isComposerActionActive() {
+  return activeComposerAction !== null && !generating;
+}
+
+const visionModeChipCancel = $("#vision-mode-chip-cancel");
+if (visionModeChipCancel) {
+  visionModeChipCancel.addEventListener("click", () => setComposerAction(null));
+}
+
+function selectComposerAction(action) {
+  if (generating || generatingImage) return;
+  // Toggle behavior: picking the same tool twice turns image mode off.
+  if (activeComposerAction && activeComposerAction.id === action.id) {
+    setComposerAction(null);
+    return;
+  }
+  setComposerAction(action);
+}
+
+async function sendComposerAction() {
+  const action = activeComposerAction;
+  const prompt = input.value.trim();
+  if (!action || generating || generatingImage) return;
+  if (!prompt && !hasReadyAttachments()) return;
+  if (!action.route) {
+    showError("Selected tool has no route.");
+    setComposerAction(null);
+    return;
+  }
+
+  const attachmentText = buildAttachmentText();
+  const payload = { prompt };
+  if (attachmentText) payload.attachments = attachmentText;
+  clearAttachments();
+  input.value = "";
+  input.style.height = "auto";
+  createMessage("user", prompt || "Attached input");
+  hideCommandPalette();
+
+  generatingImage = true;
+  sendButton.disabled = true;
+  inputWrap.classList.add("generating");
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "message assistant vision-generation";
+  wrapper.setAttribute("role", "status");
+  wrapper.setAttribute("aria-live", "polite");
+  wrapper.innerHTML = `<div class="vision-loader" aria-label="Running ${escapeHtml(action.label || "tool")}"><div class="vision-loader-glow"></div><div class="vision-loader-core"></div><span>${escapeHtml(action.label || "Tool")} is working…</span></div>`;
+  chatLog.appendChild(wrapper); chatLog.scrollTop = chatLog.scrollHeight;
+  const loaderStartedAt = performance.now();
+  try {
+    const responsePromise = fetch(action.route, {method: action.method || "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    const response = await responsePromise;
+    const data = await response.json();
+    const remaining = MIN_VISION_LOADER_MS - (performance.now() - loaderStartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+    if (!response.ok) throw new Error(data.detail || "Tool action failed");
+    const resultType = action.composer?.result || "image";
+    if (resultType === "image") {
+      const image = data.data?.[0]?.b64_json;
+      if (!image) throw new Error("Tool returned no image");
+      wrapper.className = "message assistant vision-generation complete";
+      wrapper.replaceChildren();
+      const img = document.createElement("img"); img.src = `data:image/png;base64,${image}`; img.alt = prompt; img.style.maxWidth = "100%"; wrapper.appendChild(img);
+    } else {
+      wrapper.className = "message assistant tool-generation complete";
+      wrapper.textContent = data.output || data.text || data.message || JSON.stringify(data);
+    }
+    chatLog.appendChild(wrapper); chatLog.scrollTop = chatLog.scrollHeight;
+    setComposerAction(null);
+  } catch (error) {
+    wrapper.className = "message assistant vision-generation failed";
+    wrapper.innerHTML = `<div class="vision-generation-error"><strong>Tool action failed</strong><span>${escapeHtml(error.message)}</span></div>`;
+    setComposerAction(null);
+  }
+  finally {
+    generatingImage = false;
+    sendButton.disabled = false;
+    inputWrap.classList.remove("generating");
+    input.focus();
+  }
+}
+
+async function loadPluginActions() {
+  const host = $("#plugin-actions");
+  if (!host) return;
+  try {
+    const r = await fetch("/admin/ui/layout", {headers: authHeaders()});
+    if (!r.ok) return;
+    const data = await r.json();
+    const ids = [...(data.layout?.chat || []), ...(data.layout?.plugins || []), ...(data.layout?.toolbar || [])];
+    const hidden = new Set(data.hidden || []);
+    host.replaceChildren();
+    let visibleCount = 0;
+    for (const action of data.actions || []) {
+      if (!ids.includes(action.id) || hidden.has(action.id)) continue;
+      visibleCount += 1;
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "plugin-action-button"; button.setAttribute("role", "menuitem");
+      const icon = document.createElement("img");
+      icon.className = "plugin-action-icon";
+      icon.src = action.icon === "image" ? "/assets/arc-llama-vision.png?v=ui-0.21" : "/assets/arc-llama-tools.png?v=ui-0.21";
+      icon.alt = ""; icon.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span"); copy.className = "plugin-action-copy";
+      const label = document.createElement("strong"); label.textContent = action.label || action.id;
+      const detail = document.createElement("small"); detail.textContent = action.description || "Plugin action";
+      copy.append(label, detail); button.append(icon, copy);
+      button.addEventListener("click", () => {
+        setPluginToolsOpen(false);
+        if (action.composer?.mode) selectComposerAction(action);
+        else if (action.route) window.location.href = action.route;
+      });
+      host.appendChild(button);
+    }
+    if (pluginToolsCount) pluginToolsCount.textContent = String(visibleCount);
+    if (pluginToolsToggle) pluginToolsToggle.disabled = visibleCount === 0;
+    if (!visibleCount) setPluginToolsOpen(false);
+  } catch (_) { /* plugin actions are optional */ }
+}
 
 async function initAdminToken() {
   try {
@@ -78,7 +285,8 @@ if (typeof marked !== "undefined") {
     mangle: false,
   });
 }
-const mdRenderer = {
+const mdRenderer = typeof marked !== "undefined" ? new marked.Renderer() : {};
+Object.assign(mdRenderer, {
   code(code, language) {
     const validLang = language && hljs.getLanguage(language) ? language : "plaintext";
     const highlighted = hljs.highlight(code, { language: validLang }).value;
@@ -91,7 +299,13 @@ const mdRenderer = {
   html(text) {
     return escapeHtml(text);
   },
-};
+  link(href, title, text) {
+    return ArcMarkdownSafety.link(href, title, text);
+  },
+  image(href, title, text) {
+    return ArcMarkdownSafety.image(href, title, text);
+  },
+});
 
 function attachCopyButtons(root) {
   for (const btn of root.querySelectorAll(".copy-code-btn")) {
@@ -124,6 +338,13 @@ settingsToggle.addEventListener("click", () => {
   settingsToggle.classList.toggle("open", open);
   if (open) renderSettingsPanel();
 });
+
+function openSettingsFromLink() {
+  if (new URLSearchParams(window.location.search).get("settings") !== "1") return;
+  settingsPanel.classList.add("open");
+  settingsToggle.classList.add("open");
+  renderSettingsPanel();
+}
 
 historyToggle.addEventListener("click", async () => {
   const open = historyPanel.classList.toggle("open");
@@ -192,10 +413,16 @@ function serverChatToLocal(data, modelHint) {
 
 async function apiRequest(path, options = {}) {
   const r = await fetch(path, options);
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`${r.status} ${t}`);
-  }
+    if (!r.ok) {
+      const structured = await parseStructuredFailure(r);
+      if (structured) {
+        const err = new Error(structured.message);
+        err.structured = structured;
+        throw err;
+      }
+      const t = await r.text();
+      throw new Error(`${r.status} ${t}`);
+    }
   return r.json();
 }
 
@@ -619,7 +846,16 @@ async function importChatsFromFile() {
 
 function renderSettingsPanel() {
   const m = models.find(m => m.id === selectedModel);
-  sModelName.textContent = selectedModel || "—";
+  if (settingsDraftModel === selectedModel && (settingsDirty || sFields.contains(document.activeElement))) {
+    const fitLine = $("#s-fit");
+    if (fitLine) fitLine.textContent = settingsDirty
+      ? "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate."
+      : vramFitText(m || {});
+    return;
+  }
+  settingsDraftModel = selectedModel;
+  settingsDirty = false;
+  sModelName.textContent = selectedModel || "Not selected";
   if (!m || (m.owned_by && m.owned_by.startsWith("upstream:"))) {
     sFields.innerHTML = '<div class="s-upstream">Settings not available for upstream models.</div>';
     return;
@@ -645,10 +881,38 @@ function renderSettingsPanel() {
       <input id="s-par" type="number" min="1" max="32" value="${parallel}"></div>
     <div class="s-field"><label>KV Class</label>
       <select id="s-kvc">${classOpts}</select></div>
+    <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
     <button class="s-apply" id="s-apply">Apply</button>
     <div class="s-note">Takes effect on next model load.</div>
   `;
   $("#s-apply").addEventListener("click", applySettings);
+  sFields.querySelectorAll("input, select").forEach((field) => {
+    const markDirty = () => {
+      settingsDirty = true;
+      $("#s-fit").textContent = "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate.";
+    };
+    field.addEventListener("input", markDirty);
+    field.addEventListener("change", markDirty);
+  });
+}
+
+// Honest VRAM fit line for the settings panel, from /admin/status's
+// vram_estimate block. Never invents a number: when the server could not
+// estimate, says so plainly.
+function vramFitText(m) {
+  const fit = m.vram_estimate;
+  if (!fit || fit.estimated_mb == null) return "Memory fit: not estimated yet.";
+  const est = `est. ${fit.estimated_mb.toLocaleString()} MiB`;
+  if (fit.fit === false) {
+    const head = fit.headroom_mb != null
+      ? `exceeds the GPU by ${Math.abs(fit.headroom_mb).toLocaleString()} MiB`
+      : "will not fit on the configured GPU";
+    return `Memory fit: ${est}, ${head}. Reduce context or KV size, or pick a smaller model.`;
+  }
+  if (fit.fit === true && fit.headroom_mb != null) {
+    return `Memory fit: ${est}, ${fit.headroom_mb.toLocaleString()} MiB headroom on the assigned GPU.`;
+  }
+  return `Memory fit: ${est}. ${fit.detail || "GPU capacity unknown; no fit verdict."}`;
 }
 
 async function applySettings() {
@@ -679,6 +943,10 @@ async function applySettings() {
     m.kv_class     = body.kv_class;
     sFeedback.style.color = "var(--accent-bright)";
     sFeedback.textContent = "Saved.";
+    settingsDirty = false;
+    // The VRAM estimate depends on ctx/KV; refresh status so the settings
+    // panel re-renders an honest fit line instead of the stale one.
+    fetchStatus().catch(() => {});
   } catch (e) {
     sFeedback.style.color = "#e8b0b0";
     sFeedback.textContent = "Error: " + e.message;
@@ -716,7 +984,8 @@ async function fetchModels() {
 }
 
 function renderModelPicker() {
-  const current = selectedModel || modelSelect.value;
+  const requested = new URLSearchParams(window.location.search).get("model");
+  const current = requested || selectedModel || sessionStorage.getItem("arc-llama-selected-model") || modelSelect.value;
   modelSelect.innerHTML = "";
   if (models.length === 0) {
     const opt = document.createElement("option");
@@ -725,7 +994,7 @@ function renderModelPicker() {
     opt.selected = true;
     modelSelect.appendChild(opt);
     selectedModel = null;
-    updateStatus("swapping");
+    updateStatus("unavailable");
     return;
   }
   for (const m of models) {
@@ -741,6 +1010,8 @@ function renderModelPicker() {
     selectedModel = models[0].id;
     modelSelect.value = selectedModel;
   }
+  if (selectedModel) sessionStorage.setItem("arc-llama-selected-model", selectedModel);
+  openSettingsFromLink();
 }
 
 async function fetchStatus() {
@@ -749,6 +1020,16 @@ async function fetchStatus() {
     if (!r.ok) return;
     const data = await r.json();
     const modelMap = new Map((data.models || []).map(m => [m.name, m]));
+    const waiting = document.querySelector(".load-wait-card .content");
+    if (waiting && loadingModel) {
+      const target = modelMap.get(loadingModel);
+      const draining = (data.models || []).some(m => m.state === "draining");
+      waiting.textContent = draining
+        ? "Waiting for active responses to finish before switching models…"
+        : target?.state === "loading"
+          ? "Loading the model and waiting for the runtime to become ready…"
+          : "Waiting for model readiness…";
+    }
     models = models.map(m => {
       const s = modelMap.get(m.id);
       if (s) {
@@ -757,19 +1038,21 @@ async function fetchStatus() {
         m.cache_type_k  = s.cache_type_k  ?? m.cache_type_k;
         m.cache_type_v  = s.cache_type_v  ?? m.cache_type_v;
         m.kv_class      = s.kv_class      ?? m.kv_class;
+        m.vram_estimate = s.vram_estimate || null;
       }
       return m;
     });
     updatePickerStatus();
+    if (settingsPanel.classList.contains("open")) renderSettingsPanel();
   } catch (e) {
-    // silent — the chat endpoint will surface real errors
+    // silent: the chat endpoint will surface real errors
   }
 }
 
 function updatePickerStatus() {
   const m = models.find(m => m.id === selectedModel);
   if (!m) {
-    updateStatus("swapping");
+    updateStatus("unavailable");
     return;
   }
   if (loadingModel === selectedModel) {
@@ -777,7 +1060,7 @@ function updatePickerStatus() {
   } else if (m.loaded) {
     updateStatus("ready");
   } else {
-    updateStatus("swapping");
+    updateStatus("idle");
   }
 }
 
@@ -788,9 +1071,11 @@ function updateStatus(state) {
 
 modelSelect.addEventListener("change", () => {
   selectedModel = modelSelect.value;
+  sessionStorage.setItem("arc-llama-selected-model", selectedModel);
   loadingModel = null;
   updatePickerStatus();
   if (settingsPanel.classList.contains("open")) renderSettingsPanel();
+  restoreDraft();
 });
 
 function createMessage(role, text = "") {
@@ -839,24 +1124,125 @@ function showError(text) {
   content.parentElement.querySelector(".role").textContent = "Error";
 }
 
+// Render one structured /admin/load or chat-completions startup failure as a
+// readable card: message, action, diagnostics id, a Retry button that
+// re-runs the load (returning to a prior send when one was pending), and an
+// expandable diagnostics region with the server-provided details. A plain
+// Error (network drop, non-JSON reply) degrades to showError.
+function showStartupFailure(failure, { onRetry = null, retryLabel = "Retry" } = {}) {
+  const category = failure?.category;
+  const message = failure?.message || "";
+  const action = failure?.action || "";
+  const diagId = failure?.diagnostics_id || "";
+  const details = failure?.details || null;
+  if (!category || !message) return showError(message || "Model load failed.");
+
+  const { div, content } = createMessage("error", "");
+  div.classList.add("error-card", "load-failure-card");
+  div.dataset.failureCategory = category;
+  if (diagId) div.dataset.diagnosticsId = diagId;
+  div.querySelector(".role").textContent = "Load failed";
+
+  content.textContent = message;
+
+  if (action) {
+    const actionEl = document.createElement("p");
+    actionEl.className = "load-failure-action";
+    const key = document.createElement("span");
+    key.className = "fail-key";
+    key.textContent = "What to do: ";
+    actionEl.append(key, action);
+    content.appendChild(actionEl);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "load-failure-meta";
+  if (diagId) {
+    const idEl = document.createElement("span");
+    idEl.className = "load-failure-id";
+    idEl.textContent = `diagnostics ${diagId}`;
+    meta.appendChild(idEl);
+  }
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "load-failure-retry";
+  retry.textContent = retryLabel;
+  retry.disabled = !onRetry;
+  retry.addEventListener("click", async () => {
+    if (!onRetry || generating) return;
+    retry.disabled = true;
+    try {
+      const result = await onRetry();
+      if (result !== false) div.remove();
+    } catch (error) {
+      showError(error.message || "Retry failed.");
+    } finally {
+      retry.disabled = !onRetry;
+    }
+  });
+  meta.appendChild(retry);
+  if (details && Object.keys(details).length) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "load-failure-details-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+    const detailsRegion = document.createElement("div");
+    detailsRegion.className = "load-failure-details";
+    detailsRegion.hidden = true;
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(details, null, 2);
+    detailsRegion.appendChild(pre);
+    toggle.textContent = "Show diagnostics";
+    toggle.addEventListener("click", () => {
+      const open = detailsRegion.toggleAttribute("hidden");
+      toggle.setAttribute("aria-expanded", String(!open));
+      toggle.textContent = open ? "Show diagnostics" : "Hide diagnostics";
+    });
+    meta.appendChild(toggle);
+    content.appendChild(detailsRegion);
+  }
+  content.appendChild(meta);
+}
+
+// Parse the HTTP error body of /admin/load or /v1/chat/completions into the
+// structured failure shape ({category, message, action, diagnostics_id,
+// details}) when the server sent one; otherwise return null.
+async function parseStructuredFailure(response) {
+  try {
+    const body = await response.clone().json();
+    const err = body && body.error;
+    if (err && typeof err === "object" && typeof err.message === "string") return err;
+  } catch (_) { /* not JSON */ }
+  try {
+    const body = await response.clone().json();
+    const text = typeof body?.detail === "string" ? body.detail : null;
+    if (text) return { category: "http_error", message: text, action: "", diagnostics_id: "" };
+  } catch (_) { /* not JSON */ }
+  return null;
+}
+
 async function ensureModelLoaded() {
   const m = models.find(m => m.id === selectedModel);
   if (!m) throw new Error("No model selected");
   if (m.loaded || (m.owned_by && m.owned_by.startsWith("upstream:"))) return;
   loadingModel = selectedModel;
-  updatePickerStatus();
+  updateStatus("loading");
   try {
     const r = await fetch(`/admin/load/${encodeURIComponent(selectedModel)}`, {
       method: "POST",
       headers: authHeaders(),
     });
     if (!r.ok) {
+      const structured = await parseStructuredFailure(r);
+      if (structured) {
+        const err = new Error(structured.message);
+        err.structured = structured;
+        throw err;
+      }
       const t = await r.text();
       throw new Error(`Load failed: ${r.status} ${t}`);
     }
     m.loaded = true;
-  } catch (e) {
-    throw e;
   } finally {
     loadingModel = null;
     updatePickerStatus();
@@ -864,8 +1250,9 @@ async function ensureModelLoaded() {
 }
 
 async function sendMessage() {
+  if (isComposerActionActive()) { sendComposerAction(); return; }
+  if (generating || sendingMessage || !selectedModel) return;
   const text = input.value.trim();
-  if (generating || !selectedModel) return;
   if (!text && !hasReadyAttachments()) return;
   if (hasProcessingAttachments()) {
     showError("Please wait for attachments to finish processing.");
@@ -880,26 +1267,71 @@ async function sendMessage() {
   input.value = "";
   input.style.height = "auto";
   clearAttachments();
+  clearDraft();
   conversation.push({ role: "user", content: fullText });
   createMessage("user", fullText);
 
-  // Persist this conversation on the server (best-effort).
-  await ensureServerChat(fullText, currentFolder);
-  serverAppendMessages(currentChatId, [{ role: "user", content: fullText }]);
+  // Reserve this send while persistence awaits, before generation begins.
+  sendingMessage = true;
+  try {
+    await ensureServerChat(fullText, currentFolder);
+    serverAppendMessages(currentChatId, [{ role: "user", content: fullText }]);
+    await runSend();
+  } finally {
+    sendingMessage = false;
+  }
+}
 
+// The generation half of a send, after the user turn has been appended to
+// the transcript. A failed startup renders a retry card that re-enters
+// here directly, so a retried send never duplicates the user turn.
+async function runSend() {
+  if (generating || !selectedModel || !conversation.length) return false;
+  const retryChatId = currentChatId;
+  const retryModel = selectedModel;
+  const retryTranscript = conversation;
+  const retryLength = conversation.length;
+  const retryTurn = () => {
+    if (generating || currentChatId !== retryChatId || selectedModel !== retryModel ||
+        conversation !== retryTranscript || conversation.length !== retryLength) {
+      showError("This retry belongs to an earlier conversation or turn. Send a new message to continue.");
+      return false;
+    }
+    return runSend();
+  };
   generating = true;
   sendButton.disabled = true;
   inputWrap.classList.add("generating");
+
+  // Honest waiting stage: if the model is not loaded yet, say so in the log
+  // instead of leaving an empty assistant bubble for tens of seconds of
+  // cold start. The card is removed as soon as the load resolves one way
+  // or another.
+  const needsLoad = (() => {
+    const m = models.find(m => m.id === selectedModel);
+    return !(m && (m.loaded || (m.owned_by && m.owned_by.startsWith("upstream:"))));
+  })();
+  let loadingCard = null;
+  if (needsLoad) {
+    loadingCard = createMessage("system", "Starting model, this can take a while on first load…");
+    loadingCard.div.classList.add("load-wait-card");
+  }
   const streamingDot = $("#streaming-indicator");
   if (streamingDot) streamingDot.style.opacity = "1";
 
   try {
     await ensureModelLoaded();
   } catch (e) {
-    showError(e.message);
+    if (loadingCard) loadingCard.div.remove();
+    if (e.structured) {
+      showStartupFailure(e.structured, { onRetry: retryTurn, retryLabel: "Retry load" });
+    } else {
+      showError(e.message);
+    }
     finishGeneration();
     return;
   }
+  if (loadingCard) loadingCard.div.remove();
 
   const assistantMsg = createMessage("assistant");
   conversation.push({ role: "assistant", content: "", thinking: "" });
@@ -921,6 +1353,12 @@ async function sendMessage() {
       }),
     });
     if (!r.ok) {
+      const structured = await parseStructuredFailure(r);
+      if (structured) {
+        const err = new Error(structured.message);
+        err.structured = structured;
+        throw err;
+      }
       const t = await r.text();
       throw new Error(`${r.status} ${t}`);
     }
@@ -983,7 +1421,13 @@ async function sendMessage() {
   } catch (e) {
     assistantMsg.div.remove();
     conversation.pop();
-    showError("Generation failed: " + e.message);
+    if (e.structured) {
+      // The user turn is the last transcript entry again; retry re-enters
+      // runSend directly so the turn is not duplicated.
+      showStartupFailure(e.structured, { onRetry: retryTurn, retryLabel: "Retry" });
+    } else {
+      showError("Generation failed: " + e.message);
+    }
   } finally {
     lastUsage = null;
     streamStartTime = null;
@@ -1030,18 +1474,20 @@ function parseThinking(text) {
   let thinking = "";
   let content = text;
   const thinkMatches = [...text.matchAll(/<think>([\s\S]*?)<\/think>/g)];
-  for (const m of thinkMatches) thinking += (thinking ? "\n" : "") + m[1];
+  // Reasoning arrives in small SSE deltas. Preserve the model's whitespace;
+  // adding a newline for every delta turns normal prose into a column.
+  for (const m of thinkMatches) thinking += m[1];
   content = content.replace(/<think>[\s\S]*?<\/think>/g, "");
   const thinkingMatches = [...text.matchAll(/<thinking>([\s\S]*?)<\/thinking>/g)];
-  for (const m of thinkingMatches) thinking += (thinking ? "\n" : "") + m[1];
+  for (const m of thinkingMatches) thinking += m[1];
   content = content.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
   const unclosedThink = content.match(/<think>([\s\S]*)$/);
   const unclosedThinking = content.match(/<thinking>([\s\S]*)$/);
   if (unclosedThink) {
-    thinking += (thinking ? "\n" : "") + unclosedThink[1];
+    thinking += unclosedThink[1];
     content = content.replace(/<think>[\s\S]*$/, "");
   } else if (unclosedThinking) {
-    thinking += (thinking ? "\n" : "") + unclosedThinking[1];
+    thinking += unclosedThinking[1];
     content = content.replace(/<thinking>[\s\S]*$/, "");
   }
   return { thinking: thinking.trim(), content: content.trimEnd(), hasPartialTag: false };
@@ -1077,12 +1523,7 @@ function renderMarkdown(container, text) {
 }
 
 function escapeHtml(s) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return ArcMarkdownSafety.escapeHtml(s);
 }
 
 function renderThinking(messageDiv, thinkingText) {
@@ -1387,7 +1828,7 @@ function renderHelpMessage() {
   content.className = "content";
   let html = "";
   for (const cmd of SLASH_COMMANDS) {
-    html += `<p><code>/${cmd.name}</code> <strong>—</strong> ${escapeHtml(cmd.desc)}</p>`;
+    html += `<p><code>/${cmd.name}</code> <strong>-</strong> ${escapeHtml(cmd.desc)}</p>`;
   }
   content.innerHTML = html;
   div.appendChild(content);
@@ -1418,7 +1859,11 @@ function switchModel(modelId) {
   modelSelect.value = m.id;
   updatePickerStatus();
   if (settingsPanel.classList.contains("open")) renderSettingsPanel();
-  ensureModelLoaded().catch((e) => showError(e.message));
+  restoreDraft();
+  ensureModelLoaded().catch((e) => {
+    if (e.structured) showStartupFailure(e.structured, { onRetry: () => switchModel(m.id), retryLabel: "Retry load" });
+    else showError(e.message);
+  });
 }
 
 async function compactConversation(instruction) {
@@ -1433,7 +1878,8 @@ async function compactConversation(instruction) {
   try {
     await ensureModelLoaded();
   } catch (e) {
-    showError(e.message);
+    if (e.structured) showStartupFailure(e.structured, { onRetry: () => compactConversation(instruction), retryLabel: "Retry load" });
+    else showError(e.message);
     return;
   }
 
@@ -1513,6 +1959,10 @@ input.addEventListener("keydown", async (e) => {
       hideCommandPalette();
       return;
     }
+    if (isComposerActionActive()) {
+      await sendComposerAction();
+      return;
+    }
     sendMessage();
   }
 });
@@ -1525,19 +1975,51 @@ sendButton.addEventListener("click", async () => {
     hideCommandPalette();
     return;
   }
+  if (isComposerActionActive()) {
+    await sendComposerAction();
+    return;
+  }
   sendMessage();
 });
+
+$("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 96) + "px";
   updateCommandPalette();
+  saveDraft();
 });
+
+// Draft persistence: an unsent composer draft survives a page refresh, per
+// model, so a reload never eats what the user already typed. Cleared on a
+// successful send. sessionStorage (not localStorage) keeps it tab-scoped.
+const DRAFT_KEY = "arc-llama-draft-";
+function saveDraft() {
+  if (!selectedModel) return;
+  try { sessionStorage.setItem(DRAFT_KEY + selectedModel, input.value); } catch (_) {}
+}
+function clearDraft() {
+  if (!selectedModel) return;
+  try { sessionStorage.removeItem(DRAFT_KEY + selectedModel); } catch (_) {}
+}
+function restoreDraft() {
+  if (!selectedModel) return;
+  try {
+    const draft = sessionStorage.getItem(DRAFT_KEY + selectedModel);
+    input.value = draft || "";
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 96) + "px";
+  } catch (_) {}
+}
 
 (async function init() {
   await initAdminToken();
+  await loadPluginActions();
   await fetchModels();
+  await fetchStatus();
   await loadFolders();
   await syncChatsFromServer();
+  restoreDraft();
   statusPoller = setInterval(fetchStatus, 3000);
 })();

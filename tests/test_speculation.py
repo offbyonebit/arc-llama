@@ -31,3 +31,37 @@ def test_rejects_larger_draft(tmp_path):
     target = _model("qwen3-4b", str(target_path))
     cfg = Config(models=[target, _model("qwen3-30b", str(draft_path))])
     assert discover_drafts(cfg, target) == []
+
+
+def test_rejects_known_tokenizer_mismatch(tmp_path, monkeypatch):
+    target_path = tmp_path / "Qwen3-30B-Q4.gguf"
+    draft_path = tmp_path / "Qwen3-4B-Q4.gguf"
+    target_path.write_bytes(b"x" * (2 * 1024 * 1024))
+    draft_path.write_bytes(b"x" * (1024 * 1024))
+    target = _model("qwen3-30b", str(target_path))
+    cfg = Config(
+        gpus=[GPUConfig(pci_slot="gpu", sycl_index=0, arch="battlemage", vram_mb=24 * 1024)],
+        models=[target, _model("qwen3-4b", str(draft_path))],
+    )
+    monkeypatch.setattr(
+        "arc_llama.speculation.tokenizer_fingerprint",
+        lambda path: "target" if str(path) == str(target_path) else "draft",
+    )
+    assert discover_drafts(cfg, target) == []
+
+
+def test_marks_verified_tokenizer_match(tmp_path, monkeypatch):
+    target_path = tmp_path / "Qwen3-30B-Q4.gguf"
+    draft_path = tmp_path / "Qwen3-4B-Q4.gguf"
+    target_path.write_bytes(b"x" * (2 * 1024 * 1024))
+    draft_path.write_bytes(b"x" * (1024 * 1024))
+    target = _model("qwen3-30b", str(target_path))
+    cfg = Config(
+        gpus=[GPUConfig(pci_slot="gpu", sycl_index=0, arch="battlemage", vram_mb=24 * 1024)],
+        models=[target, _model("qwen3-4b", str(draft_path))],
+    )
+    monkeypatch.setattr("arc_llama.speculation.tokenizer_fingerprint", lambda _path: "same")
+    candidates = discover_drafts(cfg, target)
+    assert len(candidates) == 1
+    assert candidates[0].tokenizer_compatible is True
+    assert "tokenizer verified" in candidates[0].reason

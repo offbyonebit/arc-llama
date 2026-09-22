@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import shutil
 import tarfile
+import warnings
 import zipfile
 from pathlib import Path
 
+import httpx
 import pytest
 
 from arc_llama.arch import Backend
 from arc_llama.runtime import (
+    RuntimeAsset,
     RuntimeInstallError,
+    _publish_install,
+    _resolve_release_with_asset,
     _resolve_windows_release_with_asset,
     asset_suffix,
+    download_asset,
     extract_archive,
     host_platform,
     install_runtime,
@@ -72,6 +80,7 @@ def test_asset_suffix_unsupported_raises(os_name, arch, backend):
 
 
 def test_select_asset_matches():
+    digest = "ab" * 32
     release = {
         "tag_name": "b10092",
         "assets": [
@@ -84,6 +93,7 @@ def test_select_asset_matches():
                 "name": "llama-b10092-bin-ubuntu-vulkan-x64.tar.gz",
                 "browser_download_url": "http://x/v",
                 "size": 123,
+                "digest": f"sha256:{digest}",
             },
         ],
     }
@@ -92,6 +102,22 @@ def test_select_asset_matches():
     assert asset.url == "http://x/v"
     assert asset.size == 123
     assert asset.tag == "b10092"
+    assert asset.digest == digest
+
+
+def test_select_asset_ignores_malformed_digest():
+    release = {
+        "tag_name": "b10092",
+        "assets": [
+            {
+                "name": "llama-b10092-bin-ubuntu-vulkan-x64.tar.gz",
+                "browser_download_url": "http://x/v",
+                "size": 123,
+                "digest": "md5:not-a-sha256",
+            }
+        ],
+    }
+    assert select_asset(release, "linux", "x64", "vulkan").digest is None
 
 
 def test_select_asset_matches_current_windows_release_name():
@@ -111,36 +137,60 @@ def test_select_asset_matches_current_windows_release_name():
 
 def test_windows_latest_fallback_skips_assetless_latest_release():
     class Response:
-        def __init__(self, payload):
-            self.payload = payload
-
         def raise_for_status(self):
             return None
 
         def json(self):
-            return self.payload
+            return [
+                {"tag_name": "v0.4.0", "assets": []},
+                {
+                    "tag_name": "b10819",
+                    "assets": [
+                        {
+                            "name": "llama-b10819-bin-win-vulkan-x64.zip",
+                            "browser_download_url": "http://x/v",
+                            "size": 123,
+                        }
+                    ],
+                },
+            ]
 
     class Client:
         def get(self, url):
             assert url.endswith("/releases?per_page=30")
-            return Response(
-                [
-                    {"tag_name": "v0.4.0", "assets": []},
-                    {
-                        "tag_name": "b10819",
-                        "assets": [
-                            {
-                                "name": "llama-b10819-bin-win-vulkan-x64.zip",
-                                "browser_download_url": "http://x/v",
-                                "size": 123,
-                            }
-                        ],
-                    },
-                ]
-            )
+            return Response()
 
     release = _resolve_windows_release_with_asset(Client(), "x64", "vulkan")
     assert release["tag_name"] == "b10819"
+
+
+def test_linux_latest_fallback_skips_assetless_latest_release():
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {"tag_name": "v0.4.0", "assets": []},
+                {
+                    "tag_name": "b10867",
+                    "assets": [
+                        {
+                            "name": "llama-b10867-bin-ubuntu-vulkan-x64.tar.gz",
+                            "browser_download_url": "http://x/v",
+                            "size": 123,
+                        }
+                    ],
+                },
+            ]
+
+    class Client:
+        def get(self, url):
+            assert url.endswith("/releases?per_page=30")
+            return Response()
+
+    release = _resolve_release_with_asset(Client(), "linux", "x64", "vulkan")
+    assert release["tag_name"] == "b10867"
 
 
 def test_select_asset_missing_raises():
@@ -156,6 +206,49 @@ def test_select_asset_missing_raises():
     }
     with pytest.raises(RuntimeInstallError):
         select_asset(release, "linux", "x64", "vulkan")
+
+
+# ---------------------------------------------------------------------------
+# download integrity
+# ---------------------------------------------------------------------------
+
+
+def _download_client(payload: bytes) -> httpx.Client:
+    return httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=payload))
+    )
+
+
+def test_download_asset_verifies_size_and_digest(tmp_path):
+    payload = b"verified runtime archive"
+    asset = RuntimeAsset(
+        name="runtime.tar.gz",
+        url="https://example.test/runtime.tar.gz",
+        size=len(payload),
+        tag="b1",
+        digest=hashlib.sha256(payload).hexdigest(),
+    )
+    output = tmp_path / "runtime.tar.gz"
+    with _download_client(payload) as client:
+        assert download_asset(client, asset, output) == output
+    assert output.read_bytes() == payload
+
+
+@pytest.mark.parametrize("bad_field", ["size", "digest"])
+def test_download_asset_rejects_corruption_and_removes_file(tmp_path, bad_field):
+    payload = b"corrupt runtime archive"
+    asset = RuntimeAsset(
+        name="runtime.tar.gz",
+        url="https://example.test/runtime.tar.gz",
+        size=len(payload) + (1 if bad_field == "size" else 0),
+        tag="b1",
+        digest=("00" * 32 if bad_field == "digest" else hashlib.sha256(payload).hexdigest()),
+    )
+    output = tmp_path / "runtime.tar.gz"
+    with _download_client(payload) as client:
+        with pytest.raises(RuntimeInstallError, match="mismatch"):
+            download_asset(client, asset, output)
+    assert not output.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +279,21 @@ def test_extract_tar_gz_finds_binary(tmp_path):
         assert os.access(found, os.X_OK)
 
 
+def test_extract_tar_gz_without_python_312_data_filter(tmp_path, monkeypatch):
+    server = _make_fake_server(tmp_path)
+    archive = tmp_path / "test-legacy.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(server, arcname="build/bin/llama-server")
+
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        found = extract_archive(archive, tmp_path / "legacy-extracted")
+
+    assert found.exists()
+    assert found.name == "llama-server"
+
+
 def test_extract_zip_finds_exe(tmp_path):
     src = tmp_path / "src"
     (src / "bin").mkdir(parents=True)
@@ -214,6 +322,66 @@ def test_extract_no_binary_raises(tmp_path):
     dest = tmp_path / "extracted"
     with pytest.raises(RuntimeInstallError, match="no llama-server"):
         extract_archive(archive, dest)
+
+
+def test_extract_tar_rejects_parent_traversal(tmp_path):
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("../outside")
+        payload = b"escaped"
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    with pytest.raises(RuntimeInstallError, match="Unsafe archive member"):
+        extract_archive(archive, tmp_path / "dest")
+    assert not (tmp_path / "outside").exists()
+
+
+def test_extract_tar_rejects_escaping_symlink(tmp_path):
+    archive = tmp_path / "evil-link.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("build/link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../../outside"
+        tf.addfile(info)
+
+    with pytest.raises(RuntimeInstallError, match="Unsafe archive member"):
+        extract_archive(archive, tmp_path / "dest")
+
+
+def test_extract_zip_rejects_parent_traversal(tmp_path):
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("../outside", "escaped")
+
+    with pytest.raises(RuntimeInstallError, match="Unsafe archive member"):
+        extract_archive(archive, tmp_path / "dest")
+    assert not (tmp_path / "outside").exists()
+
+
+def test_publish_install_restores_previous_install_on_failure(tmp_path, monkeypatch):
+    install = tmp_path / "runtime"
+    install.mkdir()
+    (install / "old").write_text("working")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "new").write_text("replacement")
+
+    import arc_llama.runtime as rt
+
+    real_replace = rt.os.replace
+    calls = {"count": 0}
+
+    def fail_publish(src, dst):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated publish failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(rt.os, "replace", fail_publish)
+    with pytest.raises(OSError, match="publish failure"):
+        _publish_install(staging, install)
+    assert (install / "old").read_text() == "working"
 
 
 # ---------------------------------------------------------------------------

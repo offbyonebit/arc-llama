@@ -6,12 +6,14 @@ for a registered model. Can run a single shot or sweep ctx/KV configs.
 All measurements go through the running arc-llama serve instance so the
 benchmark inherits the correct SYCL env, arch profile, and router policy.
 """
+
 from __future__ import annotations
 
 import logging
 import re
+import statistics
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ WARMUP_PROMPT = "The quick brown fox jumps over the lazy dog. "
 DEFAULT_PROMPT_TOKENS = 512
 DEFAULT_GEN_TOKENS = 128
 
-# How many repeat runs to average for stable numbers.
+# How many repeat runs to summarise by median for stable numbers.
 REPEAT_PROMPT_EVAL = 3
 REPEAT_GENERATION = 3
 
@@ -35,6 +37,7 @@ REPEAT_GENERATION = 3
 @dataclass
 class BenchmarkResult:
     """One benchmark measurement."""
+
     model: str
     ctx: int
     cache_type_k: str
@@ -45,6 +48,14 @@ class BenchmarkResult:
     prompt_eval_ms: float | None = None
     generation_tok_s: float | None = None
     generation_ms: float | None = None
+    measured_prompt_tokens: int | None = None
+    measured_gen_tokens: int | None = None
+    prompt_eval_samples: list[float] = field(default_factory=list)
+    generation_samples: list[float] = field(default_factory=list)
+    prompt_eval_min_tok_s: float | None = None
+    prompt_eval_max_tok_s: float | None = None
+    generation_min_tok_s: float | None = None
+    generation_max_tok_s: float | None = None
     vram_used_mb: int | None = None
     vram_total_mb: int | None = None
     jit_warmup_s: float | None = None
@@ -63,6 +74,7 @@ class BenchmarkResult:
 # ------------------------------------------------------------------
 # sysfs VRAM helpers
 # ------------------------------------------------------------------
+
 
 def _find_drm_card(pci_slot: str) -> Path | None:
     """Find the /sys/class/drm/cardN path for a given PCI slot."""
@@ -106,10 +118,10 @@ def _read_vram_total(card_path: Path) -> int | None:
     """Total VRAM in MiB, trying amdgpu, xe, and i915 sysfs layouts in turn."""
     device = card_path / "device"
     candidates = [
-        device / "mem_info_vram_total",                  # amdgpu
-        device / "tile0" / "physical_vram_size_bytes",   # xe (Battlemage, DG2 on xe)
-        device / "lmem_total_bytes",                     # i915 dGPU
-        card_path / "lmem_total_bytes",                  # i915 (older layout)
+        device / "mem_info_vram_total",  # amdgpu
+        device / "tile0" / "physical_vram_size_bytes",  # xe (Battlemage, DG2 on xe)
+        device / "lmem_total_bytes",  # i915 dGPU
+        card_path / "lmem_total_bytes",  # i915 (older layout)
     ]
     for c in candidates:
         v = _read_int(c)
@@ -178,6 +190,7 @@ def _read_pid_vram_mb(pid: int, proc_root: Path = Path("/proc")) -> int | None:
 # Prompt construction (approximate token counts)
 # ------------------------------------------------------------------
 
+
 def _build_prompt(target_tokens: int) -> str:
     """Build a prompt of roughly *target_tokens* tokens.
 
@@ -194,6 +207,54 @@ def _build_prompt(target_tokens: int) -> str:
 # ------------------------------------------------------------------
 # Core measurement
 # ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MeasurementSummary:
+    """Robust summary of repeated measurements for one benchmark axis."""
+
+    tok_s: float
+    elapsed_ms: float
+    token_count: int
+    samples: list[float]
+
+    @property
+    def minimum(self) -> float:
+        return min(self.samples)
+
+    @property
+    def maximum(self) -> float:
+        return max(self.samples)
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _measured_tokens(obj: dict[str, Any], timing_key: str, usage_key: str, fallback: int) -> int:
+    """Prefer llama-server's exact timing count, then OpenAI usage metadata."""
+    timings = obj.get("timings") or {}
+    usage = obj.get("usage") or {}
+    return _positive_int(timings.get(timing_key)) or _positive_int(usage.get(usage_key)) or fallback
+
+
+def _summarise_measurements(
+    rates: list[float], elapsed_ms: list[float], token_counts: list[int]
+) -> MeasurementSummary:
+    """Return medians, avoiding the upward bias of best-of-N selection."""
+    if not rates:
+        return MeasurementSummary(0.0, 0.0, 0, [])
+    return MeasurementSummary(
+        tok_s=float(statistics.median(rates)),
+        elapsed_ms=float(statistics.median(elapsed_ms)),
+        token_count=int(statistics.median(token_counts)),
+        samples=list(rates),
+    )
+
 
 async def _complete(
     client: httpx.AsyncClient,
@@ -247,28 +308,40 @@ async def _measure_prompt_eval(
     prompt_tokens: int,
     repeats: int = REPEAT_PROMPT_EVAL,
 ) -> tuple[float, float]:
-    """Return (prompt-eval tok/s, elapsed_ms) for the best of *repeats* runs.
+    """Return median (prompt-eval tok/s, elapsed_ms) across *repeats* runs.
 
     Prefers llama-server's ``timings.prompt_per_second``; falls back to
     ``prompt_tokens / wall`` (with max_tokens=1) for upstreams without it.
     """
+    summary = await _measure_prompt_eval_summary(client, model, prompt_tokens, repeats)
+    return summary.tok_s, summary.elapsed_ms
+
+
+async def _measure_prompt_eval_summary(
+    client: httpx.AsyncClient,
+    model: str,
+    prompt_tokens: int,
+    repeats: int = REPEAT_PROMPT_EVAL,
+) -> MeasurementSummary:
     prompt = _build_prompt(prompt_tokens)
-    best_tok_s = 0.0
-    best_ms = 0.0
+    rates: list[float] = []
+    elapsed: list[float] = []
+    counts: list[int] = []
     for _ in range(repeats):
         # cache_prompt=False so every run does a real full prefill.
         wall, obj = await _complete(client, model, prompt, max_tokens=1, cache_prompt=False)
         t = obj.get("timings") or {}
+        exact_tokens = _measured_tokens(obj, "prompt_n", "prompt_tokens", prompt_tokens)
         if t.get("prompt_per_second"):
             tok_s = float(t["prompt_per_second"])
             ms = float(t.get("prompt_ms", wall * 1000))
         else:
-            tok_s = prompt_tokens / wall if wall > 0 else 0.0
+            tok_s = exact_tokens / wall if wall > 0 else 0.0
             ms = wall * 1000
-        if tok_s > best_tok_s:  # best-of-N discards scheduler jitter
-            best_tok_s = tok_s
-            best_ms = ms
-    return best_tok_s, best_ms
+        rates.append(tok_s)
+        elapsed.append(ms)
+        counts.append(exact_tokens)
+    return _summarise_measurements(rates, elapsed, counts)
 
 
 async def _measure_generation(
@@ -277,16 +350,27 @@ async def _measure_generation(
     gen_tokens: int,
     repeats: int = REPEAT_GENERATION,
 ) -> tuple[float, float]:
-    """Return (generation tok/s, elapsed_ms) for the best of *repeats* runs.
+    """Return median (generation tok/s, elapsed_ms) across *repeats* runs.
 
     ``ignore_eos`` forces the model to emit the full ``gen_tokens`` instead
     of stopping early on a short reply. Prefers llama-server's
     ``timings.predicted_per_second`` (pure decode rate, excludes prefill);
     falls back to ``completion_tokens / wall`` for upstreams without timings.
     """
+    summary = await _measure_generation_summary(client, model, gen_tokens, repeats)
+    return summary.tok_s, summary.elapsed_ms
+
+
+async def _measure_generation_summary(
+    client: httpx.AsyncClient,
+    model: str,
+    gen_tokens: int,
+    repeats: int = REPEAT_GENERATION,
+) -> MeasurementSummary:
     prompt = "Hello"
-    best_tok_s = 0.0
-    best_ms = 0.0
+    rates: list[float] = []
+    elapsed: list[float] = []
+    counts: list[int] = []
     for _ in range(repeats):
         # Use the raw completions endpoint: ignore_eos past a chat template's
         # EOS can produce output that /v1/chat/completions refuses to parse.
@@ -294,17 +378,17 @@ async def _measure_generation(
             client, model, prompt, max_tokens=gen_tokens, ignore_eos=True, is_chat=False
         )
         t = obj.get("timings") or {}
+        exact_tokens = _measured_tokens(obj, "predicted_n", "completion_tokens", gen_tokens)
         if t.get("predicted_per_second"):
             tok_s = float(t["predicted_per_second"])
             ms = float(t.get("predicted_ms", wall * 1000))
         else:
-            n = (obj.get("usage") or {}).get("completion_tokens") or 0
-            tok_s = n / wall if wall > 0 and n else 0.0
+            tok_s = exact_tokens / wall if wall > 0 else 0.0
             ms = wall * 1000
-        if tok_s > best_tok_s:  # best-of-N discards scheduler jitter
-            best_tok_s = tok_s
-            best_ms = ms
-    return best_tok_s, best_ms
+        rates.append(tok_s)
+        elapsed.append(ms)
+        counts.append(exact_tokens)
+    return _summarise_measurements(rates, elapsed, counts)
 
 
 async def _warmup(
@@ -326,6 +410,7 @@ async def _warmup(
 # ------------------------------------------------------------------
 # Single-shot benchmark
 # ------------------------------------------------------------------
+
 
 async def benchmark_model(
     server_url: str,
@@ -352,8 +437,12 @@ async def benchmark_model(
     model = cfg.find_model(model_name)
     if model is None:
         return BenchmarkResult(
-            model=model_name, ctx=0, cache_type_k="?", cache_type_v="?",
-            prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
+            model=model_name,
+            ctx=0,
+            cache_type_k="?",
+            cache_type_v="?",
+            prompt_tokens=prompt_tokens,
+            gen_tokens=gen_tokens,
             error=f"Model '{model_name}' not found in config",
         )
 
@@ -375,7 +464,9 @@ async def benchmark_model(
         vram_total = gpu.vram_mb  # detected at init time; good enough for %
     result.vram_total_mb = vram_total
 
-    headers = {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+    headers = (
+        {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+    )
     async with httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client:
         # Ensure model is loaded
         if load:
@@ -391,15 +482,23 @@ async def benchmark_model(
 
         # Prompt eval
         log.info("benchmarking prompt-eval (%d tokens) ...", prompt_tokens)
-        result.prompt_eval_tok_s, result.prompt_eval_ms = await _measure_prompt_eval(
-            client, model_name, prompt_tokens
-        )
+        prompt_summary = await _measure_prompt_eval_summary(client, model_name, prompt_tokens)
+        result.prompt_eval_tok_s = prompt_summary.tok_s
+        result.prompt_eval_ms = prompt_summary.elapsed_ms
+        result.measured_prompt_tokens = prompt_summary.token_count
+        result.prompt_eval_samples = prompt_summary.samples
+        result.prompt_eval_min_tok_s = prompt_summary.minimum
+        result.prompt_eval_max_tok_s = prompt_summary.maximum
 
         # Generation
         log.info("benchmarking generation (%d tokens) ...", gen_tokens)
-        result.generation_tok_s, result.generation_ms = await _measure_generation(
-            client, model_name, gen_tokens
-        )
+        generation_summary = await _measure_generation_summary(client, model_name, gen_tokens)
+        result.generation_tok_s = generation_summary.tok_s
+        result.generation_ms = generation_summary.elapsed_ms
+        result.measured_gen_tokens = generation_summary.token_count
+        result.generation_samples = generation_summary.samples
+        result.generation_min_tok_s = generation_summary.minimum
+        result.generation_max_tok_s = generation_summary.maximum
 
         # VRAM after. amdgpu has a card-global counter; on Intel (xe/i915)
         # there is none, so fall back to the backend process's DRM fdinfo.
@@ -439,6 +538,7 @@ async def _backend_pid(client: httpx.AsyncClient, model_name: str) -> int | None
 # Sweep
 # ------------------------------------------------------------------
 
+
 async def benchmark_sweep(
     server_url: str,
     model_name: str,
@@ -459,16 +559,24 @@ async def benchmark_sweep(
 
     model = cfg.find_model(model_name)
     if model is None:
-        return [BenchmarkResult(
-            model=model_name, ctx=0, cache_type_k="?", cache_type_v="?",
-            prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
-            error=f"Model '{model_name}' not found in config",
-        )]
+        return [
+            BenchmarkResult(
+                model=model_name,
+                ctx=0,
+                cache_type_k="?",
+                cache_type_v="?",
+                prompt_tokens=prompt_tokens,
+                gen_tokens=gen_tokens,
+                error=f"Model '{model_name}' not found in config",
+            )
+        ]
 
     original_recipe = dict(model.recipe or {})
     results: list[BenchmarkResult] = []
 
-    headers = {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+    headers = (
+        {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+    )
     async with httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client:
         for ctx in ctx_values:
             for kv in kv_types:
@@ -480,18 +588,27 @@ async def benchmark_sweep(
                 }
                 r = await client.post(f"/admin/models/{model_name}/edit", json=edit_body)
                 if r.status_code != 200:
-                    results.append(BenchmarkResult(
-                        model=model_name, ctx=ctx, cache_type_k=kv, cache_type_v=kv,
-                        prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
-                        error=f"Edit failed: {r.status_code} {r.text}",
-                    ))
+                    results.append(
+                        BenchmarkResult(
+                            model=model_name,
+                            ctx=ctx,
+                            cache_type_k=kv,
+                            cache_type_v=kv,
+                            prompt_tokens=prompt_tokens,
+                            gen_tokens=gen_tokens,
+                            error=f"Edit failed: {r.status_code} {r.text}",
+                        )
+                    )
                     continue
 
                 # Benchmark
                 res = await benchmark_model(
-                    server_url, model_name,
-                    prompt_tokens=prompt_tokens, gen_tokens=gen_tokens,
-                    load=True, cfg=cfg,
+                    server_url,
+                    model_name,
+                    prompt_tokens=prompt_tokens,
+                    gen_tokens=gen_tokens,
+                    load=True,
+                    cfg=cfg,
                 )
                 # Override result fields to reflect the sweep config, not the original recipe.
                 res.ctx = ctx
@@ -501,7 +618,8 @@ async def benchmark_sweep(
 
         # Restore original recipe
         restore_body = {
-            k: v for k, v in original_recipe.items()
+            k: v
+            for k, v in original_recipe.items()
             if k in ("ctx", "cache_type_k", "cache_type_v", "parallel", "n_gpu_layers")
         }
         if restore_body:
@@ -513,6 +631,7 @@ async def benchmark_sweep(
 # ------------------------------------------------------------------
 # Formatting
 # ------------------------------------------------------------------
+
 
 def _fmt_speed(tok_s: float | None) -> str:
     if tok_s is None:
@@ -546,12 +665,30 @@ def print_result(result: BenchmarkResult) -> None:
 
     console.print(f"\n[bold]Benchmark: {result.model}[/bold]")
     console.print(f"  Recipe:   ctx={result.ctx}, KV={result.cache_type_k}/{result.cache_type_v}")
-    console.print(f"  Prompt:   {result.prompt_tokens} tokens")
-    console.print(f"  Generate: {result.gen_tokens} tokens")
+    prompt_count = result.measured_prompt_tokens or result.prompt_tokens
+    gen_count = result.measured_gen_tokens or result.gen_tokens
+    console.print(f"  Prompt:   {prompt_count} measured tokens")
+    console.print(f"  Generate: {gen_count} measured tokens")
     if result.jit_warmup_s is not None:
         console.print(f"  Warm-up:  {result.jit_warmup_s:.1f}s (SYCL JIT)")
-    console.print(f"  Prompt-eval:  {_fmt_speed(result.prompt_eval_tok_s)}  |  {_fmt_time(result.prompt_eval_ms)}")
-    console.print(f"  Generation:   {_fmt_speed(result.generation_tok_s)}  |  {_fmt_time(result.generation_ms)}")
+    console.print(
+        f"  Prompt-eval:  {_fmt_speed(result.prompt_eval_tok_s)}  |  {_fmt_time(result.prompt_eval_ms)}"
+    )
+    console.print(
+        f"  Generation:   {_fmt_speed(result.generation_tok_s)}  |  {_fmt_time(result.generation_ms)}"
+    )
+    if result.prompt_eval_samples:
+        console.print(
+            f"  Prompt range: {_fmt_speed(result.prompt_eval_min_tok_s)} .. "
+            f"{_fmt_speed(result.prompt_eval_max_tok_s)} "
+            f"({len(result.prompt_eval_samples)} runs)"
+        )
+    if result.generation_samples:
+        console.print(
+            f"  Gen range:    {_fmt_speed(result.generation_min_tok_s)} .. "
+            f"{_fmt_speed(result.generation_max_tok_s)} "
+            f"({len(result.generation_samples)} runs)"
+        )
     console.print(f"  VRAM:         {_fmt_vram(result.vram_used_mb, result.vram_total_mb)}")
 
 
@@ -572,8 +709,12 @@ def print_sweep_table(results: list[BenchmarkResult]) -> None:
     for r in results:
         if r.error:
             table.add_row(
-                str(r.ctx), f"{r.cache_type_k}/{r.cache_type_v}",
-                "[red]error[/red]", "", "", "✗",
+                str(r.ctx),
+                f"{r.cache_type_k}/{r.cache_type_v}",
+                "[red]error[/red]",
+                "",
+                "",
+                "✗",
             )
             continue
         fit = "✓" if (r.vram_pct is None or r.vram_pct < 95) else "⚠"

@@ -167,7 +167,12 @@ class TestSourceSetvars:
             env = source_setvars(setvars)
             assert env["ONEAPI_ROOT"] == r"C:\Intel\oneAPI"
             assert env["LD_LIBRARY_PATH"] == r"C:\Intel\oneAPI\lib"
-            assert r"C:\Intel\oneAPI\bin" in env["PATH"]
+            path = next(
+                (value for key, value in env.items() if key.casefold() == "path"),
+                None,
+            )
+            assert path is not None
+            assert r"C:\Intel\oneAPI\bin" in path
         else:
             setvars = tmp_path / "setvars.sh"
             setvars.write_text(

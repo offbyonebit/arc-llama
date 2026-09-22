@@ -94,7 +94,13 @@ def test_migrate_config_adds_missing_sections():
 
     raw = migrate_config({})
     assert raw["version"] == CONFIG_VERSION
-    assert raw["server"] == {"admin_token": None}
+    # Newer server sections carry the model-switch drain and interrupt
+    # policy with explicit defaults.
+    assert raw["server"] == {
+        "admin_token": None,
+        "switch_drain_seconds": 30.0,
+        "switch_interrupt_policy": "reject_new",
+    }
     assert raw["paths"] == {}
     assert raw["agent"] == {"root": ".", "profile": None}
     assert raw["gpus"] == []

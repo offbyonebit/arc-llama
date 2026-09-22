@@ -1,277 +1,919 @@
-// arc-llama model manager — polling client over /admin/status + /admin/load|stop.
+// arc-llama dashboard: a first-run friendly view over the local model registry.
 
-const $ = (sel) => document.querySelector(sel);
-const fmtVram = (mb) => mb == null ? "?" : `${(mb / 1024).toFixed(1)} GB`;
-const fmtPath = (p) => {
-  if (!p) return "—";
-  // Show just the basename + parent dir, leave full path on hover.
-  const parts = p.split("/").filter(Boolean);
-  return parts.slice(-2).join("/");
-};
+const $ = (selector) => document.querySelector(selector);
+const THEME_KEY = "arc-llama-theme";
+function applyTheme(theme) {
+  const dark = theme !== "light";
+  if (document.documentElement) document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const toggle = $("#theme-toggle");
+  if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
+  if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
+}
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
+const MIB = 1024;
+const SELECTED_MODEL_KEY = "arc-llama-selected-model";
 
-let lastStatus = null;
-let inflight = false;
+let snapshot = null;
+let selectedModel = null;
+let adminToken = null;
+let fetching = false;
+let scanning = false;
+const openDetailModels = new Set();
 
-async function fetchStatus(force) {
-  // Skip the auto-poll while a row is in edit mode so input values don't
-  // get clobbered by re-renders. Manual refresh (force=true) still works.
-  if (editingModel && !force) return;
-  if (inflight) return;
-  inflight = true;
-  const footer = $("#status-footer");
+const fmtGiB = (mb) => mb == null ? "Unknown" : `${(mb / MIB).toFixed(mb >= MIB ? 1 : 0)} GiB`;
+const fmtCtx = (ctx) => ctx ? `${Number(ctx).toLocaleString()} tokens` : "Default context";
+const displayName = (model) => model.display_name || model.name;
+
+function authHeaders(headers = {}) {
+  return adminToken ? { ...headers, Authorization: `Bearer ${adminToken}` } : headers;
+}
+
+async function initAdminToken() {
   try {
-    const r = await fetch("/admin/status");
-    if (!r.ok) throw new Error(`status ${r.status}`);
-    lastStatus = await r.json();
-    render(lastStatus);
-    $("#last-updated").textContent = `updated ${new Date().toLocaleTimeString()}`;
-    footer.classList.remove("error");
-    footer.classList.add("online");
-  } catch (e) {
-    $("#last-updated").textContent = `error: ${e.message}`;
-    footer.classList.remove("online");
-    footer.classList.add("error");
-  } finally {
-    inflight = false;
+    const response = await fetch("/admin/session-token");
+    if (response.ok) adminToken = (await response.json()).admin_token || null;
+  } catch (_) {
+    // A remote deployment cannot expose its local session token. Read-only UI
+    // state remains useful; protected actions explain their failure.
   }
 }
 
-async function postAction(path, label) {
-  try {
-    const r = await fetch(path, { method: "POST" });
-    if (!r.ok) {
-      const t = await r.text();
-      alert(`${label} failed: ${r.status} ${t}`);
-      return;
-    }
-    await fetchStatus(true);
-  } catch (e) {
-    alert(`${label} error: ${e.message}`);
+function setServerState(kind, text) {
+  const state = $("#server-state");
+  const intro = $("#intro-status");
+  state.className = `server-state ${kind}`;
+  state.textContent = text;
+  if (intro) {
+    intro.className = `intro-status ${kind}`;
+    intro.querySelector("span:last-child").textContent = text;
   }
 }
 
-// Track which model is currently in inline-edit mode (only one at a time).
-let editingModel = null;
-
-const KV_OPTIONS = ["f16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0"];
-
-function render(s) {
-  $("#server-info").textContent = `${s.server.host}:${s.server.port}`;
-  $("#policy-info").textContent =
-    s.server.single_resident ? "single-resident" : "multi-resident";
-
-  // GPUs
-  const gpuBody = $("#gpus tbody");
-  gpuBody.innerHTML = "";
-  if (!s.gpus || s.gpus.length === 0) {
-    renderEmpty(gpuBody, 6, "No GPUs detected", "Enable a device in config to make it available for model loading.");
-  } else {
-    for (const g of s.gpus) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="mono">${g.pci_slot}</td>
-        <td>${g.arch}</td>
-        <td>${g.name || "—"}</td>
-        <td class="mono">level_zero:${g.sycl_index}</td>
-        <td>${fmtVram(g.vram_mb)}</td>
-        <td><span class="pill ${g.enabled ? "loaded" : "idle"}">${g.enabled ? "yes" : "no"}</span></td>
-      `;
-      gpuBody.appendChild(tr);
-    }
-  }
-
-  // Models
-  const modelBody = $("#models tbody");
-  modelBody.innerHTML = "";
-  if (!s.models || s.models.length === 0) {
-    renderEmpty(modelBody, 8, "No models registered", "Click Scan for models to discover GGUF files, or add upstream endpoints in config.");
-  } else {
-    for (const m of s.models) {
-      const tr = document.createElement("tr");
-      if (editingModel === m.name) {
-        renderEditRow(tr, m);
-      } else {
-        renderViewRow(tr, m);
-      }
-      modelBody.appendChild(tr);
-    }
-  }
+function setFooter(text, isError = false) {
+  $("#last-updated").textContent = text;
+  $("#status-footer").classList.toggle("error", isError);
+  $("#status-footer").classList.toggle("online", !isError);
 }
 
-function renderEmpty(tbody, colspan, title, hint) {
-  const tr = document.createElement("tr");
-  tr.innerHTML = `
-    <td colspan="${colspan}">
-      <div class="empty-state">
-        <div class="icon">∅</div>
-        <div class="title">${title}</div>
-        <div class="hint">${hint}</div>
-      </div>
-    </td>
-  `;
-  tbody.appendChild(tr);
+function selected() {
+  return snapshot?.models?.find((model) => model.name === selectedModel) || null;
 }
 
-function renderViewRow(tr, m) {
-  const isUpstream = m.source && m.source !== "local";
-  tr.className = m.loaded ? "bright" : "dim";
-  const kv = `${m.cache_type_k || "?"}/${m.cache_type_v || "?"}`;
-  const pill = isUpstream
-    ? `<span class="pill upstream">${m.source}</span>`
-    : m.loaded
-      ? '<span class="pill loaded">loaded</span>'
-      : '<span class="pill idle">idle</span>';
-  const nameCell = isUpstream
-    ? `${m.name} <span class="upstream-hint" title="${m.upstream_url}">${m.upstream_name}</span>`
-    : m.name;
-  tr.innerHTML = `
-    <td>${pill}</td>
-    <td><strong>${nameCell}</strong></td>
-    <td class="mono">${m.gpu_pci_slot || "—"}${isUpstream ? " *" : ""}</td>
-    <td class="mono">${m.port || "—"}</td>
-    <td class="mono">${m.ctx ?? "?"}</td>
-    <td class="mono">${kv}</td>
-    <td class="path" title="${m.path || ""}">${isUpstream ? "— " : fmtPath(m.path)}</td>
-    <td class="actions"></td>
-  `;
-  const actions = tr.querySelector(".actions");
+function gpuFor(model) {
+  return snapshot?.gpus?.find((gpu) => gpu.pci_slot === model.gpu_pci_slot) || null;
+}
 
-  if (isUpstream) {
-    // Upstream models show a "via" link instead of load/stop
-    const via = document.createElement("span");
-    via.className = "upstream-link";
-    via.textContent = m.upstream_name;
-    actions.appendChild(via);
-  } else {
-    const wrap = document.createElement("div");
-    wrap.className = "row-actions";
+function modelStatus(model) {
+  return model.loaded ? { label: "Loaded", tone: "ready" } : { label: "Ready on first message", tone: "idle" };
+}
 
-    const editBtn = document.createElement("button");
-    editBtn.className = "secondary";
-    editBtn.textContent = "Edit";
-    editBtn.onclick = () => {
-      editingModel = m.name;
-      fetchStatus(true);
-    };
-    wrap.appendChild(editBtn);
+function preserveSelection(models) {
+  const preferred = selectedModel || sessionStorage.getItem(SELECTED_MODEL_KEY);
+  selectedModel = preferred && models.some((model) => model.name === preferred)
+    ? preferred
+    : models[0]?.name || null;
+  if (selectedModel) sessionStorage.setItem(SELECTED_MODEL_KEY, selectedModel);
+}
 
-    if (m.loaded) {
-      const stop = document.createElement("button");
-      stop.className = "danger";
-      stop.textContent = "Stop";
-      stop.onclick = () => postAction(`/admin/stop/${encodeURIComponent(m.name)}`, "stop");
-      wrap.appendChild(stop);
-    } else {
-      const load = document.createElement("button");
-      load.className = "primary";
-      load.textContent = "Load";
-      load.onclick = () => postAction(`/admin/load/${encodeURIComponent(m.name)}`, "load");
-      wrap.appendChild(load);
-    }
-    actions.appendChild(wrap);
+function button(label, className, onClick) {
+  const node = document.createElement("button");
+  node.type = "button";
+  node.className = className;
+  node.textContent = label;
+  node.addEventListener("click", onClick);
+  return node;
+}
+
+function createDetails(model, gpu) {
+  const details = document.createElement("details");
+  details.className = "advanced-details";
+  details.open = openDetailModels.has(model.name);
+  details.addEventListener("toggle", () => {
+    if (details.open) openDetailModels.add(model.name);
+    else openDetailModels.delete(model.name);
+  });
+  // Do not let opening this disclosure also select and re-render its card.
+  details.addEventListener("click", (event) => event.stopPropagation());
+  details.addEventListener("keydown", (event) => event.stopPropagation());
+  const summary = document.createElement("summary");
+  summary.textContent = "Advanced details";
+  details.appendChild(summary);
+  const rows = [
+    ["GPU", gpu?.name || "Not assigned"],
+    ["PCI slot", model.gpu_pci_slot || "Not set"],
+    ["SYCL device", gpu ? `level_zero:${gpu.sycl_index}` : "Not set"],
+    ["GPU memory", fmtGiB(gpu?.vram_mb)],
+    ["Context", fmtCtx(model.ctx)],
+    ["KV cache", `${model.cache_type_k || "default"} / ${model.cache_type_v || "default"}`],
+    ["Port", model.port || "Not set"],
+    ["Model path", model.path || "Not set"],
+  ];
+  const list = document.createElement("dl");
+  for (const [term, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    list.append(dt, dd);
   }
+  details.appendChild(list);
+  const configure = document.createElement("a");
+  configure.className = "advanced-edit";
+  configure.href = `/chat?model=${encodeURIComponent(model.name)}&settings=1`;
+  configure.textContent = "Edit launch settings";
+  details.appendChild(configure);
+  return details;
 }
 
-function renderEditRow(tr, m) {
-  tr.className = "editing";
-  const optsK = KV_OPTIONS.map(o =>
-    `<option value="${o}"${o === m.cache_type_k ? " selected" : ""}>${o}</option>`
-  ).join("");
-  const optsV = KV_OPTIONS.map(o =>
-    `<option value="${o}"${o === m.cache_type_v ? " selected" : ""}>${o}</option>`
-  ).join("");
-  tr.innerHTML = `
-    <td><span class="pill warn">editing</span></td>
-    <td><strong>${m.name}</strong></td>
-    <td class="mono">${m.gpu_pci_slot}</td>
-    <td class="mono">${m.port}</td>
-    <td><input class="edit-field" type="number" min="256" max="1048576" step="1024" value="${m.ctx ?? 8192}" data-field="ctx"/></td>
-    <td>
-      <div class="kv-selects">
-        <select class="edit-field" data-field="cache_type_k">${optsK}</select>
-        <select class="edit-field" data-field="cache_type_v">${optsV}</select>
-      </div>
-    </td>
-    <td class="path" title="${m.path}">${fmtPath(m.path)}</td>
-    <td class="actions"></td>
-  `;
-  const actions = tr.querySelector(".actions");
-  const wrap = document.createElement("div");
-  wrap.className = "row-actions";
+function createModelCard(model) {
+  const gpu = gpuFor(model);
+  const status = modelStatus(model);
+  const card = document.createElement("article");
+  card.className = `model-card ${model.name === selectedModel ? "selected" : ""}`;
+  card.tabIndex = 0;
+  card.setAttribute("role", "option");
+  card.setAttribute("aria-selected", String(model.name === selectedModel));
 
-  const save = document.createElement("button");
-  save.className = "primary";
-  save.textContent = "Save";
-  save.onclick = async () => {
-    const ctx = parseInt(tr.querySelector('[data-field="ctx"]').value, 10);
-    const k = tr.querySelector('[data-field="cache_type_k"]').value;
-    const v = tr.querySelector('[data-field="cache_type_v"]').value;
-    const wasLoaded = m.loaded;
-    if (wasLoaded && !confirm(
-      `${m.name} is currently loaded — saving will stop it. Continue?`
-    )) {
-      return;
-    }
-    save.disabled = true;
-    try {
-      const r = await fetch(`/admin/models/${encodeURIComponent(m.name)}/edit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ctx, cache_type_k: k, cache_type_v: v }),
-      });
-      if (!r.ok) {
-        const t = await r.text();
-        alert(`edit failed: ${r.status} ${t}`);
-        return;
-      }
-      editingModel = null;
-      await fetchStatus(true);
-    } finally {
-      save.disabled = false;
-    }
+  const pick = () => {
+    selectedModel = model.name;
+    sessionStorage.setItem(SELECTED_MODEL_KEY, model.name);
+    render();
   };
-  wrap.appendChild(save);
+  card.addEventListener("click", pick);
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      pick();
+    }
+  });
 
-  const cancel = document.createElement("button");
-  cancel.className = "secondary";
-  cancel.textContent = "Cancel";
-  cancel.onclick = () => { editingModel = null; fetchStatus(true); };
-  wrap.appendChild(cancel);
+  const body = document.createElement("div");
+  body.className = "model-card-main";
+  const title = document.createElement("h3");
+  title.textContent = displayName(model);
+  const meta = document.createElement("p");
+  meta.className = "model-meta";
+  meta.textContent = [
+    model.model_file_mb != null ? `${fmtGiB(model.model_file_mb)} on disk` : "Model size unavailable",
+    gpu?.name || "GPU assignment unavailable",
+  ].join(" · ");
+  body.append(title, meta);
 
-  actions.appendChild(wrap);
+  const side = document.createElement("div");
+  side.className = "model-card-side";
+  const pill = document.createElement("span");
+  pill.className = `status-pill ${status.tone}`;
+  pill.textContent = status.label;
+  side.appendChild(pill);
+  const choose = button(model.name === selectedModel ? "Selected" : "Choose", "choose-button", (event) => {
+    event.stopPropagation();
+    pick();
+  });
+  choose.disabled = model.name === selectedModel;
+  side.appendChild(choose);
+  card.append(body, side, createDetails(model, gpu));
+  return card;
 }
 
-$("#refresh").onclick = () => fetchStatus(true);
-$("#stop-all").onclick = () => {
-  if (confirm("Stop every running llama-server?")) {
-    postAction("/admin/stop-all", "stop-all");
+function renderModels() {
+  const list = $("#model-list");
+  list.replaceChildren();
+  list.setAttribute("aria-busy", "false");
+  const models = snapshot?.models || [];
+  if (!models.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-panel";
+    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Add a GGUF file to a scan folder, then scan again.</p>";
+    empty.appendChild(button("Scan for models", "secondary", scanModels));
+    list.appendChild(empty);
+    return;
   }
-};
-$("#scan").onclick = async () => {
-  const btn = $("#scan");
-  btn.disabled = true;
-  btn.textContent = "Scanning…";
-  try {
-    const r = await fetch("/admin/scan", { method: "POST" });
-    if (!r.ok) {
-      const t = await r.text();
-      alert(`scan failed: ${r.status} ${t}`);
-      return;
+  for (const model of models) list.appendChild(createModelCard(model));
+}
+
+function renderReadiness() {
+  const container = $("#readiness-card");
+  const model = selected();
+  container.replaceChildren();
+  if (!model) {
+    container.className = "readiness-card empty";
+    container.innerHTML = "<div class=\"readiness-icon\" aria-hidden=\"true\"></div><div><h3>Select a model to see its launch settings.</h3><p>We will show its configured GPU, context, and memory capacity before you start.</p></div>";
+    return;
+  }
+  container.className = "readiness-card";
+  const gpu = gpuFor(model);
+  const heading = document.createElement("div");
+  heading.className = "readiness-heading";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "SELECTED MODEL";
+  const title = document.createElement("h3");
+  title.textContent = displayName(model);
+  heading.append(eyebrow, title);
+
+  const metrics = document.createElement("div");
+  metrics.className = "readiness-metrics";
+  const fit = model.vram_estimate;
+  let fitValue = "Unavailable";
+  let fitTone = "";
+  if (fit && fit.estimated_mb != null) {
+    const mb = fit.estimated_mb.toLocaleString();
+    if (fit.fit === true && fit.headroom_mb != null) {
+      fitValue = `Fits, ${fit.headroom_mb.toLocaleString()} MiB headroom (~${mb} MiB)`;
+      fitTone = "ok";
+    } else if (fit.fit === false) {
+      fitValue = `Does not fit (~${mb} MiB)`;
+      fitTone = "warn";
+    } else {
+      fitValue = `~${mb} MiB · ${fit.detail || "GPU capacity unknown"}`;
     }
-    const j = await r.json();
-    const added = j.added || [];
-    const msg = added.length
-      ? `Found ${j.found} GGUF(s); registered ${added.length} new: ${added.join(", ")}`
-      : `Found ${j.found} GGUF(s); nothing new to register.`;
-    $("#last-updated").textContent = msg;
-    await fetchStatus();
-  } catch (e) {
-    alert(`scan error: ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Scan for models";
   }
+  const values = [
+    ["Model size", model.model_file_mb != null ? `${fmtGiB(model.model_file_mb)} on disk` : "Unavailable"],
+    ["GPU capacity", gpu ? `${gpu.name} · ${fmtGiB(gpu.vram_mb)}` : "GPU assignment unavailable"],
+    ["Memory fit", fitValue],
+  ["Estimate basis", fit?.confidence === "estimated_from_file_size" ? "File size + KV and overhead (approximate)" : fit ? "Model metadata and heuristic overhead (approximate)" : "Unavailable"],
+    ["Context", fmtCtx(model.ctx)],
+    ["Status", model.loaded ? "Loaded and ready" : "Loads when you send a message"],
+  ];
+  for (const [label, value] of values) {
+    const item = document.createElement("div");
+    item.className = "metric";
+    const term = document.createElement("span");
+    term.textContent = label;
+    const detail = document.createElement("strong");
+    if (label === "Memory fit" && fitTone) detail.classList.add(`tone-${fitTone}`);
+    detail.textContent = value;
+    item.append(term, detail);
+    metrics.appendChild(item);
+  }
+  const note = document.createElement("p");
+  note.className = "readiness-note";
+  note.textContent = model.loaded
+    ? "This model is loaded now. You can start a conversation immediately."
+    : "The first message starts the model. arc-llama will stop another local model first when your memory policy requires it.";
+  container.append(heading, metrics, note, createDetails(model, gpu));
+}
+
+function metricRow(label, value, tone) {
+  const item = document.createElement("div");
+  item.className = "metric";
+  const term = document.createElement("span");
+  term.textContent = label;
+  const detail = document.createElement("strong");
+  if (tone) detail.classList.add(`tone-${tone}`);
+  detail.textContent = value;
+  item.append(term, detail);
+  return item;
+}
+
+function setSystemReadinessAction(container, noteText, action) {
+  const area = document.createElement("div");
+  area.className = "system-readiness-action";
+  const note = document.createElement("p");
+  note.textContent = noteText;
+  area.appendChild(note);
+  if (action) area.appendChild(action);
+  container.appendChild(area);
+}
+
+// One system-level readiness view over the /admin/status snapshot:
+// server reachability, runtime/GPU detection, and model availability,
+// with exactly one next action for whatever is blocking first-run.
+function renderSystemReadiness() {
+  const container = $("#system-readiness");
+  if (!container) return;
+  container.replaceChildren();
+  const models = snapshot?.models || [];
+  const gpus = snapshot?.gpus || [];
+  const loaded = models.filter((model) => model.loaded);
+  const metrics = document.createElement("div");
+  metrics.className = "readiness-metrics";
+
+  if (!models.length && !gpus.length) {
+    // Status answered but returned no runtime or registry data.
+    container.className = "system-readiness pending";
+    metrics.append(
+      metricRow("Server", "Running", "ok"),
+      metricRow("Runtime", "No GPU detected", "warn"),
+      metricRow("Models", "None found", "warn"),
+    );
+    container.appendChild(metrics);
+    setSystemReadinessAction(
+      container,
+      "arc-llama is running but did not detect an Arc GPU. Check the llama.cpp runtime, then check again.",
+      button("Check again", "secondary", () => fetchStatus(true)),
+    );
+    return;
+  }
+
+  if (!models.length) {
+    container.className = "system-readiness degraded";
+    metrics.append(
+      metricRow("Server", "Running", "ok"),
+      metricRow("Runtime", gpus[0]?.name ? `${gpus[0].name} detected` : "GPU detection unavailable", gpus[0]?.name ? "ok" : "warn"),
+      metricRow("Models", "None found", "warn"),
+    );
+    container.appendChild(metrics);
+    setSystemReadinessAction(
+      container,
+      "No GGUF models were found in your scan folders. Scan again after adding a model file.",
+      button("Scan for models", "secondary", scanModels),
+    );
+    return;
+  }
+
+  if (!loaded.length) {
+    const model = selected() || models[0];
+    container.className = "system-readiness degraded";
+    metrics.append(
+      metricRow("Server", "Running", "ok"),
+      metricRow("Runtime", gpus[0]?.name ? `${gpus[0].name} detected` : "GPU detection unavailable", gpus[0]?.name ? "ok" : "warn"),
+      metricRow("Models", `${models.length} available · none loaded`, null),
+    );
+    container.appendChild(metrics);
+    const chat = document.createElement("a");
+    chat.className = "chat-action";
+    chat.href = `/chat?model=${encodeURIComponent(model.name)}`;
+    chat.textContent = "Start chatting";
+    setSystemReadinessAction(
+      container,
+      "Everything is set up. Models start on their first message.",
+      chat,
+    );
+    return;
+  }
+
+  container.className = "system-readiness ok";
+  metrics.append(
+    metricRow("Server", "Running", "ok"),
+    metricRow("Runtime", gpus[0]?.name ? `${gpus[0].name} detected` : "GPU detection unavailable", gpus[0]?.name ? "ok" : "warn"),
+    metricRow("Models", `${models.length} available · ${loaded.length} loaded`, "ok"),
+  );
+  container.appendChild(metrics);
+  const active = loaded.find((model) => model.name === selectedModel) || loaded[0];
+  const chat = document.createElement("a");
+  chat.className = "chat-action";
+  chat.href = `/chat?model=${encodeURIComponent(active.name)}`;
+  chat.textContent = "Open chat";
+  setSystemReadinessAction(
+    container,
+    `${displayName(active)} is loaded and ready.`,
+    chat,
+  );
+}
+
+function renderSystemReadinessOffline() {
+  const container = $("#system-readiness");
+  if (!container) return;
+  container.replaceChildren();
+  container.className = "system-readiness blocked";
+  const metrics = document.createElement("div");
+  metrics.className = "readiness-metrics";
+  metrics.append(
+    metricRow("Server", "Offline", "error"),
+    metricRow("Runtime", "Unknown", null),
+    metricRow("Models", "Unknown", null),
+  );
+  container.appendChild(metrics);
+  setSystemReadinessAction(
+    container,
+    "Could not reach arc-llama. Make sure the server is running, then check again.",
+    button("Check again", "secondary", () => fetchStatus(true)),
+  );
+}
+
+function renderStart() {
+  const link = $("#chat-primary");
+  const copy = $("#start-copy");
+  const model = selected();
+  if (!model) {
+    link.removeAttribute("href");
+    link.classList.add("is-disabled");
+    link.setAttribute("aria-disabled", "true");
+    link.textContent = "Start chatting";
+    copy.textContent = "Select a model to continue.";
+    return;
+  }
+  link.href = `/chat?model=${encodeURIComponent(model.name)}`;
+  link.classList.remove("is-disabled");
+  link.setAttribute("aria-disabled", "false");
+  link.textContent = `Start chatting with ${displayName(model)}`;
+  copy.textContent = model.loaded ? "This model is ready now." : "The model will load when you send your first message.";
+}
+
+function render() {
+  const loadedCount = snapshot?.models?.filter((model) => model.loaded).length || 0;
+  $("#stop-all").disabled = loadedCount === 0;
+  setServerState("online", loadedCount ? `${loadedCount} model${loadedCount === 1 ? "" : "s"} loaded` : "Server ready");
+  renderModels();
+  renderReadiness();
+  renderSystemReadiness();
+  renderStart();
+  renderPlugins();
+}
+
+async function fetchStatus(force = false) {
+  if (fetching && !force) return;
+  fetching = true;
+  try {
+    const response = await fetch("/admin/status", { headers: authHeaders() });
+    if (!response.ok) {
+      throw new Error(response.status === 401 ? "Local admin access is unavailable" : `Server returned ${response.status}`);
+    }
+    snapshot = await response.json();
+    preserveSelection(snapshot.models || []);
+    render();
+    setFooter(`Updated ${new Date().toLocaleTimeString()}`);
+  } catch (error) {
+    setServerState("error", "Could not reach arc-llama");
+    $("#model-list").setAttribute("aria-busy", "false");
+    if (!snapshot) {
+      $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach arc-llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
+    }
+    renderSystemReadinessOffline();
+    setFooter(error.message, true);
+  } finally {
+    fetching = false;
+  }
+}
+
+const SCAN_LABEL_IDLE = "Scan for models";
+const SCAN_LABEL_BUSY = "Scanning…";
+
+function setScanStatus(text, { busy = false, showProgress = false } = {}) {
+  const container = $("#scan-status");
+  const progress = $("#scan-progress");
+  if (!container) return;
+  container.classList.toggle("busy", busy);
+  if (text == null) {
+    container.hidden = true;
+    $("#scan-status-text").textContent = "";
+    if (progress) progress.hidden = true;
+    return;
+  }
+  container.hidden = false;
+  $("#scan-status-text").textContent = text;
+  if (progress) progress.hidden = !showProgress;
+}
+
+async function scanModels() {
+  if (scanning) return;
+  scanning = true;
+  // The toolbar button anchors the visible loading state; secondary "scan"
+  // buttons in empty/readiness panels re-render on fetchStatus and need no
+  // per-instance state beyond the shared status region below.
+  const buttonNode = $("#scan");
+  buttonNode.disabled = true;
+  buttonNode.setAttribute("aria-busy", "true");
+  buttonNode.textContent = SCAN_LABEL_BUSY;
+  setScanStatus("Scanning your folders for models. This may take a moment.", { busy: true, showProgress: true });
+  try {
+    const response = await fetch("/admin/scan", { method: "POST", headers: authHeaders() });
+    if (!response.ok) throw new Error(`Scan failed (${response.status})`);
+    const result = await response.json();
+    const added = result.added?.length || 0;
+    setScanStatus(added ? `Scan finished: found ${result.found}, added ${added} model${added === 1 ? "" : "s"}.` : "Scan finished: no new models found.");
+    setFooter(added ? `Found ${result.found}; added ${added} model${added === 1 ? "" : "s"}` : `Found ${result.found}; no new models`);
+    await fetchStatus(true);
+  } catch (error) {
+    setScanStatus(`Scan failed: ${error.message}. Check your scan folders and try again.`, { busy: true });
+    setFooter(`${error.message}. Check your scan folders and try again.`, true);
+  } finally {
+    scanning = false;
+    buttonNode.disabled = false;
+    buttonNode.removeAttribute("aria-busy");
+    buttonNode.textContent = SCAN_LABEL_IDLE;
+  }
+}
+
+async function stopAll() {
+  const loadedCount = snapshot?.models?.filter((model) => model.loaded).length || 0;
+  if (!loadedCount || !confirm(`Stop ${loadedCount} loaded model${loadedCount === 1 ? "" : "s"}?`)) return;
+  const buttonNode = $("#stop-all");
+  buttonNode.disabled = true;
+  try {
+    const response = await fetch("/admin/stop-all", { method: "POST", headers: authHeaders() });
+    if (!response.ok) throw new Error(`Stop failed (${response.status})`);
+    setFooter("All models stopped.");
+    await fetchStatus(true);
+  } catch (error) {
+    setFooter(error.message, true);
+  } finally {
+    buttonNode.disabled = false;
+  }
+}
+
+// Plugins panel. The backend's /admin/plugins catalog reflects what was
+// discovered at app creation; here we only render it. Fetch failures are
+// isolated: the panel quietly stays empty and the rest of the page is
+// unaffected.
+let pluginList = null;
+let uiLayout = null;
+
+const PLUGIN_LABELS = {
+  active: "Active",
+  error: "Failed to load",
+  registered: "Registered",
+  failed: "Failed to load",
+  disabled: "Disabled",
 };
 
-fetchStatus();
-setInterval(fetchStatus, 5000);
+function pluginStatusLabel(status) {
+  return PLUGIN_LABELS[status] || "Registered";
+}
+
+function createPluginCard(plugin) {
+  const card = document.createElement("article");
+  card.className = "plugin-card";
+
+  const body = document.createElement("div");
+  body.className = "plugin-card-main";
+  const title = document.createElement("h3");
+  title.textContent = plugin.name;
+  body.appendChild(title);
+  if (plugin.description) {
+    const description = document.createElement("p");
+    description.className = "plugin-meta";
+    description.textContent = plugin.description;
+    body.appendChild(description);
+  }
+  if (plugin.error) {
+    // Discovery-recorded failure: show the short error so the operator can
+    // fix it from the dashboard. No plugin code was executed to collect it.
+    const errorEl = document.createElement("p");
+    errorEl.className = "plugin-error";
+    errorEl.textContent = plugin.error;
+    body.appendChild(errorEl);
+  }
+  const extra = [plugin.version ? `v${plugin.version}` : null, plugin.ui?.actions?.length ? `${plugin.ui.actions.length} action(s)` : null]
+    .filter(Boolean)
+    .join(" · ");
+  if (extra) {
+    const meta = document.createElement("p");
+    meta.className = "plugin-meta";
+    meta.textContent = extra;
+    body.appendChild(meta);
+  }
+  const apiRoutes = Array.isArray(plugin.api)
+    ? plugin.api.filter((route) => typeof route === "string").slice(0, 8)
+    : [];
+  if (apiRoutes.length) {
+    const api = document.createElement("p");
+    api.className = "plugin-meta";
+    const shown = apiRoutes.map((route) => route.slice(0, 128));
+    api.textContent = `API: ${shown.join(", ")}${plugin.api.length > shown.length ? ", …" : ""}`;
+    body.appendChild(api);
+  }
+
+  const side = document.createElement("div");
+  side.className = "plugin-card-side";
+  const pill = document.createElement("span");
+  pill.className = `status-pill ${(plugin.status === "error" || plugin.status === "failed") ? "error" : (plugin.status === "disabled" ? "warn" : "ready")}`;
+  pill.textContent = pluginStatusLabel(plugin.status);
+  side.appendChild(pill);
+
+  card.append(body, side);
+  return card;
+}
+
+function renderPlugins() {
+  const list = $("#plugin-list");
+  if (!list || pluginList == null) return;
+  list.replaceChildren();
+  if (!pluginList.length) {
+    const empty = document.createElement("p");
+    empty.className = "plugin-empty";
+    empty.textContent = "No plugins installed. Add-ons exposing an arc_llama.plugins entry point appear here.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const plugin of pluginList) list.appendChild(createPluginCard(plugin));
+}
+
+function allPluginActions() {
+  return (pluginList || []).flatMap((p) => (p.ui?.actions || []).map((a) => ({...a, plugin: p.name})));
+}
+
+function renderPluginActions() {
+  const toolbar = document.querySelector(".section-head .toolbar");
+  const pluginActions = $("#plugin-action-list");
+  if (!toolbar || !pluginActions || !uiLayout) return;
+  toolbar.querySelectorAll(".plugin-action").forEach((n) => n.remove());
+  pluginActions.replaceChildren();
+  const byId = Object.fromEntries(allPluginActions().map((a) => [a.id, a]));
+  for (const id of uiLayout.layout.toolbar || []) {
+    const action = byId[id];
+    if (!action || (uiLayout.hidden || []).includes(id)) continue;
+    const node = button(action.label, "secondary plugin-action", () => {
+      if (action.route) window.location.href = action.route;
+    });
+    toolbar.insertBefore(node, toolbar.lastElementChild);
+  }
+  for (const id of uiLayout.layout.plugins || []) {
+    const action = byId[id];
+    if (!action || (uiLayout.hidden || []).includes(id)) continue;
+    const node = button(action.label, "secondary plugin-action", () => {
+      if (action.route) window.location.href = action.route;
+    });
+    pluginActions.appendChild(node);
+  }
+}
+
+function renderLayoutEditor() {
+  const list = $("#ui-layout-list");
+  if (!list || !uiLayout) return;
+  list.replaceChildren();
+  const actions = allPluginActions();
+  for (const action of actions) {
+    const row = document.createElement("div"); row.className = "plugin-card";
+    const label = document.createElement("label");
+    const check = document.createElement("input"); check.type = "checkbox"; check.checked = !(uiLayout.hidden || []).includes(action.id);
+    check.dataset.action = action.id; label.append(check, ` ${action.label} (${action.plugin})`);
+    const select = document.createElement("select"); select.dataset.action = action.id;
+    for (const p of ["toolbar", "plugins", "chat"]) { const o = document.createElement("option"); o.value = p; o.textContent = p; o.selected = (uiLayout.layout[p] || []).includes(action.id); select.append(o); }
+    const up = button("↑", "ghost", () => { const prev = row.previousElementSibling; if (prev) row.parentNode.insertBefore(row, prev); });
+    const down = button("↓", "ghost", () => { const next = row.nextElementSibling; if (next) row.parentNode.insertBefore(next, row); });
+    up.setAttribute("aria-label", `Move ${action.label} up`); down.setAttribute("aria-label", `Move ${action.label} down`);
+    row.append(label, select, up, down); list.append(row);
+  }
+}
+
+async function loadUiLayout() {
+  try { const r = await fetch("/admin/ui/layout", {headers: authHeaders()}); if (r.ok) uiLayout = await r.json(); }
+  catch (_) { uiLayout = {layout: {toolbar: [], plugins: []}, hidden: []}; }
+  renderPluginActions();
+}
+
+function bindUiLayout() {
+  const dialog = $("#ui-layout-dialog");
+  $("#customize-ui")?.addEventListener("click", () => { renderLayoutEditor(); dialog.showModal(); });
+  $("#ui-layout-close")?.addEventListener("click", () => dialog.close());
+  $("#ui-layout-cancel")?.addEventListener("click", () => dialog.close());
+  $("#ui-layout-reset")?.addEventListener("click", () => { uiLayout.layout = {toolbar: allPluginActions().map(a => a.id), plugins: [], chat: []}; uiLayout.hidden = []; renderLayoutEditor(); });
+  $("#ui-layout-save")?.addEventListener("click", async () => {
+    const layout = {toolbar: [], plugins: [], chat: []}, hidden = [];
+    document.querySelectorAll("#ui-layout-list .plugin-card").forEach((row) => { const id = row.querySelector("input").dataset.action; const p = row.querySelector("select").value; if (row.querySelector("input").checked) layout[p].push(id); else hidden.push(id); });
+    const r = await fetch("/admin/ui/layout", {method: "PUT", headers: {...authHeaders(), "Content-Type": "application/json"}, body: JSON.stringify({layout, hidden})});
+    if (r.ok) { uiLayout = await r.json(); dialog.close(); renderPluginActions(); }
+  });
+}
+
+async function fetchPlugins() {
+  try {
+    const response = await fetch("/admin/plugins", { headers: authHeaders() });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const data = await response.json();
+    pluginList = data.plugins || [];
+    renderPlugins();
+    await loadUiLayout();
+  } catch (_) {
+    // Keep whatever was shown before; discovery is best-effort.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Measurements panel: real, bounded per-model usage measurements from
+// /admin/metrics. Never invents throughput: the panel renders only what the
+// server recorded from actual traffic.
+// ---------------------------------------------------------------------------
+
+function fmtSeconds(value) {
+  if (value == null) return "n/a";
+  if (value >= 10) return `${value.toFixed(0)}s`;
+  if (value >= 1) return `${value.toFixed(1)}s`;
+  return `${Math.round(value * 1000)}ms`;
+}
+
+function timingRow(label, summary, unit = "") {
+  if (!summary) return null;
+  const item = document.createElement("div");
+  item.className = "measure-row";
+  const term = document.createElement("span");
+  term.textContent = label;
+  const detail = document.createElement("strong");
+  const fmt = unit === " tok/s"
+    ? (v) => v == null ? "n/a" : Number(v).toFixed(1)
+    : fmtSeconds;
+  const suffix = unit === " tok/s" ? "tok_s" : "s";
+  detail.textContent = `median ${fmt(summary[`median_${suffix}`])}${unit} · p95 ${fmt(summary[`p95_${suffix}`])}${unit} · last ${fmt(summary[`last_${suffix}`])}${unit} (${summary.count})`;
+  item.append(term, detail);
+  return item;
+}
+
+function renderMeasurements(metrics) {
+  const host = $("#measurements");
+  if (!host) return;
+  host.replaceChildren();
+  const timings = metrics?.timings || {};
+  const timingModels = timings?.models || {};
+  const entries = Object.entries(timingModels);
+  const queue = timings?.queue_wait;
+  const tuned = (metrics?.autotune?.models || []).filter(m => m.before_after);
+
+  const card = document.createElement("div");
+  card.className = "measurements-card";
+  if (!entries.length && !queue && !tuned.length) {
+    const empty = document.createElement("p");
+    empty.className = "measurements-empty";
+    empty.textContent = "No measurements yet. Send chat messages and load models; real timings appear here.";
+    card.appendChild(empty);
+    host.appendChild(card);
+    return;
+  }
+  for (const [name, entry] of entries) {
+    const block = document.createElement("div");
+    block.className = "measure-block";
+    const title = document.createElement("h3");
+    title.textContent = name;
+    block.appendChild(title);
+    const rows = document.createElement("div");
+    rows.className = "measure-rows";
+    if (entry.cold_start) rows.appendChild(timingRow("Cold start", entry.cold_start));
+    if (entry.ttft) rows.appendChild(timingRow("Time to first token", entry.ttft));
+    if (entry.model_wait) rows.appendChild(timingRow("Model wait (load/switch included)", entry.model_wait));
+    if (entry.generation_tok_s) rows.appendChild(timingRow("Generation speed", entry.generation_tok_s, " tok/s"));
+    block.appendChild(rows);
+    card.appendChild(block);
+  }
+  if (queue) card.appendChild(timingRow("Model wait across requests (load/switch included)", queue));
+  for (const model of tuned) {
+    const result = model.before_after;
+    const block = document.createElement("div");
+    block.className = "measure-block";
+    const title = document.createElement("h3");
+    title.textContent = `${model.name} · last completed autotune this session`;
+    block.appendChild(title);
+    for (const [key, label] of [["prompt_tok_s", "Prompt processing"], ["generation_tok_s", "Generation"]]) {
+      const before = result.before?.[key], after = result.after?.[key];
+      if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
+      const row = document.createElement("p");
+      row.textContent = `${label}: ${before.toFixed(1)} → ${after.toFixed(1)} tok/s (${result.applied ? "applied" : "measured only"})`;
+      block.appendChild(row);
+    }
+    card.appendChild(block);
+  }
+  host.appendChild(card);
+}
+
+async function fetchMeasurements() {
+  try {
+    const response = await fetch("/admin/metrics", { headers: authHeaders() });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    renderMeasurements(await response.json());
+  } catch (_) {
+    // Measurements are best-effort; keep whatever was rendered.
+  }
+}
+
+// Connect-a-frontend guided panel. The endpoint returns only locally computed
+// discovery data (base URL from the configured host/port, loopback Ollama
+// reachability, registered upstreams); the panel is copy-only and never
+// mutates anything on the user's side or ours.
+let integrationLoaded = false;
+const frontendTabs = [
+  ["#tab-openwebui", "#panel-openwebui"],
+  ["#tab-ollama", "#panel-ollama"],
+  ["#tab-generic", "#panel-generic"],
+];
+let activeFrontendTab = "openwebui";
+
+function isWindows() {
+  return navigator.platform && /win/i.test(navigator.platform);
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    // Older or non-secure contexts may lack the async clipboard API.
+    try {
+      const helper = document.createElement("textarea");
+      helper.value = text;
+      helper.setAttribute("readonly", "true");
+      helper.style.position = "fixed";
+      helper.style.opacity = "0";
+      document.body.appendChild(helper);
+      helper.select();
+      const ok = document.execCommand("copy");
+      helper.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+function markCopied(buttonNode) {
+  const original = buttonNode.textContent;
+  buttonNode.textContent = "Copied";
+  buttonNode.classList.add("copied");
+  setTimeout(() => {
+    buttonNode.textContent = original;
+    buttonNode.classList.remove("copied");
+  }, 1500);
+}
+
+function bindCopyButton(id, getText) {
+  const node = $(id);
+  if (!node) return;
+  node.addEventListener("click", async () => {
+    if (await copyToClipboard(getText())) markCopied(node);
+  });
+}
+
+function selectFrontendTab(kind) {
+  activeFrontendTab = kind;
+  for (const [tabId, panelId] of frontendTabs) {
+    const tab = $(tabId);
+    const panel = $(panelId);
+    const active = tabId.includes(kind);
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    panel.toggleAttribute("hidden", !active);
+  }
+}
+
+function renderOllamaStatus(ollama) {
+  const status = $("#ollama-status");
+  const registered = $("#ollama-registered-note");
+  if (!ollama?.reachable) {
+    status.textContent =
+      "No Ollama found on this machine (checked its default address). " +
+      "The command below still works later; run it once Ollama is installed and running.";
+    status.classList.add("unreachable");
+  } else {
+    status.textContent = `Ollama detected${ollama.version ? ` (version ${ollama.version})` : ""}.`;
+    status.classList.remove("unreachable");
+  }
+  registered.hidden = !ollama?.already_registered;
+}
+
+function renderIntegration(data) {
+  const openwebuiUrl = $("#openwebui-url");
+  const genericUrl = $("#generic-url");
+  const genericCurl = $("#generic-curl");
+  const ollamaCommand = $("#ollama-command");
+  const portHint = $("#frontend-port-hint");
+  if (!openwebuiUrl || !data) return;
+  openwebuiUrl.textContent = data.base_url;
+  genericUrl.textContent = data.base_url;
+  genericCurl.textContent = isWindows() ? data.curl_example_windows : data.curl_example;
+  ollamaCommand.textContent = data.ollama?.upstream_add_command || "";
+  portHint.textContent = `port ${data.server?.port}, at /v1/chat/completions and /v1/models`;
+  const lanNote = $("#openwebui-lan-note");
+  if (data.lan_note) {
+    lanNote.textContent = data.lan_note;
+    lanNote.hidden = false;
+  } else {
+    lanNote.hidden = true;
+  }
+  const apiKeyNote = $("#openwebui-key-note");
+  if (data.api_key_guidance) {
+    apiKeyNote.textContent = `API Key: ${data.api_key_guidance}`;
+  }
+  renderOllamaStatus(data.ollama);
+  integrationLoaded = true;
+}
+
+async function loadIntegration(force = false) {
+  if (integrationLoaded && !force) return;
+  try {
+    const response = await fetch("/admin/integration", { headers: authHeaders() });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    renderIntegration(await response.json());
+  } catch (_) {
+    renderIntegration(null);
+  }
+}
+
+function openFrontendDialog() {
+  $("#frontend-dialog").showModal();
+  loadIntegration();
+}
+
+$("#connect-frontend").addEventListener("click", openFrontendDialog);
+$("#frontend-close").addEventListener("click", () => $("#frontend-dialog").close());
+for (const [tabId] of frontendTabs) {
+  $(tabId).addEventListener("click", () => selectFrontendTab(tabId.split("-")[1]));
+}
+bindCopyButton("#copy-openwebui-url", () => $("#openwebui-url")?.textContent);
+bindCopyButton("#copy-ollama-command", () => $("#ollama-command")?.textContent);
+bindCopyButton("#copy-generic-url", () => $("#generic-url")?.textContent);
+bindCopyButton("#copy-generic-curl", () => $("#generic-curl")?.textContent);
+
+$("#refresh").addEventListener("click", () => fetchStatus(true));
+$("#scan").addEventListener("click", scanModels);
+$("#stop-all").addEventListener("click", stopAll);
+$("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
+
+(async () => {
+  await initAdminToken();
+  await fetchStatus(true);
+  await fetchPlugins();
+  await fetchMeasurements();
+  bindUiLayout();
+  setInterval(fetchStatus, 5000);
+  setInterval(fetchMeasurements, 15000);
+})();

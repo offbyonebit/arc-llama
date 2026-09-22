@@ -68,6 +68,7 @@ async def test_eviction_proceeds_after_drain_timeout(tmp_path, monkeypatch):
     forever. After the bounded drain the eviction goes ahead (and the stuck
     request's client sees the error it was always going to see)."""
     rt = _router(tmp_path, monkeypatch)
+    rt.cfg.server.switch_interrupt_policy = "interrupt"
     await rt.ensure_active("qwen")
     rt.acquire_model("qwen")  # never released
 

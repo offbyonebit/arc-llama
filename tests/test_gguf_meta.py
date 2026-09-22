@@ -1,4 +1,5 @@
 """Tests for arc_llama.gguf_meta — MTP head detection from GGUF metadata."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,9 +15,11 @@ from arc_llama.gguf_meta import (
     has_mtp_heads,
     is_hybrid_ssm,
     is_moe,
+    kv_bytes_per_token_f16,
     mtp_info,
     read_gguf_meta,
     scan_weight_tensors,
+    tokenizer_fingerprint,
     trained_context_length,
 )
 
@@ -59,9 +62,7 @@ class _FakeFieldReader:
 
 
 class TestReadGgufMetaExpertCountKeys:
-    def _patch_reader(
-        self, monkeypatch: pytest.MonkeyPatch, fields: dict[str, Any]
-    ) -> None:
+    def _patch_reader(self, monkeypatch: pytest.MonkeyPatch, fields: dict[str, Any]) -> None:
         monkeypatch.setattr(
             "arc_llama.gguf_meta.gguf.GGUFReader",
             lambda _path: _FakeFieldReader(fields),
@@ -128,9 +129,7 @@ class TestReadGgufMetaExpertCountKeys:
         meta = read_gguf_meta(p)
         assert meta["expert_count"] == 8
 
-    def test_no_expert_count_when_no_keys(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_no_expert_count_when_no_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         p = tmp_path / "model.gguf"
         p.write_text("")
         self._patch_reader(
@@ -141,6 +140,57 @@ class TestReadGgufMetaExpertCountKeys:
         )
         meta = read_gguf_meta(p)
         assert "expert_count" not in meta
+
+
+class TestTokenizerFingerprint:
+    def _fingerprint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        fields: dict[str, Any],
+    ) -> str | None:
+        path = tmp_path / "model.gguf"
+        path.write_bytes(b"GGUF")
+        monkeypatch.setattr(
+            "arc_llama.gguf_meta.gguf.GGUFReader",
+            lambda _path: _FakeFieldReader(fields),
+        )
+        return tokenizer_fingerprint(path)
+
+    def test_same_tokenizer_is_stable(self, tmp_path, monkeypatch):
+        fields = {
+            "tokenizer.ggml.model": "gpt2",
+            "tokenizer.ggml.tokens": ["a", "b", "c"],
+            "tokenizer.ggml.bos_token_id": 1,
+        }
+        first = self._fingerprint(tmp_path, monkeypatch, fields)
+        second = self._fingerprint(tmp_path, monkeypatch, fields)
+        assert first is not None
+        assert first == second
+
+    def test_token_id_change_changes_fingerprint(self, tmp_path, monkeypatch):
+        first = self._fingerprint(
+            tmp_path,
+            monkeypatch,
+            {"tokenizer.ggml.tokens": ["a", "b"]},
+        )
+        second = self._fingerprint(
+            tmp_path,
+            monkeypatch,
+            {"tokenizer.ggml.tokens": ["b", "a"]},
+        )
+        assert first is not None
+        assert first != second
+
+    def test_requires_vocabulary_metadata(self, tmp_path, monkeypatch):
+        assert (
+            self._fingerprint(
+                tmp_path,
+                monkeypatch,
+                {"tokenizer.ggml.model": "gpt2"},
+            )
+            is None
+        )
 
 
 class TestReadGgufMeta:
@@ -158,6 +208,87 @@ class TestReadGgufMeta:
     def test_missing_file_returns_empty(self):
         meta = read_gguf_meta("/nonexistent/file.gguf")
         assert meta == {}
+
+
+class TestKvBytesPerToken:
+    def _estimate(self, tmp_path, monkeypatch, meta):
+        path = tmp_path / "kv-model.gguf"
+        path.write_bytes(b"GGUF")
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
+        return kv_bytes_per_token_f16(path)
+
+    def test_scalar_transformer_geometry(self, tmp_path, monkeypatch):
+        # 32 layers × 8 KV heads × (128 K + 128 V) × 2-byte f16.
+        result = self._estimate(
+            tmp_path,
+            monkeypatch,
+            {
+                "block_count": 32,
+                "embedding_length": 4096,
+                "attention.head_count": 32,
+                "attention.head_count_kv": 8,
+            },
+        )
+        assert result == 32 * 8 * (128 + 128) * 2
+
+    def test_hybrid_per_layer_geometry_skips_recurrent_layers(self, tmp_path, monkeypatch):
+        result = self._estimate(
+            tmp_path,
+            monkeypatch,
+            {
+                "block_count": 4,
+                "embedding_length": 2048,
+                "attention.head_count": 32,
+                "attention.head_count_kv": [0, 8, 0, 8],
+            },
+        )
+        assert result == 2 * 8 * (64 + 64) * 2
+
+    def test_explicit_key_and_value_lengths_win(self, tmp_path, monkeypatch):
+        result = self._estimate(
+            tmp_path,
+            monkeypatch,
+            {
+                "block_count": 2,
+                "attention.head_count_kv": 4,
+                "attention.key_length": 192,
+                "attention.value_length": 128,
+            },
+        )
+        assert result == 2 * 4 * (192 + 128) * 2
+
+    def test_sliding_window_uses_family_fallback(self, tmp_path, monkeypatch):
+        result = self._estimate(
+            tmp_path,
+            monkeypatch,
+            {
+                "block_count": 2,
+                "embedding_length": 2048,
+                "attention.head_count": 32,
+                "attention.head_count_kv": 8,
+                "attention.sliding_window": 4096,
+            },
+        )
+        assert result is None
+
+    def test_qwen35_scalar_heads_use_hybrid_fallback(self, tmp_path, monkeypatch):
+        result = self._estimate(
+            tmp_path,
+            monkeypatch,
+            {
+                "architecture": "qwen35",
+                "block_count": 65,
+                "embedding_length": 5120,
+                "attention.head_count": 24,
+                "attention.head_count_kv": 4,
+                "attention.key_length": 256,
+                "attention.value_length": 256,
+            },
+        )
+        assert result is None
+
+    def test_incomplete_geometry_uses_family_fallback(self, tmp_path, monkeypatch):
+        assert self._estimate(tmp_path, monkeypatch, {"block_count": 32}) is None
 
 
 class TestMtpDetection:
@@ -332,7 +463,7 @@ def _moe_tensors() -> list[_FakeTensor]:
         _FakeTensor("blk.0.ffn_up_exps.weight", 300),
         _FakeTensor("blk.0.ffn_down_exps.weight", 300),
         _FakeTensor("blk.0.ffn_up_shexp.weight", 200),  # shared expert: stays on GPU
-        _FakeTensor("blk.0.ffn_gate_inp.weight", 50),   # router gate: stays on GPU
+        _FakeTensor("blk.0.ffn_gate_inp.weight", 50),  # router gate: stays on GPU
         _FakeTensor("blk.1.ffn_gate_exps.weight", 400),
         _FakeTensor("blk.1.ffn_up_exps.weight", 400),
         _FakeTensor("blk.1.ffn_down_exps.weight", 400),
@@ -350,11 +481,11 @@ def _fused_moe_tensors() -> list[_FakeTensor]:
     return [
         _FakeTensor("token_embd.weight", 1000),
         _FakeTensor("blk.0.attn_q.weight", 100),
-        _FakeTensor("blk.0.ffn_gate_up_exps.weight", 800),   # fused: must count
+        _FakeTensor("blk.0.ffn_gate_up_exps.weight", 800),  # fused: must count
         _FakeTensor("blk.0.ffn_down_exps.weight", 400),
-        _FakeTensor("blk.0.ffn_down_exps.scale", 20),        # quant metadata: counts
-        _FakeTensor("blk.0.ffn_gate_inp.weight", 30),        # router: excluded
-        _FakeTensor("blk.0.ffn_up_shexp.weight", 60),        # shared expert: excluded
+        _FakeTensor("blk.0.ffn_down_exps.scale", 20),  # quant metadata: counts
+        _FakeTensor("blk.0.ffn_gate_inp.weight", 30),  # router: excluded
+        _FakeTensor("blk.0.ffn_up_shexp.weight", 60),  # shared expert: excluded
     ]
 
 
@@ -432,9 +563,7 @@ class TestOffloadAccounting:
         )
         assert estimate_weight_vram_bytes(f, n_cpu_moe=4) == 1500
 
-    def test_moe_without_recognisable_expert_tensors_returns_none(
-        self, tmp_path, monkeypatch
-    ):
+    def test_moe_without_recognisable_expert_tensors_returns_none(self, tmp_path, monkeypatch):
         """MoE arch but tensor names we don't recognise: the offloaded bytes
         are unknown, so the estimate must be None — callers must not fall
         back to counting full weights and refusing the load."""

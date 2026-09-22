@@ -3,10 +3,13 @@
 Uses llama.cpp's `gguf-py` to read key metadata (architecture,
 nextn_predict_layers, block_count) without loading tensor data.
 """
+
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +17,49 @@ import gguf  # type: ignore[import-untyped]
 
 log = logging.getLogger("arc_llama.gguf_meta")
 
+_TOKENIZER_IDENTITY_KEYS = (
+    "tokenizer.ggml.model",
+    "tokenizer.ggml.pre",
+    "tokenizer.ggml.tokens",
+    "tokenizer.ggml.token_type",
+    "tokenizer.ggml.merges",
+    "tokenizer.ggml.added_tokens",
+    "tokenizer.ggml.bos_token_id",
+    "tokenizer.ggml.eos_token_id",
+    "tokenizer.ggml.padding_token_id",
+    "tokenizer.ggml.unknown_token_id",
+)
+
 
 # ---------------------------------------------------------------------------
 # Metadata reading
 # ---------------------------------------------------------------------------
+
+_KV_METADATA_SUFFIXES = (
+    "embedding_length",
+    "attention.head_count",
+    "attention.head_count_kv",
+    "attention.key_length",
+    "attention.value_length",
+    "attention.sliding_window",
+)
+
+
+def _integer_metadata_value(value: Any) -> int | list[int] | None:
+    """Normalise a scalar/array GGUF integer field to plain Python values."""
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        value = tolist()
+    if isinstance(value, (list, tuple)):
+        try:
+            return [int(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def read_gguf_meta(path: Path | str) -> dict[str, Any]:
     """Read a GGUF file and return a small dict of metadata we care about.
@@ -77,13 +119,191 @@ def read_gguf_meta(path: Path | str) -> dict[str, Any]:
                 meta["context_length"] = int(ctx_field.contents())
             except (TypeError, ValueError):
                 pass
+        # Attention geometry lets us calculate KV bytes instead of guessing
+        # from a model-family bucket. Some hybrid architectures store a value
+        # per layer (with zero KV heads for recurrent layers), so preserve
+        # arrays rather than forcing every field to a scalar.
+        for suffix in _KV_METADATA_SUFFIXES:
+            field = reader.get_field(f"{arch}.{suffix}")
+            if field is None:
+                continue
+            try:
+                metadata_value = _integer_metadata_value(field.contents())
+            except Exception:
+                continue
+            if metadata_value is not None:
+                meta[suffix] = metadata_value
 
     return meta
+
+
+def _per_layer_values(value: object, layers: int) -> list[int] | None:
+    if isinstance(value, int):
+        return [value] * layers
+    if isinstance(value, list) and len(value) == layers:
+        try:
+            return [int(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+@lru_cache(maxsize=128)
+def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> int | None:
+    """Cached implementation keyed by file identity-relevant stat fields."""
+    del file_size, mtime_ns  # values deliberately participate in the cache key
+    meta = read_gguf_meta(path)
+    try:
+        layers = int(meta["block_count"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if layers <= 0:
+        return None
+
+    # llama.cpp's sliding-window allocation is architecture-specific and is
+    # often much smaller than full-context KV. Keep the measured family
+    # fallback for those models rather than replacing it with an overestimate.
+    sliding = meta.get("attention.sliding_window")
+    if isinstance(sliding, int) and sliding > 0:
+        return None
+    if isinstance(sliding, list) and any(int(item) > 0 for item in sliding):
+        return None
+
+    raw_kv_heads = meta.get("attention.head_count_kv")
+    architecture = str(meta.get("architecture", "")).lower()
+    if architecture.startswith("qwen35") and isinstance(raw_kv_heads, int):
+        # Qwen 3.5-family GGUFs can report one scalar KV-head count even though
+        # only a subset of their GDN/attention hybrid layers allocate KV. A
+        # scalar broadcast would multiply the cache by every recurrent layer.
+        return None
+    kv_heads = _per_layer_values(raw_kv_heads, layers)
+    if kv_heads is None:
+        return None
+    heads = _per_layer_values(meta.get("attention.head_count"), layers)
+    embeddings = _per_layer_values(meta.get("embedding_length"), layers)
+    key_lengths = _per_layer_values(meta.get("attention.key_length"), layers)
+    value_lengths = _per_layer_values(meta.get("attention.value_length"), layers)
+
+    total_elements = 0
+    for layer in range(layers):
+        n_kv = kv_heads[layer]
+        if n_kv < 0:
+            return None
+        if n_kv == 0:
+            # Hybrid recurrent layers have no token-growing KV allocation.
+            continue
+        key_length = key_lengths[layer] if key_lengths is not None else None
+        value_length = value_lengths[layer] if value_lengths is not None else None
+        if key_length is None or value_length is None:
+            if heads is None or embeddings is None or heads[layer] <= 0:
+                return None
+            if embeddings[layer] <= 0 or embeddings[layer] % heads[layer] != 0:
+                return None
+            default_head_length = embeddings[layer] // heads[layer]
+            key_length = key_length or default_head_length
+            value_length = value_length or default_head_length
+        if key_length <= 0 or value_length <= 0:
+            return None
+        total_elements += n_kv * (key_length + value_length)
+
+    # One f16 K element and one f16 V element are already represented in the
+    # sum above; each element occupies two bytes.
+    return total_elements * 2 if total_elements > 0 else None
+
+
+def kv_bytes_per_token_f16(path: Path | str) -> int | None:
+    """Calculate f16 KV bytes/token from GGUF attention geometry when safe.
+
+    Returns ``None`` when metadata is incomplete or the architecture needs
+    special sliding-window accounting, allowing callers to retain their
+    conservative family-based fallback.
+    """
+    p = Path(path)
+    try:
+        stat = p.stat()
+        resolved = str(p.resolve())
+    except OSError:
+        return None
+    return _kv_bytes_per_token_f16_cached(resolved, stat.st_size, stat.st_mtime_ns)
+
+
+def _hash_metadata_value(digest: Any, value: Any) -> None:
+    """Stream a deterministic representation into *digest* without giant reprs."""
+    if isinstance(value, bytes):
+        digest.update(b"b")
+        digest.update(value)
+        return
+    if isinstance(value, str):
+        digest.update(b"s")
+        digest.update(value.encode("utf-8", errors="surrogatepass"))
+        return
+    if isinstance(value, dict):
+        digest.update(b"{")
+        for key in sorted(value, key=str):
+            _hash_metadata_value(digest, str(key))
+            _hash_metadata_value(digest, value[key])
+        digest.update(b"}")
+        return
+    if isinstance(value, (list, tuple)):
+        digest.update(b"[")
+        for item in value:
+            _hash_metadata_value(digest, item)
+            digest.update(b"\0")
+        digest.update(b"]")
+        return
+    # gguf-py may expose numpy arrays/scalars. Convert those through their
+    # stable Python representation while keeping numpy an optional dependency.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        _hash_metadata_value(digest, tolist())
+        return
+    digest.update(f"{type(value).__name__}:{value}".encode("utf-8", errors="replace"))
+
+
+def tokenizer_fingerprint(path: Path | str) -> str | None:
+    """Hash tokenizer-defining GGUF metadata, or return None when unavailable.
+
+    Matching architecture names are not enough for speculative decoding: the
+    target and draft must assign identical token IDs. Hashing the vocabulary,
+    merges, tokenizer implementation, and special IDs gives draft discovery a
+    positive compatibility signal without loading model tensors.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        reader = gguf.GGUFReader(p)
+    except Exception as exc:
+        log.debug("gguf tokenizer read failed for %s: %s", p, exc)
+        return None
+
+    digest = hashlib.sha256()
+    found_vocabulary = False
+    found_any = False
+    for key in _TOKENIZER_IDENTITY_KEYS:
+        field = reader.get_field(key)
+        if field is None:
+            continue
+        try:
+            value = field.contents()
+        except Exception:
+            continue
+        found_any = True
+        if key in ("tokenizer.ggml.tokens", "tokenizer.ggml.merges"):
+            found_vocabulary = True
+        digest.update(key.encode())
+        digest.update(b"\0")
+        _hash_metadata_value(digest, value)
+        digest.update(b"\n")
+    if not found_any or not found_vocabulary:
+        return None
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------------------
 # MTP detection
 # ---------------------------------------------------------------------------
+
 
 def has_mtp_heads(path: Path | str) -> bool:
     """Return True if the GGUF at *path* contains real MTP heads.
@@ -180,9 +400,7 @@ def is_moe(path: Path | str) -> bool:
     if any(arch.startswith(prefix) for prefix in _MOE_ARCH_PREFIXES):
         return True
     # Some converters label generic architectures with an explicit MoE key.
-    return any(
-        meta.get(key) is not None for key in _EXPERT_COUNT_KEYS
-    )
+    return any(meta.get(key) is not None for key in _EXPERT_COUNT_KEYS)
 
 
 def expert_count(path: Path | str) -> int | None:
@@ -235,6 +453,7 @@ def trained_context_length(path: Path | str) -> int | None:
 # ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
+
 
 def mtp_info(path: Path | str) -> dict[str, Any]:
     """Return a human-readable summary of MTP-relevant metadata."""
@@ -311,14 +530,12 @@ def override_tensor_saved_bytes(table: dict[str, int], patterns: list[str]) -> i
             compiled.append(re.compile(pat))
         except re.error as exc:
             raise ValueError(f"invalid override-tensor regex {pat!r}: {exc}") from exc
-    return sum(
-        nbytes
-        for name, nbytes in table.items()
-        if any(c.search(name) for c in compiled)
-    )
+    return sum(nbytes for name, nbytes in table.items() if any(c.search(name) for c in compiled))
 
 
-def validate_override_patterns(table: dict[str, int] | None, patterns: list[str]) -> tuple[bool, str]:
+def validate_override_patterns(
+    table: dict[str, int] | None, patterns: list[str]
+) -> tuple[bool, str]:
     """Return (ok, error_message) for a proposed list of regex patterns.
 
     A pattern that matches zero tensors is rejected: unlike ``--n-cpu-moe``,
@@ -459,7 +676,8 @@ def scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
                 "which is implausibly low for a MoE model -- expert offload "
                 "accounting is probably under-counting. Unmatched expert-like "
                 "tensors: %s",
-                p.name, share * 100,
+                p.name,
+                share * 100,
                 ", ".join(sorted(set(unmatched_expert_names))[:8]) or "(none)",
             )
     return total, expert_by_layer
@@ -530,8 +748,7 @@ def weight_tensor_table(path: Path | str) -> dict[str, int] | None:
         log.debug("gguf weight table read failed for %s: %s", p, exc)
         return None
     return {
-        getattr(tensor, "name", "") or "": _tensor_vram_bytes(tensor)
-        for tensor in reader.tensors
+        getattr(tensor, "name", "") or "": _tensor_vram_bytes(tensor) for tensor in reader.tensors
     }
 
 

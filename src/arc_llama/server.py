@@ -7,6 +7,8 @@ the request body.
 Also exposes a small admin surface used by the bundled web UI and the TUI:
 
     GET  /admin/status        — full snapshot (gpus, models, who's loaded)
+    GET  /admin/integration   — read-only connection guidance for frontends
+    GET  /admin/plugins       — catalog of installed plugins (UI panel)
     POST /admin/load/{name}   — preload a model without sending a chat request
     POST /admin/stop/{name}   — stop one model's llama-server
     POST /admin/stop-all      — stop every running llama-server
@@ -33,22 +35,45 @@ from typing import Any
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
+from arc_llama import __version__
 from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
-from arc_llama.plugins import load_plugins, register_plugins, shutdown_plugins, startup_plugins
-from arc_llama.router import Router
+from arc_llama.failures import StartupFailureError
+from arc_llama.plugins import (
+    PluginDiscovery,
+    build_catalog,
+    load_plugins,
+    register_plugins,
+    shutdown_plugins,
+    startup_plugins,
+)
+from arc_llama.resources import ResourceLeaseManager
+from arc_llama.router import Router, model_vram_fit_info
 from arc_llama.skills import load_skills
+from arc_llama.stream_metrics import StreamMetricsObserver, generation_rate
 from arc_llama.upstream import UpstreamManager
 
 log = logging.getLogger("arc_llama.server")
+
+_REASONING_FORMATS = {"auto", "none", "deepseek", "deepseek-legacy"}
+
+
+async def _iter_sse_body(response: httpx.Response):
+    """Yield an SSE response and stop once the protocol sends ``[DONE]``."""
+    tail = b""
+    async for chunk in response.aiter_raw():
+        yield chunk
+        tail = (tail + chunk)[-64:]
+        if b"data: [DONE]" in tail:
+            return
 
 
 def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -63,6 +88,28 @@ def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
             "connection",
         )
     }
+
+
+def _local_request_body(body: dict[str, Any], target_path: str) -> bytes:
+    """Apply Arc Llama's stable local chat defaults and encode the request.
+
+    llama.cpp's generic ``deepseek`` default does not recognize every model's
+    channel markers. Its ``auto`` parser selects from the active chat template
+    and returns reasoning through ``reasoning_content`` for streaming and
+    non-streaming requests. Explicit supported values remain available for
+    clients that need llama.cpp's raw or legacy behavior.
+    """
+    if target_path == "/v1/chat/completions":
+        requested = body.get("reasoning_format")
+        if requested is None:
+            body = {**body, "reasoning_format": "auto"}
+        elif not isinstance(requested, str) or requested not in _REASONING_FORMATS:
+            allowed = ", ".join(sorted(_REASONING_FORMATS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported reasoning_format {requested!r}. Choose one of: {allowed}.",
+            )
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
@@ -141,8 +188,13 @@ def create_app(
     # Discovery happens here (app creation), not at import time, so optional
     # plugin dependencies are never pulled in just by importing arc_llama.
     if plugins is None:
-        plugins = load_plugins()
-    app_plugins: list[Any] = list(plugins)
+        # Discovery records keep failed and disabled plugins visible in the
+        # admin catalog without ever running their code.
+        discovery = PluginDiscovery()
+        app_plugins: list[Any] = load_plugins(discovery=discovery)
+    else:
+        discovery = PluginDiscovery()
+        app_plugins = list(plugins)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -150,6 +202,11 @@ def create_app(
         app.state.upstream_mgr = UpstreamManager(cfg.upstreams)
         app.state.cfg = cfg
         app.state.started_at = time.time()
+        # Exclusive GPU arbitration for plugin tasks (vision, ...). Built
+        # after the router — it delegates all llama-server process
+        # management to it — and before plugin startup so plugins can grab
+        # it from app.state in their startup hooks.
+        app.state.resources = ResourceLeaseManager(app.state.router)
         pending_confirmations: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
@@ -166,7 +223,6 @@ def create_app(
         app.state.mcp_manager = MCPClientManager(cfg.active_mcp_servers())
         tuner: Any | None = None
         if getattr(cfg, "tune", None) and cfg.tune.auto:
-            from arc_llama import __version__
             from arc_llama.autotune import start_autotuner
             from arc_llama.config import default_config_path
 
@@ -190,10 +246,14 @@ def create_app(
             await app.state.mcp_manager.stop()
             await app.state.router.shutdown()
 
-    app = FastAPI(title="arc-llama", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="arc-llama", version=__version__, lifespan=lifespan)
+    app.state.plugin_discovery = discovery
 
     # Register plugin routes before the static mount so plugin paths are not
     # shadowed by the catch-all web UI. A plugin failure here is isolated.
+    # Status is recorded per app (not per lifespan) because register() runs
+    # now, before the lifespan starts; /admin/plugins reads it later.
+    app.state.plugin_status = {}
     register_plugins(app, app_plugins)
 
     app.add_middleware(
@@ -273,6 +333,10 @@ def create_app(
             and rt._servers[m.name].is_running
             and rt._servers[m.name].ready
         ]
+        # Test routers may predate the timings member; omit the block rather
+        # than fail the whole endpoint when it is missing.
+        timings = getattr(rt, "timings", None)
+        timings_snapshot = timings.snapshot() if timings is not None else None
         return {
             "uptime_seconds": round(uptime, 2),
             "loads": rt.metrics["loads"],
@@ -281,6 +345,22 @@ def create_app(
             "last_load_at": rt.metrics["last_load_at"],
             "last_error": rt.metrics["last_error"],
             "active_models": loaded,
+            "timings": timings_snapshot,
+            "autotune": {
+                "auto": c.tune.auto,
+                "models": [
+                    {
+                        "name": m.name,
+                        "tune_state": m.tune_state,
+                        "tuned_at": m.tuned_at,
+                        "tune_error": m.tune_error,
+                        "before_after": getattr(
+                            getattr(request.app.state, "tuner", None), "last_results", {}
+                        ).get(m.name),
+                    }
+                    for m in rt.all_models()
+                ],
+            },
             "gpus": [
                 {
                     "pci_slot": g.pci_slot,
@@ -314,6 +394,7 @@ def create_app(
                     "metadata": {
                         "display_name": m.display_name,
                         "path": m.path,
+                        "model_file_mb": getattr(m, "model_file_mb", None),
                         "gpu_pci_slot": m.gpu_pci_slot,
                         "loaded": bool(srv and srv.is_running and srv.ready),
                         "aliases": list(m.aliases),
@@ -330,7 +411,7 @@ def create_app(
                             "created": created,
                             "metadata": {"canonical": m.name},
                         }
-                )
+                    )
         # Upstream models
         try:
             upstream_models = await mgr.models()
@@ -359,6 +440,46 @@ def create_app(
     @app.post("/v1/embeddings")
     async def embeddings(request: Request):
         return await _proxy_post(request, "/v1/embeddings", streaming_ok=False)
+
+    @app.get("/api/tags")
+    async def ollama_tags(request: Request) -> dict:
+        """Return the registry in Ollama's model-list shape."""
+        models = await list_models(request)
+        return {
+            "models": [
+                {
+                    "name": item["id"],
+                    "model": item["id"],
+                    "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.get("created", 0))),
+                    "size": int(item.get("metadata", {}).get("model_file_mb", 0) or 0) * 1024 * 1024,
+                    "digest": "",
+                    "details": {"family": item.get("owned_by", "arc-llama")},
+                }
+                for item in models["data"]
+            ]
+        }
+
+    @app.post("/api/chat")
+    async def ollama_chat(request: Request):
+        body = await _read_json_body(request)
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail="Ollama chat requests require a messages array")
+        payload = _ollama_to_openai(body, messages=messages)
+        request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
+        response = await _proxy_post(request, "/v1/chat/completions")
+        return _openai_response_as_ollama(response, body.get("model", ""), generate=False)
+
+    @app.post("/api/generate")
+    async def ollama_generate(request: Request):
+        body = await _read_json_body(request)
+        prompt = body.get("prompt", "")
+        if not isinstance(prompt, str):
+            raise HTTPException(status_code=400, detail="Ollama generate requests require a string prompt")
+        payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
+        request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
+        response = await _proxy_post(request, "/v1/completions")
+        return _openai_response_as_ollama(response, body.get("model", ""), generate=True)
 
     @app.post("/v1/agent")
     async def agent_endpoint(request: Request):
@@ -729,23 +850,51 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/admin/status")
-    async def admin_status(request: Request, _auth: None = Depends(_require_admin)) -> dict:
+    async def admin_status(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict:
         rt: Router = request.app.state.router
         c: Config = request.app.state.cfg
+        # Reuse one VRAM-estimate cache across this snapshot (and across calls:
+        # it lives on app.state) so repeated status polls never re-scan GGUFs.
+        vram_cache: dict[str, tuple[float, int | None]] | None = getattr(
+            request.app.state, "vram_estimate_cache", None
+        )
+        if vram_cache is None:
+            vram_cache = {}
+            request.app.state.vram_estimate_cache = vram_cache
         models = []
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
             r = m.recipe or {}
             running = bool(srv and srv.is_running)
             loaded = bool(srv and srv.is_running and srv.ready)
+            try:
+                model_file_mb = (Path(m.path).stat().st_size + 1_048_575) // 1_048_576
+            except OSError:
+                model_file_mb = None
+            fit_info = await asyncio.to_thread(
+                model_vram_fit_info, m, c.find_gpu(m.gpu_pci_slot), vram_cache
+            )
+            if fit_info and not c.server.single_resident:
+                fit_info["headroom_mb"] = None
+                fit_info["fit"] = None
+                fit_info["detail"] = "Per-model estimate; available memory depends on co-resident models."
             models.append(
                 {
                     "name": m.name,
                     "display_name": m.display_name,
                     "path": m.path,
+                    "model_file_mb": model_file_mb,
                     "gpu_pci_slot": m.gpu_pci_slot,
                     "port": m.port,
                     "loaded": loaded,
+                    "state": (
+                        "draining" if m.name in getattr(rt, "_stopping", set())
+                        else "ready" if loaded
+                        else "loading" if running
+                        else "idle"
+                    ),
                     "pid": getattr(getattr(srv, "process", None), "pid", None) if running else None,
                     "ctx": r.get("ctx"),
                     "cache_type_k": r.get("cache_type_k"),
@@ -759,6 +908,7 @@ def create_app(
                     "tuned_at": m.tuned_at,
                     "tune_error": m.tune_error,
                     "tune_fingerprint": m.tune_fingerprint,
+                    "vram_estimate": fit_info,
                 }
             )
         gpus = [
@@ -779,16 +929,109 @@ def create_app(
                 "port": c.server.port,
                 "single_resident": c.server.single_resident,
                 "auto_tune": c.tune.auto,
+                "switch_drain_seconds": c.server.switch_drain_seconds,
+                "switch_interrupt_policy": c.server.switch_interrupt_policy,
             },
             "gpus": gpus,
             "models": models,
             "upstreams": mgr.upstreams_status(),
         }
 
+    @app.get("/admin/integration")
+    async def admin_integration(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        """Read-only discovery for the dashboard's Connect-a-frontend panel.
+
+        Returns the base URL a client should paste, loopback Ollama
+        reachability, and registered upstreams. The bundled UI renders this
+        as copy-only guidance — nothing here transmits credentials, mutates
+        config, or touches external Open WebUI accounts. ``integration`` is
+        imported lazily so importing ``arc_llama.server`` stays cheap.
+        """
+        from arc_llama.integration import integration_payload, probe_ollama
+
+        c: Config = request.app.state.cfg
+        ollama = await probe_ollama()
+        return integration_payload(c, ollama)
+
+    @app.get("/admin/plugins")
+    async def admin_plugins(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        """Catalog installed plugins for the dashboard's Plugins panel.
+
+        Read-only and reflective: it reports what was discovered at app
+        creation, a stable per-plugin status key, and whatever metadata each
+        plugin chooses to publish through its optional ``info()`` hook.
+        Plugins written against the original contract simply appear with
+        name and status only. Discovery records for plugins that failed to
+        import or were disabled appear alongside with their error, without
+        any plugin code running here.
+        """
+        statuses: dict[str, str] = getattr(request.app.state, "plugin_status", {})
+        discovery: PluginDiscovery | None = getattr(
+            request.app.state, "plugin_discovery", None
+        )
+        extra = discovery.catalog() if discovery is not None else []
+        return {"plugins": build_catalog(app_plugins, statuses, extra=extra)}
+
+    def _ui_layout_path() -> Path:
+        base = state_dir or Path(".arc_llama_state")
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "ui-layout.json"
+
+    def _ui_actions() -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for plugin in build_catalog(app_plugins, getattr(app.state, "plugin_status", {})):
+            for action in plugin.get("ui", {}).get("actions", []):
+                item = dict(action)
+                item["plugin"] = plugin["name"]
+                actions.append(item)
+        return actions
+
+    @app.get("/admin/ui/layout")
+    async def get_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        actions = _ui_actions()
+        ids = {a["id"] for a in actions}
+        path = _ui_layout_path()
+        try:
+            saved = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            saved = {}
+        layout = saved.get("layout", {}) if isinstance(saved, dict) else {}
+        result: dict[str, Any] = {"layout": {}, "actions": actions}
+        for placement in ("toolbar", "plugins", "chat"):
+            raw = layout.get(placement, []) if isinstance(layout, dict) else []
+            result["layout"][placement] = [x for x in raw if x in ids]
+        used = set(result["layout"]["toolbar"] + result["layout"]["plugins"])
+        for action in actions:
+            if action["id"] not in used:
+                result["layout"][action.get("placement", "plugins")].append(action["id"])
+        result["hidden"] = [x for x in (saved.get("hidden", []) if isinstance(saved, dict) else []) if x in ids]
+        return result
+
+    @app.put("/admin/ui/layout")
+    async def put_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        body = await request.json()
+        actions = _ui_actions()
+        ids = {a["id"] for a in actions}
+        layout = body.get("layout", {}) if isinstance(body, dict) else {}
+        hidden = body.get("hidden", []) if isinstance(body, dict) else []
+        if not isinstance(layout, dict) or not isinstance(hidden, list):
+            raise HTTPException(status_code=400, detail="Invalid UI layout")
+        values = [x for p in ("toolbar", "plugins", "chat") for x in layout.get(p, [])]
+        if any(not isinstance(x, str) or x not in ids for x in values + hidden) or len(values) != len(set(values)):
+            raise HTTPException(status_code=400, detail="Unknown or duplicate UI action")
+        payload = {"layout": {p: list(layout.get(p, [])) for p in ("toolbar", "plugins", "chat")}, "hidden": hidden}
+        path = _ui_layout_path()
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        return await get_ui_layout(request)
+
     @app.post("/admin/load/{name}")
     async def admin_load(
         name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict:
+    ) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -799,6 +1042,11 @@ def create_app(
             model, srv = await rt.ensure_active(name)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}") from None
+        except StartupFailureError as e:
+            # Details come along: the UI renders them behind an expandable
+            # diagnostics region, and the payload is redacted + bounded by
+            # the failure object itself.
+            return JSONResponse(status_code=e.http_status, content=e.to_dict(include_details=True))
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         # ensure_active only returns once wait_ready has passed, so ready is
@@ -925,7 +1173,8 @@ def create_app(
 
         Body is a partial recipe dict — only provided fields change. Recognised
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
-        `spec_type`, `ubatch_size`, `batch_size`, `flash_attn` (null clears),
+        `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `ubatch_size`,
+        `batch_size`, `flash_attn` (null clears),
         `n_cpu_moe` (null or 0 clears), `override_tensor` (list of regex
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
         cleared and vice versa: the two flags are alternative means to the
@@ -1005,9 +1254,61 @@ def create_app(
             model.kv_class = v
             changed.append("kv_class")
         if "spec_type" in body:
-            v = str(body["spec_type"])
-            recipe["spec_type"] = v
+            v = body["spec_type"]
+            if v is None or v == "":
+                recipe.pop("spec_type", None)
+            elif (
+                isinstance(v, str) and len(v) <= 64 and all(ch.isalnum() or ch in "-_" for ch in v)
+            ):
+                # llama.cpp adds speculation strategies faster than arc-llama
+                # releases. Keep this future-compatible while rejecting values
+                # that cannot be one argv atom.
+                recipe["spec_type"] = v
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="spec_type must be a short strategy name or null",
+                )
             changed.append("spec_type")
+        if "spec_draft_name" in body:
+            v = body["spec_draft_name"]
+            if v is None or v == "":
+                recipe.pop("spec_draft_name", None)
+            else:
+                draft_name = str(v)
+                if draft_name == name or c.find_model(draft_name) is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="spec_draft_name must name another registered model",
+                    )
+                recipe["spec_draft_name"] = draft_name
+            changed.append("spec_draft_name")
+        if "spec_draft_n_max" in body:
+            v = body["spec_draft_n_max"]
+            if v is None:
+                recipe.pop("spec_draft_n_max", None)
+            else:
+                try:
+                    draft_n = int(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400, detail="spec_draft_n_max must be an integer or null"
+                    ) from None
+                if not (1 <= draft_n <= 16):
+                    raise HTTPException(status_code=400, detail="spec_draft_n_max must be 1..16")
+                recipe["spec_draft_n_max"] = draft_n
+            changed.append("spec_draft_n_max")
+        if "speculation_result" in body:
+            v = body["speculation_result"]
+            if v is None or v == "":
+                recipe.pop("speculation_result", None)
+            elif isinstance(v, str):
+                recipe["speculation_result"] = v[:512]
+            else:
+                raise HTTPException(
+                    status_code=400, detail="speculation_result must be a string or null"
+                )
+            changed.append("speculation_result")
         if "ubatch_size" in body:
             try:
                 ub = int(body["ubatch_size"])
@@ -1156,6 +1457,88 @@ def create_app(
     return app
 
 
+async def _read_json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = json.loads(await request.body())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    return body
+
+
+def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any]) -> dict[str, Any]:
+    raw_options = body.get("options")
+    options: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
+    payload: dict[str, Any] = {"model": body.get("model", ""), "messages": messages, "stream": bool(body.get("stream", True))}
+    for ollama_key, openai_key in (("temperature", "temperature"), ("top_p", "top_p"), ("stop", "stop")):
+        if ollama_key in options:
+            payload[openai_key] = options[ollama_key]
+    if "num_predict" in options:
+        payload["max_tokens"] = options["num_predict"]
+    return payload
+
+
+def _openai_response_as_ollama(response: Response, model: str, *, generate: bool):
+    if response.status_code >= 400:
+        try:
+            body = json.loads(bytes(response.body))
+        except (TypeError, json.JSONDecodeError):
+            body = {}
+        # Structured startup failures carry their readable message under
+        # "error.message"; flat errors keep using "detail". Either way the
+        # Ollama-compat client sees one plain string, never nested JSON.
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict) and isinstance(error_obj.get("message"), str):
+                detail = error_obj["message"]
+            else:
+                detail = str(body.get("detail", "Upstream request failed"))
+        else:
+            detail = "Upstream request failed"
+        return JSONResponse({"error": str(detail)}, status_code=response.status_code)
+    if isinstance(response, StreamingResponse):
+        async def stream() -> AsyncIterator[bytes]:
+            buffer = b""
+            async for chunk in response.body_iterator:  # type: ignore[attr-defined]
+                buffer += chunk.encode() if isinstance(chunk, str) else bytes(chunk)
+                while b"\n\n" in buffer:
+                    raw, buffer = buffer.split(b"\n\n", 1)
+                    for line in raw.splitlines():
+                        if not line.startswith(b"data:"):
+                            continue
+                        text = line[5:].strip()
+                        if text == b"[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(text)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = (obj.get("choices") or [{}])[0]
+                        delta = choice.get("delta") or {}
+                        value = delta.get("content") if not generate else choice.get("text", "")
+                        if value:
+                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "message": {"role": "assistant", "content": value}, "response": value if generate else "", "done": False}) + "\n").encode()
+                        if choice.get("finish_reason"):
+                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice["finish_reason"]}) + "\n").encode()
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
+    try:
+        obj = json.loads(bytes(response.body))
+    except (TypeError, json.JSONDecodeError):
+        return response
+    choice = (obj.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = choice.get("text", "") if generate else message.get("content", "")
+    result: dict[str, Any] = {"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice.get("finish_reason")}
+    if generate:
+        result["response"] = content
+    else:
+        result["message"] = {"role": message.get("role", "assistant"), "content": content}
+        if message.get("reasoning_content"):
+            result["message"]["thinking"] = message["reasoning_content"]
+    return JSONResponse(result, status_code=response.status_code)
+
+
 async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = True):
     rt: Router = request.app.state.router
     mgr: UpstreamManager = request.app.state.upstream_mgr
@@ -1211,7 +1594,7 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
 
             async def upstream_body_iter():
                 try:
-                    async for chunk in upstream_resp.aiter_raw():
+                    async for chunk in _iter_sse_body(upstream_resp):
                         yield chunk
                 finally:
                     await close_upstream()
@@ -1246,21 +1629,36 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     # under the user.
     rt.inflight += 1
     streaming_response_started = False
+    # Request-clock origin for queue/TTFT metrics. Real timestamps from real
+    # requests only; the metrics endpoint omits values with no samples.
+    request_entered_at = time.monotonic()
+    resolved_at: float | None = None
     # Set once the request has resolved to a local model, so the router can
     # answer "is this specific model still serving?" — which _evict_for and
     # rebuild_model need to drain an incumbent instead of killing its
     # generation mid-stream. The global counter cannot answer that: the
-    # evicting request holds it too. The acquisition itself happens inside
-    # ensure_active, atomically with the readiness check.
+    # evicting request itself holds it too. The acquisition itself happens
+    # inside ensure_active, atomically with the readiness check.
     acquired_model: str | None = None
     try:
         try:
             model, srv = await rt.ensure_active(model_query, acquire=True)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_query!r}") from None
+        except StartupFailureError as e:
+            # Detailed command/log diagnostics are available only on the
+            # authenticated admin load route, not the public inference API.
+            return JSONResponse(status_code=e.http_status, content=e.to_dict())
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         acquired_model = model.name
+        # Queue timing: how long this request waited before it even resolved
+        # to a model (router lock, eviction drain, cold start join).
+        resolved_at = time.monotonic()
+        try:
+            rt.timings.record_queue_wait(resolved_at - request_entered_at, model.name)
+        except Exception:  # noqa: BLE001 - metrics must never break serving
+            log.debug("queue-timing record failed", exc_info=True)
         # Tell the background tuner this model was actually used by a real request.
         # Upstream models do not reach this point, so only local models can become
         # auto-tune candidates.
@@ -1269,6 +1667,7 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             tuner.bump_use(model.name)
         target_url = f"{srv.plan.backend_url}{target_path}"
         want_stream = streaming_ok and bool(body.get("stream"))
+        body_bytes = _local_request_body(body, target_path)
         fwd_headers = {"Content-Type": "application/json"}
 
         async def _complete() -> None:
@@ -1344,17 +1743,27 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 except Exception:
                     log.debug("streaming proxy: client close failed", exc_info=True)
 
+            observer = StreamMetricsObserver()
+            ttft_recorded = False
+
             async def body_iter():
-                # The decrement belongs here rather than only in the
-                # BackgroundTask: this finally runs when the body is fully
-                # consumed, when the upstream errors mid-stream, and when the
-                # generator is finalized after a client disconnect. It must not
-                # run any earlier, because dropping the count while generation
-                # is still live lets the autotuner restart the backend out from
-                # under the request.
+                nonlocal ttft_recorded
+                timings = getattr(rt, "timings", None)
                 try:
-                    async for chunk in upstream.aiter_raw():
+                    async for chunk in _iter_sse_body(upstream):
+                        if timings is not None and upstream.status_code < 400:
+                            try:
+                                observer.feed(chunk, time.monotonic())
+                                if not ttft_recorded and observer.first_token_at is not None:
+                                    timings.record_ttft(model.name, observer.first_token_at - request_entered_at)
+                                    ttft_recorded = True
+                            except Exception:
+                                log.debug("stream metrics observation failed", exc_info=True)
+                        # Forward the original bytes immediately, including malformed
+                        # or oversized events that the observer ignores.
                         yield chunk
+                    if timings is not None and observer.generation_tok_s is not None:
+                        timings.record_generation_tok_s(model.name, observer.generation_tok_s)
                 finally:
                     await _release()
 
@@ -1370,6 +1779,14 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             )
         async with httpx.AsyncClient(timeout=600.0) as client:
             r = await client.post(target_url, content=body_bytes, headers=fwd_headers)
+        timings = getattr(rt, "timings", None)
+        if timings is not None and r.status_code < 400:
+            try:
+                rate = generation_rate(json.loads(r.content))
+                if rate is not None:
+                    timings.record_generation_tok_s(model.name, rate)
+            except (ValueError, TypeError, OverflowError):
+                pass
         await _complete()
         return Response(
             content=r.content,

@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0rc1] - 2026-09-21
+
+### Added
+
+- Add `arc-llama-vision`, a bounded first-pass image-generation companion
+  scaffold: a standalone, local-first service exposing `GET /health`,
+  `GET /v1/models` with image modality metadata, and `POST /v1/images/generations`
+  over a backend-neutral adapter seam. Ships deterministic `fake` and
+  `unavailable` test backends (no model weights or ML dependencies), with a
+  documented contract for plugging in real backends; core upstream routing
+  does not yet proxy image endpoints, so clients call the companion directly.
+- Add `arc-llama run [MODEL|GGUF|HF_SPEC]`, a guarded one-command path that
+  detects Arc hardware, installs a verified runtime when needed, registers or
+  discovers a model, reports its context/KV/backend and estimated VRAM fit,
+  prints the OpenAI/UI endpoints, and starts serving.
+- Read exact GGUF context, tokenizer, tensor, and KV-cache metadata to improve
+  fit estimates and reject known speculative-decoding tokenizer mismatches.
+- Add measured A/B gates for speculative decoding and community recipes, with
+  automatic rollback unless the candidate improves the configured workload.
+- Add llama-server build provenance and confidence scoring to shared recipes;
+  aggregate only measurements from matching recipe/build groups using medians.
+- Redesign the model manager around first-run readiness and model selection,
+  and keep chat model/settings state synchronized with it.
+- Add a documented contract for integrating a separate audio companion service.
+- Add a Plugins panel to the web UI, backed by the new read-only
+  `GET /admin/plugins` catalog of discovered plugins (name, stable status,
+  and any metadata published via a backward-compatible optional plugin
+  `info()` hook).
+- Add request timing and model resource measurements to the admin UI, with
+  cached VRAM fit estimates and clear startup failure diagnostics.
+- Record plugin discovery failures and expose plugin health and metadata so
+  optional integrations can fail independently and visibly, including their
+  advertised API routes.
+
+### Changed
+
+- Route image generation through the main chat composer: selecting the
+  Vision tool from the chat tools menu switches the composer into image
+  mode (placeholder, mode chip, and disabled attachments), the prompt is
+  typed in the main message input, and submitting posts to the existing
+  plugin generation endpoint instead of opening a separate browser prompt
+  window. Normal text chat, the loading animation, plugin error cards, and
+  the GPU/resource-lease safety contract are unchanged.
+- Fresh `run` setups default to portable Vulkan while preserving a recognised
+  existing SYCL runtime. `--setup-only` validates the full launch plan without
+  starting a service, and clearly oversized recipes are stopped before launch.
+- Benchmark measurements use reported token counts and expose steadier summary
+  data for recipe and speculative-decoding comparisons.
+- Model switching now drains active requests according to the configured
+  interruption policy before stopping the resident backend.
+- Preserve refreshed model details and use the structured ComfyUI queue state
+  when tracking image-generation jobs.
+- Bundle the pinned Markdown and syntax-highlighting browser assets so the local
+  UI works offline.
+
+### Fixed
+
+- Avoid leaked asyncio future exceptions after a failed model start.
+- Bound binary discovery work and deduplicate candidates by filesystem identity.
+- Advertise the installed Arc Llama version through the FastAPI application.
+
+### Security
+
+- Verify downloaded runtime asset sizes and SHA-256 digests when available,
+  reject unsafe archive members, and publish installations atomically.
+- Fully validate downloaded community registries, bound their size and values,
+  and install them atomically without replacing a known-good registry on error.
+- Escape raw model HTML and reject unsafe Markdown link and image protocols in
+  the chat UI.
+
+### Testing
+
+- Add bare-wheel CI checks on Linux and Windows, a real-browser UI regression
+  suite, and static browser-script checks.
+- The Python suite, Ruff, mypy, wheel/sdist build, and browser suite pass on
+  the release branch. The maintainer reports the Windows end-to-end test run
+  for this branch also passes.
+
+## [0.8.1] - 2026-09-05
+
+### Fixed
+
+- Fix Windows runtime installation when GitHub's latest release has no binary assets.
+- Keep Windows Rich diagnostics printable on legacy code pages.
+- Verify Windows Vulkan and SYCL inference, including streaming requests, on Battlemage B60.
+
 ## [0.8.0] - 2026-09-05
 
 ### Added
@@ -16,9 +102,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Preserve configured speculative decoding after a failed llama.cpp capability probe.
 - Use numeric `video` and `render` group IDs in Docker Compose so GPU device access works consistently on Linux hosts.
-- Fix Windows runtime installation when GitHub's latest release has no binary assets.
-- Keep Windows Rich diagnostics printable on legacy code pages.
-- Verify Windows Vulkan and SYCL inference, including streaming requests, on Battlemage B60.
 
 ## [0.7.1] - 2026-08-24
 
