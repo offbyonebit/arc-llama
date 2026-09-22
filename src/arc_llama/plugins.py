@@ -144,7 +144,7 @@ def discover_entry_points() -> list[Any]:
     eps = entry_points()
     if hasattr(eps, "select"):
         return list(eps.select(group=ENTRY_POINT_GROUP))
-    return [ep for ep in eps if ep.group == ENTRY_POINT_GROUP]
+    return [ep for ep in eps if getattr(ep, "group", None) == ENTRY_POINT_GROUP]
 
 
 def _instantiate(obj: Any) -> Any:
