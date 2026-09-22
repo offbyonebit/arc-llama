@@ -30,6 +30,7 @@ reads process mapping state and the environment.
 from __future__ import annotations
 
 import os
+import posixpath
 from typing import Any
 
 # Environment variables that oneAPI's setvars.sh exports, all of which can
@@ -84,14 +85,16 @@ def _runtime_tree(path: str | None) -> str | None:
     """
     if path is None:
         return None
-    resolved = os.path.realpath(path)
+    # /proc/<pid>/maps always reports POSIX paths, including when this
+    # parser is exercised from a Windows test process with synthetic maps.
+    resolved = posixpath.realpath(path)
     if _ONEAPI_COMPILER_MARK in resolved:
         # Keep the version segment: /oneapi/compiler/<ver>/lib/...
         rest = resolved[resolved.index(_ONEAPI_COMPILER_MARK) + len(_ONEAPI_COMPILER_MARK) :]
         version = rest.split("/")[0]
         root = resolved[: resolved.index(_ONEAPI_COMPILER_MARK)]
         return f"oneapi:{root}{_ONEAPI_COMPILER_MARK.rstrip('/')}/{version}"
-    return f"libdir:{os.path.dirname(resolved)}"
+    return f"libdir:{posixpath.dirname(resolved)}"
 
 
 def detect_ur_runtime_mixing(pid: int) -> dict[str, Any]:

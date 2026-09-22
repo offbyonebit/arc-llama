@@ -58,7 +58,7 @@ def test_to_dict_includes_details_only_when_requested():
 
 
 def test_chat_js_renders_structured_failure_cards():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
     # The card renders the structured fields, not the raw JSON.
     assert "function showStartupFailure" in js
     assert 'textContent = "Load failed"' in js
@@ -76,13 +76,13 @@ def test_chat_js_renders_structured_failure_cards():
 
 
 def test_chat_js_parses_structured_error_bodies():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
     assert "function parseStructuredFailure" in js
     assert "body.error" in js
 
 
 def test_chat_js_shows_honest_loading_stage():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
     # The named loading stage appears in the chat log while the model loads.
     assert "Starting model, this can take a while on first load" in js
     assert "load-wait-card" in js
@@ -92,7 +92,7 @@ def test_chat_js_shows_honest_loading_stage():
 
 
 def test_chat_failure_css_exists():
-    css = (STATIC / "chat.css").read_text()
+    css = (STATIC / "chat.css").read_text(encoding="utf-8")
     assert ".load-failure-action" in css
     assert ".load-failure-retry" in css
     assert ".load-failure-details-toggle" in css

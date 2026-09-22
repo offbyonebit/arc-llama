@@ -10,7 +10,7 @@ STATIC = Path(__file__).parent.parent / "src" / "arc_llama" / "static"
 
 
 def test_settings_panel_renders_vram_fit_line():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
     assert "function vramFitText" in js
     # Honest wording for every branch: fit with headroom, does-not-fit with
     # an action, unknown capacity, and not-estimated.
@@ -21,14 +21,14 @@ def test_settings_panel_renders_vram_fit_line():
 
 
 def test_settings_panel_consumes_admin_status_vram_estimate():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
     assert "s.vram_estimate" in js
     assert "m.vram_estimate = s.vram_estimate" in js
     assert 'id="s-fit"' in js
 
 
 def test_apply_settings_refreshes_the_fit_line():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
     body = js[js.index("async function applySettings") : js.index("function estimateTokens")]
     # After saving recipe edits the status is refetched so the fit line and
     # loaded state re-render instead of showing stale estimates.
@@ -36,19 +36,19 @@ def test_apply_settings_refreshes_the_fit_line():
 
 
 def test_chat_status_css_exists_for_fit_line():
-    css = (STATIC / "chat.css").read_text()
+    css = (STATIC / "chat.css").read_text(encoding="utf-8")
     assert ".s-fit" in css
 
 
 def test_dashboard_has_measurements_section():
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'id="measurements"' in html
     assert 'id="measurements-title"' in html
     assert "Measurements" in html
 
 
 def test_dashboard_renders_only_measured_values():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "function renderMeasurements" in js
     assert "fetchMeasurements" in js
     # The empty state is explicit that numbers come from real traffic.
@@ -61,13 +61,13 @@ def test_dashboard_renders_only_measured_values():
 
 
 def test_measurements_css_exists():
-    css = (STATIC / "style.css").read_text()
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
     assert ".measurements-card" in css
     assert ".measure-rows" in css
 
 
 def test_dashboard_readiness_shows_memory_fit_from_status():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "model.vram_estimate" in js
     assert "Memory fit" in js
     assert "Does not fit" in js
@@ -75,6 +75,6 @@ def test_dashboard_readiness_shows_memory_fit_from_status():
 
 
 def test_readiness_tone_classes_exist():
-    css = (STATIC / "style.css").read_text()
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
     assert ".metric strong.tone-ok" in css or "tone-ok" in css
     assert "tone-warn" in css

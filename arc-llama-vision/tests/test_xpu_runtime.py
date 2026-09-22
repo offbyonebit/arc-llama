@@ -55,7 +55,7 @@ def test_mixed_binding_is_flagged_for_real_crash_pairing(monkeypatch: pytest.Mon
     # SYCL realpaths into the venv lib dir; the UR loader sits in the
     # system oneAPI 2026.1 compiler tree.
     assert report["sycl_tree"].startswith("libdir:")
-    assert report["sycl_tree"].endswith("/venv/lib")
+    assert report["sycl_tree"].replace("\\", "/").endswith("/venv/lib")
     assert report["loader_tree"] == "oneapi:/mnt/storage/opt/intel/oneapi/compiler/2026.1"
     assert "urProgramBuildExp" in report["detail"]
     assert "sanitize_launch_env" in report["detail"]
