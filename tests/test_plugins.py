@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from arc_llama.plugins import (
     Plugin,
@@ -268,12 +269,12 @@ async def test_startup_isolates_failure():
     assert good.started is True
 
 
-def test_create_app_registers_plugin_routes_and_lifecycle():
+async def test_create_app_registers_plugin_routes_and_lifecycle():
     plugin = FakePlugin()
     app = create_app(plugins=[plugin])
 
-    with TestClient(app) as client:
-        resp = client.get("/plugin/fake")
+    async with _test_client(app) as client:
+        resp = await client.get("/plugin/fake")
         assert resp.status_code == 200
         assert resp.json() == {"plugin": "fake"}
         assert plugin.started is True
@@ -297,36 +298,43 @@ def _catalog_app(monkeypatch, plugins):
 AUTH = {"Authorization": "Bearer test-token"}
 
 
-def test_create_app_without_plugins_preserves_core_routes(monkeypatch):
+@asynccontextmanager
+async def _test_client(app):
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            yield client
+
+
+async def test_create_app_without_plugins_preserves_core_routes(monkeypatch):
     app = _catalog_app(monkeypatch, [])
 
-    with TestClient(app) as client:
-        resp = client.get("/health")
+    async with _test_client(app) as client:
+        resp = await client.get("/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
-        resp = client.get("/admin/plugins", headers=AUTH)
+        resp = await client.get("/admin/plugins", headers=AUTH)
         assert resp.status_code == 200
         assert resp.json() == {"plugins": []}
 
 
-def test_create_app_admin_plugins_requires_admin_token(monkeypatch):
+async def test_create_app_admin_plugins_requires_admin_token(monkeypatch):
     app = _catalog_app(monkeypatch, [FakePlugin()])
 
-    with TestClient(app) as client:
-        assert client.get("/admin/plugins").status_code == 401
-        assert client.get("/admin/plugins", headers=AUTH).status_code == 200
+    async with _test_client(app) as client:
+        assert (await client.get("/admin/plugins")).status_code == 401
+        assert (await client.get("/admin/plugins", headers=AUTH)).status_code == 200
 
 
-def test_create_app_admin_plugins_lists_installed_plugin(monkeypatch):
+async def test_create_app_admin_plugins_lists_installed_plugin(monkeypatch):
     app = _catalog_app(monkeypatch, [FakePlugin()])
 
-    with TestClient(app) as client:
-        resp = client.get("/admin/plugins", headers=AUTH)
+    async with _test_client(app) as client:
+        resp = await client.get("/admin/plugins", headers=AUTH)
         assert resp.status_code == 200
         assert resp.json() == {"plugins": [{"name": "fake", "status": "active"}]}
 
 
-def test_create_app_admin_plugins_exposes_info_metadata(monkeypatch):
+async def test_create_app_admin_plugins_exposes_info_metadata(monkeypatch):
     class CatalogPlugin(Plugin):
         name = "audio-extra"
 
@@ -337,8 +345,8 @@ def test_create_app_admin_plugins_exposes_info_metadata(monkeypatch):
 
     app = _catalog_app(monkeypatch, [CatalogPlugin()])
 
-    with TestClient(app) as client:
-        resp = client.get("/admin/plugins", headers=AUTH)
+    async with _test_client(app) as client:
+        resp = await client.get("/admin/plugins", headers=AUTH)
         assert resp.status_code == 200
         body = resp.json()
         entry = next(p for p in body["plugins"] if p["name"] == "audio-extra")
@@ -347,11 +355,11 @@ def test_create_app_admin_plugins_exposes_info_metadata(monkeypatch):
         assert entry["description"] == "Audio routes"
 
 
-def test_create_app_admin_plugins_reports_error_status(monkeypatch):
+async def test_create_app_admin_plugins_reports_error_status(monkeypatch):
     app = _catalog_app(monkeypatch, [BrokenPlugin(), FakePlugin()])
 
-    with TestClient(app) as client:
-        resp = client.get("/admin/plugins", headers=AUTH)
+    async with _test_client(app) as client:
+        resp = await client.get("/admin/plugins", headers=AUTH)
         assert resp.status_code == 200
         by_name = {p["name"]: p["status"] for p in resp.json()["plugins"]}
         assert by_name["broken"] == "error"

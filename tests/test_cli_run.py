@@ -76,6 +76,31 @@ def test_run_existing_model_prints_launch_contract(tmp_path, monkeypatch):
     assert "comfortable" in result.output
     assert "http://127.0.0.1:11437/v1" in result.output
     assert "Setup-only complete" in result.output
+    assert "Backend auto-selected: Vulkan" in result.output
+    backend_probe.assert_called_once()
+
+
+def test_setup_is_beginner_friendly_alias_for_run_setup_only(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    backend_probe = MagicMock(return_value={Backend.VULKAN})
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda _path: cfg)
+    monkeypatch.setattr("arc_llama.cli.detect_backends", backend_probe)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 12288)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(tmp_path / "config.toml"),
+            "setup",
+            "model-0",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Arc inference is ready" in result.output
+    assert "Setup-only complete" in result.output
+    assert "run --setup-only" not in result.output
     backend_probe.assert_called_once()
 
 
@@ -154,6 +179,40 @@ def test_run_without_source_requires_choice_when_multiple_models(tmp_path, monke
     assert result.exit_code == 1
     assert "More than one model is registered" in result.output
     assert "model-0, model-1" in result.output
+
+
+def test_run_without_source_interactively_picks_registered_model(tmp_path, monkeypatch):
+    cfg = _config(tmp_path, models=2)
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda _path: cfg)
+    monkeypatch.setattr("arc_llama.cli.detect_backends", lambda _path: {Backend.VULKAN})
+    monkeypatch.setattr("arc_llama.cli._do_scan", lambda _cfg, _paths: [])
+    monkeypatch.setattr("arc_llama.cli._choose_registered_model", lambda models: models[1])
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(tmp_path / "config.toml"),
+            "run",
+            "--setup-only",
+        ],
+        input="2\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Model ready" in result.output
+    assert "model-1" in result.output
+
+
+def test_registered_model_picker_uses_numbered_choice(tmp_path, monkeypatch):
+    from arc_llama.cli import _choose_registered_model
+
+    cfg = _config(tmp_path, models=2)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("arc_llama.cli.click.prompt", lambda *_args, **_kwargs: 2)
+
+    assert _choose_registered_model(cfg.models) is cfg.models[1]
 
 
 def test_run_refuses_recipe_estimated_over_vram(tmp_path, monkeypatch):

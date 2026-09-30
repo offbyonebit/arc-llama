@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport as _ASGITransport
+from httpx import AsyncClient as _HttpxAsyncClient
 
 from arc_llama import __version__
 from arc_llama.config import (
@@ -22,12 +24,107 @@ from arc_llama.failures import StartupFailureError
 from arc_llama.server import _local_request_body, create_app
 
 
+class _SyncASGIClient:
+    __test__ = False
+
+    def __init__(self, app, *, client=None):
+        self.app = app
+        self.client = client
+
+    def request(self, method, url, **kwargs):
+        async def send():
+            async with self.app.router.lifespan_context(self.app):
+                async with _HttpxAsyncClient(
+                    transport=_ASGITransport(app=self.app, client=self.client),
+                    base_url="http://test",
+                ) as client:
+                    return await client.request(method, url, **kwargs)
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(send())
+        finally:
+            # Do not let asyncio.run() wait for unrelated executor workers
+            # left by a fake backend from an earlier request.
+            loop.close()
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request("DELETE", url, **kwargs)
+
+    def options(self, url, **kwargs):
+        return self.request("OPTIONS", url, **kwargs)
+
+    @contextmanager
+    def stream(self, method, url, **kwargs):
+        yield self.request(method, url, **kwargs)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+
+TestClient = _SyncASGIClient
+
+
+@pytest.fixture(autouse=True)
+def _isolate_server_httpx(monkeypatch):
+    """Keep upstream fakes from mutating the real test transport's module."""
+    import types
+
+    import httpx
+
+    import arc_llama.server as server_mod
+
+    isolated = types.ModuleType("httpx")
+    for name in dir(httpx):
+        setattr(isolated, name, getattr(httpx, name))
+    monkeypatch.setattr(server_mod, "httpx", isolated)
+    monkeypatch.setattr(server_mod, "load_plugins", lambda discovery=None: [])
+
+    import arc_llama.autotune as autotune_mod
+
+    class _NoopTuner:
+        is_sweep_running = False
+        running_model = None
+        running_stage = None
+        last_results = {}
+
+        def bump_use(self, name):
+            pass
+
+        def queue_now(self, name):
+            return False
+
+        def abort_sweep(self):
+            return False
+
+        async def stop(self):
+            pass
+
+    async def no_op_start(*args, **kwargs):
+        return _NoopTuner()
+
+    monkeypatch.setattr(autotune_mod, "start_autotuner", no_op_start)
+
+
+
 def test_app_advertises_package_version():
     app = create_app(Config(), plugins=[])
     assert app.version == __version__
 
 
-def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
+async def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
     """The lifespan must attach a GPU lease manager bound to the router."""
     import arc_llama.server as server_mod
     from arc_llama.resources import ResourceLeaseManager
@@ -35,25 +132,29 @@ def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
     monkeypatch.setattr(server_mod, "Router", FakeRouter)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
-    app = create_app(Config())
+    cfg = Config()
+    cfg.tune.auto = False
+    app = create_app(cfg)
 
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-        mgr = app.state.resources
-        assert isinstance(mgr, ResourceLeaseManager)
-        assert mgr.router is app.state.router
-        # Normal text inference holds no lease: a proxied request leaves
-        # the manager's bookkeeping untouched.
-        assert mgr.active_leases == {}
+    async with app.router.lifespan_context(app):
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/health")).status_code == 200
+            mgr = app.state.resources
+            assert isinstance(mgr, ResourceLeaseManager)
+            assert mgr.router is app.state.router
+            # Normal text inference holds no lease: a proxied request leaves
+            # the manager's bookkeeping untouched.
+            assert mgr.active_leases == {}
 
-        response = client.post(
-            "/v1/chat/completions",
-            json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
-        )
-        assert response.status_code == 200
-        assert mgr.active_leases == {}
-        assert mgr.exclusive_active is False
-        assert app.state.router.inflight == 0
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200
+            assert mgr.active_leases == {}
+            assert mgr.exclusive_active is False
+            assert app.state.router.inflight == 0
 
 
 def test_local_chat_defaults_to_template_aware_reasoning_parser():
@@ -629,7 +730,7 @@ class CapturingMCPClientManager:
         pass
 
 
-def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
+async def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
     import arc_llama.server as server_mod
     from arc_llama.config import Config
 
@@ -647,7 +748,7 @@ def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
     cfg.agent.profile = "work"
 
     app = create_app(cfg)
-    with TestClient(app):
+    async with app.router.lifespan_context(app):
         pass
 
     assert [s.name for s in CapturingMCPClientManager.started_servers] == ["fs"]
@@ -1365,7 +1466,7 @@ class ColdStartBackend(FakeBackend):
     ready = False
 
 
-def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
+async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
     """A subprocess that exists but has not passed its health check is not
     'loaded': during a cold start or a crash-respawn the port is not serving,
     and dashboards or scripts gating on this field would act on a lie."""
@@ -1377,10 +1478,13 @@ def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
     # an admin token, which would 401 the /admin/status call below.
     app = create_app(Config(server=ServerConfig(admin_token=None)))
 
-    with TestClient(app) as client:
+    async with app.router.lifespan_context(app):
         app.state.router._servers["qwen"] = ColdStartBackend()
-        health = client.get("/health").json()
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            health = (await client.get("/health")).json()
         assert health["loaded_models"] == [], "cold-starting model reported as loaded"
-        status = client.get("/admin/status").json()
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            status = (await client.get("/admin/status")).json()
         entry = next(m for m in status["models"] if m["name"] == "qwen")
         assert entry["loaded"] is False

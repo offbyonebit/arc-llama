@@ -136,12 +136,12 @@ def test_save_creates_missing_parent_directory(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_failed_persist_rolls_back_the_edit_and_reports_failure(monkeypatch, tmp_path):
+async def test_failed_persist_rolls_back_the_edit_and_reports_failure(monkeypatch, tmp_path):
     """The handler used to log the persist failure and carry on: the caller got
     a 200 listing the fields it "changed", the running server was rebuilt to
     match, and the config on disk still held the old recipe. The edit then
     quietly un-applied at the next restart. Fail the request instead."""
-    from fastapi.testclient import TestClient
+    import httpx
     from test_server import FakeRouter, FakeUpstreamManager
 
     import arc_llama.server as server_mod
@@ -164,9 +164,16 @@ def test_failed_persist_rolls_back_the_edit_and_reports_failure(monkeypatch, tmp
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(Config, "save", refuse_to_save)
+    # httpx.ASGITransport does not drive FastAPI lifespan hooks, so provide
+    # the small set of state objects this admin route normally receives from
+    # lifespan startup.
+    app.state.cfg = cfg
+    app.state.router = FakeRouter(cfg)
+    app.state.upstream_mgr = FakeUpstreamManager(cfg.upstreams)
 
-    with TestClient(app) as client:
-        resp = client.post("/admin/models/qwen/edit", json={"ctx": 8192})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/admin/models/qwen/edit", json={"ctx": 8192})
 
     assert resp.status_code == 500, f"caller was told the edit succeeded: {resp.status_code}"
     assert model.recipe == {"ctx": 4096}, f"in-memory recipe was not rolled back: {model.recipe}"

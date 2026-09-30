@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from arc_llama.config import Config
 from arc_llama.router import ModelTimings, Router, summarise_seconds
@@ -195,7 +195,7 @@ class _TimingsRouter(Router):
         self.timings.record_queue_wait(0.05, "qwen")
 
 
-def test_admin_metrics_endpoint_shape(monkeypatch, tmp_path):
+async def test_admin_metrics_endpoint_shape(monkeypatch, tmp_path):
     import arc_llama.server as server_mod
     from arc_llama.config import GPUConfig, ModelConfig
 
@@ -205,6 +205,11 @@ def test_admin_metrics_endpoint_shape(monkeypatch, tmp_path):
         "UpstreamManager",
         lambda upstreams=None: FakeUpstreamMinimal(),
     )
+
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(server_mod.asyncio, "to_thread", inline_to_thread)
     cfg = Config()
     cfg.gpus = [GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=24576)]
     cfg.models = [
@@ -216,8 +221,9 @@ def test_admin_metrics_endpoint_shape(monkeypatch, tmp_path):
         )
     ]
     app = server_mod.create_app(cfg, plugins=[])
-    with TestClient(app) as client:
-        r = client.get("/admin/metrics")
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.get("/admin/metrics")
     assert r.status_code == 200
     data = r.json()
     entry = data["timings"]["models"]["qwen"]

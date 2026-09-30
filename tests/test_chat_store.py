@@ -139,3 +139,31 @@ def test_folder_duplicate_id_global(store: ChatStore) -> None:
         store.create("chat-1", "Work chat", folder="work")
 
 
+def test_chat_path_cache_avoids_walk_and_tracks_move_and_delete(
+    store: ChatStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.create("chat-1", "Work chat", folder="work")
+
+    walks = 0
+    original_rglob = Path.rglob
+
+    def counted_rglob(path: Path, pattern: str):
+        nonlocal walks
+        if path == store.directory:
+            walks += 1
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", counted_rglob)
+
+    assert store.get("chat-1") is not None
+    assert store.get("chat-1") is not None
+    assert walks == 1
+
+    store.move("chat-1", "personal")
+    assert store.get("chat-1") is not None
+    assert walks == 1
+
+    assert store.delete("chat-1")
+    assert store.get("chat-1") is None
+    assert walks == 2
+

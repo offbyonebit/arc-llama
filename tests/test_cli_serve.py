@@ -173,11 +173,19 @@ async def test_serve_load_error_counted_once(tmp_path, monkeypatch):
 
     cfg = make_config(tmp_path, single_resident=False)
     monkeypatch.setattr(router_mod, "LlamaServer", NeverReadyServer)
+
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
     rt = Router(cfg)
 
-    with pytest.raises(RuntimeError, match="timed out while loading"):
-        await rt.ensure_active("qwen")
-    assert rt.metrics["load_errors"] == 1
+    try:
+        with pytest.raises(RuntimeError, match="timed out while loading"):
+            await rt.ensure_active("qwen")
+        assert rt.metrics["load_errors"] == 1
+    finally:
+        await rt.shutdown()
 
 
 class NeverReadyServer:
@@ -207,6 +215,9 @@ class NeverReadyServer:
     def stop(self):
         self.running = False
         self.ready = False
+
+    async def astop(self):
+        self.stop()
 
 
 def test_list_models_sends_admin_bearer(runner, tmp_path, monkeypatch):

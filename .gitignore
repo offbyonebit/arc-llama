@@ -25,6 +25,9 @@ AUTOTUNE_*.md
 # local planning documents
 docs/roadmap-2.0.md
 
+# local agent instructions; never publish these to GitHub
+**/AGENTS.md
+
 EOF
 work/
 

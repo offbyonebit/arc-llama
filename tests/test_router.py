@@ -5,9 +5,18 @@ import time
 
 import pytest
 
+import arc_llama.router as router_mod
 from arc_llama.config import ModelConfig
 from arc_llama.failures import StartupFailureError
 from arc_llama.router import Router, estimate_model_vram_quick_mb
+
+
+@pytest.fixture(autouse=True)
+def _inline_router_threads(monkeypatch):
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
 
 
 def test_quick_vram_estimate_uses_file_kv_and_fixed_overhead(tmp_path, monkeypatch):

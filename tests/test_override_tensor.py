@@ -311,6 +311,13 @@ def _moe_cfg(tmp_path: Path, *, vram_mb: int) -> Config:
     )
 
 
+def _patch_tune_threads(monkeypatch) -> None:
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("arc_llama.tune.asyncio.to_thread", inline_to_thread)
+
+
 class _MoeMeasurements:
     def __init__(self, cfg: Config, table: dict[str, int] | None, perf: dict):
         self.cfg = cfg
@@ -349,6 +356,7 @@ async def test_tuner_refines_n_cpu_moe_with_override_tensor(tmp_path, monkeypatc
     import arc_llama.server_caps as caps_mod
 
     cfg = _moe_cfg(tmp_path, vram_mb=8000)
+    _patch_tune_threads(monkeypatch)
     _patch_reader(monkeypatch, _moe_scale_tensors())
     table = weight_tensor_table(cfg.models[0].path)
 
@@ -374,6 +382,7 @@ async def test_tuner_keeps_n_cpu_moe_when_ot_does_not_beat(tmp_path, monkeypatch
     import arc_llama.server_caps as caps_mod
 
     cfg = _moe_cfg(tmp_path, vram_mb=8000)
+    _patch_tune_threads(monkeypatch)
     _patch_reader(monkeypatch, _moe_scale_tensors())
 
     # Every -ot candidate is slower than the n_cpu_moe winner here.
@@ -399,6 +408,7 @@ async def test_override_tensor_skipped_when_no_offload_needed(tmp_path, monkeypa
     import arc_llama.server_caps as caps_mod
 
     cfg = _moe_cfg(tmp_path, vram_mb=64 * 1024)
+    _patch_tune_threads(monkeypatch)
     _patch_reader(monkeypatch, _gemma_fused_tensors())
 
     fake = _MoeMeasurements(cfg, None, {})

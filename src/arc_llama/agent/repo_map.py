@@ -195,6 +195,8 @@ class SemanticIndex:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self._embedder: Any | None = None
         self._enabled: bool | None = None
+        self._normalized_embeddings: Any | None = None
+        self._normalized_embeddings_stamp: tuple[int, int] | None = None
 
     def _check_enabled(self) -> bool:
         if self._enabled is None:
@@ -215,6 +217,27 @@ class SemanticIndex:
 
     def _chunks_path(self) -> Path:
         return self.index_dir / "chunks.json"
+
+    def _clear_embedding_cache(self) -> None:
+        self._normalized_embeddings = None
+        self._normalized_embeddings_stamp = None
+
+    def _load_normalized_embeddings(self) -> Any:
+        """Load and normalize embeddings once per on-disk index version."""
+        import numpy as np
+
+        path = self._embeddings_path()
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if self._normalized_embeddings is not None and stamp == self._normalized_embeddings_stamp:
+            return self._normalized_embeddings
+
+        matrix = np.load(path)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        unit_matrix = matrix / np.where(norms == 0, 1, norms)
+        self._normalized_embeddings = unit_matrix
+        self._normalized_embeddings_stamp = stamp
+        return unit_matrix
 
     def _is_stale(self, root: Path, manifest: dict[str, Any]) -> bool:
         for entry in manifest.get("files", []):
@@ -245,20 +268,25 @@ class SemanticIndex:
                 continue
             if not _is_text_file(path):
                 continue
-            if path.stat().st_size > MAX_FILE_SIZE:
+            try:
+                file_stat = path.stat()
+            except OSError:
+                continue
+            if file_stat.st_size > MAX_FILE_SIZE:
                 continue
             file_chunks = _chunk_file(path, root)
             chunks.extend(file_chunks)
             files.append({
                 "path": path.relative_to(root).as_posix(),
-                "mtime": path.stat().st_mtime,
-                "size": path.stat().st_size,
+                "mtime": file_stat.st_mtime,
+                "size": file_stat.st_size,
             })
 
         if not chunks:
             manifest = {"files": files, "chunk_count": 0}
             self._manifest_path().write_text(json.dumps(manifest), encoding="utf-8")
             self._chunks_path().write_text(json.dumps([]), encoding="utf-8")
+            self._clear_embedding_cache()
             if self._embeddings_path().exists():
                 self._embeddings_path().unlink()
             return {"indexed_files": len(files), "chunks": 0}
@@ -268,6 +296,7 @@ class SemanticIndex:
 
         import numpy as np
         matrix = np.vstack(embeddings).astype(np.float32)
+        self._clear_embedding_cache()
         np.save(self._embeddings_path(), matrix)
 
         manifest = {"files": files, "chunk_count": len(chunks)}
@@ -311,11 +340,9 @@ class SemanticIndex:
         query_embedding = list(embedder.embed([query]))[0]
 
         import numpy as np
-        matrix = np.load(self._embeddings_path())
-        # Cosine similarity on normalized vectors.
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        safe_norms = np.where(norms == 0, 1, norms)
-        unit_matrix = matrix / safe_norms
+        # Cosine similarity on normalized vectors. The corpus matrix is
+        # unchanged across queries, so keep its normalized form in memory.
+        unit_matrix = self._load_normalized_embeddings()
         q_norm = np.linalg.norm(query_embedding)
         q_unit = query_embedding / q_norm if q_norm else query_embedding
         scores = unit_matrix @ q_unit

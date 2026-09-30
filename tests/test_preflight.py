@@ -82,7 +82,11 @@ def test_disabled_gpu_is_rejected_before_filesystem_checks(tmp_path):
 
 def test_occupied_port_is_rejected(tmp_path):
     _runtime, model, gpu, plan = _inputs(tmp_path)
-    with socket.socket() as listener:
+    try:
+        listener = socket.socket()
+    except PermissionError:
+        pytest.skip("sandbox does not permit opening sockets")
+    with listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         model.port = listener.getsockname()[1]

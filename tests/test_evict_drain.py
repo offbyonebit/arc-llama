@@ -27,6 +27,11 @@ def _router(tmp_path, monkeypatch, *, single=True) -> Router:
     FakeServer.stops = []
     cfg = make_config(tmp_path, single_resident=single)
     monkeypatch.setattr(router_mod, "LlamaServer", FakeServer)
+
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
     return Router(cfg)
 
 

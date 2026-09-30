@@ -90,6 +90,7 @@ class ChatStore:
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
+        self._path_cache: dict[str, Path] = {}
 
     @staticmethod
     def _sanitize(name: str) -> str:
@@ -110,9 +111,23 @@ class ChatStore:
     def _find_chat_path(self, chat_id: str) -> Path | None:
         """Locate a chat file anywhere in the store by id."""
         safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", chat_id)
-        candidates = list(self.directory.rglob(f"{safe_id}.json"))
-        for path in candidates:
+        cached = self._path_cache.get(safe_id)
+        if cached is not None:
+            if cached.is_file():
+                return cached
+            self._path_cache.pop(safe_id, None)
+
+        # Most older chats live at the store root, so check that path before
+        # walking folders. Keep the recursive lookup for folder and legacy
+        # layouts, but stop as soon as the matching file is found.
+        root_path = self.directory / f"{safe_id}.json"
+        if root_path.is_file():
+            self._path_cache[safe_id] = root_path
+            return root_path
+
+        for path in self.directory.rglob(f"{safe_id}.json"):
             if path.is_file():
+                self._path_cache[safe_id] = path
                 return path
         return None
 
@@ -163,6 +178,7 @@ class ChatStore:
         self._write(new_path, chat)
         if old_path is not None and old_path != new_path:
             old_path.unlink()
+            self._path_cache[re.sub(r"[^a-zA-Z0-9_.-]", "_", chat.id)] = new_path
             self._prune_empty_folders()
 
     def _save(self, chat: Chat) -> None:
@@ -192,6 +208,7 @@ class ChatStore:
         if path is None:
             return False
         path.unlink()
+        self._path_cache.pop(re.sub(r"[^a-zA-Z0-9_.-]", "_", chat_id), None)
         self._prune_empty_folders()
         return True
 
@@ -264,6 +281,7 @@ class ChatStore:
         if self.directory.exists():
             shutil.rmtree(self.directory)
             self.directory.mkdir(parents=True, exist_ok=True)
+        self._path_cache.clear()
 
     def export_all(self) -> list[dict[str, Any]]:
         """Return every stored chat as a list of plain dicts."""

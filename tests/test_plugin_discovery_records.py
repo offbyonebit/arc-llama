@@ -5,7 +5,7 @@ keeps working unchanged."""
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from arc_llama.plugins import (
     Plugin,
@@ -137,7 +137,7 @@ def test_build_catalog_ignores_nameless_or_duplicate_extra_records():
     assert catalog[0]["status"] == "registered"
 
 
-def test_admin_plugins_includes_discovery_records(monkeypatch):
+async def test_admin_plugins_includes_discovery_records(monkeypatch):
     import arc_llama.server as server_mod
     from arc_llama.config import Config
 
@@ -157,8 +157,9 @@ def test_admin_plugins_includes_discovery_records(monkeypatch):
     )
     monkeypatch.setattr(server_mod, "load_plugins", fake_load_plugins)
     app = server_mod.create_app(Config(), plugins=None)
-    with TestClient(app) as client:
-        resp = client.get("/admin/plugins")
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/admin/plugins")
     assert resp.status_code == 200
     plugins = {p["name"]: p for p in resp.json()["plugins"]}
     assert plugins["good"]["status"] == "active"
