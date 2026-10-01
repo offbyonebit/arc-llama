@@ -290,3 +290,20 @@ def test_run_starts_existing_serve_path(tmp_path, monkeypatch):
         port=11437,
         log_level="info",
     )
+
+
+def test_missing_local_model_is_reported_before_runtime_install(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    monkeypatch.setattr('arc_llama.cli.load_config', lambda _path: cfg)
+    install = MagicMock(side_effect=AssertionError('Must not install runtime for a bad file'))
+    monkeypatch.setattr('arc_llama.cli._ensure_run_runtime', install)
+    result = CliRunner().invoke(cli, ['-c', str(tmp_path/'config.toml'), 'run', str(tmp_path/'missing model.gguf'), '--setup-only'])
+    assert result.exit_code == 1
+    assert 'Local GGUF file not found' in result.output
+    assert 'quote it' in result.output
+    install.assert_not_called()
+
+
+def test_hf_filename_spec_is_not_misclassified_as_local_file(tmp_path):
+    from arc_llama.cli import _validate_run_source
+    _validate_run_source(_config(tmp_path), 'org/repo:model.gguf')

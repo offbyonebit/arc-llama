@@ -167,3 +167,117 @@ def test_chat_path_cache_avoids_walk_and_tracks_move_and_delete(
     assert store.get("chat-1") is None
     assert walks == 2
 
+
+
+def test_failed_atomic_replace_preserves_existing_chat(store, monkeypatch):
+    chat = store.create("chat-1", "Original")
+    chat.title = "Changed"
+    original_replace = Path.replace
+
+    def fail_chat_replace(path, target):
+        if Path(target).name == "chat-1.json":
+            raise OSError("disk full")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_chat_replace)
+    with pytest.raises(OSError, match="disk full"):
+        store.save(chat)
+    assert store.get("chat-1").title == "Original"
+    assert list(store.directory.iterdir()) == [store.directory / "chat-1.json"]
+
+
+def test_import_overwrite_moves_existing_chat_without_duplicates(store):
+    store.create("chat-1", "Original", folder="work")
+    result = store.import_chats([{ "id": "chat-1", "title": "Imported", "folder": "personal"}], overwrite=True)
+    assert result["imported"] == 1
+    assert len(store.list_chats()) == 1
+    assert store.get("chat-1").title == "Imported"
+    assert not (store.directory / "work" / "chat-1.json").exists()
+
+
+@pytest.mark.parametrize("payload", ['[]', '{"messages": [null]}', '{"updated_at": "invalid"}'])
+def test_malformed_chat_is_skipped_without_breaking_other_chats(store, payload):
+    store.create("good", "Good")
+    (store.directory / "bad.json").write_text(payload)
+    assert store.get("bad") is None
+    assert [chat.id for chat in store.list_chats()] == ["good"]
+
+
+@pytest.mark.parametrize("folder", [".", ".."])
+def test_reserved_folder_cannot_escape_or_alias_store_root(store, folder):
+    with pytest.raises(ValueError):
+        store.create("unsafe", "Unsafe", folder=folder)
+    assert not (store.directory.parent / "unsafe.json").exists()
+
+
+def test_summary_cache_reuses_reads_and_refreshes_after_external_edit(store, monkeypatch):
+    import json
+    chat = store.create('a', 'Original', [ChatMessage('user', 'message')])
+    reads = []
+    original_read = Path.read_text
+    def counted_read(path, *args, **kwargs):
+        reads.append(path)
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', counted_read)
+    first = store.list_summaries()
+    first[0]['title'] = 'Cannot poison cache'
+    assert store.list_summaries()[0]['title'] == 'Original'
+    assert store.list_folders() == [{'name': '', 'count': 1}]
+    assert len(reads) == 1
+    data = chat.to_dict()
+    data['title'] = 'External edit with different size'
+    (store.directory / 'a.json').write_text(json.dumps(data))
+    assert store.list_summaries()[0]['title'] == data['title']
+    assert len(reads) == 2
+    store.move('a', 'work')
+    assert store.list_summaries()[0]['folder'] == 'work'
+    store.delete('a')
+    assert store.list_summaries() == []
+    assert store._summary_cache == {}
+
+
+def test_summary_cache_tracks_save_folder_filters_and_corrupt_files(store):
+    chat = store.create('a', 'Original')
+    store.create('b', 'Work', folder='work')
+    assert len(store.list_summaries()) == 2
+    chat.title = 'Saved'
+    store.save(chat)
+    assert store.list_summaries(folder='')[0]['title'] == 'Saved'
+    assert store.list_summaries(folder='work')[0]['id'] == 'b'
+    (store.directory / 'a.json').write_text('[]')
+    assert [s['id'] for s in store.list_summaries()] == ['b']
+
+
+def test_failed_flush_preserves_saved_history(tmp_path, monkeypatch):
+    import os
+
+    import pytest
+    store = ChatStore(tmp_path / 'chats')
+    chat = store.create('flush-failure', 'Original')
+    original = (store.directory / 'flush-failure.json').read_bytes()
+    chat.title = 'Replacement'
+
+    def failed_fsync(fd):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(os, 'fsync', failed_fsync)
+    with pytest.raises(OSError, match='disk full'):
+        store.save(chat)
+    assert (store.directory / 'flush-failure.json').read_bytes() == original
+    assert not list(store.directory.glob('*.tmp'))
+
+
+def test_legacy_null_folder_remains_readable(tmp_path):
+    import json
+    store = ChatStore(tmp_path / 'chats')
+    (store.directory / 'legacy.json').write_text(json.dumps({'id': 'legacy', 'folder': None}))
+    assert store.get('legacy').folder == ''
+    assert store.list_summaries()[0]['folder'] == ''
+
+
+def test_corrupt_unrepresentable_timestamp_is_skipped(tmp_path):
+    import json
+    store = ChatStore(tmp_path / 'chats')
+    (store.directory / 'corrupt.json').write_text(json.dumps({'id': 'corrupt', 'updated_at': 10 ** 1000}))
+    assert store.get('corrupt') is None
+    assert store.list_summaries() == []

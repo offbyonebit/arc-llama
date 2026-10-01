@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0rc2] - 2026-10-01
+
+### Changed
+
+- Cache unchanged chat summaries during sidebar and folder polling.
+- Reuse unchanged GGUF metadata across model registration and readiness checks.
+- Prune ignored directories before scanning repositories and share scan logic.
+- Explain missing local model paths before attempting runtime installation.
+- Give actionable Windows GPU detection guidance.
+- Keep package and lockfile release versions consistent.
+
+### Fixed
+
+- Save chat histories atomically so interrupted writes preserve existing data.
+- Validate chat records and requests, skip corrupt histories, and explain storage failures.
+- Remove the old chat file when an overwrite import changes its folder.
+- Reject invalid folder and chat identifiers that could escape storage.
+- Stop partially started model processes when loading fails or is cancelled,
+  and settle concurrent waiters so later requests can recover.
+- Handle files disappearing during repository scans.
+- Preserve upstream Windows UTF-8 UI test fixes.
+
 ## [0.9.0rc1] - 2026-09-21
 
 ### Added

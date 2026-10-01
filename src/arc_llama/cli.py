@@ -31,7 +31,7 @@ import os
 import platform
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import click
@@ -296,8 +296,8 @@ def init(
     if not gpus:
         if _IS_WINDOWS:
             console.print(
-                "[yellow]No Intel GPUs detected — Windows auto-detection is not "
-                "supported yet. Create a config manually or run this on WSL.[/yellow]"
+                "[yellow]No Intel GPUs detected. Check the Intel graphics driver "
+                "and Windows Device Manager, then run `arc-llama doctor`.[/yellow]"
             )
         else:
             console.print("[red]No Intel GPUs detected.[/red]")
@@ -1459,6 +1459,22 @@ def _choose_registered_model(models: list[ModelConfig]) -> ModelConfig | None:
     return models[choice - 1]
 
 
+def _validate_run_source(cfg: Config, source: str | None) -> None:
+    """Report mistyped local files before attempting a runtime download."""
+    if source is None or cfg.find_model(source) is not None:
+        return
+    path = Path(source).expanduser()
+    looks_local = (path.is_absolute() or bool(PureWindowsPath(source).drive)
+                   or source.startswith(("./", "../", "~", ".\\", "..\\"))
+                   or (source.lower().endswith(".gguf") and ":" not in source))
+    if looks_local and not path.is_file():
+        raise click.ClickException(
+            f"Local GGUF file not found or not a regular file: {source}. "
+            "Check the path and quote it if it contains spaces. "
+            "For a download, use a Hugging Face spec such as org/repo:Q4_K_M."
+        )
+
+
 def _prepare_run_model(
     cfg: Config,
     config_path: Path,
@@ -1642,6 +1658,7 @@ def run_cmd(
     """
     config_path: Path = ctx.obj["config_path"]
     cfg = _bootstrap_run_config(config_path)
+    _validate_run_source(cfg, source)
     current_runtime = _configured_runtime(cfg)
     available_backends = detect_backends(current_runtime) if current_runtime is not None else set()
     selected_backend, backend_explicit = _run_backend(backend, available_backends)

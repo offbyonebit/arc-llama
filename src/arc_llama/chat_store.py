@@ -10,12 +10,32 @@ legacy root directory, so existing flat chats keep working.
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def _validate_record(data: dict[str, Any], strings: tuple[str, ...], times: tuple[str, ...]) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("Chat records and messages must be JSON objects")
+    for key in strings:
+        if key in data and not isinstance(data[key], str):
+            raise ValueError(f"{key} must be a string")
+    for key in times:
+        if key in data:
+            value = data[key]
+            try:
+                valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+            except OverflowError:
+                valid = False
+            if not valid:
+                raise ValueError(f"{key} must be a finite timestamp")
 
 
 @dataclass
@@ -31,6 +51,7 @@ class ChatMessage:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChatMessage:
+        _validate_record(data, ("role", "content"), ("timestamp",))
         return cls(
             role=data.get("role", ""),
             content=data.get("content", ""),
@@ -61,6 +82,11 @@ class Chat:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Chat:
+        _validate_record(data, ("id", "title"), ("created_at", "updated_at"))
+        if data.get("folder") is not None and not isinstance(data["folder"], str):
+            raise ValueError("folder must be a string")
+        if not isinstance(data.get("messages", []), list):
+            raise ValueError("messages must be an array")
         return cls(
             id=data.get("id", ""),
             title=data.get("title", "Untitled chat"),
@@ -91,11 +117,17 @@ class ChatStore:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._path_cache: dict[str, Path] = {}
+        self._summary_cache: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
 
     @staticmethod
     def _sanitize(name: str) -> str:
         """Make a user-provided name safe for the filesystem."""
-        return re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
+        if not isinstance(name, str):
+            raise ValueError("Chat IDs and folders must be strings")
+        safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
+        if safe in ("", ".", ".."):
+            raise ValueError("Chat IDs and folders cannot be empty or reserved path components")
+        return safe
 
     def _folder_path(self, folder: str) -> Path:
         """Return the directory for a folder; empty folder means the root."""
@@ -105,12 +137,12 @@ class ChatStore:
 
     def _chat_path(self, chat_id: str, folder: str) -> Path:
         """Return the path to a chat file, normalising the id."""
-        safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", chat_id)
+        safe_id = self._sanitize(chat_id)
         return self._folder_path(folder) / f"{safe_id}.json"
 
     def _find_chat_path(self, chat_id: str) -> Path | None:
         """Locate a chat file anywhere in the store by id."""
-        safe_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", chat_id)
+        safe_id = self._sanitize(chat_id)
         cached = self._path_cache.get(safe_id)
         if cached is not None:
             if cached.is_file():
@@ -161,9 +193,9 @@ class ChatStore:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            return Chat.from_dict(data)
+        except (OSError, ValueError, TypeError):
             return None
-        return Chat.from_dict(data)
 
     def save(self, chat: Chat) -> None:
         """Persist a chat, updating ``updated_at``.
@@ -178,7 +210,8 @@ class ChatStore:
         self._write(new_path, chat)
         if old_path is not None and old_path != new_path:
             old_path.unlink()
-            self._path_cache[re.sub(r"[^a-zA-Z0-9_.-]", "_", chat.id)] = new_path
+            self._summary_cache.pop(old_path, None)
+            self._path_cache[self._sanitize(chat.id)] = new_path
             self._prune_empty_folders()
 
     def _save(self, chat: Chat) -> None:
@@ -188,10 +221,22 @@ class ChatStore:
         self._write(path, chat)
 
     def _write(self, path: Path, chat: Chat) -> None:
-        path.write_text(
-            json.dumps(chat.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        data = chat.to_dict()
+        Chat.from_dict(data)  # Validate before replacing a working record.
+        text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=f".{path.stem}.", suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+            self._summary_cache.pop(path, None)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def move(self, chat_id: str, folder: str) -> Chat:
         """Move an existing chat to a different folder."""
@@ -208,7 +253,8 @@ class ChatStore:
         if path is None:
             return False
         path.unlink()
-        self._path_cache.pop(re.sub(r"[^a-zA-Z0-9_.-]", "_", chat_id), None)
+        self._summary_cache.pop(path, None)
+        self._path_cache.pop(self._sanitize(chat_id), None)
         self._prune_empty_folders()
         return True
 
@@ -236,9 +282,34 @@ class ChatStore:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 chats.append(Chat.from_dict(data))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError, TypeError):
                 continue
         return sorted(chats, key=lambda c: c.updated_at, reverse=True)
+
+    def list_summaries(self, folder: str | None = None) -> list[dict[str, Any]]:
+        """Reuse unchanged chat summaries without decoding message histories."""
+        paths = list(self.directory.rglob("*.json") if folder is None
+                     else self._folder_path(folder).glob("*.json"))
+        if folder is None:
+            present = set(paths)
+            self._summary_cache = {path: value for path, value in self._summary_cache.items()
+                                   if path in present}
+        summaries = []
+        for path in paths:
+            try:
+                info = path.stat()
+                stamp = (info.st_mtime_ns, info.st_size)
+                cached = self._summary_cache.get(path)
+                if cached is not None and cached[0] == stamp:
+                    summary = cached[1]
+                else:
+                    chat = Chat.from_dict(json.loads(path.read_text(encoding="utf-8")))
+                    summary = chat.summary()
+                    self._summary_cache[path] = (stamp, summary)
+                summaries.append(dict(summary))
+            except (OSError, ValueError, TypeError):
+                self._summary_cache.pop(path, None)
+        return sorted(summaries, key=lambda item: item["updated_at"], reverse=True)
 
     def list_folders(self) -> list[dict[str, Any]]:
         """Return all folders with chat counts, sorted by name.
@@ -246,8 +317,9 @@ class ChatStore:
         The root/legacy folder is reported as ``{"name": "", "count": n}``.
         """
         counts: dict[str, int] = {}
-        for chat in self.list_chats():
-            counts[chat.folder] = counts.get(chat.folder, 0) + 1
+        for chat in self.list_summaries():
+            folder = chat["folder"]
+            counts[folder] = counts.get(folder, 0) + 1
         return [{"name": name, "count": count} for name, count in sorted(counts.items())]
 
     def search(
@@ -282,6 +354,7 @@ class ChatStore:
             shutil.rmtree(self.directory)
             self.directory.mkdir(parents=True, exist_ok=True)
         self._path_cache.clear()
+        self._summary_cache.clear()
 
     def export_all(self) -> list[dict[str, Any]]:
         """Return every stored chat as a list of plain dicts."""
@@ -313,15 +386,18 @@ class ChatStore:
             if not chat_id:
                 errors.append("skipped chat with missing id")
                 continue
-            existing_path = self._find_chat_path(chat_id)
-            if existing_path is not None and not overwrite:
-                skipped += 1
-                continue
             try:
                 chat = Chat.from_dict(item)
-            except (TypeError, ValueError) as e:
-                errors.append(f"{chat_id}: invalid chat data ({e})")
+                existing_path = self._find_chat_path(chat_id)
+                if existing_path is not None and not overwrite:
+                    skipped += 1
+                    continue
+                if existing_path is not None:
+                    self.save(chat)
+                else:
+                    self._save(chat)
+            except (OSError, TypeError, ValueError) as e:
+                errors.append(f"{chat_id}: could not import chat ({e})")
                 continue
-            self._save(chat)
             imported += 1
         return {"imported": imported, "skipped": skipped, "errors": len(errors), "error_details": errors}

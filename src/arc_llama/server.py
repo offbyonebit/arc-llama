@@ -44,7 +44,7 @@ from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
-from arc_llama.chat_store import ChatMessage, ChatStore
+from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.plugins import (
@@ -673,6 +673,32 @@ def create_app(
     # Chat history persistence
     # ------------------------------------------------------------------
 
+    async def _chat_body(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        return body
+
+    def _chat_messages(body: dict[str, Any]) -> list[ChatMessage]:
+        messages = body["messages"]
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail="messages must be an array")
+        try:
+            return [ChatMessage.from_dict(message) for message in messages]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _persist_chat(store: ChatStore, chat: Chat) -> None:
+        try:
+            store.save(chat)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Could not save chat. Check disk space and storage permissions, then retry.") from exc
+
     @app.get("/v1/chats")
     async def list_chats(request: Request, folder: str | None = Query(None)) -> dict[str, Any]:
         """Return a list of chat summaries ordered by most recently updated first.
@@ -681,8 +707,11 @@ def create_app(
         ``?folder=`` for the root/legacy folder only.
         """
         store: ChatStore = request.app.state.chat_store
-        chats = store.list_chats(folder=folder)
-        return {"object": "list", "data": [c.summary() for c in chats]}
+        try:
+            summaries = store.list_summaries(folder=folder)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"object": "list", "data": summaries}
 
     @app.get("/v1/chats/folders")
     async def list_chat_folders(request: Request) -> dict[str, Any]:
@@ -698,19 +727,22 @@ def create_app(
         If no id is provided a UUID is generated. If no folder is provided,
         the chat is placed in the ``default`` folder.
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _chat_body(request)
 
         chat_id = body.get("id") or str(uuid.uuid4())
         title = body.get("title") or "Untitled chat"
         folder = body.get("folder") if body.get("folder") is not None else ""
+        if not isinstance(folder, str):
+            raise HTTPException(status_code=400, detail="folder must be a string")
         store: ChatStore = request.app.state.chat_store
         try:
             chat = store.create(chat_id, title, folder=folder)
         except FileExistsError:
             raise HTTPException(status_code=409, detail=f"Chat already exists: {chat_id}") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Could not create chat. Check disk space and storage permissions, then retry.") from exc
         return chat.to_dict()
 
     @app.post("/v1/chats/search")
@@ -720,14 +752,19 @@ def create_app(
         Body: {"query": "string", "limit": 20}
         Returns matching chats with the indices of matching messages.
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _chat_body(request)
         query = body.get("query", "")
-        if not query:
-            raise HTTPException(status_code=400, detail="query is required")
-        limit = int(body.get("limit", 20))
+        if not isinstance(query, str) or not query.strip():
+            raise HTTPException(status_code=400, detail="query must be a nonempty string")
+        try:
+            value = body.get("limit", 20)
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                raise ValueError
+            limit = int(value)
+            if limit < 1:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="limit must be a positive integer") from exc
         store: ChatStore = request.app.state.chat_store
         results = store.search(query, limit=limit)
         return {
@@ -754,17 +791,15 @@ def create_app(
         Body: {"chats": [...], "overwrite": false}
         Existing chats are skipped unless ``overwrite`` is true.
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = await _chat_body(request)
         chats = body.get("chats")
         if not isinstance(chats, list):
             raise HTTPException(status_code=400, detail="'chats' must be an array")
         store: ChatStore = request.app.state.chat_store
-        result = store.import_chats(chats, overwrite=bool(body.get("overwrite", False)))
+        overwrite = body.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            raise HTTPException(status_code=400, detail="overwrite must be a boolean")
+        result = store.import_chats(chats, overwrite=overwrite)
         return {
             "imported": result["imported"],
             "skipped": result["skipped"],
@@ -784,10 +819,7 @@ def create_app(
     @app.put("/v1/chats/{chat_id}")
     async def update_chat(chat_id: str, request: Request) -> dict[str, Any]:
         """Replace an entire chat (title and/or messages)."""
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _chat_body(request)
 
         store: ChatStore = request.app.state.chat_store
         chat = store.get(chat_id)
@@ -796,9 +828,9 @@ def create_app(
 
         if "title" in body:
             chat.title = str(body["title"])
-        if "messages" in body and isinstance(body["messages"], list):
-            chat.messages = [ChatMessage.from_dict(m) for m in body["messages"]]
-        store.save(chat)
+        if "messages" in body:
+            chat.messages = _chat_messages(body)
+        _persist_chat(store, chat)
         return chat.to_dict()
 
     @app.patch("/v1/chats/{chat_id}")
@@ -815,12 +847,7 @@ def create_app(
                 ]
             }
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = await _chat_body(request)
 
         store: ChatStore = request.app.state.chat_store
         chat = store.get(chat_id)
@@ -831,10 +858,9 @@ def create_app(
             chat.title = str(body["title"])
         if "folder" in body and body["folder"] is not None:
             chat.folder = str(body["folder"])
-        if "messages" in body and isinstance(body["messages"], list):
-            for m in body["messages"]:
-                chat.messages.append(ChatMessage.from_dict(m))
-        store.save(chat)
+        if "messages" in body:
+            chat.messages.extend(_chat_messages(body))
+        _persist_chat(store, chat)
         return chat.to_dict()
 
     @app.delete("/v1/chats/{chat_id}")

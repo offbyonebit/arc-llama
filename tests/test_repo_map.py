@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import arc_llama.agent.repo_map as repo_map_mod
 from arc_llama.agent.repo_map import SemanticIndex, build_repo_map
 
 
@@ -102,3 +103,39 @@ def test_semantic_search_reuses_normalized_matrix_and_refreshes_after_reindex(
     refreshed = index.search(root, "query")
     assert refreshed and all(result["score"] == 0.0 for result in refreshed)
     assert loads == 2
+
+
+def test_repo_map_prunes_ignored_trees_before_traversal(tmp_path, monkeypatch):
+    import os
+    root = tmp_path / 'project'
+    root.mkdir()
+    (root / 'visible.py').write_text('def visible():\n    pass\n')
+    for name in ['node_modules', '.venv-310', 'package.egg-info']:
+        directory = root / name / 'nested'
+        directory.mkdir(parents=True)
+        (directory / 'ignored.py').write_text('def ignored():\n    pass\n')
+    visited = []
+    original_walk = os.walk
+
+    def counted_walk(*args, **kwargs):
+        for item in original_walk(*args, **kwargs):
+            visited.append(Path(item[0]))
+            yield item
+
+    monkeypatch.setattr('arc_llama.agent.repo_map.os.walk', counted_walk)
+    assert build_repo_map(root) == 'visible.py: visible'
+    assert visited == [root]
+
+
+def test_repo_map_handles_file_disappearing_during_scan(tmp_path, monkeypatch):
+    source = tmp_path / 'deleted.py'
+    source.write_text('def removed():\n    pass\n')
+    original_is_text = repo_map_mod._is_text_file
+
+    def removing_is_text(path):
+        result = original_is_text(path)
+        path.unlink()
+        return result
+
+    monkeypatch.setattr('arc_llama.agent.repo_map._is_text_file', removing_is_text)
+    assert build_repo_map(tmp_path) == '(empty project)'

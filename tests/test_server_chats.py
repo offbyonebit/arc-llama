@@ -207,3 +207,49 @@ def test_move_chat_via_patch(tmp_path, monkeypatch):
 
         personal_resp = client.get("/v1/chats?folder=personal")
         assert [c["id"] for c in personal_resp.json()["data"]] == ["chat-1"]
+
+
+def test_invalid_chat_requests_report_400_and_preserve_saved_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, 'Router', FakeRouter)
+    monkeypatch.setattr(server_mod, 'UpstreamManager', FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        assert client.post('/v1/chats', json={'id': 'safe', 'title': 'Original'}).status_code == 200
+        for route in ['/v1/chats', '/v1/chats/search', '/v1/chats/import']:
+            assert client.post(route, json=[]).status_code == 400
+        for method in [client.put, client.patch]:
+            for body in [[], {'messages': [None]}, {'messages': 'bad'}, {'messages': [{'content': 123}]}]:
+                assert method('/v1/chats/safe', json=body).status_code == 400
+        for body in [{'query': 123}, {'query': 'x', 'limit': 'bad'}, {'query': 'x', 'limit': 0}]:
+            assert client.post('/v1/chats/search', json=body).status_code == 400
+        assert client.post('/v1/chats', json={'id': 'bad', 'folder': '..'}).status_code == 400
+        assert client.patch('/v1/chats/safe', json={'folder': '..'}).status_code == 400
+        assert client.post('/v1/chats/import', json={'chats': [], 'overwrite': 'false'}).status_code == 400
+        saved = client.get('/v1/chats/safe').json()
+        assert saved['title'] == 'Original'
+        assert saved['messages'] == []
+        assert saved['folder'] == ''
+
+
+def test_chat_storage_failure_reports_retryable_error_and_keeps_history(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(server_mod, 'Router', FakeRouter)
+    monkeypatch.setattr(server_mod, 'UpstreamManager', FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        client.post('/v1/chats', json={'id': 'safe', 'title': 'Original'})
+        original_replace = Path.replace
+        def failed_replace(path, target):
+            if Path(target).name == 'safe.json':
+                raise OSError('disk full')
+            return original_replace(path, target)
+        monkeypatch.setattr(Path, 'replace', failed_replace)
+        response = client.patch('/v1/chats/safe', json={'title': 'Changed'})
+        assert response.status_code == 503
+        assert 'disk space' in response.json()['detail']
+        assert client.get('/v1/chats/safe').json()['title'] == 'Original'
+
+
+def test_invalid_folder_query_returns_client_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, 'Router', FakeRouter)
+    monkeypatch.setattr(server_mod, 'UpstreamManager', FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        assert client.get('/v1/chats', params={'folder': '..'}).status_code == 400

@@ -753,6 +753,17 @@ class Router:
                 if acquire:
                     self.acquire_model(target_model.name)
                 return result
+            except asyncio.CancelledError:
+                # The shared future must settle even when its starter disconnects.
+                # Otherwise shielded waiters hang and a half-started process survives.
+                future.cancel()
+                self.metrics["load_errors"] += 1
+                self.metrics["last_error"] = f"Loading {target_model.name} was cancelled"
+                try:
+                    await asyncio.shield(target_srv.astop())
+                except Exception:
+                    log.exception("failed to stop cancelled model %s", target_model.name)
+                raise
             except Exception as exc:
                 if not future.done():
                     self.metrics["load_errors"] += 1
@@ -768,6 +779,11 @@ class Router:
                     # Retrieving it here only marks it observed; existing and
                     # later waiters still receive the same exception.
                     future.exception()
+                if target_srv.is_running:
+                    try:
+                        await target_srv.astop()
+                    except Exception:
+                        log.exception("failed to stop failed model %s", target_model.name)
                 raise
             finally:
                 self._loading_futures.pop(target_model.name, None)

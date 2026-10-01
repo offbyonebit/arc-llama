@@ -420,7 +420,7 @@ def test_dialog_styles_exist_for_frontend_panel():
 
 
 def test_plugins_panel_is_present_and_labeled():
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     assert 'id="plugins-title"' in html
     assert "Plugins" in html
@@ -429,14 +429,14 @@ def test_plugins_panel_is_present_and_labeled():
 
 
 def test_plugins_panel_reads_admin_plugins_endpoint():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert 'fetch("/admin/plugins"' in js
     assert "authHeaders()" in js
 
 
 def test_plugins_panel_renders_name_status_and_optional_metadata():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert "plugin.name" in js
     assert "plugin.status" in js
@@ -447,14 +447,14 @@ def test_plugins_panel_renders_name_status_and_optional_metadata():
 
 
 def test_plugins_panel_empty_state_mentions_entry_point_discovery():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert "No plugins installed" in js
     assert "arc_llama.plugins" in js
 
 
 def test_plugin_fetch_failure_is_isolated():
-    js = (STATIC / "app.js").read_text()
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
     block = js[js.index("async function fetchPlugins") : js.index("// Connect-a-frontend")]
 
     # The whole request/render path is wrapped so a failing plugins fetch
@@ -526,7 +526,7 @@ def test_image_generation_runs_through_the_main_composer():
     """Selecting the Vision tool puts the composer into image mode; the prompt
     is typed in the main input and submitted through the plugin generation
     endpoint. No separate browser prompt window may be involved."""
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
 
     assert "window.prompt" not in js
     assert "window.alert" not in js
@@ -537,8 +537,8 @@ def test_image_generation_runs_through_the_main_composer():
 
 
 def test_vision_mode_chips_and_states_are_declared():
-    html = (STATIC / "chat.html").read_text()
-    css = (STATIC / "chat.css").read_text()
+    html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    css = (STATIC / "chat.css").read_text(encoding="utf-8")
 
     # The composer advertises image mode with a cancelable chip.
     assert 'id="vision-mode-chip"' in html
@@ -551,7 +551,7 @@ def test_vision_mode_chips_and_states_are_declared():
 
 
 def test_image_mode_dispatch_preserves_normal_chat_send():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
 
     # The dispatch order in BOTH send paths: slash commands first, then image
     # mode, then the normal chat send. sendMessage itself guards too.
@@ -562,7 +562,7 @@ def test_image_mode_dispatch_preserves_normal_chat_send():
 
 
 def test_vision_generation_keeps_plugin_route_and_loader_pacing():
-    js = (STATIC / "chat.js").read_text()
+    js = (STATIC / "chat.js").read_text(encoding="utf-8")
 
     # The generation call still goes to the action's declared plugin route
     # with only the prompt (server keeps the GPU lease contract).

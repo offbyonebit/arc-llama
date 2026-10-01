@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,22 @@ def _integer_metadata_value(value: Any) -> int | list[int] | None:
 
 
 def read_gguf_meta(path: Path | str) -> dict[str, Any]:
+    """Reuse small metadata records while the model file remains unchanged."""
+    try:
+        p = Path(path).resolve()
+        stat = p.stat()
+    except OSError:
+        return {}
+    return deepcopy(_read_gguf_meta_cached(str(p), stat.st_size, stat.st_mtime_ns))
+
+
+@lru_cache(maxsize=128)
+def _read_gguf_meta_cached(path: str, file_size: int, mtime_ns: int) -> dict[str, Any]:
+    del file_size, mtime_ns  # Stat values participate in cache invalidation.
+    return _read_gguf_meta(path)
+
+
+def _read_gguf_meta(path: Path | str) -> dict[str, Any]:
     """Read a GGUF file and return a small dict of metadata we care about.
 
     Returns empty dict if the file can't be read.

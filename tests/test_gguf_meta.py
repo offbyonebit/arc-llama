@@ -582,3 +582,30 @@ class TestOffloadAccounting:
         assert estimate_weight_vram_bytes("/nonexistent.gguf", n_cpu_moe=4) is None
         assert scan_weight_tensors("/nonexistent.gguf") is None
         assert expert_tensor_bytes_by_layer("/nonexistent.gguf") is None
+
+
+def test_metadata_cache_reuses_reader_refreshes_and_isolates_mutations(tmp_path, monkeypatch):
+    path = tmp_path / 'cached.gguf'
+    path.write_bytes(b'first')
+    calls = []
+
+    def reader(p):
+        calls.append(p)
+        return _FakeFieldReader({
+            gguf.Keys.General.ARCHITECTURE: 'test',
+            'test.block_count': 2,
+            'test.attention.head_count_kv': [1, 2],
+        })
+
+    monkeypatch.setattr(gguf, 'GGUFReader', reader)
+    first = read_gguf_meta(path)
+    first['architecture'] = 'changed'
+    first['attention.head_count_kv'][0] = 99
+    assert read_gguf_meta(path)['architecture'] == 'test'
+    assert read_gguf_meta(path)['attention.head_count_kv'] == [1, 2]
+    assert len(calls) == 1
+    path.write_bytes(b'replaced model contents')
+    assert read_gguf_meta(path)['block_count'] == 2
+    assert len(calls) == 2
+    path.unlink()
+    assert read_gguf_meta(path) == {}

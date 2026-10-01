@@ -9,6 +9,7 @@ import fnmatch
 import importlib.util
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ log = logging.getLogger("arc_llama.agent.repo_map")
 
 
 IGNORE_DIRS = {
-    ".git", "node_modules", "__pycache__", ".venv", "venv", "build", "dist",
+    ".git", "node_modules", "__pycache__", ".venv*", "venv", "build", "dist",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".eggs", "*.egg-info",
 }
 
@@ -78,6 +79,17 @@ def _is_ignored(path: Path, root: Path) -> bool:
         if part in IGNORE_DIRS or any(fnmatch.fnmatch(part, pat) for pat in IGNORE_DIRS):
             return True
     return False
+
+
+def _project_files(root: Path) -> list[Path]:
+    """Prune ignored directories before traversal and preserve sorted output."""
+    paths: list[Path] = []
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        base = Path(directory)
+        dirs[:] = [name for name in dirs
+                   if not _is_ignored(base / name, root) and not (base / name).is_symlink()]
+        paths.extend(base / name for name in files if not _is_ignored(base / name, root))
+    return sorted(paths)
 
 
 def _is_text_file(path: Path) -> bool:
@@ -164,17 +176,18 @@ def build_repo_map(root: Path, max_entries: int = 500) -> str:
 
     lines: list[str] = []
     entries = 0
-    for path in sorted(root.rglob("*")):
+    for path in _project_files(root):
         if entries >= max_entries:
             lines.append("... (truncated)")
             break
         if not path.is_file():
             continue
-        if _is_ignored(path, root):
-            continue
         if not _is_text_file(path):
             continue
-        if path.stat().st_size > MAX_FILE_SIZE:
+        try:
+            if path.stat().st_size > MAX_FILE_SIZE:
+                continue
+        except OSError:
             continue
         symbols = _extract_symbols(path)
         rel = path.relative_to(root).as_posix()
@@ -243,7 +256,8 @@ class SemanticIndex:
         for entry in manifest.get("files", []):
             path = root / entry["path"]
             try:
-                if path.stat().st_mtime != entry["mtime"] or path.stat().st_size != entry["size"]:
+                file_stat = path.stat()
+                if file_stat.st_mtime != entry["mtime"] or file_stat.st_size != entry["size"]:
                     return True
             except OSError:
                 return True
@@ -261,10 +275,8 @@ class SemanticIndex:
         chunks: list[CodeChunk] = []
         files: list[dict[str, Any]] = []
 
-        for path in sorted(root.rglob("*")):
+        for path in _project_files(root):
             if not path.is_file():
-                continue
-            if _is_ignored(path, root):
                 continue
             if not _is_text_file(path):
                 continue

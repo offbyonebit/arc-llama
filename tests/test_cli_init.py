@@ -85,3 +85,14 @@ def test_init_writes_config_without_binary_and_hints_install_runtime(
     assert result.exit_code == 0, result.output
     assert "install-runtime" in result.output
     assert config_file.exists()
+
+
+def test_windows_no_gpu_guidance_does_not_claim_detection_is_unsupported(tmp_path, monkeypatch):
+    monkeypatch.setattr('arc_llama.cli._IS_WINDOWS', True)
+    monkeypatch.setattr('arc_llama.cli.detect_gpus', lambda: [])
+    result = CliRunner().invoke(cli, ['-c', str(tmp_path/'config.toml'), 'init', '--no-scan'])
+    assert result.exit_code == 2
+    assert 'Device Manager' in ' '.join(result.output.split())
+    assert 'doctor' in result.output
+    assert 'not supported' not in result.output
+    assert not (tmp_path/'config.toml').exists()
