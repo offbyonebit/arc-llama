@@ -55,7 +55,7 @@ def _model_text(cfg: Config | None) -> str:
     for model in cfg.models:
         path = _safe_text(model.path)
         try:
-            size = Path(model.path).expanduser().stat().st_size
+            size = str(Path(model.path).expanduser().stat().st_size)
         except OSError:
             size = "missing"
         lines.append(f"name={model.name} | path={path} | size_bytes={size} | port={model.port}")

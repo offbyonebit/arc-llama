@@ -3,6 +3,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from arc_llama.arch import Arch
 from arc_llama.config import Config, ModelConfig
 from arc_llama.detect import DetectedGPU
@@ -19,11 +21,13 @@ def test_redact_config_removes_tokens_and_home_paths(monkeypatch):
     assert "$HOME/models/x.gguf" in redacted
 
 
-def test_support_bundle_contains_metadata_but_not_model_file(tmp_path):
+@pytest.mark.parametrize("model_present", [True, False])
+def test_support_bundle_contains_metadata_but_not_model_file(tmp_path, model_present):
     config_path = tmp_path / "config.toml"
     config_path.write_text('admin_token = "secret"\n', encoding="utf-8")
     model_path = tmp_path / "model.gguf"
-    model_path.write_bytes(b"model data")
+    if model_present:
+        model_path.write_bytes(b"model data")
     cfg = Config(models=[ModelConfig("model", str(model_path), 18080, "0000:03:00.0")])
     gpu = DetectedGPU(
         pci_slot="0000:03:00.0",
@@ -46,3 +50,6 @@ def test_support_bundle_contains_metadata_but_not_model_file(tmp_path):
         assert "secret" not in archive.read("config.toml").decode()
         assert b"model data" not in b"".join(archive.read(name) for name in names)
         assert "Intel Arc Pro B60" in archive.read("hardware.txt").decode()
+
+        expected_size = "10" if model_present else "missing"
+        assert f"size_bytes={expected_size}" in archive.read("models.txt").decode()
