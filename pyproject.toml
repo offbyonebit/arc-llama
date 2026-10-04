@@ -41,7 +41,7 @@ semantic = [
     "numpy>=1.24",
 ]
 mcp = [
-    "mcp>=1.0",
+    "mcp>=1.0,<2",
 ]
 dev = [
     "pytest>=8.0",
@@ -93,5 +93,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live_inference: opt-in real model subprocess and GPU inference"]
 # Emit thread stacks for stalled tests; CI also has a hard job deadline.
 faulthandler_timeout = 30

@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import FakeTensor as _FakeTensor
+from helpers import FakeTensorReader as _FakeReader
 
 from arc_llama.benchmark import BenchmarkResult
 from arc_llama.config import Config, GPUConfig, ModelConfig, PathsConfig
@@ -24,35 +26,6 @@ from arc_llama.tune import tune_model
 # ---------------------------------------------------------------------------
 # Shared fixtures/helpers
 # ---------------------------------------------------------------------------
-
-
-class _FakeTensor:
-    def __init__(self, name: str, n_bytes: int):
-        self.name = name
-        self.n_bytes = n_bytes
-
-
-class _FakeField:
-    def __init__(self, value: str):
-        self._value = value
-
-    def contents(self) -> str:
-        return self._value
-
-
-class _FakeReader:
-    def __init__(self, tensors: list[_FakeTensor], arch: str):
-        self._tensors = tensors
-        self._arch = arch
-
-    @property
-    def tensors(self) -> list[_FakeTensor]:
-        return self._tensors
-
-    def get_field(self, key: str):
-        if key == "general.architecture":
-            return _FakeField(self._arch)
-        return None
 
 
 def _patch_reader(monkeypatch: pytest.MonkeyPatch, tensors, arch: str = "gemma4"):

@@ -62,6 +62,18 @@ class FakeAsyncClient:
     async def __aexit__(self, *args: Any) -> None:
         pass
 
+    async def get(self, url: str) -> Any:
+        assert url == "http://127.0.0.1:11440/v1/models"
+
+        class CatalogResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": [{"id": "arc-vision-diffusion"}]}
+
+        return CatalogResponse()
+
     async def post(self, url: str, json: dict[str, Any] | None = None) -> _Resp:
         assert url == "http://127.0.0.1:11440/v1/images/generations", f"unexpected url {url}"
         assert json is not None
@@ -248,3 +260,56 @@ def test_plugin_instance_and_factory_shapes():
         "/plugins/vision",
         "http://127.0.0.1:11440/v1/images/generations",
     ]
+
+
+async def test_default_model_uses_companion_catalog(monkeypatch):
+    mgr = FakeResourceLeaseManager()
+
+    class ComfyClient(FakeAsyncClient):
+        async def get(self, url):
+            response = await super().get(url)
+            response.json = lambda: {"data": [{"id": "actual-comfy-model"}]}
+            return response
+
+    app = _make_app(monkeypatch, mgr, client=ComfyClient)
+    await _route(app, "/plugins/vision/generate")(DummyRequest(app, {"prompt": "cube"}))
+    assert FakeAsyncClient.last_payload["model"] == "actual-comfy-model"
+    assert not mgr.held
+
+
+async def test_unknown_model_does_not_evict_text_backend(monkeypatch):
+    from fastapi import HTTPException
+
+    mgr = FakeResourceLeaseManager()
+    app = _make_app(monkeypatch, mgr)
+    with pytest.raises(HTTPException) as caught:
+        await _route(app, "/plugins/vision/generate")(DummyRequest(app, {"prompt": "cube", "model": "unknown"}))
+    assert caught.value.status_code == 404
+    assert not mgr.events
+    assert FakeAsyncClient.last_payload is None
+
+
+@pytest.mark.parametrize("prompt", [None, 42, [], " "])
+async def test_invalid_prompt_does_not_evict_text_backend(monkeypatch, prompt):
+    from fastapi import HTTPException
+
+    mgr = FakeResourceLeaseManager()
+    app = _make_app(monkeypatch, mgr)
+    with pytest.raises(HTTPException) as caught:
+        await _route(app, "/plugins/vision/generate")(DummyRequest(app, {"prompt": prompt}))
+    assert caught.value.status_code == 400
+    assert not mgr.events
+
+
+async def test_companion_validation_error_preserves_status(monkeypatch):
+    from fastapi import HTTPException
+
+    mgr = FakeResourceLeaseManager()
+    response = httpx.Response(400, request=httpx.Request("POST", "http://companion"), json={"detail": {"error": {"message": "invalid image size"}}})
+    FakeAsyncClient.fail_with = httpx.HTTPStatusError("rejected", request=response.request, response=response)
+    app = _make_app(monkeypatch, mgr)
+    with pytest.raises(HTTPException) as caught:
+        await _route(app, "/plugins/vision/generate")(DummyRequest(app, {"prompt": "cube"}))
+    assert caught.value.status_code == 400
+    assert caught.value.detail == "invalid image size"
+    assert not mgr.held

@@ -97,3 +97,24 @@ def test_occupied_port_is_rejected(tmp_path):
 
     assert caught.value.category == "port_in_use"
     assert caught.value.http_status == 409
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX TIME_WAIT port reuse")
+def test_closed_listener_time_wait_does_not_block_restart():
+    from arc_llama.preflight import _check_port
+
+    with socket.socket() as listener, socket.socket() as client:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.settimeout(2)
+        client.settimeout(2)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        client.connect(("127.0.0.1", port))
+        accepted, _ = listener.accept()
+        with accepted:
+            accepted.shutdown(socket.SHUT_RDWR)
+            assert client.recv(1) == b""
+        client.close()
+        listener.close()
+        _check_port("127.0.0.1", port)

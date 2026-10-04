@@ -477,6 +477,8 @@ def create_app(
         if not isinstance(prompt, str):
             raise HTTPException(status_code=400, detail="Ollama generate requests require a string prompt")
         payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
+        payload.pop("messages")
+        payload["prompt"] = prompt
         request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
         response = await _proxy_post(request, "/v1/completions")
         return _openai_response_as_ollama(response, body.get("model", ""), generate=True)
@@ -506,22 +508,27 @@ def create_app(
             {"type": "error", "message": "..."}
             {"type": "done"}
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _read_json_body(request)
 
         model = body.get("model")
         task = body.get("task")
-        if not model or not task:
-            raise HTTPException(status_code=400, detail="'model' and 'task' are required")
+        if not isinstance(model, str) or not model.strip() or not isinstance(task, str) or not task.strip():
+            raise HTTPException(status_code=400, detail="'model' and 'task' must be nonempty strings")
+        for key in ("root", "folder", "profile"):
+            if body.get(key) is not None and not isinstance(body[key], str):
+                raise HTTPException(status_code=400, detail=f"{key} must be a string")
+        for key in ("auto_confirm", "plan_mode"):
+            if key in body and not isinstance(body[key], bool):
+                raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
+        max_turns = body.get("max_turns", 30)
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
+            raise HTTPException(status_code=400, detail="max_turns must be a positive integer")
 
         auto_confirm = bool(body.get("auto_confirm", False))
         if auto_confirm:
             await _require_admin(request)
         plan_mode = bool(body.get("plan_mode", False))
-        max_turns = int(body.get("max_turns", 30))
-        folder = body.get("folder") if body.get("folder") is not None else ""
+        folder = body.get("folder") or ""
         root_path = body.get("root") or cfg.agent.root
         root = Path(root_path).expanduser().resolve()
         requested_profile = body.get("profile")
@@ -589,6 +596,10 @@ def create_app(
                     extra={"semantic_index": semantic_index},
                 ):
                     if event.get("type") == "confirm_required":
+                        # Each destructive tool needs its own approval. Reset
+                        # before publishing the event so a fast reply is not lost.
+                        confirm_event.clear()
+                        confirm_result["approved"] = False
                         event = {**event, "run_id": run_id}
                     if event.get("type") == "plan":
                         event = {**event, "run_id": run_id}
@@ -629,10 +640,9 @@ def create_app(
 
         Request body: {"approved": true|false}
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _read_json_body(request)
+        if not isinstance(body.get("approved", False), bool):
+            raise HTTPException(status_code=400, detail="approved must be a boolean")
 
         entry = request.app.state.pending_confirmations.get(run_id)
         if not entry:
@@ -653,10 +663,9 @@ def create_app(
 
         Request body: {"approved": true|false}
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _read_json_body(request)
+        if not isinstance(body.get("approved", False), bool):
+            raise HTTPException(status_code=400, detail="approved must be a boolean")
 
         entry = request.app.state.pending_plan_approvals.get(run_id)
         if not entry:
@@ -1083,7 +1092,7 @@ def create_app(
     @app.post("/admin/stop/{name}")
     async def admin_stop(
         name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict:
+    ) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -1092,13 +1101,19 @@ def create_app(
             )
         if name not in {m.name for m in rt.all_models()}:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
-        was_running = await rt.stop_one(name)
+        try:
+            was_running = await rt.stop_one(name)
+        except StartupFailureError as exc:
+            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
         return {"name": name, "was_running": was_running, "loaded": False}
 
     @app.post("/admin/stop-all")
-    async def admin_stop_all(request: Request, _auth: None = Depends(_require_admin)) -> dict:
+    async def admin_stop_all(request: Request, _auth: None = Depends(_require_admin)) -> Any:
         rt: Router = request.app.state.router
-        stopped = await rt.stop_all()
+        try:
+            stopped = await rt.stop_all()
+        except StartupFailureError as exc:
+            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
         return {"stopped": stopped}
 
     @app.get("/admin/tune/status")
@@ -1573,6 +1588,12 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
         body = json.loads(body_bytes) if body_bytes else {}
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    if not isinstance(body.get("model", ""), str):
+        raise HTTPException(status_code=400, detail="model must be a string")
+    if "stream" in body and not isinstance(body["stream"], bool):
+        raise HTTPException(status_code=400, detail="stream must be a boolean")
     model_query = body.get("model", "")
 
     # Check upstreams first — they are passive proxies, no llama-server to start.
@@ -1653,11 +1674,13 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     # auto-tuner's abort hook keys off this counter; if it drops to zero while
     # generation is still running, a sweep will restart the backend out from
     # under the user.
+    request_entered_at = time.monotonic()
+    resources = getattr(request.app.state, "resources", None)
+    lease_context = resources.acquire("local-inference", exclusive=False) if resources is not None else None
+    if lease_context is not None:
+        await lease_context.__aenter__()
     rt.inflight += 1
     streaming_response_started = False
-    # Request-clock origin for queue/TTFT metrics. Real timestamps from real
-    # requests only; the metrics endpoint omits values with no samples.
-    request_entered_at = time.monotonic()
     resolved_at: float | None = None
     # Set once the request has resolved to a local model, so the router can
     # answer "is this specific model still serving?" — which _evict_for and
@@ -1759,6 +1782,8 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 if acquired_model is not None:
                     rt.release_model(acquired_model)
                 rt.last_activity = time.time()
+                if lease_context is not None:
+                    await lease_context.__aexit__(None, None, None)
 
                 try:
                     await upstream.aclose()
@@ -1828,3 +1853,5 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             rt.inflight -= 1
             if acquired_model is not None:
                 rt.release_model(acquired_model)
+            if lease_context is not None:
+                await lease_context.__aexit__(None, None, None)

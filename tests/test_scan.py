@@ -7,7 +7,6 @@ These complement test_models.py's discovery tests; they focus on the
 
 from __future__ import annotations
 
-import sys
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -155,7 +154,6 @@ def test_discover_ggufs_is_recursive_and_skips_aux(tmp_path):
         assert all(p.name != name for p in found), name
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="depth 4 is shallow; fine on both")
 def test_discover_ggufs_respects_max_depth(tmp_path):
     models_dir = tmp_path / "models"
     _write(models_dir / "a" / "b" / "c" / "d" / "e" / "deep.gguf")

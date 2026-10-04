@@ -80,9 +80,10 @@ def test_semantic_search_reuses_normalized_matrix_and_refreshes_after_reindex(
 
     monkeypatch.setattr(Path, "stat", counted_stat)
     index.index(root)
-    # One stat backs is_file(); the explicit metadata capture is shared by
-    # the size check and manifest construction.
-    assert stat_calls == 2
+    # The explicit metadata capture is shared by size and manifest.
+    # Path.is_file may use os.stat directly (Python 3.14) rather than
+    # Path.stat, so its call need not appear in this counter.
+    assert 1 <= stat_calls <= 2
 
     loads = 0
     original_load = np.load

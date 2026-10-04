@@ -20,24 +20,8 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import make_config
-from test_router import FakeServer
-
-import arc_llama.router as router_mod
-from arc_llama.router import Router
-
-
-def _router(tmp_path, monkeypatch, *, single=True) -> Router:
-    FakeServer.starts = []
-    FakeServer.stops = []
-    cfg = make_config(tmp_path, single_resident=single)
-    monkeypatch.setattr(router_mod, "LlamaServer", FakeServer)
-
-    async def inline_to_thread(func, /, *args, **kwargs):
-        return func(*args, **kwargs)
-
-    monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
-    return Router(cfg)
+from helpers import FakeServer
+from helpers import fake_router as _router
 
 
 async def test_fast_path_acquire_counts_atomically(tmp_path, monkeypatch):

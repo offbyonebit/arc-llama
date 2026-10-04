@@ -12,24 +12,13 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
+from helpers import ConfigRouter as FakeRouter
 from httpx import ASGITransport, AsyncClient
 
 from arc_llama.cli import cli
 from arc_llama.cli import serve as serve_cmd
 from arc_llama.config import Config, GPUConfig, ModelConfig, ServerConfig, UpstreamConfig
 from arc_llama.server import create_app
-
-
-class FakeRouter:
-    def __init__(self, cfg, log_dir=None):
-        self.cfg = cfg
-        self._servers = {}
-
-    def all_models(self):
-        return list(self.cfg.models)
-
-    async def shutdown(self):
-        return None
 
 
 class FakeUpstreamManager:

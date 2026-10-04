@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from helpers import ConfigRouter as FakeRouter
 from httpx import AsyncClient as _HttpxAsyncClient
 
 from arc_llama.config import Config, ModelConfig, ServerConfig, UpstreamConfig
@@ -45,18 +46,6 @@ def _cfg(
         ],
         upstreams=upstreams or [],
     )
-
-
-class FakeRouter:
-    def __init__(self, cfg, log_dir=None):
-        self.cfg = cfg
-        self._servers = {}
-
-    def all_models(self):
-        return list(self.cfg.models)
-
-    async def shutdown(self):
-        return None
 
 
 class FakeUpstreamManager:

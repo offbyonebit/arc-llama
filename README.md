@@ -27,6 +27,11 @@ something useful before lunch.
 > B580) need community confirmation -- open an issue if something breaks on
 > your card.
 
+The current local 0.9.0rc2 candidate has a separate [Linux end-to-end validation
+report](docs/release-validation-linux-2026-10-03.md), including native long-context
+Qwen, image generation, queued text, and package-upgrade evidence. Its Windows
+changes still require candidate testing; the RC1 note above describes RC1.
+
 ## What's new in 0.9.0rc1
 
 - **One-command setup and launch:** `arc-llama run` accepts a registered model,
@@ -282,9 +287,30 @@ is bound to a specific PCI slot, and the SYCL device selector
 re-run `arc-llama init --force` to refresh `[[gpus]]`, then add models against
 either GPU.
 
-The default swap policy is **single-resident across all GPUs** , pick a model,
-the router stops anything else first. Flip `server.single_resident = false` in
-the config if you want different-GPU models to coexist.
+The default swap policy is **single-resident across all GPUs**: pick a model,
+and the router stops its other managed models first. Flip
+`server.single_resident = false` in the config if you want different-GPU models
+to coexist.
+
+On Linux, a separate `llama-server` holding DRM allocations on the target GPU
+blocks a new load with its PID and service name. Stop that server and disable
+its automatic startup if Arc Llama should own the GPU. This check includes
+buffers moved into system memory; it does not stop external services for you.
+Processes hidden by permissions and servers started after the check cannot be
+reserved by this admission check. If forced shutdown times out, Arc retains
+the child handle and ownership until exit is confirmed, and rejects a replacement
+load. This shutdown protection also applies on Windows.
+
+For Qwen3.6 35B with a vision projector on a 24 GiB B60, the text model,
+128k KV context, and MTP can leave little room for GPU vision buffers. Adding
+`--no-mmproj-offload` to that model's existing `recipe.extra_flags` moves its
+vision projector to CPU while retaining image support and the text settings.
+This configuration passed live generation, streaming, vision, and model swaps
+under hard host-memory limits; see the [incident follow-up](docs/incidents/2026-10-01-host-ram-oom-verified-investigation.md).
+It also passed a fresh 130429-token prompt in the configured 131072 context,
+followed by cached generation and image recognition. Larger images may encode
+more slowly on CPU. These results do not establish safety for the previous
+all-GPU projector recipe.
 
 ## Upstreams
 
@@ -483,7 +509,7 @@ docker build --build-arg GGML_SYCL_DEVICE_ARCH=acm-g10 -t arc-llama:acm .  # A77
 docker run --rm -it \
   --device /dev/dri:/dev/dri \
   --group-add video --group-add render \
-  -p 11437:11437 \
+  -p 127.0.0.1:11437:11437 \
   -v $HOME/models:/models:ro \
   arc-llama:latest
 ```

@@ -2,22 +2,11 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from helpers import ConfigRouter as FakeRouter
 
 import arc_llama.server as server_mod
 from arc_llama.config import Config
 from arc_llama.server import create_app
-
-
-class FakeRouter:
-    def __init__(self, cfg, log_dir=None):
-        self.cfg = cfg
-        self._servers = {}
-
-    def all_models(self):
-        return []
-
-    async def shutdown(self):
-        return None
 
 
 class FakeUpstreamManager:

@@ -20,7 +20,7 @@
 #     --device /dev/dri:/dev/dri \
 #     --group-add video \
 #     --group-add render \
-#     -p 11437:11437 \
+#     -p 127.0.0.1:11437:11437 \
 #     -v $HOME/models:/models:ro \
 #     arc-llama:latest \
 #     arc-llama serve
@@ -92,6 +92,9 @@ RUN pip install --no-cache-dir --break-system-packages -e ".[tui]"
 # Runtime environment
 ENV SYCL_CACHE_PERSISTENT=0
 ENV ARC_LLAMA_SERVER=/usr/local/bin/llama-server
+# Docker port forwarding reaches the container interface, not its loopback.
+# Keep host publication local by default in the documented run command.
+ENV ARC_LLAMA_HOST=0.0.0.0
 
 # Default port
 EXPOSE 11437

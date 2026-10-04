@@ -42,20 +42,14 @@ class VisionPlugin(Plugin):
 
         @app.post("/plugins/vision/generate")
         async def vision_generate(request: Request) -> JSONResponse:
-            body = await request.json()
-            if not isinstance(body, dict) or not str(body.get("prompt", "")).strip():
-                raise HTTPException(status_code=400, detail="prompt is required")
-            payload = {
-                "model": body.get("model", "arc-vision-diffusion"),
-                "prompt": body["prompt"],
-                "size": body.get("size", "512x512"),
-            }
-
-            # Present on every standard arc-llama server (app.state.resources,
-            # a ResourceLeaseManager). Its absence means the adapter was
-            # registered against a server without GPU arbitration; generating
-            # anyway would let the vision companion contend with llama-server
-            # for VRAM with nothing serialising them, so refuse clearly.
+            try:
+                body = await request.json()
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
+            if not isinstance(body, dict) or not isinstance(body.get("prompt"), str) or not body["prompt"].strip():
+                raise HTTPException(status_code=400, detail="prompt must be a nonempty string")
+            if "model" in body and (not isinstance(body["model"], str) or not body["model"].strip()):
+                raise HTTPException(status_code=400, detail="model must be a nonempty string")
             resources = getattr(request.app.state, "resources", None)
             if resources is None:
                 raise HTTPException(
@@ -66,26 +60,47 @@ class VisionPlugin(Plugin):
                         "manager to run image generation safely."
                     ),
                 )
-
-            # Exclusive lease: active router requests drain, resident local
-            # models stop, and other exclusive plugin tasks serialize on the
-            # same gate. Released on return, error, or cancellation.
-            async with resources.acquire(self.name, exclusive=True):
-                try:
-                    # Real diffusion backends may take many minutes on CPU or
-                    # during a cold-start. Keep the proxy alive for the same
-                    # bounded window as the companion's render contract.
-                    async with httpx.AsyncClient(timeout=_VISION_REQUEST_TIMEOUT) as client:
-                        response = await client.post(
-                            f"{api_base}/v1/images/generations", json=payload
-                        )
+            try:
+                async with httpx.AsyncClient(timeout=_VISION_REQUEST_TIMEOUT) as client:
+                    # Discover before eviction: a missing companion or invalid
+                    # model must not stop a healthy text backend. The fake and
+                    # ComfyUI adapters advertise different model identifiers.
+                    catalog = await client.get(f"{api_base}/v1/models")
+                    catalog.raise_for_status()
+                    try:
+                        data = catalog.json()
+                    except ValueError as exc:
+                        raise HTTPException(status_code=503, detail="Vision companion returned an invalid model catalog") from exc
+                    entries = data.get("data") if isinstance(data, dict) else None
+                    ids = [entry["id"] for entry in entries if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"].strip()] if isinstance(entries, list) else []
+                    if not ids:
+                        raise HTTPException(status_code=503, detail="Vision companion advertises no available image models")
+                    model = body.get("model", ids[0])
+                    if model not in ids:
+                        raise HTTPException(status_code=404, detail=f"Unknown vision model: {model}")
+                    payload = {"model": model, "prompt": body["prompt"], "size": body.get("size", "512x512")}
+                    async with resources.acquire(self.name, exclusive=True):
+                        response = await client.post(f"{api_base}/v1/images/generations", json=payload)
                         response.raise_for_status()
                         return JSONResponse(response.json())
-                except httpx.HTTPError as exc:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Vision companion is not running on port 11440",
-                    ) from exc
+            except httpx.HTTPStatusError as exc:
+                # An actual backend error must not be presented as a missing
+                # service. Preserve its status and explain the rejected request.
+                try:
+                    error = exc.response.json()
+                    detail = error.get("detail") if isinstance(error, dict) else None
+                    if isinstance(detail, dict):
+                        detail = detail.get("error", {}).get("message")
+                except (ValueError, AttributeError):
+                    detail = None
+                raise HTTPException(
+                    status_code=exc.response.status_code,
+                    detail=detail if isinstance(detail, str) else f"Vision companion returned HTTP {exc.response.status_code}",
+                ) from exc
+            except httpx.RequestError as exc:
+                raise HTTPException(status_code=503, detail="Vision companion is not running or responding on port 11440") from exc
+            except TimeoutError as exc:
+                raise HTTPException(status_code=503, detail="GPU work did not drain for image generation; retry after it finishes") from exc
 
     def info(self) -> dict[str, Any]:
         return {

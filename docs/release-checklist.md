@@ -13,6 +13,26 @@ pytest tests/ -q -ra --tb=short -p no:cacheprovider
 python -m build
 ```
 
+For safe local CPU runs, select `-m 'not live_inference'` and run the marked
+native inference test separately with an explicit `ARC_LLAMA_SMOKE_MODEL`,
+`ARC_LLAMA_SMOKE_CONFIG`, and `ARC_LLAMA_SMOKE_URL`. Record both runs. The
+unmarked tests block real process lifecycle signals by default; the explicit
+live-inference job must have its own process and memory containment. GGUF
+metadata cases use generated format fixtures, so they no longer depend on a
+particular developer's model directory. Those fixtures validate metadata and
+launch argument construction, not native inference.
+
+Also run `pytest arc-llama-vision/tests -q -ra` for the separately packaged
+vision companion. Its deterministic backend and adapter protocol tests do not
+certify a real ComfyUI render; record that external integration separately.
+Run the installed companion's browser-to-PNG workflow with a resident text
+model. Verify an invalid image model preserves that resident, actual image
+work evicts it, a concurrent text request waits without loading a backend,
+and text reloads/answers after image completion. Confirm all leases settle
+and model-wait timing includes admission delay. Record rendering backend,
+model, dimensions, step count, host-memory minimum, and cleanup.
+
+
 Review the pytest skip report before calling a release green. Every skip must
 be classified as platform-specific coverage, a deliberately absent local
 fixture or model covered by an integration or hardware run, or an intentionally

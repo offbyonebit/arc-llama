@@ -3,8 +3,7 @@
 ``ResourceLeaseManager`` (app.state.resources) serialises exclusive plugin
 tasks (vision, ...), waits for the router's in-flight requests to drain,
 and empties the GPU of resident llama-server processes by delegating to
-the Router's own lifecycle methods. Normal text inference never takes a
-lease — the _proxy_post path is unchanged — and release must happen on
+the Router's own lifecycle methods. Local inference shares the gate through response cleanup, and release must happen on
 exceptions and cancellations, not just normal return.
 
 No GPU or llama.cpp backend needed. The Router fakes mirror the shared
@@ -16,7 +15,7 @@ from __future__ import annotations
 import asyncio
 
 from conftest import make_config
-from test_router import FakeServer
+from helpers import FakeServer
 
 import arc_llama.router as router_mod
 from arc_llama.resources import Lease, ResourceLeaseManager
@@ -353,13 +352,13 @@ async def test_pending_exclusive_blocks_new_shared_lease(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# normal text inference is untouched
+# normal text inference with no exclusive work
 # ---------------------------------------------------------------------------
 
 
 async def test_ensure_active_fast_path_unaffected_by_manager(tmp_path, monkeypatch):
     """The router's lock-free fast path works identically with a manager
-    attached; text inference never consults the lease gate."""
+    attached; the idle lease gate does not require an extra swap."""
     rt, mgr = _manager(tmp_path, monkeypatch)
 
     await rt.ensure_active("qwen")
@@ -371,9 +370,7 @@ async def test_ensure_active_fast_path_unaffected_by_manager(tmp_path, monkeypat
     assert mgr.active_leases == {}
     rt.release_model("qwen")
 
-    # And a lease does not fence the proxy path either: an exclusive lease
-    # being held does not break ensure_active for requests that arrive
-    # after eviction (the model restarts on demand).
+    # Text can load again once exclusive work releases its admission gate.
     async with mgr.acquire("vision", exclusive=True):
         assert rt.running_models() == []
     model, srv = await rt.ensure_active("qwen")
@@ -386,4 +383,83 @@ async def test_no_router_is_supported(tmp_path, monkeypatch):
     mgr = ResourceLeaseManager(None)
     async with mgr.acquire("vision"):
         assert mgr.active_leases == {"vision": 1}
+    assert mgr.active_leases == {}
+
+
+async def test_exclusive_waits_for_existing_shared_work(tmp_path, monkeypatch):
+    _, mgr = _manager(tmp_path, monkeypatch)
+    entered = asyncio.Event()
+
+    async def writer():
+        async with mgr.acquire("vision"):
+            entered.set()
+
+    async with mgr.acquire("text", exclusive=False):
+        task = asyncio.create_task(writer())
+        await asyncio.sleep(0.01)
+        assert not entered.is_set()
+    await task
+    assert entered.is_set()
+    assert mgr.active_leases == {}
+
+
+async def test_busy_shared_work_rejects_exclusive_without_eviction(tmp_path, monkeypatch):
+    import pytest
+
+    rt, mgr = _manager(tmp_path, monkeypatch, drain_seconds=0.01)
+    await rt.ensure_active("qwen")
+    async with mgr.acquire("text", exclusive=False):
+        with pytest.raises(TimeoutError):
+            async with mgr.acquire("vision"):
+                raise AssertionError("exclusive overlapped shared GPU work")
+        assert rt.running_models() == ["qwen"]
+    assert not mgr.exclusive_active
+    assert mgr.active_leases == {}
+
+
+async def test_router_model_load_waits_for_exclusive_release(tmp_path, monkeypatch):
+    rt, mgr = _manager(tmp_path, monkeypatch)
+    async with mgr.acquire("vision"):
+        task = asyncio.create_task(rt.ensure_active("qwen"))
+        await asyncio.sleep(0.01)
+        assert not task.done()
+        assert rt.running_models() == []
+    model, _ = await task
+    assert model.name == "qwen"
+    assert mgr.active_leases == {}
+
+
+async def test_nested_admitted_work_finishes_ahead_of_pending_exclusive(tmp_path, monkeypatch):
+    rt, mgr = _manager(tmp_path, monkeypatch)
+
+    async def writer():
+        async with mgr.acquire("vision"):
+            pass
+
+    async with mgr.acquire("text", exclusive=False):
+        task = asyncio.create_task(writer())
+        await asyncio.sleep(0.01)
+        model, _ = await asyncio.wait_for(rt.ensure_active("qwen"), timeout=1)
+        assert model.name == "qwen"
+        assert not task.done()
+    await task
+    assert mgr.active_leases == {}
+
+
+async def test_stream_cleanup_can_release_shared_lease_from_another_task(tmp_path, monkeypatch):
+    _, mgr = _manager(tmp_path, monkeypatch)
+    context = mgr.acquire("stream", exclusive=False)
+    await context.__aenter__()
+    await asyncio.create_task(context.__aexit__(None, None, None))
+    assert mgr.active_leases == {}
+    assert mgr._shared_holders == 0
+    async with mgr.acquire("vision"):
+        # The parent's inherited scope was released by the stream task.
+        task = asyncio.create_task(mgr.acquire("new", exclusive=False).__aenter__())
+        await asyncio.sleep(0.01)
+        assert not task.done()
+        task.cancel()
+        import pytest
+        with pytest.raises(asyncio.CancelledError):
+            await task
     assert mgr.active_leases == {}

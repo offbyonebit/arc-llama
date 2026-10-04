@@ -66,6 +66,7 @@ def _wait_for_server(
     )
 
 
+@pytest.mark.live_inference
 @pytest.mark.skipif(not os.environ.get("ARC_LLAMA_SMOKE_MODEL"), reason=_SKIP_REASON)
 def test_inference_smoke() -> None:
     model = os.environ["ARC_LLAMA_SMOKE_MODEL"]
