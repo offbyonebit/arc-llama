@@ -180,7 +180,8 @@ curl http://127.0.0.1:11437/v1/chat/completions \
 - Kernel **6.14+ recommended** for Battlemage (`xe` driver; 6.8 is the minimum
   where `xe` exists, but 6.14+ is stable for BMG) or 5.17+ for Alchemist
   (`i915`). This matches the threshold `arc-llama doctor` warns on.
-- User in the `render` and `video` groups (`arc-llama doctor` will tell you).
+- User in the `render` and `video` groups (`arc-llama doctor` will tell you;
+  see [GPU setup](docs/gpu-setup.md) for the fix).
 
 ### Windows
 
@@ -439,7 +440,8 @@ do not fit your workload.
 The router serialises swaps with an `asyncio.Lock`, so concurrent requests for
 the same model fan out to one warm backend. Health is polled at
 `{backend_url}/health`; cold-start budget is 120 s by default to absorb the
-SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch.
+SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch (see
+[GPU setup](docs/gpu-setup.md) to remove it with an AOT build).
 
 ## Why not just use Ollama / vLLM?
 
@@ -590,7 +592,8 @@ The unchecked items will be linked to public tracking issues as they are
 opened. Multi-GPU support remains available for testing but is not a blocker
 for the initial single-GPU 1.0 release.
 
-See the [compatibility contract](docs/compatibility.md), [remote-access and
+See the [compatibility contract](docs/compatibility.md), [GPU setup
+guide](docs/gpu-setup.md), [remote-access and
 security guidance](docs/security.md), and [release-candidate
 checklist](docs/release-checklist.md) for the concrete promises and validation
 matrix. The detailed implementation sequence and release gates are in the
