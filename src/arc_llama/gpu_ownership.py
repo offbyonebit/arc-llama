@@ -56,11 +56,14 @@ def check_gpu_ownership(pci_slot: str, ignored_pids: set[int] | None = None) -> 
                 continue
             allocated = False
             for key, value in fields.items():
-                if key.startswith("drm-total-") and key != "drm-total-cycles":
-                    # Memory accounting values have a byte-unit suffix. Cycle
-                    # counters and resident bytes are not allocation totals.
+                if key.startswith("drm-total-") and not key.startswith("drm-total-cycles"):
+                    # Memory accounting values may carry a byte-unit suffix; a
+                    # bare number means bytes. Cycle counters and resident
+                    # bytes are not allocation totals.
                     parts = value.split()
-                    if len(parts) == 2 and parts[1] in {"B", "KiB", "MiB", "GiB"}:
+                    if len(parts) == 1 or (
+                        len(parts) == 2 and parts[1] in {"B", "KiB", "MiB", "GiB"}
+                    ):
                         try:
                             allocated |= int(parts[0]) > 0
                         except ValueError:

@@ -13,7 +13,6 @@ import json
 import math
 import os
 import re
-import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -347,14 +346,6 @@ class ChatStore:
             if matches:
                 results.append((chat, matches[:limit]))
         return results[:limit]
-
-    def wipe(self) -> None:
-        """Delete the entire store directory. Useful for tests."""
-        if self.directory.exists():
-            shutil.rmtree(self.directory)
-            self.directory.mkdir(parents=True, exist_ok=True)
-        self._path_cache.clear()
-        self._summary_cache.clear()
 
     def export_all(self) -> list[dict[str, Any]]:
         """Return every stored chat as a list of plain dicts."""

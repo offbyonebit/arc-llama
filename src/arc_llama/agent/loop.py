@@ -27,10 +27,6 @@ from arc_llama.chat_store import ChatStore
 log = logging.getLogger("arc_llama.agent.loop")
 
 
-class AgentError(Exception):
-    """Raised when the agent loop cannot continue."""
-
-
 async def run_agent(
     task: str,
     model: str,

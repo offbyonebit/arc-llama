@@ -37,9 +37,15 @@ def test_allocated_buffers_block_even_when_nonresident(tmp_path, monkeypatch, re
     assert "qwen3.8-27b-server.service" in caught.value.message
 
 
+def test_bare_byte_allocation_blocks(tmp_path, monkeypatch):
+    _owner(tmp_path, monkeypatch, allocation="22515458048")
+    with pytest.raises(StartupFailureError):
+        gpu_ownership.check_gpu_ownership("0000:06:00.0")
+
+
 @pytest.mark.parametrize("changes", [
     {"gpu": "0000:07:00.0"}, {"name": "Xorg"},
-    {"allocation": "0 KiB"}, {"allocation": "malformed KiB"},
+    {"allocation": "0 KiB"}, {"allocation": "0"}, {"allocation": "malformed KiB"},
 ])
 def test_unrelated_or_empty_clients_do_not_block(tmp_path, monkeypatch, changes):
     _owner(tmp_path, monkeypatch, **changes)
