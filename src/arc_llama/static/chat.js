@@ -8,6 +8,14 @@ function applyTheme(theme) {
   if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
 }
 applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
+// Side panels open beneath the header so its history/settings buttons stay reachable.
+(() => {
+  const header = $("header");
+  if (!header) return;
+  const publish = () => document.documentElement?.style?.setProperty?.("--header-h", `${header.offsetHeight}px`);
+  publish();
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(publish).observe(header);
+})();
 const chatLog = $("#chat-log");
 const emptyState = $("#empty-state");
 const modelSelect = $("#model-select");
