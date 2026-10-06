@@ -65,17 +65,21 @@ runs were not performed.
 
 ## Remaining release gates
 
-- The exact integrated tree has not run on GitHub Actions yet. Draft PR #68
-  targets `main` to trigger Linux and Windows CI on Python 3.10, 3.12, and
-  3.14, plus the bare-wheel job.
+- Exact-tree GitHub Actions run `37396095836` passed: Linux and Windows on
+  Python 3.10, 3.12, and 3.14; Linux and Windows bare-wheel installs; and the
+  Chromium browser regression job. Windows full suites took about 7.5–10
+  minutes, but passed. Draft PR #68 remains open against `main`.
 - The original host-RAM incident's exact old workload remains untested after
   the ownership changes. The passing bounded Qwen run documented in
   `release-validation-linux-2026-10-03.md` uses the CPU vision projector and
-  does not prove that the old all-GPU-projector recipe is safe.
+  does not prove that the old all-GPU-projector recipe is safe. That workload
+  was intentionally not repeated because it previously disrupted the host;
+  use the tested CPU-projector recipe for Qwen on this B60 setup.
 - The repository's release plan calls for a public release-candidate soak.
   That gate was intentionally skipped at the owner's direction; this report
   does not claim the planned soak occurred.
 
-The local package is prepared and the available code/inference checks pass, but
-the missing exact-tree CI and incident-workload evidence remain review points
-before deciding to publish `0.9.0`.
+The source, package, local inference, and exact-tree CI checks are green. The
+remaining release decision is whether to accept the explicitly skipped public
+candidate soak and the untested old all-GPU-projector recipe; neither is
+represented here as validated. No release has been published.
