@@ -9,23 +9,30 @@ claiming a public candidate soak.
 
 - Checkout: `/home/slowe/arc-llama`, branch `maintenance/rc1-local-follow-up`,
   base commit `4c2237d`.
-- PRs #64–#67 are applied in the working tree. They remain uncommitted local
-  changes; no PR was merged, and nothing was pushed.
+- PRs #64–#67 are integrated in the working tree; their original PRs remain
+  separate. The prepared change was committed and pushed as
+  `3724761` on this branch. Draft integration PR #68 targets `main`; it is not
+  merged, and no release was published.
+- The branch was merged locally with the current `origin/main` tip
+  (`57764df`), which removes the vision companion from this repository because
+  it is maintained separately. The companion suite had passed before that
+  repository split.
 - Package metadata is set to `0.9.0` in `pyproject.toml` and `uv.lock`.
 - The README identifies this as unpublished release preparation. The changelog
   records the locally integrated PR changes under `Unreleased`.
 
 ## Local validation
 
-- Previously completed combined test run after applying PRs: core suite
-  **1131 passed, 1 deselected**; vision suite **86 passed**; browser suite
-  **10 passed**; Ruff, mypy, JavaScript syntax, and lock consistency passed.
+- Current core CI-style suite after merging `main` (Python 3.12):
+  **1143 passed, 1 skipped** (the opt-in live smoke test), with one Starlette
+  deprecation warning. The companion suite previously passed **86 tests**.
+- Current browser suite after merging `main`: **10 passed**.
 - Native inference on the existing `lfm2.5` model after applying PRs:
   **1 smoke test passed**, including streaming and non-streaming responses.
 - Current focused regression run for the GPU ownership and semantic-search
   changes: **25 passed**.
-- `ruff check`, `git diff --check`, and `uv lock --check` passed on the current
-  release-preparation tree.
+- Ruff, mypy (48 source files), JavaScript syntax, `uv lock --check`, and
+  `git diff --check` passed on the current release-preparation tree.
 - Built a wheel and source archive locally from the source distribution:
   `arc_llama-0.9.0-py3-none-any.whl` and `arc_llama-0.9.0.tar.gz`. Archive
   inspection confirmed the `0.9.0` wheel metadata, required UI assets, and GPU
@@ -58,10 +65,9 @@ runs were not performed.
 
 ## Remaining release gates
 
-- The exact integrated tree has not run on GitHub Actions. The repository asks
-  for Linux and Windows CI on Python 3.10, 3.12, and 3.14, plus the bare-wheel
-  job. Those checks require the integrated source to be pushed to a CI-visible
-  ref; this work made no commit or push.
+- The exact integrated tree has not run on GitHub Actions yet. Draft PR #68
+  targets `main` to trigger Linux and Windows CI on Python 3.10, 3.12, and
+  3.14, plus the bare-wheel job.
 - The original host-RAM incident's exact old workload remains untested after
   the ownership changes. The passing bounded Qwen run documented in
   `release-validation-linux-2026-10-03.md` uses the CPU vision projector and
