@@ -47,5 +47,5 @@ def test_runtime_use_switches_configured_binary_and_backend(tmp_path):
 
     assert result.exit_code == 0, result.output
     saved = load_config(config_path)
-    assert saved.paths.llama_server.endswith("/llama-server")
+    assert Path(saved.paths.llama_server).name == "llama-server"
     assert saved.gpus[0].backend == Backend.VULKAN.value

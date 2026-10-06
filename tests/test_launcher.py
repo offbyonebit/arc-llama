@@ -711,6 +711,11 @@ def test_stop_timeout_retains_child_lock_and_log_until_exit(monkeypatch, tmp_pat
     from arc_llama.launcher import LaunchPlan
 
     monkeypatch.setattr(launcher, "_IS_WINDOWS", windows)
+    # This parameter exercises the POSIX process-group path even when the
+    # test suite itself runs on Windows, where SIGKILL is not defined.
+    monkeypatch.setattr(
+        launcher.signal, "SIGKILL", getattr(launcher.signal, "SIGKILL", 9), raising=False
+    )
     monkeypatch.setattr(launcher.os, "killpg", Mock(), raising=False)
     monkeypatch.setattr(launcher.subprocess, "run", Mock())
     srv = LlamaServer(LaunchPlan(argv=["unused"], env={}), "stuck")

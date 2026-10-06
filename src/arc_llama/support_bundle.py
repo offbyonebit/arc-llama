@@ -21,7 +21,13 @@ _TOKEN_QUERY = re.compile(r"([?&](?:token|api[_-]?key|password|secret)=)[^&\s]+"
 def _safe_text(value: str) -> str:
     """Remove common credential-bearing query values and local home paths."""
     home = str(Path.home())
-    value = value.replace(home, "$HOME")
+    # Config files can carry either slash style regardless of the current OS.
+    # Redact equivalent home spellings so a Windows support bundle also hides
+    # a path copied in POSIX form (and vice versa).
+    home_variants = {home, home.replace("\\", "/"), home.replace("/", "\\")}
+    flags = re.IGNORECASE if sys.platform == "win32" else 0
+    for variant in sorted(home_variants, key=len, reverse=True):
+        value = re.sub(re.escape(variant), "$HOME", value, flags=flags)
     return _TOKEN_QUERY.sub(r"\1[REDACTED]", value)
 
 
