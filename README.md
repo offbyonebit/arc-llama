@@ -15,24 +15,11 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Release candidate: 0.9.0rc1.** Tested end-to-end on Battlemage B60 on Linux
-> and Windows. The release-prep branch includes the one-command `arc-llama run`
-> flow, verified portable runtime installation, native Windows SYCL inference,
-> streaming, Ollama-compatible endpoints, and the OpenAI-compatible API.
-> `arc-llama install-runtime` fetches a portable Vulkan `llama-server` and
-> serves real inference with no oneAPI install or source build. The Windows
-> SYCL runtime also passes GPU discovery, model startup, streaming, and the
-> OpenAI-compatible API. HF download, streaming, and the OpenAI-compatible
-> API all pass. Other SKUs (A770, A380,
-> B580) need community confirmation -- open an issue if something breaks on
-> your card.
+> **Local 0.9.0 release preparation; not published.** See the [release
+> preparation report](docs/release-prep-2026-10-05.md) for test results, hardware
+> coverage, and outstanding release gates.
 
-The current local 0.9.0rc2 candidate has a separate [Linux end-to-end validation
-report](docs/release-validation-linux-2026-10-03.md), including native long-context
-Qwen, image generation, queued text, and package-upgrade evidence. Its Windows
-changes still require candidate testing; the RC1 note above describes RC1.
-
-## What's new in 0.9.0rc1
+## What's new in 0.9.0
 
 - **One-command setup and launch:** `arc-llama run` accepts a registered model,
   local GGUF, or Hugging Face GGUF source; it prepares the runtime and model,
@@ -180,7 +167,8 @@ curl http://127.0.0.1:11437/v1/chat/completions \
 - Kernel **6.14+ recommended** for Battlemage (`xe` driver; 6.8 is the minimum
   where `xe` exists, but 6.14+ is stable for BMG) or 5.17+ for Alchemist
   (`i915`). This matches the threshold `arc-llama doctor` warns on.
-- User in the `render` and `video` groups (`arc-llama doctor` will tell you).
+- User in the `render` and `video` groups (`arc-llama doctor` will tell you;
+  see [GPU setup](docs/gpu-setup.md) for the fix).
 
 ### Windows
 
@@ -439,7 +427,8 @@ do not fit your workload.
 The router serialises swaps with an `asyncio.Lock`, so concurrent requests for
 the same model fan out to one warm backend. Health is polled at
 `{backend_url}/health`; cold-start budget is 120 s by default to absorb the
-SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch.
+SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch (see
+[GPU setup](docs/gpu-setup.md) to remove it with an AOT build).
 
 ## Why not just use Ollama / vLLM?
 
@@ -590,7 +579,8 @@ The unchecked items will be linked to public tracking issues as they are
 opened. Multi-GPU support remains available for testing but is not a blocker
 for the initial single-GPU 1.0 release.
 
-See the [compatibility contract](docs/compatibility.md), [remote-access and
+See the [compatibility contract](docs/compatibility.md), [GPU setup
+guide](docs/gpu-setup.md), [remote-access and
 security guidance](docs/security.md), and [release-candidate
 checklist](docs/release-checklist.md) for the concrete promises and validation
 matrix. The detailed implementation sequence and release gates are in the

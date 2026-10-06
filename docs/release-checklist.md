@@ -59,8 +59,13 @@ history export/import, and error states work without browser-console errors.
 ## Hardware matrix
 
 Test Windows and Linux with at least one consumer Alchemist card and one
-consumer Battlemage card. Test Vulkan on every host and SYCL wherever the Intel
-oneAPI runtime is supported. On each combination:
+consumer Battlemage card when that hardware is available. Test Vulkan on every
+host and SYCL wherever the Intel oneAPI runtime is supported. If a SKU cannot
+be tested physically, retain its exact hardware/runtime coverage as `NOT RUN`
+and add an online compatibility review using vendor API support and upstream
+llama.cpp backend/device evidence. Online evidence documents the coverage gap;
+it does not claim Arc Llama was run on that SKU. On each physically available
+combination:
 
 1. Start from a new Python environment and no Arc Llama configuration.
 2. Run `arc-llama doctor` and save the diagnostics.

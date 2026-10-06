@@ -535,10 +535,6 @@ class Router:
         """
         return [n for n, s in self._servers.items() if s is not None and s.is_running]
 
-    def backend_url_for(self, model_name: str) -> str | None:
-        srv = self._servers.get(model_name)
-        return srv.plan.backend_url if srv else None
-
     # ------------------------------------------------------------------
     # Swap
     # ------------------------------------------------------------------

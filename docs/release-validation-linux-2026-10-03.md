@@ -250,6 +250,28 @@ image, model reload, answer, and cleanup. Minimum MemAvailable was **19319 MiB
 The final suites and broad installed-wheel HTTP checks were repeated after
 these fixes. Existing ownership/lifecycle safeguards also remain covered.
 
+## Online hardware compatibility review
+
+Reviewed 2026-10-05 because additional physical GPUs are not available. The
+current host's Intel Arc Pro B60 is Battlemage/Xe2 (BMG G21), with 24 GiB GDDR6,
+oneAPI support, and Vulkan 1.3 according to Intel's [B60 specifications](https://www.intel.com/content/www/us/en/products/sku/243916/intel-arc-pro-b60-graphics/specifications.html).
+Intel lists Vulkan 1.3 for both consumer Arc B-Series (Battlemage) and Arc
+A-Series (Alchemist) in its [supported API table](https://www.intel.com/content/www/us/en/support/articles/000005524/graphics.html).
+
+The upstream [llama.cpp SYCL backend guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md)
+lists Arc B580 among verified B-Series devices and Arc A770, A750, and A730M
+among verified A-Series devices. The upstream [Intel GPU performance discussion](https://github.com/ggml-org/llama.cpp/discussions/23313)
+contains B60 Vulkan and SYCL benchmark entries. These sources support that the
+tested B60 and the listed consumer cards are in backend-supported families.
+They do not certify every SKU, driver release, board, Windows configuration,
+or Arc Llama behavior. B60's 24 GiB memory is twice the B580's 12 GiB, so its
+model-fit and performance results do not transfer to the consumer card.
+
+Coverage status remains: physical Linux B60 testing was performed on both
+Vulkan and SYCL. Native Windows validation and physical consumer Alchemist and
+Battlemage validation were not run. The online review is supporting evidence,
+not a substitute for those runs.
+
 ## Scope and saved evidence
 
 Windows is the excluded native platform. Linux hardware execution covers the

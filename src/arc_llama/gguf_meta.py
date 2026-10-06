@@ -767,24 +767,3 @@ def weight_tensor_table(path: Path | str) -> dict[str, int] | None:
     return {
         getattr(tensor, "name", "") or "": _tensor_vram_bytes(tensor) for tensor in reader.tensors
     }
-
-
-def gguf_vram_estimate(path: Path | str) -> dict[str, Any]:
-    """Return a detailed VRAM estimate for a GGUF file.
-
-    Keys:
-        - file_size_bytes: size on disk
-        - weight_vram_bytes: estimated weight footprint in VRAM
-        - params: total parameter count read from tensor shapes
-        - architecture: model architecture from metadata
-    """
-    p = Path(path)
-    file_size = p.stat().st_size if p.exists() else 0
-    weight_vram = estimate_weight_vram_bytes(p)
-    meta = read_gguf_meta(p)
-    return {
-        "file_size_bytes": file_size,
-        "weight_vram_bytes": weight_vram,
-        "params": weight_vram // 2 if weight_vram else None,
-        "architecture": meta.get("architecture", "unknown"),
-    }

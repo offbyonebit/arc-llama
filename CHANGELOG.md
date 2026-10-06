@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Document Intel Arc GPU setup, Linux device permissions, SYCL warm-up, and
+  ahead-of-time build targets.
+
+### Changed
+
+- Place chat history and model settings controls in the responsive header.
+- Reduce bundled logo and tool artwork sizes without changing their appearance.
+- Hide inactive repository scan progress indicators.
+
+### Fixed
+
+- Detect DRM allocations reported as bare byte counts when checking GPU ownership.
+- Make semantic-search tests deterministic with and without optional dependencies.
+
 ## [0.9.0rc2] - 2026-10-01
 
 ### Changed

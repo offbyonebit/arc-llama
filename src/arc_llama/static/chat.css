@@ -1086,51 +1086,30 @@ main {
 .ctx-tps { color: var(--fg-dim); }
 
 /* ------------------------------------------------------------------
-   Side-panel toggles
+   Header icon buttons (chat history, model settings)
    ------------------------------------------------------------------ */
-#settings-toggle, #history-toggle {
-  position: fixed;
-  bottom: 20px;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-  color: var(--fg-mute);
-  cursor: pointer;
-  display: flex;
+.icon-button {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition:
-    color var(--transition-fast),
-    border-color var(--transition-fast),
-    background var(--transition-fast),
-    transform var(--transition-base),
-    box-shadow var(--transition-fast);
-  z-index: 100;
-  box-shadow: var(--shadow-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-mute);
+  box-shadow: none;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-base);
 }
-
-#history-toggle { left: 20px; }
-#settings-toggle { right: 20px; }
-
-#settings-toggle:hover, #history-toggle:hover {
-  color: var(--accent-bright);
-  border-color: rgba(245, 176, 65, 0.25);
-  background: var(--bg-base);
-  box-shadow: var(--shadow-glow);
-}
-
-#settings-toggle.open {
-  transform: rotate(45deg);
-  color: var(--accent-bright);
-  border-color: rgba(245, 176, 65, 0.25);
-}
-
-#history-toggle.open {
-  color: var(--accent-bright);
-  border-color: rgba(245, 176, 65, 0.25);
-}
+.icon-button svg { flex: 0 0 auto; width: 18px; height: 18px; }
+.icon-button:hover:not(:disabled) { color: var(--fg); background: var(--bg-sunk, var(--bg-base)); transform: none; box-shadow: none; }
+#settings-toggle.open { color: var(--accent-bright); }
+#settings-toggle svg { transition: transform var(--transition-base); }
+#settings-toggle.open svg { transform: rotate(45deg); }
+#history-toggle.open { color: var(--accent-bright); }
 
 #settings-toggle:focus-visible,
 #history-toggle:focus-visible {
@@ -1143,7 +1122,7 @@ main {
    ------------------------------------------------------------------ */
 #settings-panel, #history-panel {
   position: fixed;
-  top: 0;
+  top: var(--header-h, 62px);
   bottom: 0;
   width: 300px;
   background: var(--bg-base);
@@ -1610,11 +1589,6 @@ main { max-width: 768px; padding: 32px 24px; gap: 30px; }
 .attachment-chip:hover { border-color: var(--border-strong); }
 .attachment-chip .attachment-icon { color: var(--fg-dim); }
 
-#settings-toggle, #history-toggle { top: 14px; bottom: auto; width: 32px; height: 32px; border: 0; border-radius: 4px; background: transparent; color: var(--fg-mute); box-shadow: none; }
-#history-toggle { left: 178px; }
-#settings-toggle { right: 136px; }
-#settings-toggle:hover, #history-toggle:hover, #settings-toggle.open, #history-toggle.open { color: var(--fg); border-color: transparent; background: #1e1e20; box-shadow: none; transform: none; }
-#settings-toggle:focus-visible, #history-toggle:focus-visible { outline: 2px solid var(--fg-dim); outline-offset: 2px; box-shadow: none; }
 #settings-panel, #history-panel { width: 320px; padding: 22px; background: #161618; border-color: var(--border) !important; box-shadow: var(--shadow-lg); transition: transform .18s ease-out; }
 .s-title, .h-title { color: var(--fg-mute); }
 .s-model-name { color: var(--fg); }
@@ -1631,13 +1605,12 @@ main { max-width: 768px; padding: 32px 24px; gap: 30px; }
 .command-item:hover, .command-item.selected { background: #1e1e20; }
 
 @media (max-width: 640px) {
-  header { min-height: 56px; padding: 0 16px; }
+  header { min-height: 56px; padding: 8px 16px; flex-wrap: wrap; row-gap: 4px; }
+  .meta { margin-left: auto; gap: 4px; }
   .tagline { display: none; }
   .model-bar { padding: 8px 16px; }
   main { padding: 24px 16px; }
   .input-area, .ctx-meter { padding-inline: 16px; }
-  #history-toggle { left: 144px; }
-  #settings-toggle { right: 102px; }
   #settings-panel, #history-panel { width: min(320px, 88vw); }
   .message.user { width: 92%; }
 }
@@ -1694,17 +1667,15 @@ button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12p
 [data-theme="light"] .message { box-shadow: 0 4px 16px rgba(24,32,44,.08); }
 [data-theme="light"] .input-wrap { box-shadow: 0 6px 20px rgba(24,32,44,.10); }
 
-/* Keep utility controls discoverable beside the header on every theme. */
-#history-toggle, #settings-toggle { width: 38px; height: 36px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-surface); color: var(--fg); box-shadow: 0 3px 10px rgba(0,0,0,.18); }
-#history-toggle { top: auto; left: 20px; right: auto; bottom: 20px; }
-#settings-toggle { top: auto; left: auto; right: 20px; bottom: 20px; }
-#history-toggle svg, #settings-toggle svg { width: 20px; height: 20px; }
-#history-toggle:hover, #settings-toggle:hover, #history-toggle.open, #settings-toggle.open { color: var(--fg); border-color: var(--border-strong); background: var(--bg-surface); box-shadow: 0 5px 14px rgba(0,0,0,.24); }
-[data-theme="light"] #history-toggle, [data-theme="light"] #settings-toggle { background: #ffffff; color: #566171; box-shadow: 0 3px 10px rgba(24,32,44,.12); }
-[data-theme="light"] #history-toggle:hover, [data-theme="light"] #settings-toggle:hover, [data-theme="light"] #history-toggle.open, [data-theme="light"] #settings-toggle.open { color: #18202c; background: #eef1f5; }
+/* Icon-only buttons must not inherit the text-button padding above, which squeezes their glyph to a dot. */
+#send-button, #attach-button, .vision-mode-cancel, .icon-button { padding: 0; }
+#send-button svg, #attach-button svg { flex: 0 0 auto; }
+.theme-toggle { padding: 6px 10px; border-color: transparent; background: transparent; color: var(--fg-dim); box-shadow: none; font-size: 12px; font-weight: 600; }
+.theme-toggle:hover:not(:disabled) { color: var(--fg); background: var(--bg-sunk, var(--bg-base)); box-shadow: none; transform: none; }
+.brand { align-items: center; }
 
 /* A brief welcome motion gives the chat surface a distinct arrival without delaying use. */
-header { position: relative; overflow: hidden; animation: chat-header-in .42s cubic-bezier(.22, .8, .28, 1) both; }
+header { position: relative; z-index: 100; overflow: hidden; animation: chat-header-in .42s cubic-bezier(.22, .8, .28, 1) both; }
 header::after { content: ""; position: absolute; inset: -60px -18%; z-index: 0; pointer-events: none; background: linear-gradient(108deg, transparent 14%, rgba(43, 113, 255, .08) 29%, rgba(0, 210, 255, .25) 41%, rgba(245, 176, 65, .34) 53%, rgba(194, 103, 67, .28) 62%, rgba(107, 75, 255, .13) 71%, transparent 84%); filter: blur(22px); transform: translateX(-58%); animation: chat-color-wash 1.35s cubic-bezier(.2, .7, .2, 1) .08s both; }
 header > * { position: relative; z-index: 1; }
 .brand-logo { animation: chat-logo-in .62s cubic-bezier(.22, .8, .28, 1) both; }

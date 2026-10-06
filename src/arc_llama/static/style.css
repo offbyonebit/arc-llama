@@ -81,6 +81,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
    while the scan request runs. The backend reports no percentage, so the bar
    honestly signals ongoing work without estimating completion. */
 .scan-status { display: flex; align-items: center; gap: 10px; margin: 12px 0 14px; padding: 9px 11px; border: 1px solid var(--border-muted); border-radius: var(--radius-small); background: var(--surface-sunk); color: var(--text-muted); font-size: 12.5px; }
+.scan-status[hidden], .scan-progress[hidden] { display: none; }
 .scan-status-text { min-width: 0; }
 .scan-status.busy { color: var(--text); }
 .scan-progress { flex: 0 0 auto; width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; position: relative; }

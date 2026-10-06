@@ -24,26 +24,55 @@ def test_build_repo_map(tmp_path: Path) -> None:
     assert "README.md" in text
 
 
-def test_semantic_search_requires_optional_dependency(tmp_path: Path) -> None:
-    index = SemanticIndex(tmp_path / "idx")
-    # If fastembed is installed this will index; if not it raises RuntimeError.
-    try:
-        import fastembed  # noqa: F401
-    except ImportError:
-        with pytest.raises(RuntimeError, match="semantic"):
-            index.index(tmp_path)
-        return
-
-    # When the optional dep is present, exercise the full flow.
-    (tmp_path / "main.py").write_text(
-        "def authenticate():\n    pass\n\ndef login():\n    pass\n",
-        encoding="utf-8",
+def test_semantic_search_requires_optional_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hide fastembed whether or not the extra is installed, so this checks the
+    # missing-dependency error instead of depending on the environment.
+    real_find_spec = repo_map_mod.importlib.util.find_spec
+    monkeypatch.setattr(
+        repo_map_mod.importlib.util,
+        "find_spec",
+        lambda name, *args, **kwargs: None
+        if name == "fastembed"
+        else real_find_spec(name, *args, **kwargs),
     )
-    stats = index.index(tmp_path)
-    assert stats["indexed_files"] == 1
-    results = index.search(tmp_path, "authentication logic", top_k=2)
-    assert len(results) <= 2
-    assert any("authenticate" in r["path"] or "authenticate" in r["snippet"] for r in results)
+    index = SemanticIndex(tmp_path / "idx")
+    with pytest.raises(RuntimeError, match="semantic"):
+        index.index(tmp_path)
+
+
+def test_semantic_search_indexes_and_ranks_with_embedder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    np = pytest.importorskip("numpy")
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "auth.py").write_text("def authenticate():\n    pass\n", encoding="utf-8")
+    (root / "other.py").write_text("def render_chart():\n    pass\n", encoding="utf-8")
+
+    class FakeEmbedder:
+        """Deterministic stand-in so no embedding model is downloaded."""
+
+        def embed(self, texts: list[str]):
+            return [
+                np.asarray(
+                    (1.0, 0.0) if "authent" in text.lower() else (0.0, 1.0),
+                    dtype=np.float32,
+                )
+                for text in texts
+            ]
+
+    index = SemanticIndex(tmp_path / "idx")
+    monkeypatch.setattr(index, "_check_enabled", lambda: True)
+    monkeypatch.setattr(index, "_embedder_instance", lambda: FakeEmbedder())
+
+    stats = index.index(root)
+    assert stats["indexed_files"] == 2
+    results = index.search(root, "authentication logic", top_k=2)
+    assert len(results) == 2
+    assert "authenticate" in results[0]["snippet"]
+    assert results[0]["score"] > results[1]["score"]
 
 
 def test_semantic_search_reuses_normalized_matrix_and_refreshes_after_reindex(
