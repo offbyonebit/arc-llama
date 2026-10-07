@@ -32,6 +32,29 @@ by a particular llama.cpp build remains conditional on that build. The `/admin`,
 `/v1/agent`, and `/v1/chats` routes are Arc Llama extensions and are versioned
 with this project rather than the OpenAI API.
 
+### Model capabilities
+
+Each local entry in `GET /v1/models` carries `metadata.capabilities`:
+`chat`, `completion`, and `embedding` for ordinary models, plus `vision`
+when a projector is attached, or only `rerank` for a reranker.
+
+- **Vision-language models.** A model whose recipe has `mmproj` starts with
+  `--mmproj` and accepts OpenAI `image_url` content parts in
+  `/v1/chat/completions`. `arc-llama scan`, `add`, and `run` attach a
+  projector from the model's folder automatically: one whose name shares
+  the model's family (`mmproj-gemma-3-...`), or a generic `mmproj-F16.gguf`
+  when every model in the folder is the same family. Hugging Face downloads
+  fetch the repo's projector beside the model. Image requests to a model
+  without a projector fail with HTTP 400 before any model is loaded. The
+  projector's size counts toward the VRAM fit; set `mmproj_offload = false`
+  to keep it on the CPU.
+- **Rerankers.** `POST /v1/rerank` forwards to a model whose recipe sets
+  `reranking = true`. Other models are refused with HTTP 400.
+- **Split GGUFs.** Files named `<name>-00001-of-0000N.gguf` register as one
+  model. Only the first shard is listed, sizes and VRAM fit cover every
+  shard, Hugging Face downloads fetch all shards, and a missing shard fails
+  with `shard_missing` before llama-server starts.
+
 ## Ollama-compatible API
 
 Arc Llama also provides a small compatibility surface for Ollama-aware clients:

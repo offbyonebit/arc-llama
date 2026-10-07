@@ -27,6 +27,7 @@ from arc_llama.config import Config, GPUConfig, ModelConfig
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
+    gguf_total_bytes,
     kv_bytes_per_token_f16,
     override_tensor_saved_bytes,
     scan_weight_tensors,
@@ -177,10 +178,9 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
     recipe = model.recipe or {}
     if recipe.get("n_cpu_moe") or recipe.get("override_tensor"):
         return None
-    try:
-        size = Path(model.path).stat().st_size
-    except OSError:
+    if not Path(model.path).exists():
         return None
+    size = gguf_total_bytes(model.path)
     mib = 1_048_576
     weight_mb = (size + mib - 1) // mib
     ctx = int(recipe.get("ctx", 8192))
@@ -194,7 +194,24 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         )
         // mib
     )
-    return weight_mb + kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+    return (
+        weight_mb + kv_mb + mmproj_vram_mb(recipe)
+        + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+    )
+
+
+def mmproj_vram_mb(recipe: dict[str, Any]) -> int:
+    """VRAM held by an offloaded multimodal projector, in MiB (0 if none)."""
+    mmproj = recipe.get("mmproj")
+    if not mmproj or recipe.get("mmproj_offload") is False:
+        return 0
+    try:
+        size = Path(str(mmproj)).expanduser().stat().st_size
+    except OSError:
+        return 0
+    # Projectors also allocate an image-encoder compute buffer; a quarter of
+    # their weight size is a conservative allowance measured on CLIP/SigLIP.
+    return int(size * 1.25) // 1_048_576
 
 
 def _estimate_model_vram_mb(
@@ -272,10 +289,7 @@ def _estimate_model_vram_mb(
     if weight_bytes is None:
         weight_bytes = estimate_weight_vram_bytes(path)
         if weight_bytes is None:
-            try:
-                weight_bytes = path.stat().st_size
-            except OSError:
-                weight_bytes = 0
+            weight_bytes = gguf_total_bytes(path)
             log.debug(
                 "VRAM estimate for %s falling back to file size: %.0f MiB",
                 model.name,
@@ -291,7 +305,7 @@ def _estimate_model_vram_mb(
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
-    return weight_mb + kv_mb + buffer_mb + _VRAM_SAFETY_MARGIN_MB
+    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
 
 _VRAM_ESTIMATE_CACHE_TTL_SECONDS = 120.0

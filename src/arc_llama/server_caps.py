@@ -45,6 +45,12 @@ class ServerCaps:
     Current llama.cpp removed ``--no-mmap``/``--mlock``/``--mmap`` in favor of
     ``--load-mode {auto,none,mmap,mlock,mmap+mlock,dio}``; the old flags are a
     hard parse error there, so launches must use the new one when it exists."""
+    supports_mmproj: bool = False
+    """Whether this binary accepts ``--mmproj`` for vision-language models."""
+    supports_reranking: bool = False
+    """Whether this binary can serve ``/v1/rerank`` (``--reranking``)."""
+    supports_tensor_split: bool = False
+    """Whether this binary accepts ``--tensor-split`` / ``--split-mode``."""
 
 
 def format_speculation_capability(caps: ServerCaps) -> str:
@@ -68,38 +74,35 @@ DEFAULT_CAPS = ServerCaps(
     supports_draft_model=True,
     supports_ngram=True,
     supports_load_mode=True,
+    supports_mmproj=True,
+    supports_reranking=True,
+    supports_tensor_split=True,
 )
 
 _cache: dict[tuple[str, float], ServerCaps] = {}
 
 
 def _parse_help(help_text: str) -> ServerCaps:
+    features = {
+        "probed": True,
+        "supports_speculative": "--spec-type" in help_text,
+        "supports_draft_model": "--spec-draft-model" in help_text,
+        "supports_ngram": "ngram" in help_text.lower() and "--spec-type" in help_text,
+        "supports_load_mode": "--load-mode" in help_text,
+        "supports_mmproj": "--mmproj" in help_text,
+        "supports_reranking": "--rerank" in help_text,
+        "supports_tensor_split": "--tensor-split" in help_text,
+    }
     idx = help_text.find("--flash-attn")
     if idx < 0:
-        return ServerCaps(
-            supports_flash_attn=False,
-            flash_attn_takes_value=False,
-            probed=True,
-            supports_speculative="--spec-type" in help_text,
-            supports_draft_model="--spec-draft-model" in help_text,
-            supports_ngram="ngram" in help_text.lower() and "--spec-type" in help_text,
-            supports_load_mode="--load-mode" in help_text,
-        )
+        return ServerCaps(supports_flash_attn=False, flash_attn_takes_value=False, **features)
     # New-style help reads: "-fa, --flash-attn FA  set Flash Attention use
     # ('on', 'off', or 'auto', default: 'auto')". Old-style: "-fa, --flash-attn
     # enable Flash Attention (default: disabled)". 'auto' in the option's help
     # window is the discriminator.
     window = help_text[idx : idx + 240]
     takes_value = "auto" in window
-    return ServerCaps(
-        supports_flash_attn=True,
-        flash_attn_takes_value=takes_value,
-        probed=True,
-        supports_speculative="--spec-type" in help_text,
-        supports_draft_model="--spec-draft-model" in help_text,
-        supports_ngram="ngram" in help_text.lower() and "--spec-type" in help_text,
-            supports_load_mode="--load-mode" in help_text,
-    )
+    return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
 
 
 def probe_server_caps(llama_server: str) -> ServerCaps:

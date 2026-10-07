@@ -47,6 +47,7 @@ from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
+from arc_llama.gguf_meta import gguf_total_bytes
 from arc_llama.plugin_api import PLUGIN_API_VERSION, _event_bus
 from arc_llama.plugins import (
     PluginDiscovery,
@@ -400,6 +401,7 @@ def create_app(
                         "gpu_pci_slot": m.gpu_pci_slot,
                         "loaded": bool(srv and srv.is_running and srv.ready),
                         "aliases": list(m.aliases),
+                        "capabilities": model_capabilities(m),
                     },
                 }
             )
@@ -438,6 +440,15 @@ def create_app(
     @app.post("/v1/completions")
     async def chat_or_completions(request: Request):
         return await _proxy_post(request, request.url.path)
+
+    @app.post("/v1/rerank")
+    async def rerank(request: Request):
+        """Rank documents against a query with a reranker model.
+
+        The target model needs ``reranking = true`` in its recipe, which
+        starts its llama-server with ``--reranking``.
+        """
+        return await _proxy_post(request, "/v1/rerank", streaming_ok=False)
 
     @app.post("/v1/embeddings")
     async def embeddings(request: Request):
@@ -906,10 +917,11 @@ def create_app(
             r = m.recipe or {}
             running = bool(srv and srv.is_running)
             loaded = bool(srv and srv.is_running and srv.ready)
-            try:
-                model_file_mb = (Path(m.path).stat().st_size + 1_048_575) // 1_048_576
-            except OSError:
-                model_file_mb = None
+            model_file_mb = (
+                (gguf_total_bytes(m.path) + 1_048_575) // 1_048_576
+                if Path(m.path).exists()
+                else None
+            )
             fit_info = await asyncio.to_thread(
                 model_vram_fit_info, m, c.find_gpu(m.gpu_pci_slot), vram_cache
             )
@@ -941,6 +953,9 @@ def create_app(
                     "batch_size": r.get("batch_size"),
                     "kv_class": m.kv_class,
                     "aliases": list(m.aliases),
+                    "capabilities": model_capabilities(m),
+                    "mmproj": r.get("mmproj"),
+                    "tensor_split": r.get("tensor_split"),
                     "tune_state": m.tune_state,
                     "tuned_at": m.tuned_at,
                     "tune_error": m.tune_error,
@@ -1427,6 +1442,64 @@ def create_app(
                 recipe["override_tensor"] = list(v)
                 recipe.pop("n_cpu_moe", None)
             changed.append("override_tensor")
+        if "mmproj" in body:
+            v = body["mmproj"]
+            if v is None or v == "":
+                recipe.pop("mmproj", None)
+                recipe.pop("mmproj_offload", None)
+            else:
+                mmproj_path = Path(str(v)).expanduser()
+                if mmproj_path.suffix.lower() != ".gguf" or not mmproj_path.is_file():
+                    raise HTTPException(
+                        status_code=400, detail="mmproj must be the path of an existing .gguf file"
+                    )
+                recipe["mmproj"] = str(mmproj_path)
+            changed.append("mmproj")
+        for flag in ("mmproj_offload", "reranking"):
+            if flag in body:
+                v = body[flag]
+                if not isinstance(v, bool):
+                    raise HTTPException(status_code=400, detail=f"{flag} must be a boolean")
+                default = flag == "mmproj_offload"
+                if v == default:
+                    recipe.pop(flag, None)
+                else:
+                    recipe[flag] = v
+                changed.append(flag)
+        if "tensor_split" in body:
+            v = body["tensor_split"]
+            if v is None or v == []:
+                recipe.pop("tensor_split", None)
+                recipe.pop("split_mode", None)
+            else:
+                if (
+                    not isinstance(v, list)
+                    or not 2 <= len(v) <= 8
+                    or not all(
+                        isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0
+                        for x in v
+                    )
+                    or not any(x > 0 for x in v)
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="tensor_split must be 2..8 non-negative numbers, or null",
+                    )
+                recipe["tensor_split"] = [float(x) for x in v]
+            changed.append("tensor_split")
+        if "split_mode" in body:
+            from arc_llama.recipes import SPLIT_MODES
+
+            v = body["split_mode"]
+            if v is None:
+                recipe.pop("split_mode", None)
+            elif v in SPLIT_MODES:
+                recipe["split_mode"] = v
+            else:
+                raise HTTPException(
+                    status_code=400, detail=f"split_mode must be one of {list(SPLIT_MODES)} or null"
+                )
+            changed.append("split_mode")
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe = model.recipe
@@ -1585,6 +1658,61 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
     return JSONResponse(result, status_code=response.status_code)
 
 
+_IMAGE_PART_TYPES = {"image_url", "input_image", "image"}
+
+
+def request_has_images(body: dict[str, Any]) -> bool:
+    """True when an OpenAI chat body carries image content parts."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES:
+                return True
+    return False
+
+
+def model_capabilities(model: Any) -> list[str]:
+    """Capability tags advertised in /v1/models and used for validation."""
+    recipe = getattr(model, "recipe", None) or {}
+    if recipe.get("reranking"):
+        return ["rerank"]
+    caps = ["chat", "completion", "embedding"]
+    if recipe.get("mmproj"):
+        caps.append("vision")
+    return caps
+
+
+def _check_local_capabilities(
+    rt: Router, model_query: str, body: dict[str, Any], target_path: str
+) -> None:
+    cfg = getattr(rt, "cfg", None)
+    model = cfg.find_model(model_query) if cfg is not None and model_query else None
+    if model is None:
+        return
+    caps = model_capabilities(model)
+    if target_path == "/v1/rerank" and "rerank" not in caps:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model {model.name!r} is not a reranker. Set reranking = true in its "
+                "recipe, or choose a reranker model."
+            ),
+        )
+    if target_path == "/v1/chat/completions" and request_has_images(body) and "vision" not in caps:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model {model.name!r} cannot read images: it has no vision projector "
+                "(mmproj). Choose a vision-language model, or set mmproj in its recipe."
+            ),
+        )
+
+
 async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = True):
     rt: Router = request.app.state.router
     mgr: UpstreamManager = request.app.state.upstream_mgr
@@ -1671,6 +1799,10 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             headers=_strip_response_headers(dict(upstream_resp.headers)),
             media_type=upstream_resp.headers.get("content-type", "application/json"),
         )
+
+    # Reject requests a local model cannot serve before loading it, so a
+    # mistaken request never evicts a working model just to fail.
+    _check_local_capabilities(rt, model_query, body, target_path)
 
     # Local model — router manages llama-server lifecycle. The in-flight count
     # spans the ENTIRE request lifetime from here until the forwarded response

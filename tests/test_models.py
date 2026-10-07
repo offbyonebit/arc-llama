@@ -108,7 +108,9 @@ def test_download_from_hf_explicit_filename(mock_hf_module, tmp_path):
         result = download_from_hf(spec, target_dir=tmp_path)
 
     assert result == Path("/mock/download/model.gguf")
-    mock_api.list_repo_files.assert_not_called()
+    # The listing finds split shards and projectors; with none, only the
+    # named file downloads.
+    mock_api.list_repo_files.assert_called_once_with("org/repo")
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",

@@ -55,6 +55,13 @@ KV_PER_TOKEN_F16_BYTES: dict[str, int] = {
 FLASH_ATTN_VALUES = ("on", "off", "auto")
 
 
+SPLIT_MODES = ("layer", "row")
+
+
+def _fmt_ratio(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+
 @dataclass
 class LaunchRecipe:
     """A complete llama-server invocation, minus the model path and port."""
@@ -110,6 +117,20 @@ class LaunchRecipe:
     Not an expert count — llama.cpp matches blk.N.ffn_{gate,up,down}_exps.*."""
     extra_flags: list[str] = field(default_factory=list)
     """Anything else the user wants appended to the command line verbatim."""
+
+    mmproj: str | None = None
+    """Multimodal projector GGUF (--mmproj) that turns a vision-language
+    model's text weights into an image-capable server."""
+    mmproj_offload: bool = True
+    """Keep the projector on the GPU. False adds --no-mmproj-offload, which
+    saves its VRAM at the cost of slower image encoding."""
+    reranking: bool = False
+    """Serve /v1/rerank (--reranking) for reranker models."""
+    tensor_split: list[float] | None = None
+    """Proportions for spreading one model across several GPUs
+    (--tensor-split), e.g. [1, 1] for two equal cards."""
+    split_mode: str | None = None
+    """--split-mode: 'layer' (default when splitting) or 'row'."""
 
     override_tensor: list[str] | None = None
     """Tensor-buffer overrides as repeated ``--override-tensor <pattern>=CPU``.
@@ -185,6 +206,16 @@ class LaunchRecipe:
                 argv += ["--override-tensor", f"{pat}=CPU"]
         elif self.n_cpu_moe is not None:
             argv += ["--n-cpu-moe", str(self.n_cpu_moe)]
+        if self.mmproj:
+            argv += ["--mmproj", self.mmproj]
+            if not self.mmproj_offload:
+                argv += ["--no-mmproj-offload"]
+        if self.reranking:
+            argv += ["--reranking"]
+        if self.tensor_split:
+            argv += ["--tensor-split", ",".join(_fmt_ratio(v) for v in self.tensor_split)]
+            if self.split_mode in SPLIT_MODES:
+                argv += ["--split-mode", self.split_mode]
         argv += list(self.extra_flags)
         return argv
 
@@ -486,6 +517,16 @@ def recipe_to_dict(recipe: LaunchRecipe) -> dict:
         d["n_cpu_moe"] = recipe.n_cpu_moe
     if recipe.override_tensor:
         d["override_tensor"] = list(recipe.override_tensor)
+    if recipe.mmproj:
+        d["mmproj"] = recipe.mmproj
+        if not recipe.mmproj_offload:
+            d["mmproj_offload"] = False
+    if recipe.reranking:
+        d["reranking"] = True
+    if recipe.tensor_split:
+        d["tensor_split"] = list(recipe.tensor_split)
+        if recipe.split_mode:
+            d["split_mode"] = recipe.split_mode
     if recipe.no_mmap:
         d["no_mmap"] = True
     if recipe.mlock:

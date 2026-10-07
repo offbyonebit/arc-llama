@@ -323,6 +323,11 @@ class ModelConfig:
             if r.get("override_tensor")
             else None,
             extra_flags=list(r.get("extra_flags", [])),
+            mmproj=r.get("mmproj") or None,
+            mmproj_offload=bool(r.get("mmproj_offload", True)),
+            reranking=bool(r.get("reranking", False)),
+            tensor_split=[float(v) for v in r["tensor_split"]] if r.get("tensor_split") else None,
+            split_mode=r.get("split_mode") or None,
         )
 
 

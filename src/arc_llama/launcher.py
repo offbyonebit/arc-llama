@@ -385,6 +385,21 @@ def build_plan(
         recipe.spec_type = None
         recipe.spec_draft_model = None
 
+    if recipe.mmproj and not caps.supports_mmproj:
+        log.warning(
+            "[%s] %s has no --mmproj; starting text-only (image input disabled)",
+            model.name, cfg.paths.llama_server,
+        )
+        recipe.mmproj = None
+    if recipe.reranking and not caps.supports_reranking:
+        log.warning("[%s] %s has no --reranking; rerank disabled", model.name, cfg.paths.llama_server)
+        recipe.reranking = False
+    if recipe.tensor_split and not caps.supports_tensor_split:
+        log.warning(
+            "[%s] %s has no --tensor-split; using a single GPU", model.name, cfg.paths.llama_server
+        )
+        recipe.tensor_split = None
+
     argv: list[str] = [
         cfg.paths.llama_server,
         "-m", model.path,

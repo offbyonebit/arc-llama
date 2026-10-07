@@ -23,11 +23,15 @@ from arc_llama.config import (
     ModelConfig,
 )
 from arc_llama.gguf_meta import (
+    gguf_shards,
+    gguf_total_bytes,
     has_mtp_heads,
     is_hybrid_ssm,
     is_moe,
+    is_secondary_shard,
     kv_bytes_per_token_f16,
     read_gguf_meta,
+    split_info,
     trained_context_length,
 )
 from arc_llama.recipes import default_recipe, recipe_to_dict
@@ -170,7 +174,7 @@ def add_local_model(
     recipe = default_recipe(
         arch=arch,
         vram_mb=gpu.vram_mb or 8192,
-        model_file_mb=p.stat().st_size // (1024 * 1024),
+        model_file_mb=gguf_total_bytes(p) // (1024 * 1024),
         kv_class=kv_class,
         backend=backend,
         trained_ctx=trained_ctx,
@@ -178,6 +182,10 @@ def add_local_model(
         f16_bytes_per_token=exact_kv_bytes,
     )
     recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
+    mmproj = find_mmproj(p)
+    if mmproj is not None:
+        recipe_dict["mmproj"] = str(mmproj)
+        log.info("model %s: pairing vision projector %s", name, mmproj.name)
     # Auto-enable draft-mtp for models that actually carry MTP heads.
     # Measured B60/Qwen3.6-27B-MTP: draft-mtp n_max 1–4 ≈ +20% gen vs none;
     # n_max 5–6 regresses. Pin n_max=3 (llama default / mid of the good band).
@@ -495,6 +503,9 @@ def is_auxiliary_gguf(filename: str) -> bool:
     lowered = filename.lower()
     if not lowered.endswith(".gguf"):
         lowered = lowered + ".gguf"
+    if is_secondary_shard(lowered):
+        # Shards 2..N of a split model belong to shard 1's registration.
+        return True
     if _MTP_SUFFIX_RE.search(lowered):
         return True
     stem = lowered[:-5]
@@ -504,6 +515,78 @@ def is_auxiliary_gguf(filename: str) -> bool:
     if _AUX_GGUF_RE.search(stem):
         return True
     return False
+
+
+_MMPROJ_RE = re.compile(r"(^|[-_.])(mmproj|projector)([-_.]|$)", re.IGNORECASE)
+_TOKEN_SPLIT_RE = re.compile(r"[-_.\s]+")
+# Tokens that describe precision or packaging rather than the model family.
+_NON_FAMILY_TOKEN_RE = re.compile(
+    r"^(mmproj|projector|model|gguf|f16|bf16|f32|fp16|fp32|q\d.*|iq\d.*|\d+)$", re.IGNORECASE
+)
+_MMPROJ_PRECISION_RANK = {"f16": 0, "bf16": 1, "fp16": 0, "f32": 2, "fp32": 2}
+
+
+def _family(stem: str) -> str | None:
+    """First descriptive token of a GGUF stem (``gemma``, ``qwen2``, ...).
+
+    Quant, precision and ``mmproj`` tokens are skipped, so a bare
+    ``mmproj-F16`` has no family.
+    """
+    for token in _TOKEN_SPLIT_RE.split(stem):
+        if token and not _NON_FAMILY_TOKEN_RE.match(token):
+            return token.lower()
+    return None
+
+
+def is_mmproj_gguf(path: Path | str) -> bool:
+    """True when ``path`` names a multimodal projector GGUF."""
+    name = Path(path).name
+    return name.lower().endswith(".gguf") and bool(_MMPROJ_RE.search(name[:-5]))
+
+
+def find_mmproj(model_path: Path | str, siblings: list[Path] | None = None) -> Path | None:
+    """Return the vision projector that belongs to ``model_path``, if any.
+
+    Projectors are paired only from the model's own directory. A projector
+    whose name shares a family token with the model (``mmproj-gemma-3-...``
+    next to ``gemma-3-...``) is preferred. A generic one (``mmproj-F16.gguf``,
+    as Hugging Face repos ship it) is used only when every model in the
+    directory belongs to the same family, so a projector is never attached
+    to an unrelated model that happens to share a folder. F16 is preferred
+    over BF16 and F32 when several fit.
+    """
+    main = Path(model_path)
+    if siblings is None:
+        try:
+            siblings = [p for p in main.parent.iterdir() if p.is_file()]
+        except OSError:
+            return None
+    projectors = [p for p in siblings if is_mmproj_gguf(p)]
+    if not projectors:
+        return None
+    model_family = _family(main.stem)
+    if model_family is None:
+        return None
+    others = [
+        p for p in siblings
+        if p.name.lower().endswith(".gguf")
+        and not is_auxiliary_gguf(p.name)
+        and p != main
+    ]
+    same_family_dir = all(_family(p.stem) == model_family for p in others)
+
+    def rank(p: Path) -> tuple[int, str]:
+        tokens = {t.lower() for t in _TOKEN_SPLIT_RE.split(p.stem)}
+        precision = min((_MMPROJ_PRECISION_RANK.get(t, 3) for t in tokens), default=3)
+        return (precision, p.name)
+
+    matched = [p for p in projectors if _family(p.stem) == model_family]
+    if matched:
+        return sorted(matched, key=rank)[0]
+    generic = [p for p in projectors if _family(p.stem) is None]
+    if generic and same_family_dir:
+        return sorted(generic, key=rank)[0]
+    return None
 
 
 def is_partial_download(path: Path | str) -> bool:
@@ -638,7 +721,7 @@ def register_discovered(
         recipe = default_recipe(
             arch=arch,
             vram_mb=gpu.vram_mb or 8192,
-            model_file_mb=rp.stat().st_size // (1024 * 1024),
+            model_file_mb=gguf_total_bytes(rp) // (1024 * 1024),
             kv_class=kv_class,
             backend=backend,
             trained_ctx=trained_ctx,
@@ -646,6 +729,10 @@ def register_discovered(
             f16_bytes_per_token=exact_kv_bytes,
         )
         recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
+        mmproj = find_mmproj(rp)
+        if mmproj is not None:
+            recipe_dict["mmproj"] = str(mmproj)
+            log.info("discovered %s: pairing vision projector %s", rp.name, mmproj.name)
         # Auto-enable draft-mtp for discovered models that carry MTP heads.
         # n_max=3 pinned from B60 measurements (see bench_results/SUMMARY.md).
         if has_mtp_heads(rp):
@@ -866,33 +953,89 @@ def download_from_hf(
             "and use `arc-llama add --path /path/to/model.gguf`."
         ) from e
 
-    file = spec.file
-    if file is None:
-        api = HfApi(token=token)
-        files = [f for f in api.list_repo_files(spec.repo) if f.endswith(".gguf")]
-        if spec.quant:
-            ql = spec.quant.lower()
-            matches = [f for f in files if ql in f.lower()]
-            if not matches:
-                raise FileNotFoundError(
-                    f"No GGUF in {spec.repo} matched quant hint '{spec.quant}'. "
-                    f"Available: {', '.join(sorted(files))}"
-                )
-            # Prefer uniform quants (no "_xl" / "ud-") if multiple matched.
-            uniform = [f for f in matches if "_xl" not in f.lower() and "ud-" not in f.lower()]
-            file = sorted(uniform or matches)[0]
-        elif len(files) == 1:
-            file = files[0]
-        else:
-            raise ValueError(
-                f"Repo {spec.repo} has {len(files)} GGUF files; specify one with "
-                f"`{spec.repo}:<filename>` or `{spec.repo}:Q4_K_M`."
-            )
-    return Path(
+    # The listing is needed to find shards and projectors even when the user
+    # named an exact file; without it an explicit file still downloads alone.
+    repo_files: list[str] | None
+    try:
+        repo_files = list(HfApi(token=token).list_repo_files(spec.repo))
+    except Exception:
+        if spec.file is None:
+            raise
+        repo_files = None
+    main_file, extras = plan_hf_files(spec, repo_files)
+    main_path = Path(
         hf_hub_download(
             repo_id=spec.repo,
-            filename=file,
+            filename=main_file,
             local_dir=str(target_dir),
             token=token,
         )
     )
+    for extra in extras:
+        hf_hub_download(
+            repo_id=spec.repo,
+            filename=extra,
+            local_dir=str(target_dir),
+            token=token,
+        )
+    return main_path
+
+
+def plan_hf_files(spec: HFModelSpec, repo_files: list[str] | None) -> tuple[str, list[str]]:
+    """Choose the GGUF to register and the companion files it needs.
+
+    Returns ``(main_file, extras)``. ``extras`` holds the remaining shards of
+    a split model and, for vision-language repos, the projector placed in the
+    same folder as the model so discovery pairs it. Projector and shard files
+    are never picked as the main model.
+    """
+    ggufs = [f for f in (repo_files or []) if f.lower().endswith(".gguf")]
+    file = spec.file
+    if file is None:
+        candidates = [f for f in ggufs if not is_auxiliary_gguf(Path(f).name)]
+        if spec.quant:
+            ql = spec.quant.lower()
+            matches = [f for f in candidates if ql in f.lower()]
+            if not matches:
+                raise FileNotFoundError(
+                    f"No GGUF in {spec.repo} matched quant hint '{spec.quant}'. "
+                    f"Available: {', '.join(sorted(candidates))}"
+                )
+            # Prefer uniform quants (no "_xl" / "ud-") if multiple matched.
+            uniform = [f for f in matches if "_xl" not in f.lower() and "ud-" not in f.lower()]
+            file = sorted(uniform or matches)[0]
+        elif len(candidates) == 1:
+            file = candidates[0]
+        else:
+            raise ValueError(
+                f"Repo {spec.repo} has {len(candidates)} GGUF files; specify one with "
+                f"`{spec.repo}:<filename>` or `{spec.repo}:Q4_K_M`."
+            )
+    if repo_files is None:
+        return file, []
+    extras: list[str] = []
+    folder = str(Path(file).parent).replace("\\", "/")
+    folder = "" if folder == "." else folder + "/"
+    if split_info(file) is not None:
+        for shard in gguf_shards(file):
+            name = (folder + shard.name) if folder else shard.name
+            if name != file and name in ggufs:
+                extras.append(name)
+    # Only a projector in the model's own folder is fetched: that is where
+    # find_mmproj looks when the model is registered.
+    family = _family(Path(file).stem)
+    projectors = [
+        f for f in ggufs
+        if is_mmproj_gguf(f)
+        and f.startswith(folder)
+        and "/" not in f[len(folder):]
+        and _family(Path(f).stem) in (family, None)
+    ]
+    if projectors:
+
+        def rank(name: str) -> tuple[int, str]:
+            tokens = {t.lower() for t in _TOKEN_SPLIT_RE.split(Path(name).stem)}
+            return (min((_MMPROJ_PRECISION_RANK.get(t, 3) for t in tokens), default=3), name)
+
+        extras.append(sorted(projectors, key=rank)[0])
+    return file, extras

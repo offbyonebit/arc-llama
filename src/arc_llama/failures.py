@@ -11,6 +11,8 @@ from typing import Any
 _HTTP_STATUS = {
     "model_missing": 404,
     "draft_missing": 404,
+    "mmproj_missing": 404,
+    "shard_missing": 404,
     "runtime_missing": 503,
     "runtime_incompatible": 503,
     "gpu_unavailable": 503,
