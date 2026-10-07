@@ -436,6 +436,8 @@ class Router:
         self.cfg = cfg
         self.log_dir = log_dir
         self.resources: Any = None
+        # Optional plugin_api.EventBus; set by the server lifespan.
+        self.events: Any = None
         self._servers: dict[str, LlamaServer] = {}  # keyed by model.name
         self._lock = asyncio.Lock()
         self._loading_futures: dict[str, asyncio.Future[tuple[ModelConfig, LlamaServer]]] = {}
@@ -468,6 +470,11 @@ class Router:
         # let a concurrent arrival acquire and restart the teardown clock.
         self._stopping: set[str] = set()
         self._build_servers()
+
+    def _emit(self, event: str, **payload: Any) -> None:
+        bus = self.events
+        if bus is not None:
+            bus.emit(event, payload)
 
     def acquire_model(self, name: str) -> None:
         """Count a request as actively using *name*. Called by _proxy_post
@@ -762,6 +769,7 @@ class Router:
                 self.timings.record_cold_start(
                     target_model.name, time.monotonic() - load_started_at
                 )
+                self._emit("model_loaded", model=target_model.name, gpu=target_gpu.pci_slot)
                 result = (target_model, target_srv)
                 future.set_result(result)
                 if acquire:
@@ -782,6 +790,7 @@ class Router:
                 if not future.done():
                     self.metrics["load_errors"] += 1
                     self.metrics["last_error"] = str(exc)
+                    self._emit("model_load_failed", model=target_model.name, error=str(exc))
                     # Give waiters the same detailed error the starter raises
                     # (including the llama-server log tail), so _proxy_post can
                     # surface a 503 with real diagnostics rather than a bare
@@ -982,6 +991,7 @@ class Router:
                 )
             log.info("evicting %s before starting %s", name, target.name)
             await srv.astop()
+            self._emit("model_stopped", model=name, reason="evicted")
             return None
         finally:
             # Always clear the draining mark, whatever happened above — a
@@ -1001,6 +1011,7 @@ class Router:
                 return False
             await srv.astop()
             self.metrics["stops"] += 1
+            self._emit("model_stopped", model=name, reason="stopped")
             return True
 
     async def stop_all(self) -> int:
@@ -1008,7 +1019,7 @@ class Router:
         async with self._lock:
             stopped = 0
             failure = None
-            for srv in self._servers.values():
+            for name, srv in self._servers.items():
                 running = srv.is_running
                 if running or getattr(srv, "process", None) is not None:
                     try:
@@ -1017,6 +1028,8 @@ class Router:
                         failure = failure or exc
                     else:
                         stopped += int(running)
+                        if running:
+                            self._emit("model_stopped", model=name, reason="stopped")
             self.metrics["stops"] += stopped
             if failure is not None:
                 raise failure

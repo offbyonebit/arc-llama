@@ -636,6 +636,32 @@ def doctor(ctx: click.Context) -> None:
             hint="Run arc-llama init.",
         )
 
+    # Plugins: import each without registering routes, so a broken add-on is
+    # reported here instead of surfacing only in the serve log.
+    from arc_llama.plugin_api import PLUGIN_API_VERSION
+    from arc_llama.plugins import plugin_health
+
+    console.print(f"\n  plugins (API {PLUGIN_API_VERSION}):")
+    health = plugin_health()
+    if not health:
+        console.print("    [dim]none installed[/dim]")
+    for entry in health:
+        ok = entry["status"] in ("loaded", "disabled")
+        version = f" v{entry['version']}" if entry.get("version") else ""
+        console.print(
+            f"    {entry['name']:<14} {_doctor_marker(ok, 'warn')}  {entry['status']}{version}"
+        )
+        if entry.get("error"):
+            console.print(f"        {entry['error']}")
+        if not ok:
+            report.add(
+                f"plugin_{entry['name']}",
+                False,
+                f"{entry['status']}: {entry.get('error', '')}",
+                severity="warn",
+                hint="Update or uninstall the plugin, or exclude it with ARC_LLAMA_PLUGINS.",
+            )
+
     # Summary of competitive-inference gates
     fails = report.failures
     warns = report.warnings
@@ -2900,6 +2926,77 @@ def tui_cmd(ctx: click.Context, server_url: str | None) -> None:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
     run_tui(server_url)
+
+
+# ===========================================================================
+# plugin
+# ===========================================================================
+
+
+@cli.group("plugin")
+def plugin_group() -> None:
+    """Create and inspect arc-llama plugins."""
+
+
+@plugin_group.command("new")
+@click.argument("name")
+@click.option(
+    "--dir",
+    "target_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Directory to create (default: ./arc-llama-NAME).",
+)
+def plugin_new(name: str, target_dir: Path | None) -> None:
+    """Generate a working plugin package with a test."""
+    from arc_llama.plugin_scaffold import validate_plugin_name, write_scaffold
+
+    try:
+        validate_plugin_name(name)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="NAME") from exc
+    target = target_dir or Path.cwd() / f"arc-llama-{name.replace('_', '-')}"
+    try:
+        written = write_scaffold(name, target)
+    except FileExistsError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    console.print(f"[green]Created plugin {name!r} in {target}[/green]")
+    for path in written:
+        console.print(f"  {path.relative_to(target)}")
+    console.print(
+        f"\nNext: [bold]cd {target} && pip install -e '.[dev]' && pytest[/bold], "
+        "then restart [bold]arc-llama serve[/bold]."
+    )
+
+
+@plugin_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")
+def plugin_list(as_json: bool) -> None:
+    """List installed plugins and whether they load."""
+    from arc_llama.plugin_api import PLUGIN_API_VERSION
+    from arc_llama.plugins import plugin_health
+
+    health = plugin_health()
+    if as_json:
+        click.echo(json.dumps({"api_version": PLUGIN_API_VERSION, "plugins": health}, indent=2))
+        return
+    console.print(f"plugin API {PLUGIN_API_VERSION}")
+    if not health:
+        console.print("[dim]No plugins installed.[/dim]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    for column in ("name", "status", "version", "requires API", "error"):
+        table.add_column(column)
+    for entry in health:
+        table.add_row(
+            str(entry.get("name", "")),
+            str(entry.get("status", "")),
+            str(entry.get("version", "")),
+            str(entry.get("requires_api", "")),
+            str(entry.get("error", "")),
+        )
+    console.print(table)
 
 
 def _experimental_agent_enabled() -> bool:

@@ -47,6 +47,7 @@ from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
+from arc_llama.plugin_api import PLUGIN_API_VERSION, _event_bus
 from arc_llama.plugins import (
     PluginDiscovery,
     build_catalog,
@@ -207,6 +208,7 @@ def create_app(
         # management to it — and before plugin startup so plugins can grab
         # it from app.state in their startup hooks.
         app.state.resources = ResourceLeaseManager(app.state.router)
+        app.state.router.events = _event_bus(app)
         pending_confirmations: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
@@ -1009,7 +1011,10 @@ def create_app(
             request.app.state, "plugin_discovery", None
         )
         extra = discovery.catalog() if discovery is not None else []
-        return {"plugins": build_catalog(app_plugins, statuses, extra=extra)}
+        return {
+            "api_version": PLUGIN_API_VERSION,
+            "plugins": build_catalog(app_plugins, statuses, extra=extra),
+        }
 
     def _ui_layout_path() -> Path:
         base = state_dir or Path(".arc_llama_state")

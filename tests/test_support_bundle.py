@@ -46,7 +46,9 @@ def test_support_bundle_contains_metadata_but_not_model_file(tmp_path, model_pre
 
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
-        assert names == {"manifest.txt", "config.toml", "hardware.txt", "models.txt"}
+        assert names == {
+            "manifest.txt", "config.toml", "hardware.txt", "models.txt", "plugins.txt"
+        }
         assert "secret" not in archive.read("config.toml").decode()
         assert b"model data" not in b"".join(archive.read(name) for name in names)
         assert "Intel Arc Pro B60" in archive.read("hardware.txt").decode()

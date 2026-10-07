@@ -517,6 +517,7 @@ const PLUGIN_LABELS = {
   registered: "Registered",
   failed: "Failed to load",
   disabled: "Disabled",
+  incompatible: "Incompatible",
 };
 
 function pluginStatusLabel(status) {
@@ -569,9 +570,21 @@ function createPluginCard(plugin) {
   const side = document.createElement("div");
   side.className = "plugin-card-side";
   const pill = document.createElement("span");
-  pill.className = `status-pill ${(plugin.status === "error" || plugin.status === "failed") ? "error" : (plugin.status === "disabled" ? "warn" : "ready")}`;
+  pill.className = `status-pill ${(plugin.status === "error" || plugin.status === "failed") ? "error" : ((plugin.status === "disabled" || plugin.status === "incompatible") ? "warn" : "ready")}`;
   pill.textContent = pluginStatusLabel(plugin.status);
   side.appendChild(pill);
+  // Plugin pages: same-origin links validated server-side to stay under
+  // /plugins/. They open in a new tab; no plugin markup runs in the dashboard.
+  for (const page of (plugin.ui?.pages || []).slice(0, 4)) {
+    if (typeof page.path !== "string" || !page.path.startsWith("/plugins/")) continue;
+    const link = document.createElement("a");
+    link.className = "secondary plugin-page-link";
+    link.href = page.path;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = page.label || "Open";
+    side.appendChild(link);
+  }
 
   card.append(body, side);
   return card;
