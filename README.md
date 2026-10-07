@@ -158,6 +158,23 @@ curl http://127.0.0.1:11437/v1/chat/completions \
   }'
 ```
 
+### Updating llama.cpp safely
+
+`arc-llama runtime update` installs the newest llama.cpp release beside your
+current one and switches only after it passes two checks: its flags cover
+every recipe you have registered, and a canary launch of your smallest model
+answers a short prompt. Otherwise your current runtime stays selected and the
+command explains why.
+
+```bash
+arc-llama runtime update                 # check, canary, switch
+arc-llama runtime update --dry-run       # check and canary, keep current
+arc-llama runtime rollback               # undo the last switch
+```
+
+Stop `arc-llama serve` first if it has a model loaded; the canary respects the
+single-resident GPU lock.
+
 ## Requirements
 
 ### Linux

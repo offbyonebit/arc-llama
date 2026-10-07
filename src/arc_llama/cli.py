@@ -2435,6 +2435,98 @@ def runtime_use_cmd(ctx: click.Context, tag: str, backend: str | None) -> None:
     console.print(f"[green]Selected[/green] {selected_tag}/{selected_backend} · {binary}")
 
 
+@runtime_group.command("update")
+@click.option(
+    "--backend",
+    type=click.Choice(["vulkan", "sycl"]),
+    default=None,
+    help="Backend to fetch (default: the enabled GPU's backend).",
+)
+@click.option(
+    "--runtime-version",
+    "runtime_version",
+    default="latest",
+    show_default=True,
+    help="llama.cpp release tag (e.g. b10092) or 'latest'.",
+)
+@click.option("--canary-model", default=None, help="Registered model to test with.")
+@click.option(
+    "--no-canary",
+    is_flag=True,
+    help="Skip the trial launch; only check the candidate's flags.",
+)
+@click.option("--dry-run", is_flag=True, help="Install and test, but keep the current runtime.")
+@click.pass_context
+def runtime_update_cmd(
+    ctx: click.Context,
+    backend: str | None,
+    runtime_version: str,
+    canary_model: str | None,
+    no_canary: bool,
+    dry_run: bool,
+) -> None:
+    """Install a newer llama.cpp beside the current one and switch only if it passes.
+
+    The candidate must support every flag your recipes use, then start one
+    registered model (the smallest, or --canary-model) and answer a short
+    prompt. Otherwise the current runtime stays selected. Stop
+    `arc-llama serve` first if it has a model loaded: the canary respects the
+    single-resident lock.
+    """
+    from arc_llama.runtime import RuntimeInstallError
+    from arc_llama.runtime_update import update_runtime
+
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    console.print(f"[bold]Checking llama.cpp {runtime_version}[/bold] (current: {cfg.paths.llama_server})")
+    try:
+        result = update_runtime(
+            cfg,
+            cfg_path,
+            backend=backend,
+            version=runtime_version,
+            canary_model=canary_model,
+            canary=not no_canary,
+            dry_run=dry_run,
+        )
+    except RuntimeInstallError as exc:
+        raise click.ClickException(f"download failed: {exc}") from exc
+    if result.status == "up_to_date":
+        console.print(f"[green]Already on {result.tag}.[/green]")
+        return
+    console.print(f"  candidate: {result.candidate} ({result.tag})")
+    if result.canary is not None:
+        marker = "[green]passed[/green]" if result.canary.ok else "[red]failed[/red]"
+        timing = f" in {result.canary.seconds:.0f}s" if result.canary.seconds else ""
+        console.print(f"  canary:    {marker} on {result.canary.model}{timing}: {result.canary.detail}")
+    if result.status == "rejected":
+        console.print("[red]Kept the current runtime.[/red] The candidate stays installed:")
+        for problem in result.problems:
+            console.print(f"  - {problem}")
+        sys.exit(1)
+    if result.status == "dry_run":
+        console.print("[green]Candidate passed.[/green] Dry run: config unchanged.")
+        console.print(f"Select it with: [bold]arc-llama runtime use {result.tag}[/bold]")
+        return
+    console.print(f"[green]Switched to {result.tag}.[/green] Restart arc-llama serve to use it.")
+    console.print("Undo with: [bold]arc-llama runtime rollback[/bold]")
+
+
+@runtime_group.command("rollback")
+@click.pass_context
+def runtime_rollback_cmd(ctx: click.Context) -> None:
+    """Return to the runtime that the last `runtime update` replaced."""
+    from arc_llama.runtime_update import rollback_runtime
+
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    restored = rollback_runtime(cfg, cfg_path)
+    if restored is None:
+        raise click.ClickException("No earlier runtime to roll back to.")
+    console.print(f"[green]Rolled back[/green] {restored[0]} -> {restored[1]}")
+    console.print("Restart arc-llama serve to use it.")
+
+
 @cli.command("install-runtime")
 @click.option(
     "--backend",
