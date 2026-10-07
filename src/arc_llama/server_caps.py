@@ -39,6 +39,12 @@ class ServerCaps:
     """Whether this binary exposes llama.cpp's ``--spec-type`` interface."""
     supports_draft_model: bool = False
     supports_ngram: bool = False
+    supports_load_mode: bool = False
+    """Whether this binary takes ``--load-mode`` (newer builds).
+
+    Current llama.cpp removed ``--no-mmap``/``--mlock``/``--mmap`` in favor of
+    ``--load-mode {auto,none,mmap,mlock,mmap+mlock,dio}``; the old flags are a
+    hard parse error there, so launches must use the new one when it exists."""
 
 
 def format_speculation_capability(caps: ServerCaps) -> str:
@@ -61,6 +67,7 @@ DEFAULT_CAPS = ServerCaps(
     supports_speculative=True,
     supports_draft_model=True,
     supports_ngram=True,
+    supports_load_mode=True,
 )
 
 _cache: dict[tuple[str, float], ServerCaps] = {}
@@ -76,6 +83,7 @@ def _parse_help(help_text: str) -> ServerCaps:
             supports_speculative="--spec-type" in help_text,
             supports_draft_model="--spec-draft-model" in help_text,
             supports_ngram="ngram" in help_text.lower() and "--spec-type" in help_text,
+            supports_load_mode="--load-mode" in help_text,
         )
     # New-style help reads: "-fa, --flash-attn FA  set Flash Attention use
     # ('on', 'off', or 'auto', default: 'auto')". Old-style: "-fa, --flash-attn
@@ -90,6 +98,7 @@ def _parse_help(help_text: str) -> ServerCaps:
         supports_speculative="--spec-type" in help_text,
         supports_draft_model="--spec-draft-model" in help_text,
         supports_ngram="ngram" in help_text.lower() and "--spec-type" in help_text,
+            supports_load_mode="--load-mode" in help_text,
     )
 
 

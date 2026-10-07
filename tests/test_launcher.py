@@ -992,3 +992,26 @@ async def test_wait_ready_cancelled_during_final_gather(monkeypatch):
         await waiter
     assert stopped == [True]
     assert srv.ready is False
+
+
+class TestBuildPlanLoadMode:
+    _plan = TestBuildPlanFlashAttn._plan
+
+    def test_modern_binary_gets_load_mode(self, monkeypatch):
+        plan = self._plan(
+            {"no_mmap": True},
+            {"probed": True, "supports_load_mode": True},
+            monkeypatch,
+        )
+        idx = plan.argv.index("--load-mode")
+        assert plan.argv[idx + 1] == "none"
+        assert "--no-mmap" not in plan.argv
+
+    def test_old_binary_keeps_no_mmap(self, monkeypatch):
+        plan = self._plan(
+            {"no_mmap": True},
+            {"probed": True, "supports_load_mode": False},
+            monkeypatch,
+        )
+        assert "--no-mmap" in plan.argv
+        assert "--load-mode" not in plan.argv

@@ -97,10 +97,12 @@ class LaunchRecipe:
     translates per the probed binary style — see server_caps.probe_server_caps.
     """
     no_mmap: bool = False
-    """Disable mmap (--no-mmap): slower reload, but the whole model is read
-    up-front — avoids page-cache thrash when VRAM spill keeps tensors host-side."""
+    """Disable mmap (--no-mmap, or --load-mode none on newer builds): slower
+    reload, but the whole model is read up-front — avoids page-cache thrash
+    when VRAM spill keeps tensors host-side."""
     mlock: bool = False
-    """--mlock: pin host-side weights in RAM so they can't be swapped out."""
+    """--mlock (--load-mode mlock/mmap+mlock on newer builds): pin host-side
+    weights in RAM so they can't be swapped out."""
     n_cpu_moe: int | None = None
     """Number of MoE layers whose routed-expert tensors stay on CPU (--n-cpu-moe).
 
@@ -119,7 +121,7 @@ class LaunchRecipe:
     the same end and applying both would double-count the offload.
     """
 
-    def to_argv(self, fa_takes_value: bool = True) -> list[str]:
+    def to_argv(self, fa_takes_value: bool = True, load_mode_flag: bool = False) -> list[str]:
         argv = [
             "-ngl",
             str(self.n_gpu_layers),
@@ -159,10 +161,22 @@ class LaunchRecipe:
                 # Old boolean-style flag; 'off' is that style's default and
                 # 'auto' is inexpressible, so both fall through to no flag.
                 argv += ["-fa"]
-        if self.no_mmap:
-            argv += ["--no-mmap"]
-        if self.mlock:
-            argv += ["--mlock"]
+        if load_mode_flag:
+            # Current llama.cpp rejects --no-mmap/--mlock outright; the same
+            # choices are spelled --load-mode. 'none' = read the whole model up
+            # front without mmap, 'mlock' = no mmap + pinned, 'mmap+mlock' =
+            # mmap + pinned. With neither option set, leave the binary default.
+            if self.no_mmap and self.mlock:
+                argv += ["--load-mode", "mlock"]
+            elif self.no_mmap:
+                argv += ["--load-mode", "none"]
+            elif self.mlock:
+                argv += ["--load-mode", "mmap+mlock"]
+        else:
+            if self.no_mmap:
+                argv += ["--no-mmap"]
+            if self.mlock:
+                argv += ["--mlock"]
         if self.override_tensor:
             # llama.cpp common/arg.cpp:247 parses --override-tensor as
             # <pattern>=<buffer_type>, splitting each value on its first '='.

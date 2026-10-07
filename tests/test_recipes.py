@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from arc_llama.arch import Arch
 from arc_llama.recipes import (
     DEFAULT_CTX_CAP,
@@ -541,6 +543,35 @@ class TestLaunchRecipePerfArgv:
         argv = LaunchRecipe().to_argv()
         assert "--no-mmap" not in argv
         assert "--mlock" not in argv
+
+    @pytest.mark.parametrize(
+        "no_mmap,mlock,expected",
+        [
+            (True, False, ["--load-mode", "none"]),
+            (False, True, ["--load-mode", "mmap+mlock"]),
+            (True, True, ["--load-mode", "mlock"]),
+        ],
+    )
+    def test_load_mode_translation(self, no_mmap, mlock, expected):
+        # Current llama.cpp rejects --no-mmap/--mlock; they must not be emitted.
+        argv = LaunchRecipe(no_mmap=no_mmap, mlock=mlock).to_argv(load_mode_flag=True)
+        idx = argv.index("--load-mode")
+        assert argv[idx : idx + 2] == expected
+        assert argv.count("--load-mode") == 1
+        assert "--no-mmap" not in argv
+        assert "--mlock" not in argv
+
+    def test_load_mode_omitted_when_neither_set(self):
+        argv = LaunchRecipe().to_argv(load_mode_flag=True)
+        assert "--load-mode" not in argv
+        assert "--no-mmap" not in argv
+        assert "--mlock" not in argv
+
+    def test_legacy_flags_when_load_mode_unsupported(self):
+        argv = LaunchRecipe(no_mmap=True, mlock=True).to_argv(load_mode_flag=False)
+        assert "--no-mmap" in argv
+        assert "--mlock" in argv
+        assert "--load-mode" not in argv
 
 
 class TestPerfDefaults:
