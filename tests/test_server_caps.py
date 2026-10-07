@@ -33,6 +33,16 @@ OLD_STYLE_HELP = """\
 -b,  --batch-size N                     logical maximum batch size (default: 2048)
 """
 
+LOAD_MODE_HELP = """\
+-lm,   --load-mode MODE                 model loading mode (default: auto)
+                                        - auto: mmap, unless a device does not support it
+                                        - none: no special loading mode
+                                        - mmap: memory-map model
+                                        - mlock: force system to keep model in RAM
+                                        - mmap+mlock: mmap + force system to keep model in RAM
+                                        (env: LLAMA_ARG_LOAD_MODE)
+"""
+
 NO_FA_HELP = """\
 -b,  --batch-size N                     logical maximum batch size (default: 2048)
 """
@@ -53,6 +63,23 @@ class TestParseHelp:
     def test_no_flash_attn(self):
         caps = _parse_help(NO_FA_HELP)
         assert not caps.supports_flash_attn
+
+    def test_load_mode_detected(self):
+        assert _parse_help(NEW_STYLE_HELP + LOAD_MODE_HELP).supports_load_mode
+
+    def test_load_mode_detected_without_flash_attn(self):
+        assert _parse_help(NO_FA_HELP + LOAD_MODE_HELP).supports_load_mode
+
+    def test_load_mode_absent_on_old_builds(self):
+        # Builds that predate --load-mode still take --no-mmap/--mlock.
+        assert not _parse_help(OLD_STYLE_HELP).supports_load_mode
+        assert not _parse_help(NEW_STYLE_HELP).supports_load_mode
+        assert not _parse_help(NO_FA_HELP).supports_load_mode
+
+    def test_load_mode_defaults(self):
+        # A failed probe assumes modern flag syntax, like the other caps.
+        assert DEFAULT_CAPS.supports_load_mode
+        assert not ServerCaps().supports_load_mode
 
 
 class TestFormatSpeculationCapability:

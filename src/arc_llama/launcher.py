@@ -391,7 +391,12 @@ def build_plan(
         "--host", host,
         "--port", str(model.port),
     ]
-    argv.extend(recipe.to_argv(fa_takes_value=caps.flash_attn_takes_value))
+    argv.extend(
+        recipe.to_argv(
+            fa_takes_value=caps.flash_attn_takes_value,
+            load_mode_flag=caps.supports_load_mode,
+        )
+    )
     backend_url = f"http://{host}:{model.port}"
     return LaunchPlan(
         argv=argv,
