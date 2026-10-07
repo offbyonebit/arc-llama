@@ -87,3 +87,13 @@ agents, MCP tools, plugins, and the audio-companion contract are experimental
 for 0.9. They may gain fields or stricter validation between minor releases.
 Core single-GPU inference, runtime installation, model registration, routing,
 and the three OpenAI-compatible endpoints above are the stabilization target.
+
+### Splitting one model across GPUs (experimental)
+
+A recipe can spread one model over several cards with `tensor_split` (one
+proportion per card, for example `[1, 1]`) and `split_gpus` (the cards' PCI
+slots, including the model's own GPU). Every listed GPU must be enabled and
+use the same backend. The launcher exposes all of them to llama-server
+(`ONEAPI_DEVICE_SELECTOR` or `GGML_VK_VISIBLE_DEVICES`), and the fit check
+counts their combined VRAM. An invalid combination falls back to the model's
+single GPU with a warning.
