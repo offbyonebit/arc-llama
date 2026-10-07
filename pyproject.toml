@@ -80,6 +80,9 @@ exclude = [
     "AUTOTUNE_*.md",
     "EOF",
     "arc-llama-vision/",
+    "docs/release-prep-*.md",
+    "docs/release-validation-*.md",
+    "docs/incidents/",
 ]
 
 [tool.ruff]

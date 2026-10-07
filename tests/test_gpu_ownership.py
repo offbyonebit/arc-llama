@@ -103,7 +103,7 @@ async def test_conflict_preserves_healthy_resident(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("total,available,reserve", [
-    (32768, 4000, 4096), (8192, 1000, 1024), (2048, 500, 512),
+    (32768, 12000, 12288), (8192, 1000, 3276), (2048, 500, 819),
 ])
 def test_host_memory_reserve_scales_with_ram(tmp_path, monkeypatch, total, available, reserve):
     monkeypatch.setattr(gpu_ownership.sys, "platform", "linux")

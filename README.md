@@ -15,9 +15,7 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Local 0.9.0 release preparation; not published.** See the [release
-> preparation report](docs/release-prep-2026-10-05.md) for test results, hardware
-> coverage, and outstanding release gates.
+> **Version 0.9.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.0).
 
 ## What's new in 0.9.0
 

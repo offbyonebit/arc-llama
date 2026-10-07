@@ -95,8 +95,10 @@ def check_gpu_ownership(pci_slot: str, ignored_pids: set[int] | None = None) -> 
 def host_memory_pressure() -> dict[str, int] | None:
     """Detect critically low available Linux RAM without querying the GPU.
 
-    Keep an eighth of host RAM available during loading, bounded to
-    512 MiB–4 GiB. Missing OS counters disable this best-effort check.
+    Keep 40% of host RAM available during loading, bounded to 512 MiB–12 GiB.
+    Large GPU allocations can consume host-visible memory outside the model
+    process's cgroup, so a small reserve may not leave time for cleanup.
+    Missing OS counters disable this best-effort check.
     """
     if sys.platform != "linux":
         return None
@@ -110,7 +112,7 @@ def host_memory_pressure() -> dict[str, int] | None:
         available = fields["MemAvailable"]
     except (OSError, KeyError, ValueError, IndexError):
         return None
-    reserve = max(512, min(4096, total // 8))
+    reserve = max(512, min(12 * 1024, total * 2 // 5))
     if available >= reserve:
         return None
     return {"available_host_mb": available, "reserved_host_mb": reserve}
