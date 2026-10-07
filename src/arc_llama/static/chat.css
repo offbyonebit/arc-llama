@@ -1644,6 +1644,18 @@ main, .ctx-meter, .input-area { margin-inline: auto; }
 [data-theme="light"] .manager-link:hover, [data-theme="light"] .command-item:hover, [data-theme="light"] .command-item.selected, [data-theme="light"] .h-card:hover { background: #e8edf4; }
 [data-theme="light"] .hljs { color: #243149 !important; }
 [data-theme="light"] .hljs-comment, [data-theme="light"] .hljs-quote { color: #6b7280 !important; }
+[data-theme="light"] #settings-panel .s-field input,
+[data-theme="light"] #settings-panel .s-field select,
+[data-theme="light"] #settings-panel .s-preset textarea,
+[data-theme="light"] #history-panel .h-folder-bar select {
+  background: var(--bg-surface);
+  color: var(--fg);
+}
+[data-theme="light"] #settings-panel .s-field select option,
+[data-theme="light"] #history-panel .h-folder-bar select option {
+  background: var(--bg-surface);
+  color: var(--fg);
+}
 
 /* Status indicators use a clear spinner while work is active and a check when ready. */
 .model-status.loading .indicator, .model-status.swapping .indicator { width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: status-spin .7s linear infinite; }
