@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -34,7 +35,9 @@ import httpx
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
 from arc_llama.binary import list_vulkan_devices, resolve_vulkan_index
 from arc_llama.config import Config, GPUConfig, ModelConfig, default_state_dir
+from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import has_mtp_heads
+from arc_llama.gpu_ownership import check_gpu_ownership, host_memory_pressure
 from arc_llama.platform_checks import (
     oneapi_runtime_env_needed,
     oneapi_setvars_path,
@@ -44,6 +47,26 @@ from arc_llama.policy import apply_launch_policy
 from arc_llama.server_caps import probe_server_caps
 
 log = logging.getLogger("arc_llama.launcher")
+
+async def _await_cleanup(future: asyncio.Future[Any]) -> Any:
+    """Finish started cleanup before propagating caller cancellation.
+
+    Cancelling a to_thread await cannot stop its worker. Shield its future,
+    including repeated cancellation, so cleanup cannot outlive its caller.
+    """
+    interrupted: asyncio.CancelledError | None = None
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError as exc:
+            if future.cancelled():
+                raise
+            interrupted = exc
+    result = future.result()
+    if interrupted is not None:
+        raise interrupted
+    return result
+
 
 DEFAULT_HEALTH_TIMEOUT = 120  # seconds — generous for cold-start SYCL JIT
 HEALTH_POLL_INTERVAL = 1.5
@@ -144,6 +167,7 @@ class LaunchPlan:
     # Held by the parent for the lifetime of the child when single-resident
     # mode is enabled. This coordinates separate arc-llama processes too.
     resident_lock_path: Path | None = None
+    gpu_pci_slot: str | None = None
 
 
 # Environment variables that only make sense for the SYCL backend; they can
@@ -374,6 +398,7 @@ def build_plan(
         env=env,
         backend_url=backend_url,
         health_url=f"{backend_url}/health",
+        gpu_pci_slot=gpu.pci_slot,
         resident_lock_path=(Path(getattr(cfg.paths, "state_dir", default_state_dir())) / "llama-server.lock"
                             if cfg.server.single_resident else None),
     )
@@ -395,6 +420,7 @@ class LlamaServer:
         self._log_file: Any = None  # file handle opened in start(), closed in stop()
         self._log_path: Path | None = None
         self._resident_lock: Any = None
+        self._stop_lock = threading.RLock()
 
     @property
     def is_running(self) -> bool:
@@ -404,6 +430,10 @@ class LlamaServer:
         if self.is_running:
             log.debug("[%s] already running, pid=%s", self.name, self.process.pid)  # type: ignore[union-attr]
             return
+        if self.process is not None:
+            # Reap/close retained resources after an earlier stop timed out
+            # and the child subsequently exited.
+            self._finish_stop()
         self.ready = False
         stdout = subprocess.DEVNULL
         stderr = subprocess.DEVNULL
@@ -445,6 +475,10 @@ class LlamaServer:
         else:
             popen_kwargs["preexec_fn"] = _preexec_isolate_and_pdeathsig
         try:
+            # Check again after eviction and lock acquisition, immediately
+            # before spawn. Legacy services may not participate in the lock.
+            if self.plan.gpu_pci_slot is not None:
+                check_gpu_ownership(self.plan.gpu_pci_slot)
             self.process = subprocess.Popen(
                 self.plan.argv,
                 env=self.plan.env,
@@ -475,54 +509,92 @@ class LlamaServer:
                 lock_file.close()
 
     async def wait_ready(self, timeout: float = DEFAULT_HEALTH_TIMEOUT) -> bool:
+        pressure_seen = asyncio.Event()
+        health = asyncio.create_task(self._wait_ready_health(timeout))
+        memory = asyncio.create_task(self._guard_host_memory(pressure_seen))
+        try:
+            try:
+                done, _pending = await asyncio.wait(
+                    {health, memory}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if memory in done or pressure_seen.is_set():
+                    # Pressure takes precedence even if health becomes ready
+                    # while the shutdown worker is still finishing.
+                    await asyncio.shield(memory)
+                return await health
+            finally:
+                if not health.done():
+                    health.cancel()
+                if not pressure_seen.is_set() and not memory.done():
+                    memory.cancel()
+                try:
+                    await _await_cleanup(asyncio.gather(health, memory, return_exceptions=True))
+                finally:
+                    if pressure_seen.is_set():
+                        self.ready = False
+        except asyncio.CancelledError:
+            # This owner must clean up even if cancellation happens before
+            # the health task gets its first turn on the event loop.
+            health.cancel()
+            if not pressure_seen.is_set():
+                log.info("[%s] wait_ready cancelled; stopping subprocess", self.name)
+                try:
+                    await _await_cleanup(asyncio.create_task(self.astop()))
+                except asyncio.CancelledError:
+                    self.stop()
+                except Exception:
+                    log.exception("[%s] failed to stop subprocess during cancellation", self.name)
+            raise
+
+    async def _guard_host_memory(self, pressure_seen: asyncio.Event) -> None:
+        while True:
+            pressure = host_memory_pressure()
+            if pressure is not None:
+                pressure_seen.set()
+                self.ready = False
+                details: dict[str, Any] = {"model": self.name, **pressure}
+                try:
+                    # Escalate promptly; ordinary three-second draining is
+                    # inappropriate when a load is exhausting host RAM.
+                    await self.astop(drain_seconds=0.25)
+                except StartupFailureError as exc:
+                    details["shutdown_error"] = exc.to_dict(include_details=True)
+                raise StartupFailureError(
+                    "out_of_memory",
+                    f"Loading {self.name!r} was stopped to protect available host RAM.",
+                    "Inspect the runtime log and GPU allocation plan before retrying. "
+                    "A process that has not exited still retains ownership.",
+                    details=details,
+                )
+            await asyncio.sleep(0.25)
+
+    async def _wait_ready_health(self, timeout: float) -> bool:
         deadline = time.time() + timeout
         last_progress = time.time()
         progress_interval = 15.0  # log every 15 s so the terminal isn't silent
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                while time.time() < deadline:
-                    if not self.is_running:
-                        log.warning("[%s] process exited before becoming healthy", self.name)
-                        return False
-                    try:
-                        r = await client.get(self.plan.health_url)
-                        if r.status_code == 200 and r.json().get("status") == "ok":
-                            elapsed = time.time() - self.started_at if self.started_at else 0
-                            log.info("[%s] ready after %.1fs", self.name, elapsed)
-                            self.ready = True
-                            return True
-                    except Exception:
-                        pass
-                    now = time.time()
-                    if now - last_progress >= progress_interval:
-                        remaining = max(0, deadline - now)
-                        log.info(
-                            "[%s] still loading... %.0fs elapsed, %.0fs budget remaining",
-                            self.name, timeout - remaining, remaining,
-                        )
-                        last_progress = now
-                    await asyncio.sleep(HEALTH_POLL_INTERVAL)
-        except asyncio.CancelledError:
-            # If the waiter is cancelled (router timeout, client disconnect,
-            # shutdown) the llama-server child is still holding GPU VRAM.
-            # Stop it before re-raising so we don't leak a process that blocks
-            # every subsequent model load on a single-GPU box.
-            log.info("[%s] wait_ready cancelled; stopping subprocess", self.name)
-            try:
-                # Shielded: CancelledError is a BaseException, so an unshielded
-                # `await self.astop()` that is cancelled again (loop shutdown)
-                # would propagate straight past the `except Exception` below and
-                # leave the child alive — precisely the leak this handler exists
-                # to prevent.
-                await asyncio.shield(self.astop())
-            except asyncio.CancelledError:
-                # Cancelled while cleaning up. Fall back to the blocking stop:
-                # briefly stalling the loop during teardown is much cheaper than
-                # orphaning a process that holds the GPU.
-                self.stop()
-            except Exception:
-                log.exception("[%s] failed to stop subprocess during cancellation", self.name)
-            raise
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            while time.time() < deadline:
+                if not self.is_running:
+                    log.warning("[%s] process exited before becoming healthy", self.name)
+                    return False
+                try:
+                    r = await client.get(self.plan.health_url)
+                    if r.status_code == 200 and r.json().get("status") == "ok":
+                        elapsed = time.time() - self.started_at if self.started_at else 0
+                        log.info("[%s] ready after %.1fs", self.name, elapsed)
+                        self.ready = True
+                        return True
+                except Exception:
+                    pass
+                now = time.time()
+                if now - last_progress >= progress_interval:
+                    remaining = max(0, deadline - now)
+                    log.info(
+                        "[%s] still loading... %.0fs elapsed, %.0fs budget remaining",
+                        self.name, timeout - remaining, remaining,
+                    )
+                    last_progress = now
+                await asyncio.sleep(HEALTH_POLL_INTERVAL)
         log.warning("[%s] health-check timed out after %.0fs", self.name, timeout)
         return False
 
@@ -543,11 +615,17 @@ class LlamaServer:
         return self._log_path
 
     def stop(self, drain_seconds: float = 3.0) -> None:
+        # Memory-pressure, cancellation and router cleanup can coincide.
+        # Only one worker may signal/reap/release this child at a time.
+        with self._stop_lock:
+            self._stop(drain_seconds)
+
+    def _stop(self, drain_seconds: float) -> None:
         self.ready = False
         if not self.is_running:
             # The child may have exited between the health check and cleanup;
             # release our parent-held coordination lock in that case too.
-            self._release_resident_lock()
+            self._finish_stop()
             return
         proc = self.process
         assert proc is not None
@@ -568,15 +646,20 @@ class LlamaServer:
                 log.warning(
                     "[%s] CTRL_BREAK timed out, force-killing process tree", self.name
                 )
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    capture_output=True,
-                    timeout=drain_seconds,
-                )
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        capture_output=True,
+                        timeout=drain_seconds,
+                    )
+                except (subprocess.TimeoutExpired, OSError) as exc:
+                    if proc.poll() is None:
+                        raise self._stop_timeout(proc.pid) from exc
+
                 try:
                     proc.wait(timeout=drain_seconds)
-                except subprocess.TimeoutExpired:
-                    pass
+                except subprocess.TimeoutExpired as exc:
+                    raise self._stop_timeout(proc.pid) from exc
         else:
             try:
                 os.killpg(proc.pid, signal.SIGTERM)  # type: ignore[attr-defined]
@@ -592,8 +675,21 @@ class LlamaServer:
                     pass
                 try:
                     proc.wait(timeout=drain_seconds)
-                except subprocess.TimeoutExpired:
-                    pass
+                except subprocess.TimeoutExpired as exc:
+                    raise self._stop_timeout(proc.pid) from exc
+        self._finish_stop()
+
+    def _stop_timeout(self, pid: int) -> StartupFailureError:
+        # A killed process can remain blocked in driver reclaim. Keep both
+        # its handle and resident lock until poll()/wait() confirms exit.
+        return StartupFailureError(
+            "gpu_unavailable",
+            f"Model {self.name!r} has not exited after forced shutdown (PID {pid}).",
+            "Wait for the process to exit before retrying. Its GPU ownership is retained.",
+            details={"model": self.name, "pid": pid, "reason": "shutdown_timeout"},
+        )
+
+    def _finish_stop(self) -> None:
         self.process = None
         self.started_at = None
         if self._log_file is not None:
@@ -611,4 +707,5 @@ class LlamaServer:
         directly from async code stalls the loop while a stuck child drains.
         This wrapper offloads the blocking work to a thread.
         """
-        await asyncio.to_thread(self.stop, drain_seconds)
+        worker = asyncio.create_task(asyncio.to_thread(self.stop, drain_seconds))
+        await _await_cleanup(worker)

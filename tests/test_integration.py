@@ -12,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
+from helpers import ConfigRouter as FakeRouter
+from httpx import AsyncClient as _HttpxAsyncClient
 
 from arc_llama.config import Config, ModelConfig, ServerConfig, UpstreamConfig
 from arc_llama.integration import (
@@ -45,18 +46,6 @@ def _cfg(
         ],
         upstreams=upstreams or [],
     )
-
-
-class FakeRouter:
-    def __init__(self, cfg, log_dir=None):
-        self.cfg = cfg
-        self._servers = {}
-
-    def all_models(self):
-        return list(self.cfg.models)
-
-    async def shutdown(self):
-        return None
 
 
 class FakeUpstreamManager:
@@ -266,11 +255,15 @@ class TestAdminIntegrationEndpoint:
         """Point the loopback probe at an unreachable fake so offline runs are deterministic."""
         monkeypatch.setattr("arc_llama.integration.httpx.AsyncClient", _fake_ollama_unreachable)
 
-    def test_endpoint_reports_configured_server(self, tmp_path: Path, monkeypatch):
+    async def test_endpoint_reports_configured_server(self, tmp_path: Path, monkeypatch):
+        import httpx
+
         self._probe_stub(monkeypatch)
         app = _make_test_app(_cfg(tmp_path / "m.gguf", port=11437))
-        with TestClient(app) as client:
-            response = client.get("/admin/integration")
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get("/admin/integration")
         assert response.status_code == 200
         data = response.json()
         assert data["base_url"] == "http://127.0.0.1:11437/v1"
@@ -278,44 +271,67 @@ class TestAdminIntegrationEndpoint:
         assert data["ollama"]["reachable"] is False
         assert data["ollama"]["upstream_add_command"].startswith("arc-llama upstream add")
 
-    def test_endpoint_requires_admin_token_when_configured(self, tmp_path: Path, monkeypatch):
+    async def test_endpoint_requires_admin_token_when_configured(self, tmp_path: Path, monkeypatch):
+        import httpx
+
         self._probe_stub(monkeypatch)
         app = _make_test_app(_cfg(tmp_path / "m.gguf", admin_token="sekrit"))
-        with TestClient(app) as client:
-            assert client.get("/admin/integration").status_code == 401
-            ok = client.get(
-                "/admin/integration", headers={"Authorization": "Bearer sekrit"}
-            )
-            assert ok.status_code == 200
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+                assert (await client.get("/admin/integration")).status_code == 401
+                ok = await client.get(
+                    "/admin/integration", headers={"Authorization": "Bearer sekrit"}
+                )
+                assert ok.status_code == 200
 
-    def test_endpoint_without_token_is_open_like_other_admin_reads(self, tmp_path: Path, monkeypatch):
+    async def test_endpoint_without_token_is_open_like_other_admin_reads(self, tmp_path: Path, monkeypatch):
+        import httpx
+
         self._probe_stub(monkeypatch)
         app = _make_test_app(_cfg(tmp_path / "m.gguf", admin_token=None))
-        with TestClient(app) as client:
-            assert client.get("/admin/integration").status_code == 200
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+                assert (await client.get("/admin/integration")).status_code == 200
 
-    def test_endpoint_leaks_no_credentials(self, tmp_path: Path, monkeypatch):
+    async def test_endpoint_leaks_no_credentials(self, tmp_path: Path, monkeypatch):
+        import httpx
+
         self._probe_stub(monkeypatch)
         app = _make_test_app(_cfg(tmp_path / "m.gguf", admin_token="super-secret-token"))
-        with TestClient(app) as client:
-            data = client.get(
-                "/admin/integration", headers={"Authorization": "Bearer super-secret-token"}
-            ).json()
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+                data = (
+                    await client.get(
+                        "/admin/integration",
+                        headers={"Authorization": "Bearer super-secret-token"},
+                    )
+                ).json()
         assert "super-secret-token" not in repr(data)
 
-    def test_endpoint_lists_registered_upstreams(self, tmp_path: Path, monkeypatch):
+    async def test_endpoint_lists_registered_upstreams(self, tmp_path: Path, monkeypatch):
+        import httpx
+
         self._probe_stub(monkeypatch)
         upstreams = [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")]
         app = _make_test_app(_cfg(tmp_path / "m.gguf", upstreams=upstreams))
-        with TestClient(app) as client:
-            data = client.get("/admin/integration").json()
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+                data = (await client.get("/admin/integration")).json()
         assert data["upstreams"] == [{"name": "lmstudio", "url": "http://127.0.0.1:1234"}]
         assert data["ollama"]["already_registered"] is False
 
-    def test_reachable_ollama_reported_in_endpoint(self, tmp_path: Path, monkeypatch):
+    async def test_reachable_ollama_reported_in_endpoint(self, tmp_path: Path, monkeypatch):
+        import httpx
+
         monkeypatch.setattr("arc_llama.integration.httpx.AsyncClient", _fake_ollama_ok("0.6.1"))
         app = _make_test_app(_cfg(tmp_path / "m.gguf"))
-        with TestClient(app) as client:
-            data = client.get("/admin/integration").json()
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+                data = (await client.get("/admin/integration")).json()
         assert data["ollama"]["reachable"] is True
         assert data["ollama"]["version"] == "0.6.1"

@@ -22,7 +22,7 @@ import time
 
 import pytest
 from conftest import make_config
-from test_router import FakeServer
+from helpers import FakeServer
 
 import arc_llama.router as router_mod
 from arc_llama.config import ServerConfig
@@ -250,3 +250,9 @@ def test_migrated_config_gains_new_server_keys(tmp_path):
     cfg = load_config(config_path)
     assert cfg.server.switch_drain_seconds == 30.0
     assert cfg.server.switch_interrupt_policy == "reject_new"
+
+
+@pytest.mark.parametrize("seconds", [float("inf"), float("nan"), -1, 0, True, "30"])
+def test_drain_deadline_rejects_invalid_or_unbounded_values(seconds):
+    with pytest.raises(ValueError, match="switch_drain_seconds"):
+        ServerConfig(switch_drain_seconds=seconds)

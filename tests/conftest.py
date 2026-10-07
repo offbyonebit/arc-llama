@@ -130,3 +130,67 @@ def _isolate_fake_servers_from_host_preflight(monkeypatch):
 def base_config(tmp_path: Path) -> Config:
     """A populated Config using temp paths, suitable for CLI tests."""
     return make_config(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _block_host_lifecycle_signals(monkeypatch, request):
+    """Fake process IDs must never reach real process signaling.
+
+    Tests that verify signaling explicitly replace these sentinels with
+    recording mocks. Ordinary tests cannot depend on actual host RAM.
+    """
+    import os
+    import subprocess
+
+    # Opt-in hardware smoke tests own real subprocesses. Their containing
+    # runner supplies process/memory isolation; unit tests retain barriers.
+    if request.node.get_closest_marker("live_inference") and os.environ.get("ARC_LLAMA_SMOKE_MODEL"):
+        return
+
+    original_popen = subprocess.Popen
+
+    def guarded_popen(args, *positional, **kwargs):
+        command = args[0] if isinstance(args, (list, tuple)) else args
+        if isinstance(command, (str, bytes, os.PathLike)):
+            name = os.fsdecode(command).replace("\\", "/").rsplit("/", 1)[-1].lower()
+            if name in {"taskkill", "taskkill.exe"}:
+                raise AssertionError("Real process signaling is prohibited in unit tests")
+        return original_popen(args, *positional, **kwargs)
+
+    def forbidden_signal(*args, **kwargs):
+        raise AssertionError("Real process signaling is prohibited in unit tests")
+
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+    monkeypatch.setattr(os, "kill", forbidden_signal)
+    monkeypatch.setattr(os, "killpg", forbidden_signal, raising=False)
+    monkeypatch.setattr("arc_llama.launcher.host_memory_pressure", lambda: None)
+
+
+@pytest.fixture(scope="session")
+def metadata_ggufs(tmp_path_factory):
+    """Generated GGUF binary metadata fixtures, not inference models.
+
+    Exercise the actual writer/reader format without depending on a user's
+    deleted model paths. Native inference is covered by the opt-in smoke.
+    """
+    import gguf
+
+    root = tmp_path_factory.mktemp("gguf-metadata")
+    specs = {
+        "base": ("qwen35", {"block_count": 64}),
+        "mtp": ("qwen35", {"block_count": 65, "nextn_predict_layers": 1}),
+        "gemma_moe": ("gemma4", {"expert_count": 128}),
+        "qwen_moe": ("qwen3moe", {"expert_count": 128}),
+    }
+    paths = {}
+    for name, (arch, fields) in specs.items():
+        path = root / f"{name}.gguf"
+        writer = gguf.GGUFWriter(str(path), arch)
+        for key, value in fields.items():
+            writer.add_uint32(f"{arch}.{key}", value)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        paths[name] = path
+    return paths

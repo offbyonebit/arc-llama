@@ -44,7 +44,7 @@ from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
-from arc_llama.chat_store import ChatMessage, ChatStore
+from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.plugins import (
@@ -477,6 +477,8 @@ def create_app(
         if not isinstance(prompt, str):
             raise HTTPException(status_code=400, detail="Ollama generate requests require a string prompt")
         payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
+        payload.pop("messages")
+        payload["prompt"] = prompt
         request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
         response = await _proxy_post(request, "/v1/completions")
         return _openai_response_as_ollama(response, body.get("model", ""), generate=True)
@@ -506,22 +508,27 @@ def create_app(
             {"type": "error", "message": "..."}
             {"type": "done"}
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _read_json_body(request)
 
         model = body.get("model")
         task = body.get("task")
-        if not model or not task:
-            raise HTTPException(status_code=400, detail="'model' and 'task' are required")
+        if not isinstance(model, str) or not model.strip() or not isinstance(task, str) or not task.strip():
+            raise HTTPException(status_code=400, detail="'model' and 'task' must be nonempty strings")
+        for key in ("root", "folder", "profile"):
+            if body.get(key) is not None and not isinstance(body[key], str):
+                raise HTTPException(status_code=400, detail=f"{key} must be a string")
+        for key in ("auto_confirm", "plan_mode"):
+            if key in body and not isinstance(body[key], bool):
+                raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
+        max_turns = body.get("max_turns", 30)
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
+            raise HTTPException(status_code=400, detail="max_turns must be a positive integer")
 
         auto_confirm = bool(body.get("auto_confirm", False))
         if auto_confirm:
             await _require_admin(request)
         plan_mode = bool(body.get("plan_mode", False))
-        max_turns = int(body.get("max_turns", 30))
-        folder = body.get("folder") if body.get("folder") is not None else ""
+        folder = body.get("folder") or ""
         root_path = body.get("root") or cfg.agent.root
         root = Path(root_path).expanduser().resolve()
         requested_profile = body.get("profile")
@@ -589,6 +596,10 @@ def create_app(
                     extra={"semantic_index": semantic_index},
                 ):
                     if event.get("type") == "confirm_required":
+                        # Each destructive tool needs its own approval. Reset
+                        # before publishing the event so a fast reply is not lost.
+                        confirm_event.clear()
+                        confirm_result["approved"] = False
                         event = {**event, "run_id": run_id}
                     if event.get("type") == "plan":
                         event = {**event, "run_id": run_id}
@@ -629,10 +640,9 @@ def create_app(
 
         Request body: {"approved": true|false}
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _read_json_body(request)
+        if not isinstance(body.get("approved", False), bool):
+            raise HTTPException(status_code=400, detail="approved must be a boolean")
 
         entry = request.app.state.pending_confirmations.get(run_id)
         if not entry:
@@ -653,10 +663,9 @@ def create_app(
 
         Request body: {"approved": true|false}
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _read_json_body(request)
+        if not isinstance(body.get("approved", False), bool):
+            raise HTTPException(status_code=400, detail="approved must be a boolean")
 
         entry = request.app.state.pending_plan_approvals.get(run_id)
         if not entry:
@@ -673,6 +682,32 @@ def create_app(
     # Chat history persistence
     # ------------------------------------------------------------------
 
+    async def _chat_body(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        return body
+
+    def _chat_messages(body: dict[str, Any]) -> list[ChatMessage]:
+        messages = body["messages"]
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail="messages must be an array")
+        try:
+            return [ChatMessage.from_dict(message) for message in messages]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def _persist_chat(store: ChatStore, chat: Chat) -> None:
+        try:
+            store.save(chat)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Could not save chat. Check disk space and storage permissions, then retry.") from exc
+
     @app.get("/v1/chats")
     async def list_chats(request: Request, folder: str | None = Query(None)) -> dict[str, Any]:
         """Return a list of chat summaries ordered by most recently updated first.
@@ -681,8 +716,11 @@ def create_app(
         ``?folder=`` for the root/legacy folder only.
         """
         store: ChatStore = request.app.state.chat_store
-        chats = store.list_chats(folder=folder)
-        return {"object": "list", "data": [c.summary() for c in chats]}
+        try:
+            summaries = store.list_summaries(folder=folder)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"object": "list", "data": summaries}
 
     @app.get("/v1/chats/folders")
     async def list_chat_folders(request: Request) -> dict[str, Any]:
@@ -698,19 +736,22 @@ def create_app(
         If no id is provided a UUID is generated. If no folder is provided,
         the chat is placed in the ``default`` folder.
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _chat_body(request)
 
         chat_id = body.get("id") or str(uuid.uuid4())
         title = body.get("title") or "Untitled chat"
         folder = body.get("folder") if body.get("folder") is not None else ""
+        if not isinstance(folder, str):
+            raise HTTPException(status_code=400, detail="folder must be a string")
         store: ChatStore = request.app.state.chat_store
         try:
             chat = store.create(chat_id, title, folder=folder)
         except FileExistsError:
             raise HTTPException(status_code=409, detail=f"Chat already exists: {chat_id}") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Could not create chat. Check disk space and storage permissions, then retry.") from exc
         return chat.to_dict()
 
     @app.post("/v1/chats/search")
@@ -720,14 +761,19 @@ def create_app(
         Body: {"query": "string", "limit": 20}
         Returns matching chats with the indices of matching messages.
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _chat_body(request)
         query = body.get("query", "")
-        if not query:
-            raise HTTPException(status_code=400, detail="query is required")
-        limit = int(body.get("limit", 20))
+        if not isinstance(query, str) or not query.strip():
+            raise HTTPException(status_code=400, detail="query must be a nonempty string")
+        try:
+            value = body.get("limit", 20)
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                raise ValueError
+            limit = int(value)
+            if limit < 1:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="limit must be a positive integer") from exc
         store: ChatStore = request.app.state.chat_store
         results = store.search(query, limit=limit)
         return {
@@ -754,17 +800,15 @@ def create_app(
         Body: {"chats": [...], "overwrite": false}
         Existing chats are skipped unless ``overwrite`` is true.
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = await _chat_body(request)
         chats = body.get("chats")
         if not isinstance(chats, list):
             raise HTTPException(status_code=400, detail="'chats' must be an array")
         store: ChatStore = request.app.state.chat_store
-        result = store.import_chats(chats, overwrite=bool(body.get("overwrite", False)))
+        overwrite = body.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            raise HTTPException(status_code=400, detail="overwrite must be a boolean")
+        result = store.import_chats(chats, overwrite=overwrite)
         return {
             "imported": result["imported"],
             "skipped": result["skipped"],
@@ -784,10 +828,7 @@ def create_app(
     @app.put("/v1/chats/{chat_id}")
     async def update_chat(chat_id: str, request: Request) -> dict[str, Any]:
         """Replace an entire chat (title and/or messages)."""
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        body = await _chat_body(request)
 
         store: ChatStore = request.app.state.chat_store
         chat = store.get(chat_id)
@@ -796,9 +837,9 @@ def create_app(
 
         if "title" in body:
             chat.title = str(body["title"])
-        if "messages" in body and isinstance(body["messages"], list):
-            chat.messages = [ChatMessage.from_dict(m) for m in body["messages"]]
-        store.save(chat)
+        if "messages" in body:
+            chat.messages = _chat_messages(body)
+        _persist_chat(store, chat)
         return chat.to_dict()
 
     @app.patch("/v1/chats/{chat_id}")
@@ -815,12 +856,7 @@ def create_app(
                 ]
             }
         """
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        body = await _chat_body(request)
 
         store: ChatStore = request.app.state.chat_store
         chat = store.get(chat_id)
@@ -831,10 +867,9 @@ def create_app(
             chat.title = str(body["title"])
         if "folder" in body and body["folder"] is not None:
             chat.folder = str(body["folder"])
-        if "messages" in body and isinstance(body["messages"], list):
-            for m in body["messages"]:
-                chat.messages.append(ChatMessage.from_dict(m))
-        store.save(chat)
+        if "messages" in body:
+            chat.messages.extend(_chat_messages(body))
+        _persist_chat(store, chat)
         return chat.to_dict()
 
     @app.delete("/v1/chats/{chat_id}")
@@ -1057,7 +1092,7 @@ def create_app(
     @app.post("/admin/stop/{name}")
     async def admin_stop(
         name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict:
+    ) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -1066,13 +1101,19 @@ def create_app(
             )
         if name not in {m.name for m in rt.all_models()}:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
-        was_running = await rt.stop_one(name)
+        try:
+            was_running = await rt.stop_one(name)
+        except StartupFailureError as exc:
+            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
         return {"name": name, "was_running": was_running, "loaded": False}
 
     @app.post("/admin/stop-all")
-    async def admin_stop_all(request: Request, _auth: None = Depends(_require_admin)) -> dict:
+    async def admin_stop_all(request: Request, _auth: None = Depends(_require_admin)) -> Any:
         rt: Router = request.app.state.router
-        stopped = await rt.stop_all()
+        try:
+            stopped = await rt.stop_all()
+        except StartupFailureError as exc:
+            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
         return {"stopped": stopped}
 
     @app.get("/admin/tune/status")
@@ -1547,6 +1588,12 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
         body = json.loads(body_bytes) if body_bytes else {}
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    if not isinstance(body.get("model", ""), str):
+        raise HTTPException(status_code=400, detail="model must be a string")
+    if "stream" in body and not isinstance(body["stream"], bool):
+        raise HTTPException(status_code=400, detail="stream must be a boolean")
     model_query = body.get("model", "")
 
     # Check upstreams first — they are passive proxies, no llama-server to start.
@@ -1627,11 +1674,13 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     # auto-tuner's abort hook keys off this counter; if it drops to zero while
     # generation is still running, a sweep will restart the backend out from
     # under the user.
+    request_entered_at = time.monotonic()
+    resources = getattr(request.app.state, "resources", None)
+    lease_context = resources.acquire("local-inference", exclusive=False) if resources is not None else None
+    if lease_context is not None:
+        await lease_context.__aenter__()
     rt.inflight += 1
     streaming_response_started = False
-    # Request-clock origin for queue/TTFT metrics. Real timestamps from real
-    # requests only; the metrics endpoint omits values with no samples.
-    request_entered_at = time.monotonic()
     resolved_at: float | None = None
     # Set once the request has resolved to a local model, so the router can
     # answer "is this specific model still serving?" — which _evict_for and
@@ -1733,6 +1782,8 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 if acquired_model is not None:
                     rt.release_model(acquired_model)
                 rt.last_activity = time.time()
+                if lease_context is not None:
+                    await lease_context.__aexit__(None, None, None)
 
                 try:
                     await upstream.aclose()
@@ -1802,3 +1853,5 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             rt.inflight -= 1
             if acquired_model is not None:
                 rt.release_model(acquired_model)
+            if lease_context is not None:
+                await lease_context.__aexit__(None, None, None)

@@ -11,6 +11,7 @@ Color choices avoid red/green — status is signalled by brightness/dim, not hue
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +186,7 @@ class ArcLlamaTUI(App):
 
     async def on_mount(self) -> None:
         self._client = httpx.AsyncClient(base_url=self.server_url, timeout=10.0)
+        await self._configure_admin_auth()
         gpus = self.query_one("#gpus", DataTable)
         gpus.add_columns("PCI", "Arch", "Name", "SYCL", "VRAM", "Enabled")
         models = self.query_one("#models", DataTable)
@@ -193,6 +195,23 @@ class ArcLlamaTUI(App):
         upstreams.add_columns("Name", "URL", "Models", "Last Fetch")
         await self._refresh()
         self.set_interval(REFRESH_SECONDS, self._refresh)
+
+    async def _configure_admin_auth(self) -> None:
+        if self._client is None:
+            return
+        token = os.environ.get("ARC_LLAMA_ADMIN_TOKEN")
+        if not token:
+            try:
+                response = await self._client.get("/admin/session-token")
+                if response.status_code == 200:
+                    body = response.json()
+                    candidate = body.get("admin_token") if isinstance(body, dict) else None
+                    if isinstance(candidate, str):
+                        token = candidate
+            except (httpx.HTTPError, ValueError):
+                pass
+        if token:
+            self._client.headers["Authorization"] = f"Bearer {token}"
 
     async def on_unmount(self) -> None:
         if self._client is not None:

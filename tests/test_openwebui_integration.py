@@ -12,24 +12,13 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
-from fastapi.testclient import TestClient
+from helpers import ConfigRouter as FakeRouter
+from httpx import ASGITransport, AsyncClient
 
 from arc_llama.cli import cli
 from arc_llama.cli import serve as serve_cmd
 from arc_llama.config import Config, GPUConfig, ModelConfig, ServerConfig, UpstreamConfig
 from arc_llama.server import create_app
-
-
-class FakeRouter:
-    def __init__(self, cfg, log_dir=None):
-        self.cfg = cfg
-        self._servers = {}
-
-    def all_models(self):
-        return list(self.cfg.models)
-
-    async def shutdown(self):
-        return None
 
 
 class FakeUpstreamManager:
@@ -73,52 +62,55 @@ def gguf(tmp_path: Path) -> Path:
     return p
 
 
-def test_cors_allows_cross_origin(gguf: Path):
+async def test_cors_allows_cross_origin(gguf: Path):
     import arc_llama.server as server_mod
 
     with patch.object(server_mod, "Router", FakeRouter), \
          patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
         app = create_app(_cfg(gguf))
-        with TestClient(app) as client:
-            pre = client.options(
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                pre = await client.options(
                 "/v1/models",
                 headers={
                     "Origin": "http://localhost:3000",
                     "Access-Control-Request-Method": "GET",
                 },
-            )
-            assert pre.status_code in (200, 204)
-            assert pre.headers.get("access-control-allow-origin") == "http://localhost:3000"
-            r = client.get("/v1/models", headers={"Origin": "http://localhost:3000"})
-            assert r.status_code == 200
-            assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
+                )
+                assert pre.status_code in (200, 204)
+                assert pre.headers.get("access-control-allow-origin") == "http://localhost:3000"
+                r = await client.get("/v1/models", headers={"Origin": "http://localhost:3000"})
+                assert r.status_code == 200
+                assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
 
 
-def test_cors_rejects_unconfigured_cross_origin(gguf: Path):
+async def test_cors_rejects_unconfigured_cross_origin(gguf: Path):
     import arc_llama.server as server_mod
 
     with patch.object(server_mod, "Router", FakeRouter), \
          patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
         app = create_app(_cfg(gguf))
-        with TestClient(app) as client:
-            pre = client.options(
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                pre = await client.options(
                 "/v1/models",
                 headers={
                     "Origin": "http://evil.example.com",
                     "Access-Control-Request-Method": "GET",
                 },
-            )
-            assert "access-control-allow-origin" not in pre.headers
+                )
+                assert "access-control-allow-origin" not in pre.headers
 
 
-def test_list_models_created_from_gguf_mtime(gguf: Path):
+async def test_list_models_created_from_gguf_mtime(gguf: Path):
     import arc_llama.server as server_mod
 
     with patch.object(server_mod, "Router", FakeRouter), \
          patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
         app = create_app(_cfg(gguf))
-        with TestClient(app) as client:
-            data = client.get("/v1/models").json()["data"]
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                data = (await client.get("/v1/models")).json()["data"]
             local = next(m for m in data if m["id"] == "qwen")
             assert local["created"] == 1_700_000_123
             alias = next(m for m in data if m["id"] == "qwen.gguf")
@@ -126,15 +118,18 @@ def test_list_models_created_from_gguf_mtime(gguf: Path):
             assert any(m["owned_by"] == "upstream:lmstudio" for m in data)
 
 
-def test_list_models_missing_file_created_zero(tmp_path: Path):
+async def test_list_models_missing_file_created_zero(tmp_path: Path):
     import arc_llama.server as server_mod
 
     missing = tmp_path / "gone.gguf"
     with patch.object(server_mod, "Router", FakeRouter), \
          patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
         app = create_app(_cfg(missing, upstream=False))
-        with TestClient(app) as client:
-            local = next(m for m in client.get("/v1/models").json()["data"] if m["id"] == "qwen")
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                local = next(
+                    m for m in (await client.get("/v1/models")).json()["data"] if m["id"] == "qwen"
+                )
             assert local["created"] == 0
 
 

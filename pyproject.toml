@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arc-llama"
-version = "0.9.0rc1"
+version = "0.9.0"
 description = "Plug-and-play llama.cpp runtime for Intel Arc GPUs. Auto-detects your card, picks safe SYCL defaults, and exposes an OpenAI-compatible API."
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,7 +41,7 @@ semantic = [
     "numpy>=1.24",
 ]
 mcp = [
-    "mcp>=1.0",
+    "mcp>=1.0,<2",
 ]
 dev = [
     "pytest>=8.0",
@@ -80,6 +80,9 @@ exclude = [
     "AUTOTUNE_*.md",
     "EOF",
     "arc-llama-vision/",
+    "docs/release-prep-*.md",
+    "docs/release-validation-*.md",
+    "docs/incidents/",
 ]
 
 [tool.ruff]
@@ -93,5 +96,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live_inference: opt-in real model subprocess and GPU inference"]
 # Emit thread stacks for stalled tests; CI also has a hard job deadline.
 faulthandler_timeout = 30

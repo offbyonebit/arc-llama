@@ -15,19 +15,9 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import make_config
-from test_router import FakeServer
-
-import arc_llama.router as router_mod
-from arc_llama.router import Router
-
-
-def _router(tmp_path, monkeypatch, *, single=True) -> Router:
-    FakeServer.starts = []
-    FakeServer.stops = []
-    cfg = make_config(tmp_path, single_resident=single)
-    monkeypatch.setattr(router_mod, "LlamaServer", FakeServer)
-    return Router(cfg)
+import pytest
+from helpers import FakeServer
+from helpers import fake_router as _router
 
 
 async def test_eviction_waits_for_incumbent_to_finish(tmp_path, monkeypatch):
@@ -104,3 +94,55 @@ async def test_per_model_counts_are_independent(tmp_path, monkeypatch):
     assert rt.model_inflight == {"qwen": 2, "gemma": 1}
     rt.release_model("qwen")
     assert rt.model_inflight == {"qwen": 1, "gemma": 1}
+
+
+async def test_unconfirmed_shutdown_blocks_swap_and_same_model_retry(tmp_path, monkeypatch):
+    import pytest
+
+    from arc_llama.failures import StartupFailureError
+
+    rt = _router(tmp_path, monkeypatch)
+    await rt.ensure_active("qwen")
+    srv = rt._servers["qwen"]
+
+    async def stuck_stop(*args, **kwargs):
+        srv.ready = False
+        raise StartupFailureError(
+            "gpu_unavailable", "Child has not exited", "Wait for child exit",
+            details={"reason": "shutdown_timeout"},
+        )
+
+    monkeypatch.setattr(srv, "astop", stuck_stop)
+    for model in ("gemma", "qwen"):
+        with pytest.raises(StartupFailureError, match="has not exited"):
+            await rt.ensure_active(model)
+        assert srv.is_running
+        assert FakeServer.starts == ["qwen"]
+        assert not rt._stopping
+        assert not rt._loading_futures
+
+
+@pytest.mark.parametrize("action", ["stop_one", "stop_all", "switch", "rebuild"])
+async def test_exited_child_releases_retained_resources(tmp_path, monkeypatch, action):
+    from unittest.mock import Mock
+
+    from arc_llama.launcher import LlamaServer
+
+    rt = _router(tmp_path, monkeypatch)
+    previous = rt._servers["qwen"]
+    srv = LlamaServer(previous.plan, "qwen")
+    srv.process = Mock(pid=12345)
+    srv.process.poll.return_value = -9
+    lock = open(tmp_path / "retained.lock", "a+")
+    srv._resident_lock = lock
+    rt._servers["qwen"] = srv
+    if action == "stop_one":
+        assert await rt.stop_one("qwen") is False
+    elif action == "stop_all":
+        assert await rt.stop_all() == 0
+    elif action == "switch":
+        await rt.ensure_active("gemma")
+    else:
+        assert await rt.rebuild_model("qwen") == (True, False)
+    assert srv.process is None and srv._resident_lock is None
+    assert lock.closed

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from click.testing import CliRunner
+from helpers import AsyncContextClient
 
 from arc_llama.benchmark import BenchmarkResult
 from arc_llama.cli import cli
@@ -93,20 +94,11 @@ def test_speculative_auto_rolls_back_when_draft_is_slower(tmp_path, monkeypatch)
         restored.append(dict(edits))
         return None
 
-    class Client:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            pass
 
     monkeypatch.setattr("arc_llama.cli.benchmark_mod.benchmark_model", benchmark)
     monkeypatch.setattr("arc_llama.tune._apply_edits", apply)
     monkeypatch.setattr("arc_llama.tune._restore_final_state", restore)
-    monkeypatch.setattr("arc_llama.cli.httpx.AsyncClient", Client)
+    monkeypatch.setattr("arc_llama.cli.httpx.AsyncClient", AsyncContextClient)
 
     result = CliRunner().invoke(
         cli,

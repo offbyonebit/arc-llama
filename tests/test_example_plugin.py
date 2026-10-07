@@ -6,8 +6,6 @@ try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
-from fastapi.testclient import TestClient
-
 from arc_llama.server import create_app
 
 
@@ -20,7 +18,7 @@ def test_example_plugin_declares_entry_point() -> None:
     )
 
 
-def test_example_plugin_registers_and_runs(monkeypatch) -> None:
+async def test_example_plugin_registers_and_runs(monkeypatch) -> None:
     root = Path(__file__).parents[1] / "examples" / "hello-plugin"
     monkeypatch.syspath_prepend(str(root / "src"))
 
@@ -37,13 +35,17 @@ def test_example_plugin_registers_and_runs(monkeypatch) -> None:
     plugin = create_plugin()
     app = create_app(plugins=[plugin])
 
-    with TestClient(app) as client:
-        response = client.get("/plugin/hello")
-        assert response.status_code == 200
-        assert response.json() == {
-            "plugin": "hello",
-            "message": "hello from an arc-llama plugin",
-        }
-        assert app.state.hello_plugin_started is True
+    import httpx
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/plugin/hello")
+            assert response.status_code == 200
+            assert response.json() == {
+                "plugin": "hello",
+                "message": "hello from an arc-llama plugin",
+            }
+            assert app.state.hello_plugin_started is True
 
     assert app.state.hello_plugin_stopped is True

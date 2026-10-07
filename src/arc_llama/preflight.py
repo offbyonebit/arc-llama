@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from arc_llama.config import GPUConfig, ModelConfig
 from arc_llama.failures import StartupFailureError
+from arc_llama.gpu_ownership import check_gpu_ownership
 from arc_llama.launcher import LaunchPlan
 
 
@@ -103,6 +104,10 @@ def _check_port(host: str, port: int) -> None:
         try:
             if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            elif os.name != "nt":
+                # A closed server's accepted connections can remain in
+                # TIME_WAIT. They do not mean a listener still owns this port.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(sockaddr)
         except OSError as exc:
             raise StartupFailureError(
@@ -115,7 +120,10 @@ def _check_port(host: str, port: int) -> None:
             probe.close()
 
 
-def preflight_launch(model: ModelConfig, gpu: GPUConfig, plan: LaunchPlan) -> None:
+def preflight_launch(
+    model: ModelConfig, gpu: GPUConfig, plan: LaunchPlan,
+    managed_pids: set[int] | None = None,
+) -> None:
     """Reject predictable launch failures without spawning a subprocess."""
     if not gpu.enabled:
         raise StartupFailureError(
@@ -135,5 +143,8 @@ def preflight_launch(model: ModelConfig, gpu: GPUConfig, plan: LaunchPlan) -> No
     draft_path = _argv_value(plan.argv, "--spec-draft-model")
     if draft_path:
         _check_gguf(draft_path, draft=True)
+    # Managed residents are intentionally excluded: the router drains them
+    # after this preflight. External conflicts must not evict a healthy one.
+    check_gpu_ownership(gpu.pci_slot, managed_pids)
     host = urlsplit(plan.backend_url).hostname or "127.0.0.1"
     _check_port(host, model.port)

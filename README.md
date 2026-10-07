@@ -15,19 +15,9 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Release candidate: 0.9.0rc1.** Tested end-to-end on Battlemage B60 on Linux
-> and Windows. The release-prep branch includes the one-command `arc-llama run`
-> flow, verified portable runtime installation, native Windows SYCL inference,
-> streaming, Ollama-compatible endpoints, and the OpenAI-compatible API.
-> `arc-llama install-runtime` fetches a portable Vulkan `llama-server` and
-> serves real inference with no oneAPI install or source build. The Windows
-> SYCL runtime also passes GPU discovery, model startup, streaming, and the
-> OpenAI-compatible API. HF download, streaming, and the OpenAI-compatible
-> API all pass. Other SKUs (A770, A380,
-> B580) need community confirmation -- open an issue if something breaks on
-> your card.
+> **Version 0.9.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.0).
 
-## What's new in 0.9.0rc1
+## What's new in 0.9.0
 
 - **One-command setup and launch:** `arc-llama run` accepts a registered model,
   local GGUF, or Hugging Face GGUF source; it prepares the runtime and model,
@@ -175,7 +165,8 @@ curl http://127.0.0.1:11437/v1/chat/completions \
 - Kernel **6.14+ recommended** for Battlemage (`xe` driver; 6.8 is the minimum
   where `xe` exists, but 6.14+ is stable for BMG) or 5.17+ for Alchemist
   (`i915`). This matches the threshold `arc-llama doctor` warns on.
-- User in the `render` and `video` groups (`arc-llama doctor` will tell you).
+- User in the `render` and `video` groups (`arc-llama doctor` will tell you;
+  see [GPU setup](docs/gpu-setup.md) for the fix).
 
 ### Windows
 
@@ -282,9 +273,30 @@ is bound to a specific PCI slot, and the SYCL device selector
 re-run `arc-llama init --force` to refresh `[[gpus]]`, then add models against
 either GPU.
 
-The default swap policy is **single-resident across all GPUs** , pick a model,
-the router stops anything else first. Flip `server.single_resident = false` in
-the config if you want different-GPU models to coexist.
+The default swap policy is **single-resident across all GPUs**: pick a model,
+and the router stops its other managed models first. Flip
+`server.single_resident = false` in the config if you want different-GPU models
+to coexist.
+
+On Linux, a separate `llama-server` holding DRM allocations on the target GPU
+blocks a new load with its PID and service name. Stop that server and disable
+its automatic startup if Arc Llama should own the GPU. This check includes
+buffers moved into system memory; it does not stop external services for you.
+Processes hidden by permissions and servers started after the check cannot be
+reserved by this admission check. If forced shutdown times out, Arc retains
+the child handle and ownership until exit is confirmed, and rejects a replacement
+load. This shutdown protection also applies on Windows.
+
+For Qwen3.6 35B with a vision projector on a 24 GiB B60, the text model,
+128k KV context, and MTP can leave little room for GPU vision buffers. Adding
+`--no-mmproj-offload` to that model's existing `recipe.extra_flags` moves its
+vision projector to CPU while retaining image support and the text settings.
+This configuration passed live generation, streaming, vision, and model swaps
+under hard host-memory limits; see the [incident follow-up](docs/incidents/2026-10-01-host-ram-oom-verified-investigation.md).
+It also passed a fresh 130429-token prompt in the configured 131072 context,
+followed by cached generation and image recognition. Larger images may encode
+more slowly on CPU. These results do not establish safety for the previous
+all-GPU projector recipe.
 
 ## Upstreams
 
@@ -413,7 +425,8 @@ do not fit your workload.
 The router serialises swaps with an `asyncio.Lock`, so concurrent requests for
 the same model fan out to one warm backend. Health is polled at
 `{backend_url}/health`; cold-start budget is 120 s by default to absorb the
-SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch.
+SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch (see
+[GPU setup](docs/gpu-setup.md) to remove it with an AOT build).
 
 ## Why not just use Ollama / vLLM?
 
@@ -483,7 +496,7 @@ docker build --build-arg GGML_SYCL_DEVICE_ARCH=acm-g10 -t arc-llama:acm .  # A77
 docker run --rm -it \
   --device /dev/dri:/dev/dri \
   --group-add video --group-add render \
-  -p 11437:11437 \
+  -p 127.0.0.1:11437:11437 \
   -v $HOME/models:/models:ro \
   arc-llama:latest
 ```
@@ -564,7 +577,8 @@ The unchecked items will be linked to public tracking issues as they are
 opened. Multi-GPU support remains available for testing but is not a blocker
 for the initial single-GPU 1.0 release.
 
-See the [compatibility contract](docs/compatibility.md), [remote-access and
+See the [compatibility contract](docs/compatibility.md), [GPU setup
+guide](docs/gpu-setup.md), [remote-access and
 security guidance](docs/security.md), and [release-candidate
 checklist](docs/release-checklist.md) for the concrete promises and validation
 matrix. The detailed implementation sequence and release gates are in the

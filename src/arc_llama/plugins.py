@@ -141,7 +141,7 @@ def discover_entry_points() -> list[Any]:
         from importlib.metadata import entry_points
     except ImportError:  # pragma: no cover - Python < 3.8
         return []
-    eps = entry_points()
+    eps: Any = entry_points()
     if hasattr(eps, "select"):
         return list(eps.select(group=ENTRY_POINT_GROUP))
     return [ep for ep in eps if getattr(ep, "group", None) == ENTRY_POINT_GROUP]

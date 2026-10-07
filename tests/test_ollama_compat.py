@@ -57,3 +57,29 @@ def test_openai_stream_converts_to_ndjson() -> None:
     lines = [json.loads(line) for line in asyncio.run(collect()).splitlines()]
     assert lines[0]["message"]["content"] == "hi"
     assert lines[-1]["done"] is True
+
+
+def test_ollama_generate_forwards_prompt_to_completion_backend(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import arc_llama.server as server_mod
+    from arc_llama.config import Config, PathsConfig
+
+    async def proxy(request, target_path):
+        payload = json.loads(await request.body())
+        assert target_path == "/v1/completions"
+        assert payload["prompt"] == "2 plus 2"
+        assert payload["max_tokens"] == 5
+        assert "messages" not in payload
+        return Response(json.dumps({"choices": [{"text": "4", "finish_reason": "stop"}]}).encode())
+
+    monkeypatch.setattr(server_mod, "_proxy_post", proxy)
+    cfg = Config(paths=PathsConfig(state_dir=str(tmp_path)))
+    cfg.tune.auto = False
+    with TestClient(server_mod.create_app(cfg, plugins=[])) as client:
+        response = client.post("/api/generate", json={
+            "model": "demo", "prompt": "2 plus 2", "stream": False,
+            "options": {"num_predict": 5},
+        })
+        assert response.status_code == 200
+        assert response.json()["response"] == "4"

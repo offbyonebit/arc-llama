@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ASGITransport as _ASGITransport
+from httpx import AsyncClient as _HttpxAsyncClient
 
 from arc_llama import __version__
 from arc_llama.config import (
@@ -22,12 +24,53 @@ from arc_llama.failures import StartupFailureError
 from arc_llama.server import _local_request_body, create_app
 
 
+@pytest.fixture(autouse=True)
+def _isolate_server_httpx(monkeypatch):
+    """Keep upstream fakes from mutating the real test transport's module."""
+    import types
+
+    import httpx
+
+    import arc_llama.server as server_mod
+
+    isolated = types.ModuleType("httpx")
+    for name in dir(httpx):
+        setattr(isolated, name, getattr(httpx, name))
+    monkeypatch.setattr(server_mod, "httpx", isolated)
+    monkeypatch.setattr(server_mod, "load_plugins", lambda discovery=None: [])
+
+    import arc_llama.autotune as autotune_mod
+
+    class _NoopTuner:
+        is_sweep_running = False
+        running_model = None
+        running_stage = None
+        last_results = {}
+
+        def bump_use(self, name):
+            pass
+
+        def queue_now(self, name):
+            return False
+
+        def abort_sweep(self):
+            return False
+
+        async def stop(self):
+            pass
+
+    async def no_op_start(*args, **kwargs):
+        return _NoopTuner()
+
+    monkeypatch.setattr(autotune_mod, "start_autotuner", no_op_start)
+
+
 def test_app_advertises_package_version():
     app = create_app(Config(), plugins=[])
     assert app.version == __version__
 
 
-def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
+async def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
     """The lifespan must attach a GPU lease manager bound to the router."""
     import arc_llama.server as server_mod
     from arc_llama.resources import ResourceLeaseManager
@@ -35,25 +78,29 @@ def test_app_exposes_resource_lease_manager_on_state(monkeypatch):
     monkeypatch.setattr(server_mod, "Router", FakeRouter)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
-    app = create_app(Config())
+    cfg = Config()
+    cfg.tune.auto = False
+    app = create_app(cfg)
 
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-        mgr = app.state.resources
-        assert isinstance(mgr, ResourceLeaseManager)
-        assert mgr.router is app.state.router
-        # Normal text inference holds no lease: a proxied request leaves
-        # the manager's bookkeeping untouched.
-        assert mgr.active_leases == {}
+    async with app.router.lifespan_context(app):
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.get("/health")).status_code == 200
+            mgr = app.state.resources
+            assert isinstance(mgr, ResourceLeaseManager)
+            assert mgr.router is app.state.router
+            # Normal text inference holds no lease: a proxied request leaves
+            # the manager's bookkeeping untouched.
+            assert mgr.active_leases == {}
 
-        response = client.post(
-            "/v1/chat/completions",
-            json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
-        )
-        assert response.status_code == 200
-        assert mgr.active_leases == {}
-        assert mgr.exclusive_active is False
-        assert app.state.router.inflight == 0
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200
+            assert mgr.active_leases == {}
+            assert mgr.exclusive_active is False
+            assert app.state.router.inflight == 0
 
 
 def test_local_chat_defaults_to_template_aware_reasoning_parser():
@@ -629,7 +676,7 @@ class CapturingMCPClientManager:
         pass
 
 
-def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
+async def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
     import arc_llama.server as server_mod
     from arc_llama.config import Config
 
@@ -647,7 +694,7 @@ def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
     cfg.agent.profile = "work"
 
     app = create_app(cfg)
-    with TestClient(app):
+    async with app.router.lifespan_context(app):
         pass
 
     assert [s.name for s in CapturingMCPClientManager.started_servers] == ["fs"]
@@ -1365,7 +1412,7 @@ class ColdStartBackend(FakeBackend):
     ready = False
 
 
-def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
+async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
     """A subprocess that exists but has not passed its health check is not
     'loaded': during a cold start or a crash-respawn the port is not serving,
     and dashboards or scripts gating on this field would act on a lie."""
@@ -1377,10 +1424,121 @@ def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
     # an admin token, which would 401 the /admin/status call below.
     app = create_app(Config(server=ServerConfig(admin_token=None)))
 
-    with TestClient(app) as client:
+    async with app.router.lifespan_context(app):
         app.state.router._servers["qwen"] = ColdStartBackend()
-        health = client.get("/health").json()
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            health = (await client.get("/health")).json()
         assert health["loaded_models"] == [], "cold-starting model reported as loaded"
-        status = client.get("/admin/status").json()
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            status = (await client.get("/admin/status")).json()
         entry = next(m for m in status["models"] if m["name"] == "qwen")
         assert entry["loaded"] is False
+
+
+def test_client_preserves_application_lifespan_across_requests(monkeypatch):
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    cfg = Config()
+    cfg.tune.auto = False
+    with TestClient(create_app(cfg, plugins=[])) as client:
+        router = client.app.state.router
+        router.last_activity = 123.0
+        assert client.get("/health").status_code == 200
+        assert client.get("/health").status_code == 200
+        assert client.app.state.router is router
+        assert router.last_activity == 123.0
+
+
+@pytest.mark.parametrize("payload", [[], None, 42, "text", {"model": []}, {"model": 1}, {"stream": "false"}])
+def test_proxy_rejects_invalid_json_shapes_before_routing(tmp_path, payload):
+    cfg = Config(paths=PathsConfig(state_dir=str(tmp_path)))
+    cfg.tune.auto = False
+    with TestClient(create_app(cfg, plugins=[])) as client:
+        response = client.post(
+            "/v1/chat/completions", content=json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 400
+
+
+@pytest.mark.parametrize("path", ["/v1/agent", "/v1/agent/missing/confirm", "/v1/agent/missing/plan"])
+@pytest.mark.parametrize("body", [[], None, "invalid"])
+def test_agent_endpoints_reject_nonobject_json(path, body):
+    with TestClient(create_app(Config(), plugins=[]), raise_server_exceptions=False) as client:
+        assert client.post(path, content=json.dumps(body), headers={"Content-Type": "application/json"}).status_code == 400
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model", []), ("task", 42), ("task", " "), ("root", []),
+    ("folder", {}), ("profile", 42), ("auto_confirm", "false"),
+    ("plan_mode", 1), ("max_turns", "bad"), ("max_turns", True),
+    ("max_turns", 1.5), ("max_turns", 0),
+])
+def test_agent_endpoint_rejects_invalid_fields(field, value):
+    body = {"model": "test", "task": "test", field: value}
+    with TestClient(create_app(Config(), plugins=[]), raise_server_exceptions=False) as client:
+        assert client.post("/v1/agent", json=body).status_code == 400
+
+
+@pytest.mark.parametrize("endpoint", ["confirm", "plan"])
+@pytest.mark.parametrize("approved", ["false", 1, None])
+def test_agent_approval_requires_boolean(endpoint, approved):
+    with TestClient(create_app(Config(), plugins=[]), raise_server_exceptions=False) as client:
+        assert client.post(f"/v1/agent/missing/{endpoint}", json={"approved": approved}).status_code == 400
+
+
+def test_agent_resets_confirmation_before_each_tool(monkeypatch, tmp_path):
+    import arc_llama.server as server_mod
+
+    observed = []
+
+    async def fake_agent(**kwargs):
+        for index, approved in enumerate((True, False)):
+            yield {"type": "confirm_required", "id": str(index), "tool": "write_file", "arguments": {}}
+            event, result = next(iter(app.state.pending_confirmations.values()))
+            assert not event.is_set()
+            assert result["approved"] is False
+            result["approved"] = approved
+            event.set()
+            observed.append(await kwargs["confirm_callback"](str(index), "write_file", {}))
+        yield {"type": "done"}
+
+    monkeypatch.setattr(server_mod, "run_agent", fake_agent)
+    cfg = Config()
+    cfg.paths.state_dir = str(tmp_path / "state")
+    app = create_app(cfg, plugins=[])
+    with TestClient(app) as client:
+        response = client.post("/v1/agent", json={"model": "test", "task": "two tools"})
+        assert response.status_code == 200
+    assert observed == [True, False]
+    assert not app.state.pending_confirmations
+
+
+def test_queue_metrics_include_resource_admission_wait(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    import arc_llama.server as server_mod
+
+    class TimedRouter(FakeRouter):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.timings = MagicMock()
+
+    class DelayedAdmission:
+        @asynccontextmanager
+        async def acquire(self, *args, **kwargs):
+            await asyncio.sleep(0.05)
+            yield
+
+    monkeypatch.setattr(server_mod, "Router", TimedRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    app = create_app(Config(), plugins=[])
+    with TestClient(app) as client:
+        app.state.resources = DelayedAdmission()
+        response = client.post("/v1/chat/completions", json={"model": "qwen", "messages": []})
+        assert response.status_code == 200
+        assert app.state.router.timings.record_queue_wait.call_args.args[0] >= 0.04

@@ -50,9 +50,3 @@ def format_tool_result(name: str, arguments: dict, result: str, error: bool) -> 
     """Format a tool result for inclusion in the conversation history."""
     status = "error" if error else "ok"
     return f'<tool_result name="{name}" status="{status}">\n{result}\n</tool_result>'
-
-
-def format_assistant_tool_call(name: str, arguments: dict) -> str:
-    """Format a tool call made by the assistant for the history."""
-    import json
-    return f'<tool_call name="{name}">\n{json.dumps(arguments, indent=2)}\n</tool_call>'

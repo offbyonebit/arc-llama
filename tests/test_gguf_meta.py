@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import FakeField as _FakeField
+from helpers import FakeTensor as _FakeTensor
+from helpers import FakeTensorReader as _FakeReader
 
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
@@ -23,34 +26,8 @@ from arc_llama.gguf_meta import (
     trained_context_length,
 )
 
-# Real GGUFs on the host's storage, discovered during exploration.
-_BASE_QWEN = Path("/mnt/storage/models/qwen3.6-27b/Qwen_Qwen3.6-27B-Q4_K_M.gguf")
-_MTP_QWEN = Path("/mnt/storage/models/qwen3.6-27b/Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf")
-_GEMMA_MOE = Path("/mnt/storage/models/gemma-4-26b-a4b/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf")
-_QWEN_CODER_MOE = Path(
-    "/mnt/storage/models/qwen3-coder-30b-a3b/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
-)
 
-
-def _have_fixtures() -> bool:
-    return _BASE_QWEN.exists() and _MTP_QWEN.exists()
-
-
-def _have_moe_fixtures() -> bool:
-    return _GEMMA_MOE.exists() and _QWEN_CODER_MOE.exists()
-
-
-class _FakeField:
-    def __init__(self, value: Any):
-        self._value = value
-
-    def contents(self) -> Any:
-        return self._value
-
-
-# Distinct from the tensor-table _FakeReader defined further down: this one
-# answers get_field() lookups, that one answers .tensors. Same name would
-# shadow, and the later definition would silently win.
+# Metadata fields and tensor tables use separate reader doubles.
 class _FakeFieldReader:
     def __init__(self, fields: dict[str, Any]):
         self._fields = fields
@@ -194,14 +171,12 @@ class TestTokenizerFingerprint:
 
 
 class TestReadGgufMeta:
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_reads_architecture(self):
-        meta = read_gguf_meta(_BASE_QWEN)
+    def test_reads_architecture(self, metadata_ggufs):
+        meta = read_gguf_meta(metadata_ggufs["base"])
         assert meta["architecture"] == "qwen35"
 
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_reads_nextn_and_layers(self):
-        meta = read_gguf_meta(_MTP_QWEN)
+    def test_reads_nextn_and_layers(self, metadata_ggufs):
+        meta = read_gguf_meta(metadata_ggufs["mtp"])
         assert meta["nextn_predict_layers"] == 1
         assert meta["block_count"] == 65
 
@@ -292,32 +267,28 @@ class TestKvBytesPerToken:
 
 
 class TestMtpDetection:
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_base_qwen_has_no_mtp(self):
-        assert has_mtp_heads(_BASE_QWEN) is False
+    def test_base_qwen_has_no_mtp(self, metadata_ggufs):
+        assert has_mtp_heads(metadata_ggufs["base"]) is False
 
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_mtp_qwen_has_mtp(self):
-        assert has_mtp_heads(_MTP_QWEN) is True
+    def test_mtp_qwen_has_mtp(self, metadata_ggufs):
+        assert has_mtp_heads(metadata_ggufs["mtp"]) is True
 
     def test_missing_file_is_false(self):
         assert has_mtp_heads("/nonexistent.gguf") is False
 
 
 class TestHybridSsmDetection:
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_qwen_is_hybrid_ssm(self):
-        assert is_hybrid_ssm(_BASE_QWEN) is True
-        assert is_hybrid_ssm(_MTP_QWEN) is True
+    def test_qwen_is_hybrid_ssm(self, metadata_ggufs):
+        assert is_hybrid_ssm(metadata_ggufs["base"]) is True
+        assert is_hybrid_ssm(metadata_ggufs["mtp"]) is True
 
     def test_missing_file_is_false(self):
         assert is_hybrid_ssm("/nonexistent.gguf") is False
 
 
 class TestMtpInfo:
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_summary_keys(self):
-        info = mtp_info(_MTP_QWEN)
+    def test_summary_keys(self, metadata_ggufs):
+        info = mtp_info(metadata_ggufs["mtp"])
         assert info["has_mtp_heads"] is True
         assert info["is_hybrid_ssm"] is True
         assert info["nextn_predict_layers"] == 1
@@ -389,64 +360,30 @@ class TestMoeDetection:
         )
         assert expert_count("/fake.gguf") is None
 
-    @pytest.mark.skipif(not _have_fixtures(), reason="fixture GGUFs not on disk")
-    def test_dense_qwen_is_not_moe(self):
+    def test_dense_qwen_is_not_moe(self, metadata_ggufs):
         # Regression guard: qwen35 (dense) must not be misdetected as MoE.
-        assert is_moe(_BASE_QWEN) is False
-        assert expert_count(_BASE_QWEN) is None
+        assert is_moe(metadata_ggufs["base"]) is False
+        assert expert_count(metadata_ggufs["base"]) is None
 
-    @pytest.mark.skipif(not _have_moe_fixtures(), reason="MoE fixture GGUFs not on disk")
-    def test_gemma_moe_detected_via_expert_count_not_arch_prefix(self):
+    def test_gemma_moe_detected_via_expert_count_not_arch_prefix(self, metadata_ggufs):
         # gemma4 is deliberately excluded from _MOE_ARCH_PREFIXES since dense
         # and MoE Gemma-4 GGUFs share the same architecture string -- this
         # must be detected via the expert_count metadata field instead.
-        meta = read_gguf_meta(_GEMMA_MOE)
+        meta = read_gguf_meta(metadata_ggufs["gemma_moe"])
         assert meta["architecture"] == "gemma4"
-        assert is_moe(_GEMMA_MOE) is True
-        assert expert_count(_GEMMA_MOE) == 128
+        assert is_moe(metadata_ggufs["gemma_moe"]) is True
+        assert expert_count(metadata_ggufs["gemma_moe"]) == 128
 
-    @pytest.mark.skipif(not _have_moe_fixtures(), reason="MoE fixture GGUFs not on disk")
-    def test_qwen3_coder_moe_detected_via_arch_prefix(self):
-        meta = read_gguf_meta(_QWEN_CODER_MOE)
+    def test_qwen3_coder_moe_detected_via_arch_prefix(self, metadata_ggufs):
+        meta = read_gguf_meta(metadata_ggufs["qwen_moe"])
         assert meta["architecture"] == "qwen3moe"
-        assert is_moe(_QWEN_CODER_MOE) is True
-        assert expert_count(_QWEN_CODER_MOE) == 128
+        assert is_moe(metadata_ggufs["qwen_moe"]) is True
+        assert expert_count(metadata_ggufs["qwen_moe"]) == 128
 
 
 # ---------------------------------------------------------------------------
 # MoE expert offload accounting (--n-cpu-moe N = N layers of expert tensors)
 # ---------------------------------------------------------------------------
-
-
-class _FakeTensor:
-    def __init__(self, name: str, n_bytes: int):
-        self.name = name
-        self.n_bytes = n_bytes
-
-
-class _FakeField:
-    def __init__(self, value: str):
-        self._value = value
-
-    def contents(self) -> str:
-        return self._value
-
-
-class _FakeReader:
-    """Stands in for gguf.GGUFReader: a tensor table plus an arch field."""
-
-    def __init__(self, tensors: list[_FakeTensor], arch: str):
-        self._tensors = tensors
-        self._arch = arch
-
-    @property
-    def tensors(self) -> list[_FakeTensor]:
-        return self._tensors
-
-    def get_field(self, key: str):
-        if key == "general.architecture":
-            return _FakeField(self._arch)
-        return None
 
 
 def _patch_reader(monkeypatch: pytest.MonkeyPatch, tensors, arch: str = "qwen3moe"):
@@ -582,3 +519,30 @@ class TestOffloadAccounting:
         assert estimate_weight_vram_bytes("/nonexistent.gguf", n_cpu_moe=4) is None
         assert scan_weight_tensors("/nonexistent.gguf") is None
         assert expert_tensor_bytes_by_layer("/nonexistent.gguf") is None
+
+
+def test_metadata_cache_reuses_reader_refreshes_and_isolates_mutations(tmp_path, monkeypatch):
+    path = tmp_path / 'cached.gguf'
+    path.write_bytes(b'first')
+    calls = []
+
+    def reader(p):
+        calls.append(p)
+        return _FakeFieldReader({
+            gguf.Keys.General.ARCHITECTURE: 'test',
+            'test.block_count': 2,
+            'test.attention.head_count_kv': [1, 2],
+        })
+
+    monkeypatch.setattr(gguf, 'GGUFReader', reader)
+    first = read_gguf_meta(path)
+    first['architecture'] = 'changed'
+    first['attention.head_count_kv'][0] = 99
+    assert read_gguf_meta(path)['architecture'] == 'test'
+    assert read_gguf_meta(path)['attention.head_count_kv'] == [1, 2]
+    assert len(calls) == 1
+    path.write_bytes(b'replaced model contents')
+    assert read_gguf_meta(path)['block_count'] == 2
+    assert len(calls) == 2
+    path.unlink()
+    assert read_gguf_meta(path) == {}

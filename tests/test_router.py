@@ -4,10 +4,20 @@ import asyncio
 import time
 
 import pytest
+from helpers import FakeServer
 
+import arc_llama.router as router_mod
 from arc_llama.config import ModelConfig
 from arc_llama.failures import StartupFailureError
 from arc_llama.router import Router, estimate_model_vram_quick_mb
+
+
+@pytest.fixture(autouse=True)
+def _inline_router_threads(monkeypatch):
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
 
 
 def test_quick_vram_estimate_uses_file_kv_and_fixed_overhead(tmp_path, monkeypatch):
@@ -38,40 +48,6 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     )
 
     assert estimate_model_vram_quick_mb(model) is None
-
-
-class FakeServer:
-    starts: list[str] = []
-    stops: list[str] = []
-
-    def __init__(self, plan, name):
-        self.plan = plan
-        self.name = name
-        self.running = False
-        self.ready = False
-
-    @property
-    def is_running(self):
-        return self.running
-
-    def start(self, log_dir=None):
-        self.running = True
-        self.ready = False
-        self.starts.append(self.name)
-
-    async def wait_ready(self):
-        self.ready = True
-        return True
-
-    def stop(self):
-        self.running = False
-        self.ready = False
-        self.stops.append(self.name)
-
-    async def astop(self, drain_seconds=3.0):
-        # Mirrors LlamaServer.astop, which offloads the blocking stop() to a
-        # thread. The router awaits this from the event loop.
-        self.stop()
 
 
 async def test_single_resident_policy_stops_other_models_before_starting_target(
@@ -165,7 +141,7 @@ async def test_preflight_failure_does_not_evict_healthy_resident(tmp_path, monke
     rt = Router(cfg)
     await rt.ensure_active("qwen")
 
-    def reject_gemma(model, _gpu, _plan):
+    def reject_gemma(model, _gpu, _plan, _managed_pids=None):
         if model.name == "gemma":
             raise StartupFailureError(
                 "model_missing", "Model file not found.", "Update the model path."
@@ -205,7 +181,7 @@ async def test_metrics_increment_on_load_and_stop(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class SlowReadyServer:
+class SlowReadyServer(FakeServer):
     """Process reports is_running immediately but becomes ready only after a
     delay — mirrors a real cold start, where llama-server takes 20-30s to bind
     its port and pass /health."""
@@ -239,7 +215,7 @@ class SlowReadyServer:
         self.ready = False
 
 
-class NeverReadyServer:
+class NeverReadyServer(FakeServer):
     """Starts, but the health check never passes (e.g. bad recipe flags)."""
 
     def __init__(self, plan, name):

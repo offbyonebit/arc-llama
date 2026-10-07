@@ -11,7 +11,7 @@ import pytest
 
 from arc_llama.arch import Arch, Backend
 from arc_llama.config import Config, GPUConfig, ModelConfig
-from arc_llama.launcher import LlamaServer, build_env, build_plan
+from arc_llama.launcher import LaunchPlan, LlamaServer, build_env, build_plan
 from arc_llama.recipes import KVCacheType
 
 
@@ -237,22 +237,13 @@ class TestBuildPlan:
         assert plan.argv.count("--flash-attn") == 1
 
 
-# Real GGUF fixtures for MTP integration tests.
-_MTP_QWEN = Path("/mnt/storage/models/qwen3.6-27b/Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf")
-
-
-def _have_mtp_fixture() -> bool:
-    return _MTP_QWEN.exists()
-
-
 class TestBuildPlanMtp:
-    @pytest.mark.skipif(not _have_mtp_fixture(), reason="MTP fixture GGUF not on disk")
-    def test_no_auto_ub_for_mtp(self):
+    def test_no_auto_ub_for_mtp(self, metadata_ggufs):
         """MTP detection must not force -ub 8; it regresses prompt-eval throughput."""
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
         model = ModelConfig(
             name="mtp-qwen",
-            path=str(_MTP_QWEN),
+            path=str(metadata_ggufs["mtp"]),
             port=18080,
             gpu_pci_slot="00:00.0",
         )
@@ -260,13 +251,12 @@ class TestBuildPlanMtp:
         plan = build_plan(cfg, model, gpu)
         assert "-ub" not in plan.argv
 
-    @pytest.mark.skipif(not _have_mtp_fixture(), reason="MTP fixture GGUF not on disk")
-    def test_user_ubatch_size_not_overridden(self):
+    def test_user_ubatch_size_not_overridden(self, metadata_ggufs):
         """If the recipe already has ubatch_size, don't stomp it."""
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
         model = ModelConfig(
             name="mtp-qwen",
-            path=str(_MTP_QWEN),
+            path=str(metadata_ggufs["mtp"]),
             port=18080,
             gpu_pci_slot="00:00.0",
             recipe={"ubatch_size": 16},
@@ -276,13 +266,12 @@ class TestBuildPlanMtp:
         idx = plan.argv.index("-ub")
         assert plan.argv[idx + 1] == "16"
 
-    @pytest.mark.skipif(not _have_mtp_fixture(), reason="MTP fixture GGUF not on disk")
-    def test_no_auto_ub_for_mtp_on_lunar_lake(self):
+    def test_no_auto_ub_for_mtp_on_lunar_lake(self, metadata_ggufs):
         """Xe2 iGPU (Lunar Lake) should also avoid the forced micro-ubatch."""
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
         model = ModelConfig(
             name="mtp-qwen",
-            path=str(_MTP_QWEN),
+            path=str(metadata_ggufs["mtp"]),
             port=18080,
             gpu_pci_slot="00:00.0",
         )
@@ -483,7 +472,7 @@ class TestLogHandling:
         assert not log_path.exists()
         assert (log_dir / "m.log.1").exists()
 
-    def test_tail_log_returns_last_lines(self, tmp_path):
+    def test_tail_log_returns_last_lines(self, tmp_path, monkeypatch):
         from arc_llama.config import Config, GPUConfig, ModelConfig
 
         plan = build_plan(
@@ -514,7 +503,14 @@ class TestLogHandling:
             assert srv.tail_log(lines=2) == "line2\nline3"
         finally:
             subprocess.Popen = original_popen
+        import signal
+        from unittest.mock import Mock
+
+        signals = Mock()
+        monkeypatch.setattr(os, "killpg", signals, raising=False)
         srv.stop()
+        if sys.platform != "win32":
+            signals.assert_called_once_with(12345, signal.SIGTERM)
 
     def test_start_closes_log_file_on_popen_failure(self, monkeypatch, tmp_path):
         plan = build_plan(
@@ -704,3 +700,295 @@ class TestBuildPlanFlashAttn:
         )
         assert plan.argv[plan.argv.index("-ub") + 1] == "1024"
         assert plan.argv[plan.argv.index("-b") + 1] == "2048"
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_stop_timeout_retains_child_lock_and_log_until_exit(monkeypatch, tmp_path, windows):
+    from unittest.mock import Mock
+
+    from arc_llama import launcher
+    from arc_llama.failures import StartupFailureError
+    from arc_llama.launcher import LaunchPlan
+
+    monkeypatch.setattr(launcher, "_IS_WINDOWS", windows)
+    # This parameter exercises the POSIX process-group path even when the
+    # test suite itself runs on Windows, where SIGKILL is not defined.
+    monkeypatch.setattr(
+        launcher.signal, "SIGKILL", getattr(launcher.signal, "SIGKILL", 9), raising=False
+    )
+    monkeypatch.setattr(launcher.os, "killpg", Mock(), raising=False)
+    monkeypatch.setattr(launcher.subprocess, "run", Mock())
+    srv = LlamaServer(LaunchPlan(argv=["unused"], env={}), "stuck")
+    proc = Mock(pid=12345)
+    proc.poll.return_value = None
+    proc.wait.side_effect = subprocess.TimeoutExpired("fake", 0)
+    srv.process = proc
+    srv.ready = True
+    srv.started_at = 123.0
+    srv._log_file = open(tmp_path / "child.log", "wb")
+    log_file = srv._log_file
+    lock_file = open(tmp_path / "resident.lock", "a+")
+    srv._resident_lock = lock_file
+
+    with pytest.raises(StartupFailureError) as caught:
+        srv.stop(drain_seconds=0)
+    assert caught.value.details["reason"] == "shutdown_timeout"
+    assert proc.wait.call_count == 2
+    assert srv.process is proc and srv.is_running
+    assert srv._resident_lock is lock_file and not lock_file.closed
+    assert srv._log_file is log_file and not log_file.closed
+    assert srv.started_at == 123.0
+    assert not srv.ready
+
+    # Later cleanup reaps the child and then releases resources, idempotently.
+    proc.poll.return_value = -9
+    srv.stop()
+    srv.stop()
+    assert srv.process is None and srv._resident_lock is None
+    assert lock_file.closed and log_file.closed
+
+
+def test_windows_taskkill_timeout_keeps_ownership(monkeypatch):
+    from unittest.mock import Mock
+
+    from arc_llama import launcher
+    from arc_llama.failures import StartupFailureError
+    from arc_llama.launcher import LaunchPlan
+
+    monkeypatch.setattr(launcher, "_IS_WINDOWS", True)
+    proc = Mock(pid=12345)
+    proc.poll.return_value = None
+    proc.wait.side_effect = subprocess.TimeoutExpired("fake", 0)
+    taskkill = Mock(side_effect=subprocess.TimeoutExpired("taskkill", 0))
+    monkeypatch.setattr(launcher.subprocess, "run", taskkill)
+    srv = LlamaServer(LaunchPlan(argv=["unused"], env={}))
+    srv.process = proc
+    lock = Mock()
+    srv._resident_lock = lock
+    with pytest.raises(StartupFailureError) as caught:
+        srv.stop(drain_seconds=0)
+    assert caught.value.details["reason"] == "shutdown_timeout"
+    assert srv.process is proc and srv._resident_lock is lock
+    lock.close.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_memory_guard_interrupts_a_stalled_health_request(monkeypatch):
+    from unittest.mock import Mock
+
+    from arc_llama import launcher
+    from arc_llama.failures import StartupFailureError
+    from arc_llama.launcher import LaunchPlan
+
+    srv = LlamaServer(LaunchPlan(argv=["unused"], env={}), "target")
+    srv.process = Mock(pid=12345)
+    srv.process.poll.return_value = None
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def stalled_health(timeout):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    def pressure():
+        return {"available_host_mb": 100, "reserved_host_mb": 4096} if entered.is_set() else None
+
+    stops = []
+
+    async def stop(drain_seconds=3.0):
+        stops.append(drain_seconds)
+        srv.process = None
+
+    monkeypatch.setattr(srv, "_wait_ready_health", stalled_health)
+    monkeypatch.setattr(srv, "astop", stop)
+    monkeypatch.setattr(launcher, "host_memory_pressure", pressure)
+    with pytest.raises(StartupFailureError) as caught:
+        await asyncio.wait_for(srv.wait_ready(), timeout=2)
+    assert caught.value.category == "out_of_memory"
+    assert stops == [0.25]
+    assert cancelled.is_set() and not srv.is_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_pressure_cleanup_wins_over_health_success(monkeypatch, cancelled):
+    from arc_llama import launcher
+    from arc_llama.failures import StartupFailureError
+    from arc_llama.launcher import LaunchPlan
+
+    srv = LlamaServer(LaunchPlan(argv=["unused"], env={}))
+    stopping = asyncio.Event()
+    release = asyncio.Event()
+
+    async def health(timeout):
+        await stopping.wait()
+        srv.ready = True
+        return True
+
+    async def stop(drain_seconds=3.0):
+        stopping.set()
+        await release.wait()
+
+    monkeypatch.setattr(srv, "_wait_ready_health", health)
+    monkeypatch.setattr(srv, "astop", stop)
+    monkeypatch.setattr(launcher, "host_memory_pressure", lambda: {
+        "available_host_mb": 100, "reserved_host_mb": 4096,
+    })
+    waiter = asyncio.create_task(srv.wait_ready())
+    await asyncio.wait_for(stopping.wait(), 2)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not waiter.done(), "Readiness cannot return during pressure cleanup"
+    if cancelled:
+        waiter.cancel()
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.sleep(0)
+        assert not waiter.done(), "Cancellation cannot detach pressure cleanup"
+    release.set()
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(waiter, 2)
+    else:
+        with pytest.raises(StartupFailureError) as caught:
+            await asyncio.wait_for(waiter, 2)
+        assert caught.value.category == "out_of_memory"
+    assert not srv.ready
+
+
+@pytest.mark.asyncio
+async def test_astop_cancellation_waits_for_worker(monkeypatch):
+    from arc_llama.launcher import LaunchPlan
+
+    srv = LlamaServer(LaunchPlan(argv=["unused"], env={}))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    finished = []
+
+    async def worker(func, *args):
+        entered.set()
+        await release.wait()
+        finished.append(True)
+
+    monkeypatch.setattr(asyncio, "to_thread", worker)
+    stopper = asyncio.create_task(srv.astop())
+    await asyncio.wait_for(entered.wait(), 2)
+    stopper.cancel()
+    await asyncio.sleep(0)
+    stopper.cancel()  # repeated cancellation also must not detach cleanup
+    await asyncio.sleep(0)
+    assert not stopper.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(stopper, 2)
+    assert finished == [True]
+
+
+def test_concurrent_stops_share_one_cleanup(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import Mock
+
+    from arc_llama.launcher import LaunchPlan
+
+    srv = LlamaServer(LaunchPlan(argv=["unused"], env={}))
+    entered = threading.Event()
+    release = threading.Event()
+    proc = Mock(pid=12345)
+    proc.poll.return_value = None
+
+    def waited(timeout):
+        entered.set()
+        assert release.wait(2)
+        proc.poll.return_value = 0
+        return 0
+
+    proc.wait.side_effect = waited
+    srv.process = proc
+    signals = Mock()
+    monkeypatch.setattr(os, "killpg", signals, raising=False)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(srv.stop)
+        assert entered.wait(2)
+        second = pool.submit(srv.stop)
+        release.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+    assert proc.wait.call_count == 1
+    assert srv.process is None
+    if sys.platform != "win32":
+        assert signals.call_count == 1
+
+
+def test_unit_test_signal_barriers():
+    # These are fixture sentinels, not native signaling calls. The runner
+    # additionally isolates process IDs from the user's desktop.
+    for signal_call in (os.kill, os.killpg):
+        with pytest.raises(AssertionError, match="signaling is prohibited"):
+            signal_call(12345, 15)
+    with pytest.raises(AssertionError, match="signaling is prohibited"):
+        subprocess.Popen(["taskkill", "/F", "/PID", "12345"])
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_cancelled_before_health_starts(monkeypatch):
+    srv = LlamaServer(LaunchPlan(argv=[], env={}, backend_url="", health_url=""))
+    started = []
+    stopped = []
+
+    async def health(timeout):
+        started.append(True)
+        return True
+
+    async def cancel_before_yield(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    async def stop(drain_seconds=3.0):
+        stopped.append(True)
+
+    monkeypatch.setattr(srv, "_wait_ready_health", health)
+    monkeypatch.setattr(srv, "astop", stop)
+    monkeypatch.setattr(asyncio, "wait", cancel_before_yield)
+    with pytest.raises(asyncio.CancelledError):
+        await srv.wait_ready()
+    assert started == []
+    assert stopped == [True]
+    assert srv.ready is False
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_cancelled_during_final_gather(monkeypatch):
+    srv = LlamaServer(LaunchPlan(argv=[], env={}, backend_url="", health_url=""))
+    draining = asyncio.Event()
+    release = asyncio.Event()
+    stopped = []
+
+    async def health(timeout):
+        srv.ready = True
+        return True
+
+    async def memory(pressure_seen):
+        try:
+            await asyncio.Future()
+        finally:
+            draining.set()
+            await release.wait()
+
+    async def stop(drain_seconds=3.0):
+        srv.ready = False
+        stopped.append(True)
+
+    monkeypatch.setattr(srv, "_wait_ready_health", health)
+    monkeypatch.setattr(srv, "_guard_host_memory", memory)
+    monkeypatch.setattr(srv, "astop", stop)
+    waiter = asyncio.create_task(srv.wait_ready())
+    await asyncio.wait_for(draining.wait(), 1)
+    waiter.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert stopped == [True]
+    assert srv.ready is False

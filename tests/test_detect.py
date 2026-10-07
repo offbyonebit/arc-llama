@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from arc_llama.arch import Arch
+from arc_llama.arch import Arch, Backend, hardware_support
 from arc_llama.detect import (
     _REG_BINARY,
     _REG_QWORD,
@@ -19,6 +19,12 @@ from arc_llama.detect import (
     _scan_windows,
     lspci_intel_gpus,
 )
+
+
+def test_hardware_support_distinguishes_validation_from_detection():
+    assert hardware_support(0xE211, Arch.BATTLEMAGE, Backend.SYCL).status == "validated"
+    assert hardware_support(0xE20B, Arch.BATTLEMAGE, Backend.SYCL).status == "detected"
+    assert hardware_support(0, Arch.UNKNOWN, Backend.VULKAN).status == "unknown"
 
 
 def _patch_pci_root(monkeypatch, fake_sys):

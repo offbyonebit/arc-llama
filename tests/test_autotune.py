@@ -204,6 +204,14 @@ async def test_preemption_restores_baseline_via_final_edit(
     monkeypatch.setattr("arc_llama.tune._apply_edits", recorder.apply)
     monkeypatch.setattr("arc_llama.tune.benchmark_model", recorder.bench)
 
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    # This unit test uses a fake backend and placeholder GGUF. Keep the
+    # capability probe on the test loop; executor scheduling is unrelated to
+    # the restore contract under test and can strand constrained CI workers.
+    monkeypatch.setattr("arc_llama.tune.asyncio.to_thread", run_inline)
+
     calls: list[bool] = []
 
     def should_abort() -> bool:
@@ -237,6 +245,11 @@ async def test_cancelled_error_in_measure_triggers_restore(
 ) -> None:
     recorder = EditRecorder(cfg)
     monkeypatch.setattr("arc_llama.tune._apply_edits", recorder.apply)
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("arc_llama.tune.asyncio.to_thread", run_inline)
 
     async def raise_cancel(*a, **kw):  # noqa: ARG001
         raise asyncio.CancelledError("simulated")

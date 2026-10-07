@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-07
+
+### Added
+
+- Document Intel Arc GPU setup, Linux device permissions, SYCL warm-up, and
+  ahead-of-time build targets.
+
+### Changed
+
+- Place chat history and model settings controls in the responsive header.
+- Reduce bundled logo and tool artwork sizes without changing their appearance.
+- Hide inactive repository scan progress indicators.
+
+### Fixed
+
+- Detect DRM allocations reported as bare byte counts when checking GPU ownership.
+- Reserve more host memory before model loads on Linux to allow safe cleanup after large GPU allocations.
+- Make semantic-search tests deterministic with and without optional dependencies.
+
+## [0.9.0rc2] - 2026-10-01
+
+### Changed
+
+- Cache unchanged chat summaries during sidebar and folder polling.
+- Reuse unchanged GGUF metadata across model registration and readiness checks.
+- Prune ignored directories before scanning repositories and share scan logic.
+- Explain missing local model paths before attempting runtime installation.
+- Give actionable Windows GPU detection guidance.
+- Keep package and lockfile release versions consistent.
+
+### Fixed
+
+- Keep the model resident lock until a child is confirmed stopped; serialize
+  stop workers and finish cleanup even when startup or shutdown is cancelled.
+- Refuse conflicting external Linux GPU residents before model eviction.
+- Reject malformed OpenAI and agent request bodies with HTTP 400 and require
+  actual boolean agent approvals; require a fresh confirmation for each tool.
+- Forward Ollama generation as a completion prompt rather than chat messages.
+- Allow stopped Linux backend ports to be reused while old connections remain
+  in TIME_WAIT, while still rejecting an active listener.
+- Authenticate the terminal status UI against token-protected local servers.
+- Pin the optional MCP integration to its supported SDK major version and clean
+  up sessions after failed initialization.
+- Queue local inference and model loads behind exclusive image work, retaining
+  shared admission through streamed response cleanup and rejecting an exclusive
+  grant when existing shared work cannot drain safely.
+- Include exclusive admission delay in model-wait and first-token timings.
+- Discover the vision companion's advertised image model before eviction,
+  reject unknown models without stopping text, and preserve backend errors.
+- Bind the Docker service to its container interface so published ports work;
+  document loopback-only host publication.
+- Save chat histories atomically so interrupted writes preserve existing data.
+- Validate chat records and requests, skip corrupt histories, and explain storage failures.
+- Remove the old chat file when an overwrite import changes its folder.
+- Reject invalid folder and chat identifiers that could escape storage.
+- Stop partially started model processes when loading fails or is cancelled,
+  and settle concurrent waiters so later requests can recover.
+- Handle files disappearing during repository scans.
+- Preserve upstream Windows UTF-8 UI test fixes.
+
 ## [0.9.0rc1] - 2026-09-21
 
 ### Added

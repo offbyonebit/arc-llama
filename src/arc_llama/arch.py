@@ -23,6 +23,23 @@ class Backend(str, Enum):
     VULKAN = "vulkan" # Cross-vendor Vulkan path; often better token-gen on Arc
 
 
+@dataclass(frozen=True)
+class HardwareSupport:
+    """Evidence level for a detected GPU/backend combination."""
+
+    status: str
+    summary: str
+
+
+def hardware_support(device_id: int, arch: Arch, backend: Backend) -> HardwareSupport:
+    """Return conservative support status without equating detection to validation."""
+    if device_id == 0xE211:
+        return HardwareSupport("validated", f"Arc Pro B60 {backend.value} path tested")
+    if arch in (Arch.ALCHEMIST, Arch.BATTLEMAGE, Arch.LUNAR_LAKE):
+        return HardwareSupport("detected", f"{arch.value} detected; this exact SKU/backend needs confirmation")
+    return HardwareSupport("unknown", f"unknown Intel GPU/backend combination ({backend.value})")
+
+
 @dataclass
 class ArchProfile:
     """SYCL recipe for a specific Intel GPU generation."""

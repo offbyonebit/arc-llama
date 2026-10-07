@@ -435,6 +435,7 @@ class Router:
     def __init__(self, cfg: Config, log_dir: Path | None = None):
         self.cfg = cfg
         self.log_dir = log_dir
+        self.resources: Any = None
         self._servers: dict[str, LlamaServer] = {}  # keyed by model.name
         self._lock = asyncio.Lock()
         self._loading_futures: dict[str, asyncio.Future[tuple[ModelConfig, LlamaServer]]] = {}
@@ -534,15 +535,20 @@ class Router:
         """
         return [n for n, s in self._servers.items() if s is not None and s.is_running]
 
-    def backend_url_for(self, model_name: str) -> str | None:
-        srv = self._servers.get(model_name)
-        return srv.plan.backend_url if srv else None
-
     # ------------------------------------------------------------------
     # Swap
     # ------------------------------------------------------------------
 
     async def ensure_active(
+        self, query: str, *, acquire: bool = False
+    ) -> tuple[ModelConfig, LlamaServer]:
+        manager = self.resources
+        if manager is None:
+            return await self._ensure_active(query, acquire=acquire)
+        async with manager.acquire("model-load", exclusive=False):
+            return await self._ensure_active(query, acquire=acquire)
+
+    async def _ensure_active(
         self, query: str, *, acquire: bool = False
     ) -> tuple[ModelConfig, LlamaServer]:
         """Make sure the requested model is the resident one (per policy) and
@@ -656,11 +662,19 @@ class Router:
                     self.acquire_model(target_model.name)
                 return target_model, target_srv
 
+            # An earlier failed/cancelled load may still own a live child.
+            # Do not reuse its unready process or start a replacement until
+            # cleanup confirms exit. A shutdown failure keeps ownership.
+            if target_srv.is_running:
+                await target_srv.astop()
+
             # Reject predictable failures before evicting a healthy resident.
             # File and runtime checks are blocking filesystem operations, and
             # the fit estimate may scan GGUF metadata, so keep both off-loop.
             await asyncio.to_thread(
-                preflight_launch, target_model, target_gpu, target_srv.plan
+                preflight_launch, target_model, target_gpu, target_srv.plan,
+                {proc.pid for srv in self._servers.values()
+                 if (proc := getattr(srv, "process", None)) is not None},
             )
             # Configuration-only/test routes often use missing or tiny
             # placeholder GGUFs.  Keep those fast paths inline; malformed
@@ -708,10 +722,10 @@ class Router:
                         "model %s failed health-check; stopping it",
                         target_model.name,
                     )
-                    target_srv.stop()
-                    self.metrics["last_error"] = f"{target_model.name} did not become healthy"
                     process = getattr(target_srv, "process", None)
                     exit_code = process.poll() if process is not None else None
+                    await target_srv.astop()
+                    self.metrics["last_error"] = f"{target_model.name} did not become healthy"
                     category = "process_exited" if exit_code is not None else "startup_timeout"
                     failure = StartupFailureError(
                         category,
@@ -753,6 +767,17 @@ class Router:
                 if acquire:
                     self.acquire_model(target_model.name)
                 return result
+            except asyncio.CancelledError:
+                # The shared future must settle even when its starter disconnects.
+                # Otherwise shielded waiters hang and a half-started process survives.
+                future.cancel()
+                self.metrics["load_errors"] += 1
+                self.metrics["last_error"] = f"Loading {target_model.name} was cancelled"
+                try:
+                    await asyncio.shield(target_srv.astop())
+                except Exception:
+                    log.exception("failed to stop cancelled model %s", target_model.name)
+                raise
             except Exception as exc:
                 if not future.done():
                     self.metrics["load_errors"] += 1
@@ -768,6 +793,11 @@ class Router:
                     # Retrieving it here only marks it observed; existing and
                     # later waiters still receive the same exception.
                     future.exception()
+                if target_srv.is_running:
+                    try:
+                        await target_srv.astop()
+                    except Exception:
+                        log.exception("failed to stop failed model %s", target_model.name)
                 raise
             finally:
                 self._loading_futures.pop(target_model.name, None)
@@ -859,6 +889,8 @@ class Router:
             if name == target.name:
                 continue
             if not srv.is_running:
+                if getattr(srv, "process", None) is not None:
+                    await srv.astop()  # release ownership retained until exit
                 continue
             other_model = next((m for m in self.cfg.models if m.name == name), None)
             if other_model is None:
@@ -961,7 +993,11 @@ class Router:
         """Stop a single model's llama-server. Returns True if it was running."""
         async with self._lock:
             srv = self._servers.get(name)
-            if srv is None or not srv.is_running:
+            if srv is None:
+                return False
+            if not srv.is_running:
+                if getattr(srv, "process", None) is not None:
+                    await srv.astop()
                 return False
             await srv.astop()
             self.metrics["stops"] += 1
@@ -971,11 +1007,19 @@ class Router:
         """Stop every running llama-server. Returns the count stopped."""
         async with self._lock:
             stopped = 0
+            failure = None
             for srv in self._servers.values():
-                if srv.is_running:
-                    await srv.astop()
-                    stopped += 1
+                running = srv.is_running
+                if running or getattr(srv, "process", None) is not None:
+                    try:
+                        await srv.astop()
+                    except StartupFailureError as exc:
+                        failure = failure or exc
+                    else:
+                        stopped += int(running)
             self.metrics["stops"] += stopped
+            if failure is not None:
+                raise failure
             return stopped
 
     async def rebuild_model(self, name: str, drain_seconds: float | None = None) -> tuple[bool, bool]:
@@ -1023,6 +1067,8 @@ class Router:
                     await old.astop()
                 finally:
                     self._stopping.discard(name)
+            if old is not None and not was_running and getattr(old, "process", None) is not None:
+                await old.astop()
             self._servers.pop(name, None)
             cfg_model = next((m for m in self.cfg.models if m.name == name), None)
             if cfg_model is None:

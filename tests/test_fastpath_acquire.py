@@ -20,19 +20,8 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import make_config
-from test_router import FakeServer
-
-import arc_llama.router as router_mod
-from arc_llama.router import Router
-
-
-def _router(tmp_path, monkeypatch, *, single=True) -> Router:
-    FakeServer.starts = []
-    FakeServer.stops = []
-    cfg = make_config(tmp_path, single_resident=single)
-    monkeypatch.setattr(router_mod, "LlamaServer", FakeServer)
-    return Router(cfg)
+from helpers import FakeServer
+from helpers import fake_router as _router
 
 
 async def test_fast_path_acquire_counts_atomically(tmp_path, monkeypatch):
@@ -174,3 +163,65 @@ async def test_running_models_snapshot(tmp_path, monkeypatch):
     assert rt.running_models() == ["qwen"]
     await rt.stop_all()
     assert rt.running_models() == []
+
+
+async def test_cancelled_starter_releases_waiters_stops_process_and_can_retry(tmp_path, monkeypatch):
+    import pytest
+    rt = _router(tmp_path, monkeypatch)
+    srv = rt._servers['qwen']
+    entered = asyncio.Event()
+    unblock = asyncio.Event()
+
+    async def blocked_ready():
+        entered.set()
+        await unblock.wait()
+        srv.ready = True
+        return True
+
+    monkeypatch.setattr(srv, 'wait_ready', blocked_ready)
+    starter = asyncio.create_task(rt.ensure_active('qwen', acquire=True))
+    await asyncio.wait_for(entered.wait(), 1)
+    waiter = asyncio.create_task(rt.ensure_active('qwen', acquire=True))
+    await asyncio.sleep(0)
+    starter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await starter
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(waiter), .2)
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+    assert not srv.is_running
+    assert not rt._loading_futures
+    assert rt.model_inflight.get('qwen', 0) == 0
+    unblock.set()
+    model, restarted = await asyncio.wait_for(rt.ensure_active('qwen', acquire=True), 1)
+    assert model.name == 'qwen'
+    assert restarted.ready
+    assert rt.model_inflight['qwen'] == 1
+    rt.release_model('qwen')
+
+
+async def test_failed_readiness_settles_many_waiters_and_stops_process(tmp_path, monkeypatch):
+    rt = _router(tmp_path, monkeypatch)
+    srv = rt._servers['qwen']
+    entered = asyncio.Event()
+    unblock = asyncio.Event()
+
+    async def failed_ready():
+        entered.set()
+        await unblock.wait()
+        raise OSError('health connection interrupted')
+
+    monkeypatch.setattr(srv, 'wait_ready', failed_ready)
+    starter = asyncio.create_task(rt.ensure_active('qwen', acquire=True))
+    await asyncio.wait_for(entered.wait(), 1)
+    waiters = [asyncio.create_task(rt.ensure_active('qwen', acquire=True)) for _ in range(40)]
+    await asyncio.sleep(0)
+    unblock.set()
+    results = await asyncio.wait_for(asyncio.gather(starter, *waiters, return_exceptions=True), 2)
+    assert all(isinstance(result, OSError) for result in results)
+    assert not srv.is_running
+    assert not rt._loading_futures
+    assert rt.model_inflight.get('qwen', 0) == 0

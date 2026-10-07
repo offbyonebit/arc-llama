@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import FakeTensor as _FakeTensor
+from helpers import FakeTensorReader as _FakeReader
 
 from arc_llama.benchmark import BenchmarkResult
 from arc_llama.config import Config, GPUConfig, ModelConfig, PathsConfig
@@ -24,35 +26,6 @@ from arc_llama.tune import tune_model
 # ---------------------------------------------------------------------------
 # Shared fixtures/helpers
 # ---------------------------------------------------------------------------
-
-
-class _FakeTensor:
-    def __init__(self, name: str, n_bytes: int):
-        self.name = name
-        self.n_bytes = n_bytes
-
-
-class _FakeField:
-    def __init__(self, value: str):
-        self._value = value
-
-    def contents(self) -> str:
-        return self._value
-
-
-class _FakeReader:
-    def __init__(self, tensors: list[_FakeTensor], arch: str):
-        self._tensors = tensors
-        self._arch = arch
-
-    @property
-    def tensors(self) -> list[_FakeTensor]:
-        return self._tensors
-
-    def get_field(self, key: str):
-        if key == "general.architecture":
-            return _FakeField(self._arch)
-        return None
 
 
 def _patch_reader(monkeypatch: pytest.MonkeyPatch, tensors, arch: str = "gemma4"):
@@ -311,6 +284,13 @@ def _moe_cfg(tmp_path: Path, *, vram_mb: int) -> Config:
     )
 
 
+def _patch_tune_threads(monkeypatch) -> None:
+    async def inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("arc_llama.tune.asyncio.to_thread", inline_to_thread)
+
+
 class _MoeMeasurements:
     def __init__(self, cfg: Config, table: dict[str, int] | None, perf: dict):
         self.cfg = cfg
@@ -349,6 +329,7 @@ async def test_tuner_refines_n_cpu_moe_with_override_tensor(tmp_path, monkeypatc
     import arc_llama.server_caps as caps_mod
 
     cfg = _moe_cfg(tmp_path, vram_mb=8000)
+    _patch_tune_threads(monkeypatch)
     _patch_reader(monkeypatch, _moe_scale_tensors())
     table = weight_tensor_table(cfg.models[0].path)
 
@@ -374,6 +355,7 @@ async def test_tuner_keeps_n_cpu_moe_when_ot_does_not_beat(tmp_path, monkeypatch
     import arc_llama.server_caps as caps_mod
 
     cfg = _moe_cfg(tmp_path, vram_mb=8000)
+    _patch_tune_threads(monkeypatch)
     _patch_reader(monkeypatch, _moe_scale_tensors())
 
     # Every -ot candidate is slower than the n_cpu_moe winner here.
@@ -399,6 +381,7 @@ async def test_override_tensor_skipped_when_no_offload_needed(tmp_path, monkeypa
     import arc_llama.server_caps as caps_mod
 
     cfg = _moe_cfg(tmp_path, vram_mb=64 * 1024)
+    _patch_tune_threads(monkeypatch)
     _patch_reader(monkeypatch, _gemma_fused_tensors())
 
     fake = _MoeMeasurements(cfg, None, {})

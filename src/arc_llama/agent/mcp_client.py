@@ -61,37 +61,43 @@ class MCPClientManager:
                 "Install with: pip install 'arc-llama[mcp]'"
             ) from _MCP_IMPORT_ERROR
 
-        for cfg in self.servers:
-            if not cfg.name or not cfg.command:
-                log.warning("Skipping invalid MCP server config: %s", cfg)
-                continue
-            params = StdioServerParameters(
-                command=cfg.command,
-                args=cfg.args,
-                env=cfg.env or None,
-            )
-            client_ctx = stdio_client(params)
-            read, write = await client_ctx.__aenter__()
-            self._clients.append(client_ctx)
-            session = ClientSession(read, write)
-            await session.__aenter__()
-            self._sessions.append(session)
-            await session.initialize()
-            tools_result = await session.list_tools()
-            for tool in tools_result.tools:
-                prefixed = f"mcp_{cfg.name}_{tool.name}"
-                self._registered_tools.append(prefixed)
-                TOOLS.register(
-                    Tool(
-                        name=prefixed,
-                        description=f"[MCP:{cfg.name}] {tool.description}",
-                        parameters=tool.inputSchema,
-                        handler=_MCPToolProxy(session, tool.name),
-                        requires_confirmation=True,
-                        is_async=True,
-                    )
+        try:
+            for cfg in self.servers:
+                if not cfg.name or not cfg.command:
+                    log.warning("Skipping invalid MCP server config: %s", cfg)
+                    continue
+                params = StdioServerParameters(
+                    command=cfg.command,
+                    args=cfg.args,
+                    env=cfg.env or None,
                 )
-                log.info("Registered MCP tool %s from server %s", prefixed, cfg.name)
+                client_ctx = stdio_client(params)
+                read, write = await client_ctx.__aenter__()
+                self._clients.append(client_ctx)
+                session = ClientSession(read, write)
+                await session.__aenter__()
+                self._sessions.append(session)
+                await session.initialize()
+                tools_result = await session.list_tools()
+                for tool in tools_result.tools:
+                    prefixed = f"mcp_{cfg.name}_{tool.name}"
+                    self._registered_tools.append(prefixed)
+                    TOOLS.register(
+                        Tool(
+                            name=prefixed,
+                            description=f"[MCP:{cfg.name}] {tool.description}",
+                            parameters=tool.inputSchema,
+                            handler=_MCPToolProxy(session, tool.name),
+                            requires_confirmation=True,
+                            is_async=True,
+                        )
+                    )
+                    log.info("Registered MCP tool %s from server %s", prefixed, cfg.name)
+        except BaseException:
+            # SDK stdio/session contexts must unwind in the same task that
+            # entered them, including when initialize or tool discovery fails.
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         for name in self._registered_tools:

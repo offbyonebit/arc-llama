@@ -30,10 +30,18 @@ def test_bounded_details_truncates_long_strings():
     assert ok == {"path": "/models/qwen.gguf", "exit_code": 3}
 
 
-def test_bounded_details_caps_node_counts_and_depth():
+def test_bounded_details_caps_depth():
     deep = {"a": {"b": {"c": {"d": {"e": {"f": {"g": "way down"}}}}}}}
     bounded = bounded_details(deep, limit=1_000)
-    assert "truncated" in json.dumps(bounded) or bounded["a"]["b"]["c"]["d"] is not None
+    assert bounded["a"]["b"]["c"]["d"]["e"]["f"]["g"] == "[truncated]"
+    assert "way down" not in json.dumps(bounded)
+
+
+def test_bounded_details_caps_node_count():
+    bounded = bounded_details({"items": list(range(1_000))}, limit=20_000)
+    assert len(bounded["items"]) <= 128
+    assert bounded["items"][-1] == "[truncated]"
+    assert 999 not in bounded["items"]
 
 
 def test_bounded_details_rejects_non_mapping_input():

@@ -363,9 +363,6 @@ class Autotuner:
     def _use_count(self, name: str) -> int:
         return self._use_counts.get(name, 0)
 
-    def _last_used_at(self, name: str) -> float:
-        return self._last_used.get(name, 0.0)
-
     def _fingerprint_outdated(self, model: ModelConfig) -> bool:
         from arc_llama import workload
 

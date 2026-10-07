@@ -5,8 +5,9 @@ expensive GGUF scans on every poll."""
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
+import httpx
 
 from arc_llama.config import Config, GPUConfig, ModelConfig
 from arc_llama.router import (
@@ -32,6 +33,22 @@ def _file_config(tmp_path: Path, *, vram_mb: int = 24_576) -> Config:
         )
     ]
     return cfg
+
+
+def _status_app(cfg: Config):
+    from arc_llama.server import create_app
+
+    class StatusRouter:
+        _servers = {}
+
+        def all_models(self):
+            return cfg.models
+
+    app = create_app(cfg, plugins=[])
+    app.state.cfg = cfg
+    app.state.router = StatusRouter()
+    app.state.upstream_mgr = SimpleNamespace(upstreams_status=lambda: [])
+    return app
 
 
 def test_fit_info_reports_estimate_headroom_and_confidence(tmp_path):
@@ -112,13 +129,16 @@ def test_estimate_cache_hits_within_ttl_and_invalidates(tmp_path, monkeypatch):
     assert calls["n"] == 3
 
 
-def test_admin_status_includes_vram_estimate_block(tmp_path):
-    from arc_llama.server import create_app
-
+async def test_admin_status_includes_vram_estimate_block(tmp_path, monkeypatch):
     cfg = _file_config(tmp_path)
-    app = create_app(cfg, plugins=[])
-    with TestClient(app) as client:
-        response = client.get("/admin/status")
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("arc_llama.server.asyncio.to_thread", run_inline)
+    app = _status_app(cfg)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/admin/status")
     assert response.status_code == 200
     entry = next(m for m in response.json()["models"] if m["name"] == "dense")
     assert "vram_estimate" in entry
@@ -133,9 +153,7 @@ def test_admin_status_includes_vram_estimate_block(tmp_path):
     assert server["switch_interrupt_policy"] == "reject_new"
 
 
-def test_admin_status_repeated_polls_do_not_rescan(tmp_path, monkeypatch):
-    from arc_llama.server import create_app
-
+async def test_admin_status_repeated_polls_do_not_rescan(tmp_path, monkeypatch):
     cfg = _file_config(tmp_path)
     # The config fixture's model has no n_cpu_moe, so the quick estimator
     # handles it without GGUF parsing; prove repeated polls do not escalate
@@ -148,8 +166,17 @@ def test_admin_status_repeated_polls_do_not_rescan(tmp_path, monkeypatch):
         return real_exact(model, cache, **kwargs)
 
     monkeypatch.setattr("arc_llama.router.estimate_model_vram_with_cache", counting_exact)
-    app = create_app(cfg, plugins=[])
-    with TestClient(app) as client:
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    # This endpoint's regression is about cache reuse, not executor
+    # scheduling. Running the small estimator inline avoids leaving a worker
+    # thread behind when the async test loop closes on constrained CI hosts.
+    monkeypatch.setattr("arc_llama.server.asyncio.to_thread", run_inline)
+    app = _status_app(cfg)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         for _ in range(3):
-            assert client.get("/admin/status").status_code == 200
+            assert (await client.get("/admin/status")).status_code == 200
     assert calls["exact"] == 0, "dense-model status polls must use the quick estimator only"

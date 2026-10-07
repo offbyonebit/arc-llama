@@ -11,9 +11,9 @@ llama-server processes, and they must not fight each other for it.
 ``ResourceLeaseManager`` sits between the two. It owns one exclusive gate,
 waits for the router's in-flight requests to finish, and empties the GPU by
 calling the Router's own lifecycle methods — it never manages llama-server
-processes itself. Normal text inference is untouched: ``_proxy_post`` does
-not take leases, and requests that arrive while an exclusive lease is held
-still start models exactly as before.
+processes itself. Local text inference holds a shared lease through response cleanup. New
+model loads wait behind pending or active exclusive work; an exclusive grant
+waits for admitted local work to finish before evicting its resident models.
 
 Intended use from a plugin::
 
@@ -33,6 +33,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -51,6 +52,12 @@ class Lease:
     owner: str
     exclusive: bool
     acquired_at: float
+
+
+@dataclass
+class _SharedScope:
+    lease: Lease
+    active: bool = True
 
 
 class ResourceLeaseManager:
@@ -79,6 +86,15 @@ class ResourceLeaseManager:
         # settles.
         self._exclusive_waiters = 0
         self._leases: dict[str, int] = {}
+        self._shared_holders = 0
+        self._shared_idle = asyncio.Event()
+        self._shared_idle.set()
+        self._shared_scope: ContextVar[_SharedScope | None] = ContextVar(
+            f"arc_gpu_shared_{id(self)}", default=None,
+        )
+        if router is not None:
+            router.resources = self
+
 
     @property
     def active_leases(self) -> dict[str, int]:
@@ -170,8 +186,9 @@ class ResourceLeaseManager:
         With ``exclusive=False`` the lease only waits out any active or
         pending exclusive lease and then registers — shared holders coexist
         with each other but never with an exclusive one. Shared leases are
-        bookkeeping only: exclusive grants do not wait for them, so the
-        shared mode suits lightweight work, not GPU contention.
+        held until GPU work is finished. Exclusive grants wait for existing
+        shared holders and reject on the drain deadline rather than overlap.
+        Nested shared operations reuse their still-active admitted scope.
 
         The lease is released on normal exit, exception, or cancellation.
         Release is pure bookkeeping; it never touches the router, so a
@@ -188,6 +205,13 @@ class ResourceLeaseManager:
                 async with self._gate:
                     self.exclusive_active = True
                     try:
+                        if self._shared_holders:
+                            try:
+                                await asyncio.wait_for(self._shared_idle.wait(), self.drain_seconds)
+                            except asyncio.TimeoutError as exc:
+                                # Python 3.10's asyncio timeout is not yet the
+                                # built-in TimeoutError caught by adapters.
+                                raise TimeoutError("Existing GPU work did not drain") from exc
                         await self._prepare_gpu(owner)
                         self._register(owner)
                         yield lease
@@ -199,9 +223,30 @@ class ResourceLeaseManager:
                 if not self._exclusive_waiters:
                     self._no_exclusive.set()
         else:
-            await self._no_exclusive.wait()
+            existing = self._shared_scope.get()
+            if existing is not None and existing.active:
+                yield existing.lease
+                return
+            while True:
+                await self._no_exclusive.wait()
+                # No await between admission and registration: a queued
+                # exclusive owner cannot slip between these operations.
+                if not self._exclusive_waiters:
+                    break
+            scope = _SharedScope(lease)
+            self._shared_scope.set(scope)
+            self._shared_holders += 1
+            self._shared_idle.clear()
             self._register(owner)
             try:
                 yield lease
             finally:
+                scope.active = False
+                # Streaming cleanup can run in another ASGI task/context.
+                # Mark the shared object inactive before clearing this task's
+                # value; inherited copies can never reuse a released lease.
+                self._shared_scope.set(None)
                 self._unregister(owner)
+                self._shared_holders -= 1
+                if not self._shared_holders:
+                    self._shared_idle.set()

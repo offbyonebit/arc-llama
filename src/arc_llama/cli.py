@@ -31,8 +31,7 @@ import os
 import platform
 import shutil
 import sys
-from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import click
@@ -42,8 +41,11 @@ from rich.table import Table
 
 from arc_llama import __version__
 from arc_llama import benchmark as benchmark_mod
-from arc_llama.arch import Arch, Backend, aot_arch_for
+from arc_llama.arch import Arch, Backend, aot_arch_for, hardware_support
 from arc_llama.binary import detect_backends, detect_llama_server_backend
+from arc_llama.cli_agent import register_agent_commands
+from arc_llama.cli_recipes import register_recipe_commands
+from arc_llama.cli_upstream import register_upstream_commands
 from arc_llama.config import (
     Config,
     ModelConfig,
@@ -294,8 +296,8 @@ def init(
     if not gpus:
         if _IS_WINDOWS:
             console.print(
-                "[yellow]No Intel GPUs detected — Windows auto-detection is not "
-                "supported yet. Create a config manually or run this on WSL.[/yellow]"
+                "[yellow]No Intel GPUs detected. Check the Intel graphics driver "
+                "and Windows Device Manager, then run `arc-llama doctor`.[/yellow]"
             )
         else:
             console.print("[red]No Intel GPUs detected.[/red]")
@@ -423,6 +425,9 @@ def doctor(ctx: click.Context) -> None:
             console.print(
                 f"    - {g.name} @ {g.pci_slot}  ({g.arch.value}, driver={g.driver or '—'}, {vram})"
             )
+            support = hardware_support(g.device_id, g.arch, Backend.SYCL)
+            support_marker = "[green]validated[/green]" if support.status == "validated" else "[yellow]detected[/yellow]"
+            console.print(f"        support: {support_marker}  {support.summary}")
             if g.notes:
                 for n in g.notes:
                     console.print(f"        note: {n}")
@@ -645,6 +650,43 @@ def doctor(ctx: click.Context) -> None:
     if fails:
         # Non-zero so scripts/CI can gate on a healthy Arc host.
         sys.exit(2)
+
+
+@cli.command("support-bundle")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Output zip path (default: ./arc-llama-support-bundle.zip).",
+)
+@click.pass_context
+def support_bundle_cmd(ctx: click.Context, output: Path | None) -> None:
+    """Write a redacted diagnostic bundle for troubleshooting."""
+    from arc_llama.support_bundle import create_support_bundle
+
+    config_path: Path = ctx.obj["config_path"]
+    try:
+        cfg = load_config(config_path) if config_path.exists() else None
+    except Exception:
+        cfg = None
+    try:
+        gpus = detect_gpus(enrich=True)
+    except Exception:
+        gpus = []
+    destination = output or Path.cwd() / "arc-llama-support-bundle.zip"
+    try:
+        bundle = create_support_bundle(
+            destination,
+            config_path=config_path,
+            cfg=cfg,
+            gpus=gpus,
+        )
+    except FileExistsError as exc:
+        raise click.ClickException(f"Output already exists: {destination}") from exc
+    except OSError as exc:
+        raise click.ClickException(f"Could not write support bundle: {exc}") from exc
+    console.print(f"[green]Wrote support bundle[/green] {bundle}")
+    console.print("[dim]Review the archive before sharing it.[/dim]")
 
 
 # ===========================================================================
@@ -1296,6 +1338,19 @@ def _run_backend(
     return Backend.VULKAN.value, False
 
 
+def _backend_choice_message(requested: str | None, available: set[Backend], selected: str) -> str:
+    """Explain the automatic backend choice in one short line."""
+    if requested is not None:
+        return f"Backend selected explicitly: {selected}."
+    if Backend.SYCL in available:
+        if Backend.VULKAN in available:
+            return "Backend auto-selected: SYCL (Vulkan is also available; use --backend vulkan to override)."
+        return "Backend auto-selected: SYCL (the configured runtime advertises SYCL)."
+    if Backend.VULKAN in available:
+        return "Backend auto-selected: Vulkan (the configured runtime advertises Vulkan)."
+    return "Backend selected: Vulkan (portable fallback; a runtime will be installed if needed)."
+
+
 def _ensure_run_runtime(
     cfg: Config,
     config_path: Path,
@@ -1384,6 +1439,42 @@ def _existing_model_for_path(cfg: Config, path: Path) -> ModelConfig | None:
     return None
 
 
+def _choose_registered_model(models: list[ModelConfig]) -> ModelConfig | None:
+    """Offer an interactive numbered picker, or return None for automation."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    console.print("[bold]Available models[/bold]")
+    for index, model in enumerate(models, start=1):
+        path = Path(model.path).expanduser()
+        try:
+            size = f" · {path.stat().st_size / (1024**3):.1f} GiB"
+        except OSError:
+            size = ""
+        console.print(f"  {index}. {model.display_name or model.name}{size}")
+    choice = click.prompt(
+        "Choose a model",
+        type=click.IntRange(1, len(models)),
+        default=1,
+    )
+    return models[choice - 1]
+
+
+def _validate_run_source(cfg: Config, source: str | None) -> None:
+    """Report mistyped local files before attempting a runtime download."""
+    if source is None or cfg.find_model(source) is not None:
+        return
+    path = Path(source).expanduser()
+    looks_local = (path.is_absolute() or bool(PureWindowsPath(source).drive)
+                   or source.startswith(("./", "../", "~", ".\\", "..\\"))
+                   or (source.lower().endswith(".gguf") and ":" not in source))
+    if looks_local and not path.is_file():
+        raise click.ClickException(
+            f"Local GGUF file not found or not a regular file: {source}. "
+            "Check the path and quote it if it contains spaces. "
+            "For a download, use a Hugging Face spec such as org/repo:Q4_K_M."
+        )
+
+
 def _prepare_run_model(
     cfg: Config,
     config_path: Path,
@@ -1408,6 +1499,12 @@ def _prepare_run_model(
                 "example `arc-llama run /models/qwen.gguf` or "
                 "`arc-llama run unsloth/Qwen3-8B-GGUF:Q4_K_M`."
             )
+        selected = _choose_registered_model(cfg.models)
+        if selected is not None:
+            console.print(
+                f"[bold blue]3/4[/bold blue] Model [green]ready[/green] · {selected.name}"
+            )
+            return selected
         choices = ", ".join(model.name for model in cfg.models[:8])
         raise click.ClickException(f"More than one model is registered; choose one: {choices}")
 
@@ -1561,9 +1658,13 @@ def run_cmd(
     """
     config_path: Path = ctx.obj["config_path"]
     cfg = _bootstrap_run_config(config_path)
+    _validate_run_source(cfg, source)
     current_runtime = _configured_runtime(cfg)
     available_backends = detect_backends(current_runtime) if current_runtime is not None else set()
     selected_backend, backend_explicit = _run_backend(backend, available_backends)
+    console.print(
+        f"  [dim]{_backend_choice_message(backend, available_backends, selected_backend)}[/dim]"
+    )
     _ensure_run_runtime(
         cfg,
         config_path,
@@ -1622,6 +1723,66 @@ def run_cmd(
         admin_token=None,
         scan=False,
         auto_tune=auto_tune,
+    )
+
+
+@cli.command("setup")
+@click.argument("source", required=False)
+@click.option("--name", default=None, help="Name to register a new model under.")
+@click.option("--gpu", "gpu_pci_slot", default=None, help="Enabled GPU PCI slot to use.")
+@click.option(
+    "--backend",
+    type=click.Choice([Backend.VULKAN.value, Backend.SYCL.value]),
+    default=None,
+    help="Runtime backend. Fresh installs default to portable Vulkan.",
+)
+@click.option(
+    "--runtime-version",
+    default="latest",
+    show_default=True,
+    help="llama.cpp release tag used when a runtime must be installed.",
+)
+@click.option(
+    "--install-runtime/--no-install-runtime",
+    default=True,
+    help="Automatically install a compatible verified runtime when needed.",
+)
+@click.option("--hf-token", default=None, help="Hugging Face token for gated repositories.")
+@click.option("--host", default=None, help="Override the OpenAI server host in the plan.")
+@click.option("--port", type=int, default=None, help="Override the OpenAI server port in the plan.")
+@click.pass_context
+def setup_cmd(
+    ctx: click.Context,
+    source: str | None,
+    name: str | None,
+    gpu_pci_slot: str | None,
+    backend: str | None,
+    runtime_version: str,
+    install_runtime: bool,
+    hf_token: str | None,
+    host: str | None,
+    port: int | None,
+) -> None:
+    """Prepare and validate Arc inference without starting the server.
+
+    This is the beginner-friendly name for ``run --setup-only``. It detects
+    the Intel GPU, installs a verified runtime when needed, registers or finds
+    the requested model, checks the fit estimate, and prints the URLs that the
+    subsequent ``arc-llama run`` command will serve.
+    """
+    ctx.invoke(
+        run_cmd,
+        source=source,
+        name=name,
+        gpu_pci_slot=gpu_pci_slot,
+        backend=backend,
+        runtime_version=runtime_version,
+        install_runtime=install_runtime,
+        hf_token=hf_token,
+        host=host,
+        port=port,
+        auto_tune=None,
+        setup_only=True,
     )
 
 
@@ -2156,303 +2317,96 @@ def _emit_recipe_submission(ctx: click.Context, cfg: Any, report: Any) -> None:
 # ===========================================================================
 
 
-@cli.group("recipes")
-def recipes_group() -> None:
-    """Community tune-recipe registry (lookup, update, validate)."""
-
-
-@recipes_group.command("lookup")
-@click.argument("model")
-@click.pass_context
-def recipes_lookup(ctx: click.Context, model: str) -> None:
-    """Show the community recipe registered for MODEL's fingerprint, if any."""
-    from arc_llama import workload as workload_mod
-    from arc_llama.recipe_share import RecipeRegistry, share_fingerprint
-
-    cfg = load_config(ctx.obj["config_path"])
-    m = cfg.find_model(model)
-    if m is None:
-        console.print(f"[red]Model '{model}' is not registered.[/red]")
-        sys.exit(1)
-    gpu = cfg.find_gpu(m.gpu_pci_slot)
-    fp = share_fingerprint(
-        gpu_arch=(gpu.arch if gpu else "unknown"),
-        backend=(gpu.backend if gpu else "sycl"),
-        model_class=(m.kv_class or "default"),
-        workload_key=workload_mod.fingerprint_key(cfg.workload),
-        tune_schema_version=3,
-        vram_mb=(gpu.vram_mb if gpu is not None and gpu.vram_mb is not None else 0),
-    )
-    entry = RecipeRegistry().lookup(fp)
-    if entry is None:
-        console.print(
-            f"[yellow]No community recipe for {fp[:16]}… — run `arc-llama tune` to measure one.[/yellow]"
-        )
-        sys.exit(1)
-    console.print(f"[bold]{entry.submits} measurement(s)[/bold] for {fp[:16]}…")
-    console.print(f"  confidence: {entry.confidence_score:.0%}")
-    if entry.gpu_name:
-        console.print(f"  gpu: {entry.gpu_name}")
-    if entry.provenance:
-        build = entry.provenance.get("llama_server_git") or entry.provenance.get(
-            "llama_server_version", "unknown"
-        )
-        console.print(
-            f"  provenance: {entry.provenance.get('llama_server_backend', '?')} / {build}"
-        )
-    if entry.prompt_eval_tok_s or entry.generation_tok_s:
-        console.print(
-            f"  measured: {entry.prompt_eval_tok_s or '?'} pp tok/s · "
-            f"{entry.generation_tok_s or '?'} gen tok/s"
-        )
-    console.print(f"  recipe: [dim]{json.dumps(entry.edits, sort_keys=True)}[/dim]")
-
-
-@recipes_group.command("apply")
-@click.argument("model")
-@click.option(
-    "--server",
-    "server_url",
-    default=None,
-    help="Base URL of a running arc-llama server.",
+register_recipe_commands(
+    cli,
+    console=console,
+    benchmark_mod=benchmark_mod,
+    httpx=httpx,
+    load_config=lambda path: load_config(path),
+    server_url_from=_server_url_from,
 )
-@click.option(
-    "--verify/--no-verify",
-    default=True,
-    help="A/B benchmark the current and shared recipes, rolling back unless the shared recipe wins.",
-)
-@click.option(
-    "--min-improvement",
-    type=click.FloatRange(min=0.0),
-    default=0.01,
-    show_default=True,
-    help="Minimum fractional A/B score improvement required to keep the recipe.",
-)
-@click.option(
-    "--min-confidence",
-    type=click.FloatRange(min=0.0, max=1.0),
-    default=0.5,
-    show_default=True,
-)
-@click.option(
-    "--allow-unverified",
-    is_flag=True,
-    help="Allow missing or mismatched llama-server provenance; A/B verification is still recommended.",
-)
-@click.option(
-    "--dry-run", is_flag=True, help="Show the decision and edits without changing anything."
-)
-@click.pass_context
-def recipes_apply(
-    ctx: click.Context,
-    model: str,
-    server_url: str | None,
-    verify: bool,
-    min_improvement: float,
-    min_confidence: float,
-    allow_unverified: bool,
-    dry_run: bool,
-) -> None:
-    """Safely apply a community recipe, optionally proving it locally first."""
-    from arc_llama import workload as workload_mod
-    from arc_llama.recipe_share import (
-        RecipeRegistry,
-        benchmark_improvement,
-        llama_server_build_identity,
-        provenance_matches_local,
-        share_fingerprint,
-        shared_recipe_edits_to_model_recipe,
-    )
-    from arc_llama.tune import _apply_edits, _restore_edits, _restore_final_state
-
-    cfg = load_config(ctx.obj["config_path"])
-    m = cfg.find_model(model)
-    if m is None:
-        raise click.ClickException(f"model {model!r} is not registered")
-    gpu = cfg.find_gpu(m.gpu_pci_slot)
-    fp = share_fingerprint(
-        gpu_arch=(gpu.arch if gpu else "unknown"),
-        backend=(gpu.backend if gpu else "sycl"),
-        model_class=(m.kv_class or "default"),
-        workload_key=workload_mod.fingerprint_key(cfg.workload),
-        tune_schema_version=3,
-        vram_mb=(gpu.vram_mb if gpu and gpu.vram_mb else 0),
-    )
-    entry = RecipeRegistry().lookup(fp)
-    if entry is None:
-        raise click.ClickException(f"no community recipe for {fp[:16]}…")
-    if entry.confidence_score < min_confidence:
-        raise click.ClickException(
-            f"recipe confidence {entry.confidence_score:.0%} is below "
-            f"the required {min_confidence:.0%}"
-        )
-
-    local = llama_server_build_identity(cfg.paths.llama_server)
-    provenance_ok = provenance_matches_local(
-        entry.provenance,
-        llama_server_version=local.get("llama_server_version"),
-        llama_server_git=local.get("llama_server_git"),
-        llama_server_backend=local.get("llama_server_backend"),
-    )
-    if not provenance_ok and not allow_unverified:
-        raise click.ClickException(
-            "shared recipe provenance does not match this llama-server build; "
-            "use --allow-unverified to rely on local A/B verification"
-        )
-
-    edits = shared_recipe_edits_to_model_recipe(entry.edits)
-    console.print(
-        f"[bold]Community recipe[/bold] {fp[:16]}… "
-        f"(confidence {entry.confidence_score:.0%}, "
-        f"provenance {'matched' if provenance_ok else 'unverified'})"
-    )
-    console.print(f"  edits: [dim]{json.dumps(edits, sort_keys=True)}[/dim]")
-    if dry_run:
-        return
-
-    url = _server_url_from(ctx, server_url)
-    headers = (
-        {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
-    )
-
-    async def _run() -> tuple[bool, float | None, str | None]:
-        touched = set(edits)
-        restore = _restore_edits(dict(m.recipe or {}), touched)
-        accepted = False
-        candidate_applied = False
-        failure: str | None = None
-        gain: float | None = None
-        baseline = None
-        if verify:
-            baseline = await benchmark_mod.benchmark_model(
-                url,
-                model,
-                prompt_tokens=cfg.tune.prompt_tokens,
-                gen_tokens=cfg.tune.gen_tokens,
-                cfg=cfg,
-            )
-            if baseline.error:
-                return False, None, f"baseline benchmark failed: {baseline.error}"
-
-        async with httpx.AsyncClient(base_url=url, timeout=600.0, headers=headers) as client:
-            try:
-                failure = await _apply_edits(client, model, edits)
-                if failure:
-                    return False, None, failure
-                candidate_applied = True
-                if not verify:
-                    accepted = True
-                    return True, None, None
-                candidate = await benchmark_mod.benchmark_model(
-                    url,
-                    model,
-                    prompt_tokens=cfg.tune.prompt_tokens,
-                    gen_tokens=cfg.tune.gen_tokens,
-                    cfg=cfg,
-                )
-                if candidate.error:
-                    failure = f"candidate benchmark failed: {candidate.error}"
-                    return False, None, failure
-                gain = benchmark_improvement(
-                    baseline,
-                    candidate,
-                    target=workload_mod.tune_target(cfg),
-                    priority=workload_mod.score_priority(cfg),
-                )
-                if gain is None:
-                    failure = "could not score the baseline and candidate benchmarks"
-                    return False, None, failure
-                accepted = gain >= min_improvement
-                if not accepted:
-                    failure = (
-                        f"shared recipe improved the workload score by {gain:.1%}; "
-                        f"required {min_improvement:.1%}"
-                    )
-                return accepted, gain, failure
-            finally:
-                if candidate_applied and not accepted:
-                    restore_error = await _restore_final_state(client, model, restore, cfg=None)
-                    if restore_error:
-                        raise RuntimeError(
-                            f"recipe was rejected but rollback failed: {restore_error}"
-                        )
-
-    try:
-        accepted, gain, failure = asyncio.run(_run())
-    except KeyboardInterrupt:
-        raise click.ClickException("recipe verification interrupted") from None
-    except RuntimeError as exc:
-        raise click.ClickException(str(exc)) from exc
-    if not accepted:
-        raise click.ClickException(f"{failure}; original recipe restored")
-    if gain is None:
-        console.print(f"[green]Applied shared recipe to {model}.[/green]")
-    else:
-        console.print(
-            f"[green]Applied shared recipe to {model}; local A/B score improved {gain:.1%}.[/green]"
-        )
-
-
-@recipes_group.command("update")
-@click.option(
-    "--url",
-    default=None,
-    help="Fetch the registry from this URL instead of the default release asset.",
-)
-@click.pass_context
-def recipes_update(ctx: click.Context, url: str | None) -> None:
-    """Refresh the local registry from the community release asset."""
-    import httpx as _httpx
-
-    from arc_llama.recipe_share import (
-        DEFAULT_REGISTRY_URL,
-        MAX_REGISTRY_BYTES,
-        RegistryValidationError,
-        _user_override_path,
-        parse_registry_bytes,
-        write_registry_atomic,
-    )
-
-    src = url or DEFAULT_REGISTRY_URL
-    dest = _user_override_path()
-    console.print(f"Fetching {src} …")
-    try:
-        payload = bytearray()
-        with _httpx.stream("GET", src, follow_redirects=True, timeout=30) as resp:
-            resp.raise_for_status()
-            content_length = resp.headers.get("content-length")
-            if content_length is not None and int(content_length) > MAX_REGISTRY_BYTES:
-                raise RegistryValidationError("downloaded registry exceeds the 16 MiB limit")
-            for chunk in resp.iter_bytes():
-                payload.extend(chunk)
-                if len(payload) > MAX_REGISTRY_BYTES:
-                    raise RegistryValidationError("downloaded registry exceeds the 16 MiB limit")
-        doc = parse_registry_bytes(bytes(payload))
-        write_registry_atomic(doc, dest)
-    except (OSError, ValueError, _httpx.HTTPError, RegistryValidationError) as e:
-        console.print(f"[red]Download failed: {e}[/red]")
-        sys.exit(1)
-    n = len(doc["recipes"])
-    console.print(f"[green]Saved {n} recipe(s) to {dest}[/green]")
-
-
-@recipes_group.command("validate")
-@click.argument("path", type=click.Path(exists=True, path_type=Path))
-def recipes_validate(path: Path) -> None:
-    """Validate a submission JSON file (same checks registry CI runs)."""
-    from arc_llama.recipe_share import validate_submission
-
-    problems = validate_submission(json.loads(path.read_text()))
-    if problems:
-        for p in problems:
-            console.print(f"[red]- {p}[/red]")
-        sys.exit(1)
-    console.print("[green]OK[/green]")
 
 
 # ===========================================================================
 # install-runtime
 # ===========================================================================
+
+
+@cli.group("runtime")
+def runtime_group() -> None:
+    """Inspect and select installed llama.cpp runtimes."""
+
+
+def _installed_runtimes(cfg: Config) -> list[tuple[str, str, Path, dict[str, Any]]]:
+    """Return (tag, backend, binary, marker) for complete local installs."""
+    root = Path(cfg.paths.state_dir).expanduser() / "runtime"
+    found: list[tuple[str, str, Path, dict[str, Any]]] = []
+    if not root.is_dir():
+        return found
+    for install_dir in sorted(root.glob("llama-*-*")):
+        if not install_dir.is_dir():
+            continue
+        marker_path = install_dir / ".arc-llama-runtime.json"
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            marker = {}
+        binary = next(
+            (path for path in install_dir.rglob("llama-server*") if path.is_file()),
+            None,
+        )
+        if binary is None:
+            continue
+        tag = str(marker.get("tag") or install_dir.name.split("-")[1])
+        backend = str(marker.get("backend") or install_dir.name.rsplit("-", 1)[-1])
+        found.append((tag, backend, binary, marker))
+    return found
+
+
+@runtime_group.command("list")
+@click.pass_context
+def runtime_list_cmd(ctx: click.Context) -> None:
+    """List complete runtimes installed in Arc Llama's state directory."""
+    cfg = load_config(ctx.obj["config_path"])
+    runtimes = _installed_runtimes(cfg)
+    if not runtimes:
+        console.print("[yellow]No installed Arc Llama runtimes found.[/yellow]")
+        return
+    active = str(Path(cfg.paths.llama_server).expanduser().resolve())
+    table = Table(title="Installed llama.cpp runtimes")
+    table.add_column("Tag")
+    table.add_column("Backend")
+    table.add_column("Active")
+    table.add_column("Path")
+    for tag, backend, binary, _marker in runtimes:
+        table.add_row(tag, backend, "yes" if binary.resolve() == active else "", str(binary))
+    console.print(table)
+
+
+@runtime_group.command("use")
+@click.argument("tag")
+@click.option("--backend", type=click.Choice(["vulkan", "sycl"]), default=None)
+@click.pass_context
+def runtime_use_cmd(ctx: click.Context, tag: str, backend: str | None) -> None:
+    """Select an already-installed runtime by release tag."""
+    cfg_path: Path = ctx.obj["config_path"]
+    cfg = load_config(cfg_path)
+    candidates = [item for item in _installed_runtimes(cfg) if item[0] == tag]
+    if backend is not None:
+        candidates = [item for item in candidates if item[1] == backend]
+    if not candidates:
+        suffix = f"/{backend}" if backend else ""
+        raise click.ClickException(f"No installed runtime found for {tag}{suffix}.")
+    if len(candidates) > 1:
+        choices = ", ".join(item[1] for item in candidates)
+        raise click.ClickException(f"Multiple runtimes found for {tag}: {choices}; pass --backend.")
+    selected_tag, selected_backend, binary, _marker = candidates[0]
+    cfg.paths.llama_server = str(binary)
+    for gpu in cfg.gpus:
+        if gpu.enabled:
+            gpu.backend = selected_backend
+    _save_or_die(cfg, cfg_path)
+    console.print(f"[green]Selected[/green] {selected_tag}/{selected_backend} · {binary}")
 
 
 @cli.command("install-runtime")
@@ -2865,527 +2819,15 @@ WantedBy=default.target
 # ===========================================================================
 
 
-@cli.group("upstream")
-def upstream_group() -> None:
-    """Manage upstream OpenAI-compatible endpoints."""
-
-
-@upstream_group.command("add")
-@click.argument("name")
-@click.argument("url")
-@click.pass_context
-def upstream_add(ctx: click.Context, name: str, url: str) -> None:
-    """Register an upstream endpoint. URL should be the base URL
-    (e.g. http://127.0.0.1:11434 or http://192.168.1.50:8080)."""
-    cfg_path: Path = ctx.obj["config_path"]
-    cfg = load_config(cfg_path)
-    # Validate URL roughly
-    if not url.startswith(("http://", "https://")):
-        console.print(f"[red]URL must start with http:// or https://: {url}[/red]")
-        sys.exit(1)
-    # Check for duplicate name
-    existing = next((u for u in cfg.upstreams if u.name == name), None)
-    if existing is not None:
-        console.print(f"[yellow]Upstream '{name}' already exists. Remove it first.[/yellow]")
-        sys.exit(1)
-    from arc_llama.config import UpstreamConfig
-
-    cfg.upstreams.append(UpstreamConfig(name=name, url=url.rstrip("/")))
-    _save_or_die(cfg, cfg_path)
-    console.print(f"[green]Added upstream '{name}' at {url}[/green]")
-
-
-@upstream_group.command("list")
-@click.pass_context
-def upstream_list(ctx: click.Context) -> None:
-    """List registered upstream endpoints."""
-    cfg = load_config(ctx.obj["config_path"])
-    if not cfg.upstreams:
-        console.print("[dim]No upstreams configured.[/dim]")
-        return
-    table = Table(title="Upstreams")
-    table.add_column("Name")
-    table.add_column("URL")
-    for u in cfg.upstreams:
-        table.add_row(u.name, u.url)
-    console.print(table)
-
-
-@upstream_group.command("remove")
-@click.argument("name")
-@click.pass_context
-def upstream_remove(ctx: click.Context, name: str) -> None:
-    """Remove an upstream endpoint."""
-    cfg_path: Path = ctx.obj["config_path"]
-    cfg = load_config(cfg_path)
-    before = len(cfg.upstreams)
-    cfg.upstreams = [u for u in cfg.upstreams if u.name != name]
-    if len(cfg.upstreams) == before:
-        console.print(f"[yellow]No upstream named {name!r}.[/yellow]")
-        sys.exit(1)
-    _save_or_die(cfg, cfg_path)
-    console.print(f"[green]Removed upstream '{name}'.[/green]")
+register_upstream_commands(cli, console=console, save_or_die=_save_or_die)
 
 
 # ===========================================================================
-# agent
+# agent commands
 # ===========================================================================
 
 
-def _state_dir_from_config(cfg: Config) -> Path | None:
-    if cfg.paths.state_dir:
-        return Path(cfg.paths.state_dir).expanduser()
-    return None
-
-
-@asynccontextmanager
-async def _agent_tool_context(cfg: Config, profile: str | None):
-    """Load skills and start the active profile's MCP servers for a CLI agent run."""
-    from arc_llama.agent.mcp_client import MCPClientManager
-    from arc_llama.skills import load_skills
-
-    load_skills(cfg.paths.skills_dir)
-    manager = MCPClientManager(cfg.active_mcp_servers(profile))
-    try:
-        await manager.start()
-        yield
-    finally:
-        await manager.stop()
-
-
-async def _prompt_yes_no(prompt: str) -> bool:
-    """Prompt the user for a yes/no answer from an async context."""
-    loop = asyncio.get_running_loop()
-    while True:
-        answer = await loop.run_in_executor(None, input, prompt)
-        cleaned = answer.strip().lower()
-        if cleaned in ("y", "yes"):
-            return True
-        if cleaned in ("n", "no"):
-            return False
-        console.print("[dim]Please answer y or n.[/dim]")
-
-
-def _render_agent_event(event: dict) -> None:
-    t = event.get("type")
-    if t == "status":
-        console.print(f"[dim]# {event.get('message', '')}[/dim]")
-    elif t == "plan":
-        console.print("[bold cyan]Proposed plan:[/bold cyan]")
-        console.print(event.get("content", ""))
-    elif t == "assistant":
-        content = event.get("content", "")
-        if content:
-            console.print(content)
-    elif t == "tool_call":
-        name = event.get("name", "tool")
-        args = event.get("arguments", {})
-        console.print(f"[bold yellow]▶ {name}[/bold yellow]")
-        console.print(f"[dim]{json.dumps(args, indent=2, ensure_ascii=False)}[/dim]")
-    elif t == "tool_result":
-        name = event.get("name", "tool")
-        content = event.get("content", "")
-        if event.get("error"):
-            console.print(f"[red]✗ {name} failed[/red]")
-        else:
-            console.print(f"[green]✓ {name} done[/green]")
-        console.print(f"[dim]{content}[/dim]")
-    elif t == "confirm_required":
-        console.print(f"[yellow]⚠ Confirmation required for {event.get('tool', 'tool')}[/yellow]")
-    elif t == "checkpoint":
-        console.print(f"[dim]Checkpoint saved: {event.get('id', '')}[/dim]")
-    elif t == "error":
-        console.print(f"[red]Error: {event.get('message', '')}[/red]")
-    elif t == "done":
-        console.print("[green]Agent finished.[/green]")
-
-
-@cli.command("agent")
-@click.argument("task")
-@click.option("--model", "-m", required=True, help="Model id to use.")
-@click.option("--root", "-r", default=None, help="Project root (default: agent.root from config).")
-@click.option("--auto-confirm", is_flag=True, help="Do not prompt for tool confirmation.")
-@click.option("--plan-mode", is_flag=True, help="Generate a plan first and ask for approval.")
-@click.option("--max-turns", type=int, default=30, help="Maximum agent turns (default: 30).")
-@click.option("--folder", "-f", default="", help="Folder to save the agent transcript chat.")
-@click.option(
-    "--profile",
-    default=None,
-    help="MCP profile name (overrides agent.profile in config).",
-)
-@click.option(
-    "--base-url",
-    default=None,
-    help="arc-llama server base URL (default: http://HOST:PORT from config).",
-)
-@click.pass_context
-def agent_cmd(
-    ctx: click.Context,
-    task: str,
-    model: str,
-    root: str | None,
-    auto_confirm: bool,
-    plan_mode: bool,
-    max_turns: int,
-    folder: str,
-    profile: str | None,
-    base_url: str | None,
-) -> None:
-    """Run the local coding agent from the terminal.
-
-    Requires a running `arc-llama serve` instance. The agent streams events to
-    the terminal and prompts for confirmation before destructive tools.
-    """
-    import uuid
-
-    from arc_llama.agent import run_agent
-    from arc_llama.agent.checkpoints import CheckpointStore
-    from arc_llama.chat_store import ChatMessage, ChatStore
-
-    cfg = load_config(ctx.obj["config_path"])
-    if base_url is None:
-        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
-
-    try:
-        health = httpx.get(f"{base_url.rstrip('/')}/health", timeout=5.0)
-        health.raise_for_status()
-    except Exception as e:
-        console.print(f"[red]Cannot reach arc-llama server at {base_url}: {e}[/red]")
-        console.print("[dim]Start one with:[/dim] arc-llama serve")
-        sys.exit(1)
-
-    root_path = Path(root or cfg.agent.root).expanduser().resolve()
-    state_dir = _state_dir_from_config(cfg)
-    chat_store = ChatStore(state_dir / "chats" if state_dir else Path(".arc_llama_chats"))
-    checkpoint_store = CheckpointStore(
-        state_dir / "checkpoints" if state_dir else Path(".arc_llama_checkpoints")
-    )
-
-    title = task.strip().split("\n")[0][:80] or "Agent task"
-    agent_chat = chat_store.create(str(uuid.uuid4()), title, folder=folder)
-    run_id = str(uuid.uuid4())
-    transcript: list[ChatMessage] = [ChatMessage(role="user", content=task)]
-
-    async def confirm_callback(call_id: str, tool: str, arguments: dict) -> bool:
-        summary = json.dumps(arguments, ensure_ascii=False)[:200]
-        return await _prompt_yes_no(f"Allow [bold]{tool}[/bold] {summary}? [y/n] ")
-
-    async def plan_callback(plan_text: str) -> bool:
-        return await _prompt_yes_no("Approve plan? [y/n] ")
-
-    async def run() -> None:
-        async with _agent_tool_context(cfg, profile):
-            async for event in run_agent(
-                task=task,
-                model=model,
-                base_url=base_url,
-                root=root_path,
-                auto_confirm=auto_confirm,
-                confirm_callback=confirm_callback,
-                plan_mode=plan_mode,
-                plan_callback=plan_callback,
-                run_id=run_id,
-                checkpoint_store=checkpoint_store,
-                max_turns=max_turns,
-                chat_store=chat_store,
-            ):
-                _render_agent_event(event)
-                if event.get("type") == "assistant" and event.get("content"):
-                    transcript.append(ChatMessage(role="assistant", content=event["content"]))
-                elif event.get("type") == "tool_result":
-                    name = event.get("name", "tool")
-                    content = event.get("content", "")
-                    transcript.append(ChatMessage(role="tool", content=f"{name}:\n{content}"))
-
-            chat = chat_store.get(agent_chat.id)
-            if chat is not None:
-                chat.messages.extend(transcript)
-                chat_store.save(chat)
-                console.print(
-                    f"[dim]Transcript saved: chat {agent_chat.id} in folder '{folder or 'default'}'[/dim]"
-                )
-
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        console.print("[yellow]Agent run interrupted.[/yellow]")
-
-
-# ===========================================================================
-# code (interactive agent REPL)
-# ===========================================================================
-
-
-@cli.command("code")
-@click.option("--model", "-m", required=True, help="Model id to use.")
-@click.option("--root", "-r", default=None, help="Project root (default: agent.root from config).")
-@click.option("--auto-confirm", is_flag=True, help="Do not prompt for tool confirmation.")
-@click.option(
-    "--plan-mode", is_flag=True, help="Generate a plan first and ask for approval each turn."
-)
-@click.option(
-    "--max-turns", type=int, default=30, help="Maximum agent turns per user message (default: 30)."
-)
-@click.option("--folder", "-f", default="", help="Folder to save the session transcript chat.")
-@click.option(
-    "--profile",
-    default=None,
-    help="MCP profile name (overrides agent.profile in config).",
-)
-@click.option(
-    "--base-url",
-    default=None,
-    help="arc-llama server base URL (default: http://HOST:PORT from config).",
-)
-@click.pass_context
-def code_cmd(
-    ctx: click.Context,
-    model: str,
-    root: str | None,
-    auto_confirm: bool,
-    plan_mode: bool,
-    max_turns: int,
-    folder: str,
-    profile: str | None,
-    base_url: str | None,
-) -> None:
-    """Start an interactive coding agent REPL.
-
-    Requires a running `arc-llama serve` instance. Type messages and the agent
-    will use tools across multiple turns. Special commands start with `/`.
-    """
-    import uuid
-
-    from arc_llama.agent.checkpoints import CheckpointStore
-    from arc_llama.agent.interactive import InteractiveAgent
-    from arc_llama.chat_store import ChatMessage, ChatStore
-
-    cfg = load_config(ctx.obj["config_path"])
-    if base_url is None:
-        base_url = f"http://{cfg.server.host}:{cfg.server.port}"
-
-    try:
-        health = httpx.get(f"{base_url.rstrip('/')}/health", timeout=5.0)
-        health.raise_for_status()
-    except Exception as e:
-        console.print(f"[red]Cannot reach arc-llama server at {base_url}: {e}[/red]")
-        console.print("[dim]Start one with:[/dim] arc-llama serve")
-        sys.exit(1)
-
-    root_path = Path(root or cfg.agent.root).expanduser().resolve()
-    state_dir = _state_dir_from_config(cfg)
-    chat_store = ChatStore(state_dir / "chats" if state_dir else Path(".arc_llama_chats"))
-    checkpoint_store = CheckpointStore(
-        state_dir / "checkpoints" if state_dir else Path(".arc_llama_checkpoints")
-    )
-
-    session_chat = chat_store.create(str(uuid.uuid4()), "CLI session", folder=folder)
-    run_id = str(uuid.uuid4())
-
-    agent = InteractiveAgent(
-        model=model,
-        base_url=base_url,
-        root=root_path,
-        auto_confirm=auto_confirm,
-        plan_mode=plan_mode,
-        max_turns=max_turns,
-        chat_store=chat_store,
-        checkpoint_store=checkpoint_store,
-        run_id=run_id,
-    )
-
-    settings = {
-        "model": model,
-        "root": str(root_path),
-        "folder": folder or "default",
-        "auto_confirm": auto_confirm,
-        "plan_mode": plan_mode,
-        "max_turns": max_turns,
-    }
-
-    console.print("[bold green]arc-llama code[/bold green] — interactive agent")
-    for key, value in settings.items():
-        console.print(f"  [dim]{key}:[/dim] {value}")
-    console.print("[dim]Type /help for commands, /quit to exit.[/dim]\n")
-
-    async def confirm_callback(call_id: str, tool: str, arguments: dict) -> bool:
-        summary = json.dumps(arguments, ensure_ascii=False)[:200]
-        return await _prompt_yes_no(f"Allow [bold]{tool}[/bold] {summary}? [y/n] ")
-
-    async def plan_callback(plan_text: str) -> bool:
-        return await _prompt_yes_no("Approve plan? [y/n] ")
-
-    async def save_transcript(messages: list[ChatMessage]) -> None:
-        if not messages:
-            return
-        chat = chat_store.get(session_chat.id)
-        if chat is None:
-            return
-        chat.messages.extend(messages)
-        chat_store.save(chat)
-
-    async def repl() -> None:
-        nonlocal session_chat, agent
-        async with _agent_tool_context(cfg, profile):
-            loop = asyncio.get_running_loop()
-            while True:
-                try:
-                    user_input = await loop.run_in_executor(None, input, ">>> ")
-                except EOFError:
-                    console.print("\n[yellow]Exiting.[/yellow]")
-                    break
-
-                user_input = user_input.strip()
-                if not user_input:
-                    continue
-
-                if user_input.startswith("/"):
-                    command = user_input[1:].strip()
-                    if command in ("quit", "exit"):
-                        console.print("[yellow]Goodbye.[/yellow]")
-                        break
-                    if command == "help":
-                        console.print(
-                            "[bold]Commands:[/bold]\n"
-                            "  /help              show this message\n"
-                            "  /quit, /exit       leave the REPL\n"
-                            "  /auto              toggle auto-confirm\n"
-                            "  /plan              toggle plan mode\n"
-                            "  /model <id>        change model\n"
-                            "  /root <path>       change project root\n"
-                            "  /folder <name>     move transcript to folder\n"
-                            "  /max-turns <n>     change max turns per message\n"
-                            "  /clear             start a new session chat"
-                        )
-                        continue
-                    if command == "auto":
-                        agent.auto_confirm = not agent.auto_confirm
-                        console.print(f"[dim]auto_confirm = {agent.auto_confirm}[/dim]")
-                        continue
-                    if command == "plan":
-                        agent.plan_mode = not agent.plan_mode
-                        console.print(f"[dim]plan_mode = {agent.plan_mode}[/dim]")
-                        continue
-                    if command == "clear":
-                        await agent.close()
-                        session_chat = chat_store.create(
-                            str(uuid.uuid4()), "CLI session", folder=folder
-                        )
-                        agent = InteractiveAgent(
-                            model=agent.model,
-                            base_url=base_url,
-                            root=agent.root,
-                            auto_confirm=agent.auto_confirm,
-                            plan_mode=agent.plan_mode,
-                            max_turns=agent.max_turns,
-                            chat_store=chat_store,
-                            checkpoint_store=checkpoint_store,
-                            run_id=str(uuid.uuid4()),
-                        )
-                        console.print("[dim]Started a new session chat.[/dim]")
-                        continue
-                    if command.startswith("model "):
-                        agent.model = command[6:].strip() or agent.model
-                        console.print(f"[dim]model = {agent.model}[/dim]")
-                        continue
-                    if command.startswith("root "):
-                        new_root = Path(command[5:].strip()).expanduser().resolve()
-                        agent.root = new_root
-                        console.print(f"[dim]root = {agent.root}[/dim]")
-                        continue
-                    if command.startswith("folder "):
-                        new_folder = command[7:].strip()
-                        chat = chat_store.get(session_chat.id)
-                        if chat is not None:
-                            chat.folder = new_folder
-                            chat_store.save(chat)
-                        console.print(f"[dim]folder = {new_folder}[/dim]")
-                        continue
-                    if command.startswith("max-turns "):
-                        try:
-                            agent.max_turns = int(command[10:].strip())
-                            console.print(f"[dim]max_turns = {agent.max_turns}[/dim]")
-                        except ValueError:
-                            console.print("[red]max-turns requires an integer[/red]")
-                        continue
-                    console.print(f"[red]Unknown command: /{command}[/red]")
-                    continue
-
-                turn_messages: list[ChatMessage] = [ChatMessage(role="user", content=user_input)]
-                async for event in agent.chat(
-                    user_input,
-                    confirm_callback=confirm_callback,
-                    plan_callback=plan_callback,
-                ):
-                    _render_agent_event(event)
-                    if event.get("type") == "assistant" and event.get("content"):
-                        turn_messages.append(
-                            ChatMessage(role="assistant", content=event["content"])
-                        )
-                    elif event.get("type") == "tool_result":
-                        name = event.get("name", "tool")
-                        content = event.get("content", "")
-                        turn_messages.append(
-                            ChatMessage(role="tool", content=f"{name}:\n{content}")
-                        )
-
-                await save_transcript(turn_messages)
-
-            await agent.close()
-
-    try:
-        asyncio.run(repl())
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Session interrupted.[/yellow]")
-
-
-# ===========================================================================
-# agent-tui (arcllama)
-# ===========================================================================
-
-
-@cli.command("agent-tui")
-@click.option("--model", "-m", default=None, help="Model id to use (default: first available).")
-@click.option("--root", "-r", default=None, help="Project root (default: current directory).")
-@click.option("--folder", "-f", default="", help="Folder to save the session transcript chat.")
-@click.option(
-    "--profile",
-    default=None,
-    help="MCP profile name (overrides agent.profile in config).",
-)
-@click.option(
-    "--base-url",
-    default=None,
-    help="arc-llama server base URL (default: http://HOST:PORT from config).",
-)
-@click.pass_context
-def agent_tui_cmd(
-    ctx: click.Context,
-    model: str | None,
-    root: str | None,
-    folder: str,
-    profile: str | None,
-    base_url: str | None,
-) -> None:
-    """Launch the interactive arcllama agent TUI."""
-    cfg = load_config(ctx.obj["config_path"])
-    try:
-        # Imported here, not at module scope: agent_tui raises SystemExit at
-        # import time when textual is missing, and textual is an optional
-        # extra. An eager import takes down every other command with it.
-        from arc_llama.agent_tui import run_agent_tui
-
-        run_agent_tui(
-            base_url=base_url,
-            model=model,
-            root=root,
-            folder=folder,
-            profile=profile,
-            config=cfg,
-        )
-    except SystemExit as e:
-        console.print(f"[red]{e}[/red]")
-        sys.exit(1)
+register_agent_commands(cli, console=console)
 
 
 @click.command(name="arcllama", add_help_option=True)

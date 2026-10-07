@@ -311,10 +311,22 @@ async function testChatSend({ page, origin }) {
 
 async function testStructuredLoadFailure({ page, origin }) {
   await openChat(page, origin, { model: "gemma" });
+  let releaseLoad;
+  const pendingLoad = new Promise(resolve => { releaseLoad = resolve; });
+  await page.route("**/admin/load/gemma", async route => {
+    await pendingLoad;
+    return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify(STRUCTURED_LOAD_FAILURE) });
+  });
   // gemma is not loaded: sending a message triggers /admin/load/gemma, which
   // the mock answers with the real structured failure shape.
   await page.fill("#message-input", "please answer");
   await page.press("#message-input", "Enter");
+  try {
+    await page.waitForSelector(".load-wait-card", { state: "visible" });
+    if (!(await page.textContent(".load-wait-card")).includes("Starting model")) throw new Error("missing readable loading stage");
+  } finally {
+    releaseLoad(); // A failed assertion must not leave a route handler blocked.
+  }
   await page.waitForSelector(".load-failure-card", { timeout: 5000 });
   const card = page.locator(".load-failure-card");
   const text = await card.innerText();
@@ -435,6 +447,56 @@ async function testDashboardMeasurements({ page, origin }) {
   if (!content.includes("tok/s") || content.includes("n/a")) throw new Error("generation rates have incorrect units or values");
 }
 
+async function testMemoryFitAndSavedSettings({ page, origin }) {
+  await openChat(page, origin);
+  await page.click("#settings-toggle");
+  let fit = ADMIN_STATUS.models[0].vram_estimate;
+  await page.route("**/admin/status", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ ...ADMIN_STATUS, models: ADMIN_STATUS.models.map(m => m.name === "qwen" ? { ...m, vram_estimate: fit } : m) }),
+  }));
+  for (const [estimate, expected] of [
+    [fit, "MiB headroom on the assigned GPU"],
+    [{ estimated_mb: 25000, headroom_mb: -424, fit: false }, "Reduce context or KV size, or pick a smaller model"],
+    [{ estimated_mb: 5200, fit: null }, "GPU capacity unknown; no fit verdict"],
+    [null, "not estimated yet"],
+  ]) {
+    fit = estimate;
+    await page.evaluate(() => fetchStatus());
+    if (!(await page.locator("#s-fit").isVisible())) throw new Error("memory fit line is hidden");
+    if (!(await page.textContent("#s-fit")).includes(expected)) throw new Error(`incorrect memory fit for ${JSON.stringify(fit)}`);
+  }
+  let edits;
+  await page.route("**/admin/models/qwen/edit", route => {
+    edits = route.request().postDataJSON();
+    fit = { estimated_mb: 6000, headroom_mb: 18576, fit: true };
+    return route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
+  await page.fill("#s-ctx", "16384");
+  await page.click("#s-apply");
+  await page.waitForFunction(() => document.querySelector("#s-fit").textContent.includes("18,576"));
+  if (edits?.ctx !== 16384) throw new Error("settings were not sent to the server");
+  if (await page.locator("#s-apply").isDisabled()) throw new Error("apply button was not restored");
+}
+
+async function testDashboardFitAndEmptyMeasurements({ page, origin }) {
+  await page.goto(origin);
+  await page.waitForSelector("#readiness-card .readiness-metrics");
+  if (!(await page.locator("#readiness-card .tone-ok").first().innerText()).includes("headroom")) throw new Error("fitting model has no visible fit verdict");
+  await page.route("**/admin/status", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ ...ADMIN_STATUS, models: ADMIN_STATUS.models.map(m => ({ ...m, vram_estimate: { estimated_mb: 25000, fit: false } })) }),
+  }));
+  await page.evaluate(() => fetchStatus(true));
+  if (!(await page.locator("#readiness-card .tone-warn").first().innerText()).includes("Does not fit")) throw new Error("oversized model has no warning");
+  await page.route("**/admin/metrics", route => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ ...METRICS, timings: { models: {}, queue_wait: null } }),
+  }));
+  await page.evaluate(() => fetchMeasurements());
+  const empty = await page.locator("#measurements").innerText();
+  if (!empty.includes("No measurements yet") || empty.includes("24.8")) throw new Error("dashboard retained stale rates in empty state");
+}
+
 const TESTS = [
   ["chat-selection", testChatSelection],
   ["chat-send", testChatSend],
@@ -444,6 +506,8 @@ const TESTS = [
   ["settings-survive-status-poll", testSettingsSurviveStatusPoll],
   ["retry-original-turn-once", testRetrySendsOriginalTurnOnce],
   ["dashboard-measurements", testDashboardMeasurements],
+  ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
+  ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
 ];
 
 // ---------------------------------------------------------------------------
@@ -473,6 +537,8 @@ async function main() {
       await installApiMocks(context);
       const page = await context.newPage();
       page.setDefaultTimeout(5000);
+      // Chromium cold navigation can outlast interaction waits on busy hosts.
+      page.setDefaultNavigationTimeout(30000);
       const pageErrors = [];
       page.on("pageerror", error => pageErrors.push(error.message));
       recordSessionTokenCalls(page);
