@@ -714,6 +714,46 @@ function timingRow(label, summary, unit = "") {
   return item;
 }
 
+// Hourly generation-speed medians from /admin/metrics/history, by model.
+let generationHistory = new Map();
+
+function sparkline(points) {
+  const values = points.map((p) => p.median);
+  const min = Math.min(...values), max = Math.max(...values);
+  const width = 160, height = 32, span = max - min || 1;
+  const step = width / (values.length - 1);
+  const coords = values.map((v, i) => `${(i * step).toFixed(1)},${(height - 2 - (v - min) / span * (height - 4)).toFixed(1)}`);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  svg.setAttribute("class", "measure-sparkline");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Generation speed trend: ${min.toFixed(1)} to ${max.toFixed(1)} tok/s`);
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", coords.join(" "));
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "currentColor");
+  line.setAttribute("stroke-width", "1.5");
+  svg.appendChild(line);
+  return svg;
+}
+
+function historyRow(name) {
+  const points = generationHistory.get(name) || [];
+  if (points.length < 2) return null;
+  const row = document.createElement("div");
+  row.className = "measure-row measure-trend";
+  const label = document.createElement("span");
+  const days = Math.max(1, Math.round((points[points.length - 1].t - points[0].t) / 86400));
+  label.textContent = `Generation trend (${points.length} hours over ${days} day${days === 1 ? "" : "s"})`;
+  const latest = document.createElement("strong");
+  latest.textContent = `now ${points[points.length - 1].median.toFixed(1)} tok/s`;
+  row.append(label, sparkline(points), latest);
+  return row;
+}
+
 function renderMeasurements(metrics) {
   const host = $("#measurements");
   if (!host) return;
@@ -746,6 +786,8 @@ function renderMeasurements(metrics) {
     if (entry.ttft) rows.appendChild(timingRow("Time to first token", entry.ttft));
     if (entry.model_wait) rows.appendChild(timingRow("Model wait (load/switch included)", entry.model_wait));
     if (entry.generation_tok_s) rows.appendChild(timingRow("Generation speed", entry.generation_tok_s, " tok/s"));
+    const trend = historyRow(name);
+    if (trend) rows.appendChild(trend);
     block.appendChild(rows);
     card.appendChild(block);
   }
@@ -771,8 +813,19 @@ function renderMeasurements(metrics) {
 
 async function fetchMeasurements() {
   try {
-    const response = await fetch("/admin/metrics", { headers: authHeaders() });
+    const [response, history] = await Promise.all([
+      fetch("/admin/metrics", { headers: authHeaders() }),
+      fetch("/admin/metrics/history?metric=generation_tok_s&days=30", { headers: authHeaders() }).catch(() => null),
+    ]);
     if (!response.ok) throw new Error(`status ${response.status}`);
+    if (history && history.ok) {
+      const grouped = new Map();
+      for (const point of (await history.json()).points || []) {
+        if (!grouped.has(point.model)) grouped.set(point.model, []);
+        grouped.get(point.model).push(point);
+      }
+      generationHistory = grouped;
+    }
     renderMeasurements(await response.json());
   } catch (_) {
     // Measurements are best-effort; keep whatever was rendered.

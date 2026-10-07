@@ -49,6 +49,8 @@ from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
+from arc_llama.perf_history import METRICS as PERF_METRICS
+from arc_llama.perf_history import PerfHistory
 from arc_llama.plugin_api import PLUGIN_API_VERSION, _event_bus
 from arc_llama.plugins import (
     PluginDiscovery,
@@ -241,6 +243,11 @@ def create_app(
         # it from app.state in their startup hooks.
         app.state.resources = ResourceLeaseManager(app.state.router)
         app.state.router.events = _event_bus(app)
+        history = PerfHistory.for_state_dir(state_dir) if state_dir else None
+        app.state.perf_history = history
+        router_timings = getattr(app.state.router, "timings", None)
+        if history is not None and router_timings is not None:
+            router_timings.history = history
         pending_confirmations: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
@@ -276,6 +283,8 @@ def create_app(
         finally:
             if app.state.api_keys is not None:
                 app.state.api_keys.flush()
+            if app.state.perf_history is not None:
+                app.state.perf_history.flush()
             await shutdown_plugins(app_plugins, app)
             if tuner is not None:
                 await tuner.stop()
@@ -470,6 +479,23 @@ def create_app(
                 for g in c.gpus
             ],
         }
+
+    @app.get("/admin/metrics/history")
+    async def admin_metrics_history(
+        request: Request,
+        model: str | None = None,
+        metric: str | None = None,
+        days: float = Query(30, gt=0, le=90),
+        _auth: None = Depends(_require_admin),
+    ) -> dict[str, Any]:
+        """Hourly medians of real-traffic measurements, for trend charts."""
+        history: PerfHistory | None = getattr(request.app.state, "perf_history", None)
+        if metric is not None and metric not in PERF_METRICS:
+            raise HTTPException(
+                status_code=400, detail=f"metric must be one of {list(PERF_METRICS)}"
+            )
+        points = history.query(model, metric, days) if history is not None else []
+        return {"bucket_seconds": 3600, "points": points}
 
     @app.get("/v1/models")
     async def list_models(request: Request) -> dict:
@@ -1567,6 +1593,7 @@ def create_app(
             if v is None or v == []:
                 recipe.pop("tensor_split", None)
                 recipe.pop("split_mode", None)
+                recipe.pop("split_gpus", None)
             else:
                 if (
                     not isinstance(v, list)
@@ -1583,6 +1610,25 @@ def create_app(
                     )
                 recipe["tensor_split"] = [float(x) for x in v]
             changed.append("tensor_split")
+        if "split_gpus" in body:
+            v = body["split_gpus"]
+            if v is None or v == []:
+                recipe.pop("split_gpus", None)
+            else:
+                known = {g.pci_slot for g in c.gpus}
+                if (
+                    not isinstance(v, list)
+                    or not all(isinstance(x, str) and x in known for x in v)
+                    or len(set(v)) != len(v)
+                    or model.gpu_pci_slot not in v
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="split_gpus must list distinct configured GPU slots, "
+                        "including the model's own GPU",
+                    )
+                recipe["split_gpus"] = list(v)
+            changed.append("split_gpus")
         if "split_mode" in body:
             from arc_llama.recipes import SPLIT_MODES
 

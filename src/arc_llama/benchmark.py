@@ -654,6 +654,131 @@ def _fmt_vram(used_mb: int | None, total_mb: int | None) -> str:
     return f"{used_mb / 1024:.1f} GB / {total_mb / 1024:.1f} GB  ({pct}%)"
 
 
+# ------------------------------------------------------------------
+# Generation at context depth
+# ------------------------------------------------------------------
+
+DEFAULT_DEPTHS = (0, 4096, 16384, 32768)
+
+
+@dataclass
+class DepthResult:
+    """Decode speed after a prefill of ``depth`` tokens."""
+
+    depth: int
+    measured_depth: int | None = None
+    prompt_eval_tok_s: float | None = None
+    generation_tok_s: float | None = None
+    generated_tokens: int | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def usable_depths(depths: list[int], ctx: int | None, gen_tokens: int) -> tuple[list[int], list[int]]:
+    """Split requested depths into (runnable, skipped) for a model's context.
+
+    A depth is runnable when the prefill plus the generated tokens plus a
+    small template allowance still fits in ``ctx``.
+    """
+    if not ctx:
+        return sorted(set(depths)), []
+    limit = ctx - gen_tokens - 64
+    keep = sorted({d for d in depths if 0 <= d <= limit})
+    skipped = sorted({d for d in depths if d > limit})
+    return keep, skipped
+
+
+async def benchmark_depths(
+    server_url: str,
+    model_name: str,
+    depths: list[int],
+    *,
+    gen_tokens: int = DEFAULT_GEN_TOKENS,
+    client: httpx.AsyncClient | None = None,
+) -> list[DepthResult]:
+    """Measure generation speed after prefilling ``depth`` tokens.
+
+    The default benchmark decodes after a one-word prompt, which flatters
+    every model: attention cost grows with the context already in the KV
+    cache, so real chats and agent loops slow down as they get longer. Each
+    depth runs one uncached prefill followed by ``gen_tokens`` forced
+    tokens and reports llama-server's own prompt and decode rates.
+    """
+    own = client is None
+    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0)
+    results: list[DepthResult] = []
+    try:
+        await _warmup(http, model_name)
+        for depth in depths:
+            row = DepthResult(depth=depth)
+            prompt = _build_prompt(depth) if depth > 0 else "Hello"
+            try:
+                wall, obj = await _complete(
+                    http,
+                    model_name,
+                    prompt,
+                    max_tokens=gen_tokens,
+                    ignore_eos=True,
+                    cache_prompt=False,
+                    is_chat=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - report per depth, keep going
+                row.error = str(exc)[:200]
+                results.append(row)
+                continue
+            timings = obj.get("timings") or {}
+            row.measured_depth = _measured_tokens(obj, "prompt_n", "prompt_tokens", depth)
+            row.generated_tokens = _measured_tokens(
+                obj, "predicted_n", "completion_tokens", gen_tokens
+            )
+            if timings.get("prompt_per_second"):
+                row.prompt_eval_tok_s = float(timings["prompt_per_second"])
+            if timings.get("predicted_per_second"):
+                row.generation_tok_s = float(timings["predicted_per_second"])
+            elif wall > 0 and row.generated_tokens:
+                # Without engine timings the wall clock includes the prefill,
+                # so this understates decode speed; flagged in the table.
+                row.generation_tok_s = row.generated_tokens / wall
+            results.append(row)
+    finally:
+        if own:
+            await http.aclose()
+    return results
+
+
+def print_depth_table(model: str, results: list[DepthResult], skipped: list[int]) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    table = Table(title=f"Generation at context depth: {model}")
+    table.add_column("Depth", justify="right")
+    table.add_column("Prefill tok/s", justify="right")
+    table.add_column("Decode tok/s", justify="right")
+    table.add_column("vs. empty", justify="right")
+    base = next((r.generation_tok_s for r in results if r.generation_tok_s and not r.error), None)
+    for r in results:
+        if r.error:
+            table.add_row(f"{r.depth:,}", "-", "-", f"[red]{r.error}[/red]")
+            continue
+        ratio = (
+            f"{r.generation_tok_s / base * 100:.0f}%" if base and r.generation_tok_s else "-"
+        )
+        table.add_row(
+            f"{r.measured_depth or r.depth:,}",
+            _fmt_speed(r.prompt_eval_tok_s),
+            _fmt_speed(r.generation_tok_s),
+            ratio,
+        )
+    console.print(table)
+    if skipped:
+        console.print(
+            f"[dim]Skipped depths beyond the model's context: {', '.join(map(str, skipped))}[/dim]"
+        )
+
+
 def print_result(result: BenchmarkResult) -> None:
     """Pretty-print a single BenchmarkResult to the console."""
     from rich.console import Console

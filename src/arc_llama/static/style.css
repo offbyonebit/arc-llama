@@ -228,3 +228,6 @@ footer.error .status-dot { background: var(--red); }
   .header-actions { justify-content: flex-end; }
   .flow-section { padding-block: 26px; }
 }
+
+.measure-trend { align-items: center; }
+.measure-sparkline { color: var(--accent, currentColor); flex: 0 0 auto; max-width: 40vw; }

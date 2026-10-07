@@ -33,7 +33,7 @@ from arc_llama.gguf_meta import (
     scan_weight_tensors,
     weight_tensor_table,
 )
-from arc_llama.launcher import LlamaServer, build_plan
+from arc_llama.launcher import LlamaServer, build_plan, resolve_split_gpus
 from arc_llama.preflight import preflight_launch
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
@@ -104,6 +104,9 @@ class ModelTimings:
         self.queue: list[float] = []
         self.model_wait: dict[str, list[float]] = {}
         self._cap = cap
+        # Optional perf_history.PerfHistory; the server attaches one so the
+        # same real samples also build a long-term record.
+        self.history: Any = None
 
     def _append(self, store: dict[str, list[float]], name: str, value: float) -> None:
         if not math.isfinite(value) or value < 0:
@@ -120,9 +123,13 @@ class ModelTimings:
 
     def record_ttft(self, name: str, seconds: float) -> None:
         self._append(self.ttft, name, seconds)
+        if self.history is not None:
+            self.history.add(name, "ttft_s", seconds)
 
     def record_generation_tok_s(self, name: str, tok_per_s: float) -> None:
         self._append(self.generation_tok_s, name, tok_per_s)
+        if self.history is not None:
+            self.history.add(name, "generation_tok_s", tok_per_s)
 
     def record_queue_wait(self, seconds: float, name: str | None = None) -> None:
         if name is not None:
@@ -842,6 +849,12 @@ class Router:
         """
         if not target_gpu.vram_mb:
             return
+        capacity_mb = target_gpu.vram_mb
+        split = resolve_split_gpus(self.cfg, target)
+        if split:
+            # Weights and KV spread across every split GPU; admission is
+            # against their combined memory.
+            capacity_mb = sum(g.vram_mb or 0 for g in split)
         target_mb = _estimate_model_vram_mb(target)
         if target_mb is None:
             # Expert offload is in force but its bytes cannot be accounted.
@@ -872,10 +885,10 @@ class Router:
                 )
                 continue
             used_mb += other_mb
-        if used_mb > target_gpu.vram_mb:
+        if used_mb > capacity_mb:
             message = (
                 f"model {target.name!r} needs ~{target_mb} MiB on GPU "
-                f"{target_gpu.pci_slot} but only {target_gpu.vram_mb} MiB is available "
+                f"{target_gpu.pci_slot} but only {capacity_mb} MiB is available "
                 f"(estimated total with co-residents: {used_mb} MiB)"
             )
             raise StartupFailureError(
@@ -887,7 +900,7 @@ class Router:
                     "gpu": target_gpu.pci_slot,
                     "estimated_model_mb": target_mb,
                     "estimated_total_mb": used_mb,
-                    "available_mb": target_gpu.vram_mb,
+                    "available_mb": capacity_mb,
                 },
             )
 

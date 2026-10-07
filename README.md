@@ -134,6 +134,7 @@ arc-llama serve
 # 7. Drop a GGUF and use it once — auto-tune fires after the idle window,
 #    or tune manually now:
 arc-llama benchmark <model>
+arc-llama benchmark <model> --depths default   # decode speed at 0/4k/16k/32k context
 arc-llama tune <model>
 arc-llama tune --status            # print per-model tune state, no sweep
 arc-llama serve --no-auto-tune     # disable the background sweeps

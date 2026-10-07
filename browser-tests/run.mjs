@@ -614,6 +614,26 @@ async function testImagesNeedVisionModel({ page, origin }) {
   }
 }
 
+async function testDashboardGenerationTrend({ page, origin }) {
+  const now = 1_760_000_000;
+  await page.route("**/admin/metrics/history**", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      bucket_seconds: 3600,
+      points: [
+        { t: now - 7200, model: "qwen", metric: "generation_tok_s", median: 26.0, n: 4 },
+        { t: now - 3600, model: "qwen", metric: "generation_tok_s", median: 21.5, n: 3 },
+        { t: now, model: "qwen", metric: "generation_tok_s", median: 24.8, n: 2, partial: true },
+      ],
+    }),
+  }));
+  await page.goto(origin);
+  await page.waitForSelector("#measurements .measure-sparkline polyline");
+  const text = await page.locator("#measurements .measure-trend").innerText();
+  if (!text.includes("3 hours") || !text.includes("now 24.8 tok/s")) throw new Error(`unexpected trend row: ${text}`);
+}
+
 const TESTS = [
   ["chat-selection", testChatSelection],
   ["chat-send", testChatSend],
@@ -625,6 +645,7 @@ const TESTS = [
   ["dashboard-measurements", testDashboardMeasurements],
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
   ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
+  ["dashboard-generation-trend", testDashboardGenerationTrend],
   ["regenerate-and-edit", testRegenerateAndEdit],
   ["stop-keeps-partial-answer", testStopKeepsPartialAnswer],
   ["budget-before-sending", testBudgetShownBeforeSending],

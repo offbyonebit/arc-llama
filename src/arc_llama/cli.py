@@ -2153,6 +2153,12 @@ def _server_url_from(ctx: click.Context, server_url: str | None) -> str:
     type=click.Choice(["f16", "q8_0", "q5_1", "q4_0"]),
     help="KV cache type(s) for --sweep-ctx (repeatable; default: f16 q8_0).",
 )
+@click.option(
+    "--depths",
+    default=None,
+    help="Measure decode speed after these prefill sizes instead "
+    "(e.g. 0,4096,16384,32768). Use 'default' for that set.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit raw JSON instead of tables.")
 @click.pass_context
 def benchmark_cmd(
@@ -2164,6 +2170,7 @@ def benchmark_cmd(
     sweep_ctx: str,
     sweep_kv: str,
     kv_types: tuple[str, ...],
+    depths: str | None,
     as_json: bool,
 ) -> None:
     """Measure prompt-eval and generation tok/s for MODEL.
@@ -2185,7 +2192,35 @@ def benchmark_cmd(
     model_cfg = cfg.find_model(model)
     assert model_cfg is not None
 
+    depth_values: list[int] = []
+    if depths:
+        if depths.strip() == "default":
+            depth_values = list(benchmark_mod.DEFAULT_DEPTHS)
+        else:
+            try:
+                depth_values = [int(x) for x in depths.split(",") if x.strip()]
+            except ValueError as exc:
+                raise click.BadParameter("use comma-separated integers", param_hint="--depths") from exc
+        if not depth_values or min(depth_values) < 0:
+            raise click.BadParameter("depths must be non-negative", param_hint="--depths")
+
     async def _run() -> int:
+        if depth_values:
+            ctx_size = (model_cfg.recipe or {}).get("ctx")
+            runnable, skipped = benchmark_mod.usable_depths(depth_values, ctx_size, gen_tokens)
+            if not runnable:
+                console.print(f"[red]No depth fits in {model}'s context ({ctx_size}).[/red]")
+                return 1
+            rows = await benchmark_mod.benchmark_depths(url, model, runnable, gen_tokens=gen_tokens)
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {"results": [r.to_dict() for r in rows], "skipped": skipped}, indent=2
+                    )
+                )
+            else:
+                benchmark_mod.print_depth_table(model, rows, skipped)
+            return 1 if all(r.error for r in rows) else 0
         if ctx_values or kv_values:
             recipe = model_cfg.recipe or {}
             results = await benchmark_mod.benchmark_sweep(
@@ -2784,7 +2819,11 @@ def install_runtime_cmd(ctx, backend, runtime_version, dest, set_default, force)
 @click.option("--dry-run", is_flag=True, help="Show safe candidates without changing config.")
 @click.option("--off", "turn_off", is_flag=True, help="Disable speculative decoding.")
 @click.option(
-    "--auto", "auto_select", is_flag=True, help="Choose the safest registered draft candidate."
+    "--auto",
+    "auto_select",
+    is_flag=True,
+    help="Pick a draft automatically; with --verify, measure every fitting draft "
+    "and n-gram, then keep the fastest.",
 )
 @click.option("--draft", "draft_name", default=None, help="Registered model name to use as draft.")
 @click.option(
@@ -2870,49 +2909,60 @@ def speculative_cmd(
         console.print(f"[green]Disabled speculation for {target.name}.[/green]")
         return
 
-    proposed: dict[str, Any]
-    description: str
+    # Each proposal is (recipe edits, description). --auto with --verify
+    # measures every fitting draft (the three smallest) and n-gram when the
+    # binary has it, against one target-only baseline, and keeps the winner.
+    proposals: list[tuple[dict[str, Any], str]] = []
+
+    def draft_proposal(name: str) -> tuple[dict[str, Any], str]:
+        return (
+            {"spec_type": "draft-simple", "spec_draft_name": name, "spec_draft_n_max": draft_tokens},
+            f"draft {name}/{draft_tokens}",
+        )
+
+    ngram_proposal: tuple[dict[str, Any], str] = (
+        {"spec_type": "ngram-simple", "spec_draft_name": None, "spec_draft_n_max": draft_tokens},
+        f"n-gram/{draft_tokens}",
+    )
     if use_ngram:
         if not caps.supports_ngram:
             raise click.ClickException(
                 "installed llama-server does not advertise n-gram speculation"
             )
-        proposed = {
-            "spec_type": "ngram-simple",
-            "spec_draft_name": None,
-            "spec_draft_n_max": draft_tokens,
-        }
-        description = f"n-gram/{draft_tokens}"
-    else:
-        candidate = (
-            next((c for c in candidates if c.name == draft_name and c.fits), None)
-            if draft_name
-            else next((c for c in candidates if c.fits), None)
-        )
+        proposals.append(ngram_proposal)
+    elif draft_name:
+        candidate = next((c for c in candidates if c.name == draft_name and c.fits), None)
         if candidate is None:
-            raise click.ClickException(
-                "no fitting registered draft candidate; add a smaller same-family model or use --ngram"
-            )
+            raise click.ClickException(f"{draft_name!r} is not a fitting draft for {target.name}")
         if not caps.supports_draft_model:
             raise click.ClickException(
                 "installed llama-server does not advertise --spec-draft-model"
             )
-        proposed = {
-            "spec_type": "draft-simple",
-            "spec_draft_name": candidate.name,
-            "spec_draft_n_max": draft_tokens,
-        }
-        description = f"draft {candidate.name}/{draft_tokens}"
+        proposals.append(draft_proposal(candidate.name))
+    else:
+        fitting = [c for c in candidates if c.fits] if caps.supports_draft_model else []
+        for c in fitting[: 3 if verify else 1]:
+            proposals.append(draft_proposal(c.name))
+        if verify and caps.supports_ngram:
+            proposals.append(ngram_proposal)
+        if not proposals:
+            raise click.ClickException(
+                "no fitting registered draft candidate; add a smaller same-family model or use --ngram"
+            )
 
-    if not verify:
+    def save_choice(proposed: dict[str, Any], result: str) -> None:
         for key, value in proposed.items():
             if value is None:
                 recipe.pop(key, None)
             else:
                 recipe[key] = value
         recipe.pop("spec_draft_model", None)
-        recipe["speculation_result"] = f"{description} selected without A/B verification"
+        recipe["speculation_result"] = result
         _save_or_die(cfg, cfg_path)
+
+    if not verify:
+        proposed, description = proposals[0]
+        save_choice(proposed, f"{description} selected without A/B verification")
         console.print(f"[green]Saved speculation recipe for {target.name}.[/green]")
         return
 
@@ -2934,49 +2984,53 @@ def speculative_cmd(
         "speculation_result": None,
     }
 
-    async def _verify() -> tuple[bool, float | None, str | None]:
-        accepted = False
+    async def _measure() -> Any:
+        return await benchmark_mod.benchmark_model(
+            url,
+            target.name,
+            prompt_tokens=cfg.tune.prompt_tokens,
+            gen_tokens=cfg.tune.gen_tokens,
+            cfg=cfg,
+        )
+
+    async def _verify() -> tuple[int | None, list[tuple[str, float | None, str | None]]]:
+        """Return (index of the winning proposal or None, per-proposal outcomes)."""
+        outcomes: list[tuple[str, float | None, str | None]] = []
+        winner: int | None = None
         changed = False
         async with httpx.AsyncClient(base_url=url, timeout=600.0, headers=headers) as client:
             try:
                 error = await _apply_edits(client, target.name, target_only)
                 if error:
-                    return False, None, error
+                    return None, [("target-only", None, error)]
                 changed = True
-                baseline = await benchmark_mod.benchmark_model(
-                    url,
-                    target.name,
-                    prompt_tokens=cfg.tune.prompt_tokens,
-                    gen_tokens=cfg.tune.gen_tokens,
-                    cfg=cfg,
-                )
+                baseline = await _measure()
                 if baseline.error:
-                    return False, None, f"target-only benchmark failed: {baseline.error}"
-                error = await _apply_edits(client, target.name, proposed)
-                if error:
-                    return False, None, error
-                candidate_result = await benchmark_mod.benchmark_model(
-                    url,
-                    target.name,
-                    prompt_tokens=cfg.tune.prompt_tokens,
-                    gen_tokens=cfg.tune.gen_tokens,
-                    cfg=cfg,
-                )
-                if candidate_result.error:
-                    return False, None, f"speculation benchmark failed: {candidate_result.error}"
-                gain = benchmark_improvement(baseline, candidate_result, target="generation")
-                if gain is None:
-                    return False, None, "could not score speculative benchmark"
-                accepted = gain >= min_speedup
-                if not accepted:
-                    return (
-                        False,
-                        gain,
-                        f"generation improved {gain:.1%}; required {min_speedup:.1%}",
-                    )
-                return True, gain, None
+                    return None, [("target-only", None, f"benchmark failed: {baseline.error}")]
+                best_gain: float | None = None
+                for index, (proposed, description) in enumerate(proposals):
+                    error = await _apply_edits(client, target.name, proposed)
+                    if error:
+                        outcomes.append((description, None, error))
+                        continue
+                    result = await _measure()
+                    if result.error:
+                        outcomes.append((description, None, f"benchmark failed: {result.error}"))
+                        continue
+                    gain = benchmark_improvement(baseline, result, target="generation")
+                    outcomes.append((description, gain, None if gain is not None else "unscored"))
+                    if gain is not None and gain >= min_speedup and (
+                        best_gain is None or gain > best_gain
+                    ):
+                        winner, best_gain = index, gain
+                if winner is not None and winner != len(proposals) - 1:
+                    # The server holds the last proposal tried; switch to the winner.
+                    error = await _apply_edits(client, target.name, proposals[winner][0])
+                    if error:
+                        raise RuntimeError(f"could not apply the winning speculation: {error}")
+                return winner, outcomes
             finally:
-                if changed and not accepted:
+                if changed and winner is None:
                     restore_error = await _restore_final_state(
                         client, target.name, restore, cfg=None
                     )
@@ -2986,24 +3040,29 @@ def speculative_cmd(
                         )
 
     try:
-        accepted, gain, failure = asyncio.run(_verify())
+        winner, outcomes = asyncio.run(_verify())
     except KeyboardInterrupt:
         raise click.ClickException("speculation verification interrupted") from None
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
-    if not accepted:
-        raise click.ClickException(f"{failure}; original speculation recipe restored")
-
-    for key, value in proposed.items():
-        if value is None:
-            recipe.pop(key, None)
-        else:
-            recipe[key] = value
-    recipe.pop("spec_draft_model", None)
-    recipe["speculation_result"] = f"{description} verified at {gain:.1%} generation speedup"
-    _save_or_die(cfg, cfg_path)
+    for description, gain, problem in outcomes:
+        shown = f"{gain:+.1%}" if gain is not None else problem
+        console.print(f"  {description:<28} {shown}")
+    if winner is None:
+        best = max((g for _, g, _ in outcomes if g is not None), default=None)
+        detail = (
+            f"best generation change {best:+.1%}; required {min_speedup:.1%}"
+            if best is not None
+            else (outcomes[0][2] if outcomes else "no proposal could be measured")
+        )
+        raise click.ClickException(f"{detail}; original speculation recipe restored")
+    proposed, description = proposals[winner]
+    gain = next(g for d, g, _ in outcomes if d == description)
+    assert gain is not None
+    save_choice(proposed, f"{description} verified at {gain:.1%} generation speedup")
     console.print(
-        f"[green]Saved verified speculation for {target.name}: {gain:.1%} faster generation.[/green]"
+        f"[green]Saved verified speculation for {target.name}: {description}, "
+        f"{gain:.1%} faster generation.[/green]"
     )
 
 
