@@ -1849,6 +1849,13 @@ def setup_cmd(
     default=None,
     help="Enable background auto-tuning (default: from config tune.auto).",
 )
+@click.option(
+    "--lan",
+    is_flag=True,
+    help="Serve on every network interface. Remote clients need an API key; "
+    "one is created if none exists.",
+)
+@click.option("--yes", "assume_yes", is_flag=True, help="Skip the --lan confirmation.")
 @click.pass_context
 def serve(
     ctx: click.Context,
@@ -1858,9 +1865,15 @@ def serve(
     admin_token: str | None,
     scan: bool,
     auto_tune: bool | None,
+    lan: bool,
+    assume_yes: bool,
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
+    if lan:
+        if host and host not in ("0.0.0.0", "::"):
+            raise click.UsageError("--lan binds every interface; drop --host or use --host alone.")
+        host = "0.0.0.0"
     if host:
         cfg.server.host = host
     if port:
@@ -1888,6 +1901,9 @@ def serve(
                 f"[green]Auto-registered {len(added)} new model(s):[/green] "
                 + ", ".join(m.name for m in added)
             )
+
+    if lan:
+        _prepare_lan(cfg, port or cfg.server.port, assume_yes)
 
     _print_autotune_banner(cfg)
     if not cfg.models:
@@ -1958,6 +1974,128 @@ def serve(
             pass
 
     uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
+
+
+def _lan_addresses() -> list[str]:
+    """Best-guess LAN IPv4 addresses (no packets are sent)."""
+    import socket
+
+    found: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 9))  # TEST-NET-1: routing lookup only
+            found.append(sock.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = str(info[4][0])
+            if not addr.startswith("127.") and addr not in found:
+                found.append(addr)
+    except OSError:
+        pass
+    return found
+
+
+def _prepare_lan(cfg: Config, port: int, assume_yes: bool) -> None:
+    """Confirm network exposure and make sure remote clients need a key."""
+    from arc_llama.api_keys import ApiKeyStore
+
+    console.print(
+        "[bold yellow]LAN mode:[/bold yellow] the API and web UI will be reachable "
+        "from other devices on your network."
+    )
+    if not assume_yes and not click.confirm("Expose arc-llama to your network?", default=False):
+        raise click.Abort()
+    store = ApiKeyStore.for_state_dir(cfg.paths.state_dir)
+    if not store:
+        _key, plaintext = store.create("lan")
+        console.print(
+            "  Created API key [bold]lan[/bold] (shown once, store it now):\n"
+            f"    [cyan]{plaintext}[/cyan]"
+        )
+    else:
+        console.print(f"  {len(store)} API key(s) active; manage them with arc-llama keys.")
+    for addr in _lan_addresses():
+        console.print(f"  From other devices: [cyan]http://{addr}:{port}/chat[/cyan]")
+    console.print(
+        "  [dim]Remote clients send 'Authorization: Bearer <key>'; this machine "
+        "needs no key.[/dim]"
+    )
+
+
+# ===========================================================================
+# keys
+# ===========================================================================
+
+
+@cli.group("keys")
+def keys_group() -> None:
+    """Manage API keys for remote clients."""
+
+
+def _key_store(ctx: click.Context):
+    from arc_llama.api_keys import ApiKeyStore
+
+    cfg = load_config(ctx.obj["config_path"])
+    return ApiKeyStore.for_state_dir(cfg.paths.state_dir)
+
+
+@keys_group.command("create")
+@click.argument("name")
+@click.pass_context
+def keys_create(ctx: click.Context, name: str) -> None:
+    """Create a key. It is printed once and only its hash is stored."""
+    try:
+        key, plaintext = _key_store(ctx).create(name)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="NAME") from exc
+    console.print(f"[green]Created key {key.name!r}[/green] (id {key.id}). Store it now:")
+    click.echo(plaintext)
+    console.print(
+        "[dim]Remote clients must now send it as 'Authorization: Bearer <key>'. "
+        "A running server picks it up after restart.[/dim]"
+    )
+
+
+@keys_group.command("list")
+@click.pass_context
+def keys_list(ctx: click.Context) -> None:
+    """List keys with their usage."""
+    import datetime as _dt
+
+    keys = _key_store(ctx).list()
+    if not keys:
+        console.print("[dim]No API keys. Remote access is open until you create one.[/dim]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    for column in ("id", "name", "created", "last used", "requests"):
+        table.add_column(column)
+
+    def when(value: object) -> str:
+        if not isinstance(value, (int, float)):
+            return "never"
+        return _dt.datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+
+    for key in keys:
+        table.add_row(
+            str(key["id"]),
+            str(key["name"]),
+            when(key["created_at"]),
+            when(key["last_used_at"]),
+            str(key["requests"]),
+        )
+    console.print(table)
+
+
+@keys_group.command("revoke")
+@click.argument("key_id")
+@click.pass_context
+def keys_revoke(ctx: click.Context, key_id: str) -> None:
+    """Revoke a key by id."""
+    if not _key_store(ctx).revoke(key_id):
+        raise click.ClickException(f"No key with id {key_id!r}.")
+    console.print(f"[green]Revoked {key_id}.[/green]")
 
 
 # ===========================================================================

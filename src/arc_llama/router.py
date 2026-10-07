@@ -39,6 +39,11 @@ from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
 log = logging.getLogger("arc_llama.router")
 
+BACKEND_HOST = "127.0.0.1"
+"""Where llama-server backends listen. Always loopback: arc-llama is the only
+client, and binding them to ``server.host`` exposed every backend port,
+unauthenticated, whenever the router itself was bound to the network."""
+
 # Rough overhead budgets for VRAM estimation (MiB).
 _VRAM_COMPUTE_BUFFER_MB = 768
 _VRAM_SAFETY_MARGIN_MB = 256
@@ -522,7 +527,7 @@ class Router:
                     m.gpu_pci_slot,
                 )
                 continue
-            plan = build_plan(self.cfg, m, gpu, host=self.cfg.server.host)
+            plan = build_plan(self.cfg, m, gpu, host=BACKEND_HOST)
             self._servers[m.name] = LlamaServer(plan, name=m.name)
 
     # ------------------------------------------------------------------
@@ -1103,7 +1108,7 @@ class Router:
             gpu = self.cfg.find_gpu(cfg_model.gpu_pci_slot)
             if gpu is None:
                 return False, was_running
-            plan = build_plan(self.cfg, cfg_model, gpu, host=self.cfg.server.host)
+            plan = build_plan(self.cfg, cfg_model, gpu, host=BACKEND_HOST)
             self._servers[name] = LlamaServer(plan, name=name)
             return True, was_running
 

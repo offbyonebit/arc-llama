@@ -44,6 +44,7 @@ from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
+from arc_llama.api_keys import ApiKeyStore
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
@@ -175,6 +176,36 @@ async def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
+_CLIENT_PROTECTED_PREFIXES = ("/v1/", "/api/")
+
+
+def _bearer(request: Request) -> str:
+    scheme, _, provided = request.headers.get("Authorization", "").partition(" ")
+    return provided.strip() if scheme.lower() == "bearer" else ""
+
+
+def client_allowed(request: Request) -> bool:
+    """Whether a caller may use the inference API (``/v1/*``, ``/api/*``).
+
+    Loopback callers always may. Remote callers may while no API key exists
+    (the behaviour before keys were introduced) and afterwards only with a
+    valid key or the admin token.
+    """
+    peer = request.client.host if request.client else ""
+    if peer in _LOOPBACK_HOSTS:
+        return True
+    store: ApiKeyStore | None = getattr(request.app.state, "api_keys", None)
+    if store is None or not store:
+        return True
+    provided = _bearer(request)
+    if not provided:
+        return False
+    token = request.app.state.cfg.server.admin_token
+    if token and secrets.compare_digest(provided, token):
+        return True
+    return store.verify(provided) is not None
+
+
 def create_app(
     cfg: Config | None = None,
     config_path: Path | None = None,
@@ -243,6 +274,8 @@ def create_app(
             await startup_plugins(app_plugins, app)
             yield
         finally:
+            if app.state.api_keys is not None:
+                app.state.api_keys.flush()
             await shutdown_plugins(app_plugins, app)
             if tuner is not None:
                 await tuner.stop()
@@ -258,6 +291,68 @@ def create_app(
     # now, before the lifespan starts; /admin/plugins reads it later.
     app.state.plugin_status = {}
     register_plugins(app, app_plugins)
+
+    app.state.cfg = cfg
+    app.state.api_keys = (
+        ApiKeyStore.for_state_dir(cfg.paths.state_dir) if cfg.paths.state_dir else None
+    )
+
+    @app.middleware("http")
+    async def require_client_key(request: Request, call_next):
+        if request.url.path.startswith(_CLIENT_PROTECTED_PREFIXES) and not client_allowed(
+            request
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "message": (
+                            "An API key is required for remote access. Send "
+                            "'Authorization: Bearer <key>'; create one with "
+                            "'arc-llama keys create NAME'."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                    }
+                },
+            )
+        return await call_next(request)
+
+    @app.get("/admin/api-keys")
+    async def list_api_keys(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        store: ApiKeyStore | None = request.app.state.api_keys
+        return {"keys": store.list() if store is not None else []}
+
+    @app.post("/admin/api-keys")
+    async def create_api_key(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        store: ApiKeyStore | None = request.app.state.api_keys
+        if store is None:
+            raise HTTPException(status_code=503, detail="No state directory for API keys")
+        try:
+            body = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+        name = body.get("name") if isinstance(body, dict) else None
+        if not isinstance(name, str):
+            raise HTTPException(status_code=400, detail="name must be a string")
+        try:
+            key, plaintext = store.create(name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {**key.public(), "key": plaintext}
+
+    @app.delete("/admin/api-keys/{key_id}")
+    async def revoke_api_key(
+        key_id: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        store: ApiKeyStore | None = request.app.state.api_keys
+        if store is None or not store.revoke(key_id):
+            raise HTTPException(status_code=404, detail=f"Unknown API key: {key_id!r}")
+        return {"revoked": key_id}
 
     app.add_middleware(
         CORSMiddleware,

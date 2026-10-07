@@ -1685,3 +1685,13 @@ header > * { position: relative; z-index: 1; }
 @media (prefers-reduced-motion: reduce) {
   header, .brand-logo, header::after { animation: none; }
 }
+
+.api-key-dialog {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  color: inherit;
+  max-width: min(420px, calc(100vw - 32px));
+}
+.api-key-dialog label { display: grid; gap: 8px; margin-bottom: 12px; }
+.api-key-dialog input { font: inherit; padding: 8px; }

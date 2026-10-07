@@ -250,6 +250,84 @@ async function initAdminToken() {
 function authHeaders(extra = {}) {
   return adminToken ? { ...extra, Authorization: `Bearer ${adminToken}` } : extra;
 }
+
+// Remote (LAN) browsers cannot fetch the admin token, so the inference API
+// needs an API key there. Same-origin /v1 and /api calls get the admin token
+// or the stored key automatically; a 401 asks for a key once and retries.
+const API_KEY_STORAGE = "arc-llama-api-key";
+function storedApiKey() {
+  try { return localStorage.getItem(API_KEY_STORAGE) || null; } catch (_) { return null; }
+}
+function rememberApiKey(key) {
+  try { if (key) localStorage.setItem(API_KEY_STORAGE, key); else localStorage.removeItem(API_KEY_STORAGE); } catch (_) {}
+}
+function isClientApiPath(input) {
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  return url.startsWith("/v1/") || url.startsWith("/api/");
+}
+function withClientAuth(init = {}) {
+  const credential = adminToken || storedApiKey();
+  const headers = new Headers(init.headers || {});
+  if (credential && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${credential}`);
+  return { ...init, headers };
+}
+// A small modal; the UI never uses blocking browser dialogs.
+function askForApiKey() {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "api-key-dialog";
+    const form = document.createElement("form");
+    form.method = "dialog";
+    const label = document.createElement("label");
+    label.textContent = "This server needs an API key for remote access.";
+    const field = document.createElement("input");
+    field.type = "password";
+    field.autocomplete = "off";
+    field.placeholder = "arc_...";
+    label.appendChild(field);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.value = "save";
+    save.textContent = "Use key";
+    const cancel = document.createElement("button");
+    cancel.type = "submit";
+    cancel.value = "cancel";
+    cancel.className = "ghost";
+    cancel.textContent = "Cancel";
+    form.append(label, save, cancel);
+    dialog.appendChild(form);
+    document.body.appendChild(dialog);
+    dialog.addEventListener("close", () => {
+      const value = dialog.returnValue === "save" ? field.value.trim() : "";
+      dialog.remove();
+      resolve(value || null);
+    });
+    dialog.showModal();
+    field.focus();
+  });
+}
+
+// Called once from init(): wraps fetch so every existing /v1 call site gets
+// credentials without being rewritten.
+function installClientAuth() {
+  const nativeFetch = window.fetch.bind(window);
+  let apiKeyPrompted = false;
+  window.fetch = async (input, init = {}) => {
+    if (!isClientApiPath(input)) return nativeFetch(input, init);
+    const response = await nativeFetch(input, withClientAuth(init));
+    if (response.status !== 401 || adminToken || apiKeyPrompted) return response;
+    apiKeyPrompted = true;
+    const key = await askForApiKey();
+    if (!key) return response;
+    rememberApiKey(key.trim());
+    const retry = await nativeFetch(input, withClientAuth(init));
+    if (retry.status === 401) {
+      rememberApiKey(null);
+      apiKeyPrompted = false;
+    }
+    return retry;
+  };
+}
 let lastUsage = null;
 let streamStartTime = null;
 let streamTokenCount = 0;
@@ -2023,6 +2101,7 @@ function restoreDraft() {
 
 (async function init() {
   await initAdminToken();
+  installClientAuth();
   await loadPluginActions();
   await fetchModels();
   await fetchStatus();
