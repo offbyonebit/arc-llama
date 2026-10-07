@@ -497,6 +497,123 @@ async function testDashboardFitAndEmptyMeasurements({ page, origin }) {
   if (!empty.includes("No measurements yet") || empty.includes("24.8")) throw new Error("dashboard retained stale rates in empty state");
 }
 
+async function testRegenerateAndEdit({ page, origin }) {
+  const requests = [];
+  await page.route("**/v1/chat/completions", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "text/event-stream", body: ASSISTANT_REPLY });
+  });
+  await openChat(page, origin);
+  await page.fill("#message-input", "first question");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.assistant .turn-action");
+  await page.locator(".message.assistant .turn-action", { hasText: "Regenerate" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".message.assistant .turn-action").length === 1);
+  if (requests.length !== 2) throw new Error(`expected 2 completions, got ${requests.length}`);
+  const second = requests[1].messages;
+  if (second.length !== 1 || second[0].content !== "first question") throw new Error("regenerate resent the wrong transcript");
+  if (await page.locator(".message.assistant").count() !== 1) throw new Error("regenerate left the old reply visible");
+  await page.locator(".message.user .turn-action", { hasText: "Edit" }).click();
+  if (await page.inputValue("#message-input") !== "first question") throw new Error("edit did not restore the prompt");
+  if (await page.locator(".message.user, .message.assistant").count() !== 0) throw new Error("edit left the old turn visible");
+}
+
+async function testStopKeepsPartialAnswer({ page, origin }) {
+  // A stream that sends one chunk and then waits until it is aborted.
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.endsWith("/v1/chat/completions")) return realFetch(input, init);
+      const encoder = new TextEncoder();
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Partial answer"}}]}\n\n'));
+          init.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+    };
+  });
+  await openChat(page, origin);
+  await page.fill("#message-input", "tell me a long story");
+  await page.press("#message-input", "Enter");
+  await page.waitForFunction(() => document.querySelector(".message.assistant .content")?.textContent.includes("Partial answer"));
+  if (!(await page.getAttribute("#send-button", "class") || "").includes("stop")) throw new Error("send button did not become a stop button");
+  await page.click("#send-button");
+  await page.waitForSelector(".message.assistant.stopped .stopped-note");
+  const text = await page.textContent(".message.assistant .content");
+  if (!text.includes("Partial answer")) throw new Error("stopping discarded the partial answer");
+  if ((await page.getAttribute("#send-button", "class") || "").includes("stop")) throw new Error("stop mode did not reset");
+  if (await page.locator(".message.assistant .turn-action", { hasText: "Regenerate" }).count() !== 1) throw new Error("stopped reply has no Regenerate action");
+}
+
+async function testBudgetShownBeforeSending({ page, origin }) {
+  await openChat(page, origin);
+  await page.fill("#message-input", "x".repeat(40000));
+  await page.waitForFunction(() => document.getElementById("ctx-meter").classList.contains("over-budget"));
+  const label = await page.textContent("#ctx-label-left");
+  if (!label.startsWith("~") || !label.includes("8,192")) throw new Error(`unexpected budget label: ${label}`);
+  await page.fill("#message-input", "short");
+  await page.waitForFunction(() => !document.getElementById("ctx-meter").classList.contains("over-budget"));
+}
+
+async function testPresetShapesRequest({ page, origin }) {
+  await page.addInitScript(() => {
+    localStorage.setItem("arc-llama-presets", JSON.stringify({ qwen: { system: "Answer like a pirate.", temperature: 0.2 } }));
+  });
+  const requests = [];
+  await page.route("**/v1/chat/completions", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "text/event-stream", body: ASSISTANT_REPLY });
+  });
+  await openChat(page, origin);
+  await page.fill("#message-input", "ahoy");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.assistant .turn-action");
+  const body = requests[0];
+  if (body.messages[0].role !== "system" || body.messages[0].content !== "Answer like a pirate.") throw new Error("preset system prompt missing");
+  if (body.temperature !== 0.2) throw new Error(`preset temperature missing: ${body.temperature}`);
+  if (await page.locator(".message.system").count() !== 0) throw new Error("system prompt should not render as a message");
+}
+
+const PNG_1PX = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  "base64",
+);
+
+async function testImagesNeedVisionModel({ page, origin }) {
+  await openChat(page, origin);
+  await page.setInputFiles("#pdf-input", { name: "cat.png", mimeType: "image/png", buffer: PNG_1PX });
+  await page.waitForSelector(".attachment-chip.error");
+  await page.click(".attachment-chip .remove");
+
+  const requests = [];
+  await page.route("**/v1/models", route => {
+    const models = JSON.parse(JSON.stringify(MODELS));
+    models.data[0].metadata.capabilities = ["chat", "completion", "embedding", "vision"];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(models) });
+  });
+  await page.route("**/v1/chat/completions", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "text/event-stream", body: ASSISTANT_REPLY });
+  });
+  await openChat(page, origin);
+  await page.setInputFiles("#pdf-input", { name: "cat.png", mimeType: "image/png", buffer: PNG_1PX });
+  await page.waitForFunction(() => {
+    const chip = document.querySelector(".attachment-chip");
+    return chip && !chip.classList.contains("processing") && !chip.classList.contains("error");
+  });
+  await page.fill("#message-input", "what is this?");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.user .message-images img");
+  await page.waitForSelector(".message.assistant .turn-action");
+  const parts = requests[0].messages[0].content;
+  if (!Array.isArray(parts) || parts[1]?.type !== "image_url" || !parts[1].image_url.url.startsWith("data:image/png;base64,")) {
+    throw new Error("image was not sent as an image_url part");
+  }
+}
+
 const TESTS = [
   ["chat-selection", testChatSelection],
   ["chat-send", testChatSend],
@@ -508,6 +625,11 @@ const TESTS = [
   ["dashboard-measurements", testDashboardMeasurements],
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
   ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
+  ["regenerate-and-edit", testRegenerateAndEdit],
+  ["stop-keeps-partial-answer", testStopKeepsPartialAnswer],
+  ["budget-before-sending", testBudgetShownBeforeSending],
+  ["preset-shapes-request", testPresetShapesRequest],
+  ["images-need-vision-model", testImagesNeedVisionModel],
 ];
 
 // ---------------------------------------------------------------------------

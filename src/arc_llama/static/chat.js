@@ -333,6 +333,16 @@ let streamStartTime = null;
 let streamTokenCount = 0;
 const conversation = [];
 let attachments = [];
+// Abort handle for the generation in flight; the send button stops it.
+let activeAbort = null;
+// DOM of the latest exchange, for Regenerate / Edit.
+let lastUserDiv = null;
+let lastAssistantDiv = null;
+// Measured prompt size from the last reply: {tokens, length}. Context
+// estimates start from it and only approximate what was added since.
+let budgetBase = null;
+const PRESETS_KEY = "arc-llama-presets";
+const IMAGE_LIMIT_BYTES = 10 * 1024 * 1024;
 
 const ctxMeter   = $("#ctx-meter");
 const ctxBarFill = $("#ctx-bar-fill");
@@ -675,6 +685,9 @@ async function saveCurrentChat() {
 
 async function newChat() {
   conversation.length = 0;
+  budgetBase = null;
+  lastUserDiv = null;
+  lastAssistantDiv = null;
   currentChatId = null;
   chatLog.innerHTML = "";
   chatLog.appendChild(emptyState);
@@ -741,6 +754,9 @@ async function loadChat(id) {
   }
   if (!chat) return;
   conversation.length = 0;
+  budgetBase = null;
+  lastUserDiv = null;
+  lastAssistantDiv = null;
   if (Array.isArray(chat.messages)) {
     conversation.push(...chat.messages);
   }
@@ -930,7 +946,42 @@ async function importChatsFromFile() {
   }
 }
 
+// Per-model chat preset, stored in this browser only. Unlike the recipe
+// fields above it changes requests, not the model's launch, so it applies
+// immediately and also works for upstream models.
+function renderPresetPanel() {
+  const host = $("#s-preset");
+  if (!host || !selectedModel) return;
+  if (host.dataset.model === selectedModel && host.contains(document.activeElement)) return;
+  host.dataset.model = selectedModel;
+  const preset = presetFor(selectedModel);
+  host.innerHTML = `
+    <div class="s-title">Chat preset</div>
+    <div class="s-field"><label for="s-system">System prompt</label>
+      <textarea id="s-system" rows="4" placeholder="Optional instructions sent before every chat"></textarea></div>
+    <div class="s-field"><label for="s-temp">Temperature</label>
+      <input id="s-temp" type="number" min="0" max="2" step="0.05" placeholder="model default"></div>
+    <button class="s-apply" id="s-preset-save" type="button">Save preset</button>
+    <div class="s-note" id="s-preset-note">Saved in this browser; applies to the next message.</div>
+  `;
+  $("#s-system").value = preset.system;
+  $("#s-temp").value = preset.temperature == null ? "" : String(preset.temperature);
+  $("#s-preset-save").addEventListener("click", () => {
+    const raw = $("#s-temp").value.trim();
+    const temp = raw === "" ? null : Number(raw);
+    if (temp != null && !(temp >= 0 && temp <= 2)) {
+      $("#s-preset-note").textContent = "Temperature must be between 0 and 2.";
+      return;
+    }
+    savePreset(selectedModel, { system: $("#s-system").value.trim(), temperature: temp });
+    $("#s-preset-note").textContent = "Preset saved.";
+    budgetBase = null;
+    refreshBudget();
+  });
+}
+
 function renderSettingsPanel() {
+  renderPresetPanel();
   const m = models.find(m => m.id === selectedModel);
   if (settingsDraftModel === selectedModel && (settingsDirty || sFields.contains(document.activeElement))) {
     const fitLine = $("#s-fit");
@@ -1062,6 +1113,10 @@ async function fetchModels() {
     if (!r.ok) throw new Error(`status ${r.status}`);
     const data = await r.json();
     const local = (data.data || []).filter(m => m.object === "model" && m.owned_by !== "arc-llama-alias");
+    for (const m of local) {
+      m.ctx = m.ctx ?? m.metadata?.ctx;
+      m.capabilities = m.metadata?.capabilities || [];
+    }
     models = local;
     renderModelPicker();
   } catch (e) {
@@ -1136,6 +1191,7 @@ async function fetchStatus() {
 }
 
 function updatePickerStatus() {
+  refreshBudget();
   const m = models.find(m => m.id === selectedModel);
   if (!m) {
     updateStatus("unavailable");
@@ -1335,6 +1391,179 @@ async function ensureModelLoaded() {
   }
 }
 
+// ------------------------------------------------------------------
+// Presets, context budget, and request shaping
+// ------------------------------------------------------------------
+
+function loadPresets() {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || "{}") || {}; } catch (_) { return {}; }
+}
+
+function presetFor(model) {
+  const p = loadPresets()[model] || {};
+  return {
+    system: typeof p.system === "string" ? p.system : "",
+    temperature: typeof p.temperature === "number" ? p.temperature : null,
+  };
+}
+
+function savePreset(model, preset) {
+  const all = loadPresets();
+  if (!preset.system && preset.temperature == null) delete all[model];
+  else all[model] = preset;
+  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(all)); } catch (_) {}
+}
+
+function modelCanSeeImages(modelId) {
+  const m = models.find(x => x.id === modelId);
+  return !!(m && (m.capabilities || []).includes("vision"));
+}
+
+// OpenAI messages for a transcript: images become image_url parts, local
+// bookkeeping fields are dropped, and the model's preset system prompt leads.
+function toApiMessages(entries, modelId = selectedModel) {
+  const out = [];
+  const preset = presetFor(modelId);
+  if (preset.system) out.push({ role: "system", content: preset.system });
+  for (const m of entries) {
+    if (m.images && m.images.length) {
+      out.push({
+        role: m.role,
+        content: [
+          { type: "text", text: m.content || "" },
+          ...m.images.map(url => ({ type: "image_url", image_url: { url } })),
+        ],
+      });
+    } else {
+      out.push({ role: m.role, content: m.content || "" });
+    }
+  }
+  return out;
+}
+
+// Rough cost of an image in prompt tokens; projectors vary (256..1500).
+const IMAGE_TOKEN_ESTIMATE = 768;
+
+function estimateBudget(draft = "") {
+  const pending = attachments.filter(a => !a.error);
+  const chars = (entries) => entries.reduce((n, m) => n + (m.content || "").length, 0);
+  const images = (entries) => entries.reduce((n, m) => n + (m.images ? m.images.length : 0), 0);
+  let tokens;
+  let exact = false;
+  if (budgetBase && budgetBase.length <= conversation.length) {
+    const added = conversation.slice(budgetBase.length);
+    tokens = budgetBase.tokens + Math.round(chars(added) / 4) + images(added) * IMAGE_TOKEN_ESTIMATE;
+    exact = added.length === 0;
+  } else {
+    tokens = Math.round(chars(conversation) / 4) + images(conversation) * IMAGE_TOKEN_ESTIMATE;
+  }
+  const preset = presetFor(selectedModel);
+  if (!budgetBase && preset.system) tokens += Math.round(preset.system.length / 4);
+  const draftChars = draft.length + pending.reduce((n, a) => n + (a.text || "").length, 0);
+  tokens += Math.round(draftChars / 4) + pending.filter(a => a.image).length * IMAGE_TOKEN_ESTIMATE;
+  return { tokens, exact: exact && !draftChars && !pending.length };
+}
+
+function refreshBudget() {
+  const m = models.find(x => x.id === selectedModel);
+  if (!m || !m.ctx) return;
+  const { tokens, exact } = estimateBudget(input.value);
+  if (!tokens) { ctxMeter.classList.remove("visible"); return; }
+  updateCtxMeter(tokens, m.ctx);
+  if (!exact) ctxLabelL.textContent = `~${tokens.toLocaleString()} / ${m.ctx.toLocaleString()} tokens`;
+  const over = tokens > m.ctx;
+  ctxMeter.classList.toggle("over-budget", over);
+  ctxMeter.title = over
+    ? "This conversation is larger than the model's context. Older turns will be cut off; start a new chat or run /compact."
+    : "";
+}
+
+function setStopMode(on) {
+  sendButton.classList.toggle("stop", on);
+  sendButton.setAttribute("aria-label", on ? "Stop generating" : "Send");
+  sendButton.title = on ? "Stop generating" : "";
+  if (on) sendButton.disabled = false;
+}
+
+function clearTurnActions() {
+  for (const node of document.querySelectorAll(".turn-actions")) node.remove();
+}
+
+function turnButton(label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "turn-action";
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// Regenerate and Edit act on the latest exchange only, which keeps the
+// transcript, the DOM, and the stored chat trivially in step.
+function renderTurnActions() {
+  clearTurnActions();
+  if (lastAssistantDiv && conversation.length && conversation[conversation.length - 1].role === "assistant") {
+    const bar = document.createElement("div");
+    bar.className = "turn-actions";
+    bar.appendChild(turnButton("Regenerate", regenerateLast));
+    lastAssistantDiv.appendChild(bar);
+  }
+  if (lastUserDiv) {
+    const bar = document.createElement("div");
+    bar.className = "turn-actions";
+    bar.appendChild(turnButton("Edit", editLastUser));
+    lastUserDiv.appendChild(bar);
+  }
+}
+
+async function regenerateLast() {
+  if (generating || sendingMessage) return;
+  if (!conversation.length || conversation[conversation.length - 1].role !== "assistant") return;
+  conversation.pop();
+  if (lastAssistantDiv) lastAssistantDiv.remove();
+  lastAssistantDiv = null;
+  budgetBase = null;
+  clearTurnActions();
+  await saveCurrentChat();
+  await runSend();
+}
+
+async function editLastUser() {
+  if (generating || sendingMessage) return;
+  let i = conversation.length - 1;
+  while (i >= 0 && conversation[i].role !== "user") i--;
+  if (i < 0) return;
+  const entry = conversation[i];
+  conversation.length = i;
+  if (lastAssistantDiv) lastAssistantDiv.remove();
+  if (lastUserDiv) lastUserDiv.remove();
+  lastAssistantDiv = null;
+  lastUserDiv = null;
+  budgetBase = null;
+  clearTurnActions();
+  input.value = entry.content || "";
+  input.dispatchEvent(new Event("input"));
+  input.focus();
+  if (entry.images && entry.images.length) {
+    showError("Images from the edited message were not kept; attach them again if needed.");
+  }
+  await saveCurrentChat();
+}
+
+function renderUserImages(div, images) {
+  if (!images || !images.length) return;
+  const strip = document.createElement("div");
+  strip.className = "message-images";
+  for (const url of images) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "Attached image";
+    img.loading = "lazy";
+    strip.appendChild(img);
+  }
+  div.appendChild(strip);
+}
+
 async function sendMessage() {
   if (isComposerActionActive()) { sendComposerAction(); return; }
   if (generating || sendingMessage || !selectedModel) return;
@@ -1345,6 +1574,11 @@ async function sendMessage() {
     return;
   }
 
+  const images = attachments.filter(a => a.image && !a.error && !a.processing);
+  if (images.length && !modelCanSeeImages(selectedModel)) {
+    showError(`${selectedModel} cannot read images. Pick a vision model or remove the image.`);
+    return;
+  }
   const attachmentText = buildAttachmentText();
   const fullText = text
     ? attachmentText ? `${text}\n\n${attachmentText}` : text
@@ -1354,8 +1588,14 @@ async function sendMessage() {
   input.style.height = "auto";
   clearAttachments();
   clearDraft();
-  conversation.push({ role: "user", content: fullText });
-  createMessage("user", fullText);
+  const userEntry = { role: "user", content: fullText };
+  if (images.length) userEntry.images = images.map(a => a.image);
+  conversation.push(userEntry);
+  clearTurnActions();
+  const userMsg = createMessage("user", fullText);
+  renderUserImages(userMsg.div, userEntry.images);
+  lastUserDiv = userMsg.div;
+  lastAssistantDiv = null;
 
   // Reserve this send while persistence awaits, before generation begins.
   sendingMessage = true;
@@ -1420,8 +1660,13 @@ async function runSend() {
   if (loadingCard) loadingCard.div.remove();
 
   const assistantMsg = createMessage("assistant");
+  lastAssistantDiv = assistantMsg.div;
   conversation.push({ role: "assistant", content: "", thinking: "" });
   const convoIndex = conversation.length - 1;
+  const controller = new AbortController();
+  activeAbort = controller;
+  setStopMode(true);
+  const preset = presetFor(selectedModel);
 
   let streamRaw = "";
   let lastDisplayedContent = "";
@@ -1431,11 +1676,13 @@ async function runSend() {
     const r = await fetch("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         model: selectedModel,
-        messages: conversation.slice(0, -1),
+        messages: toApiMessages(conversation.slice(0, -1)),
         stream: true,
         stream_options: { include_usage: true },
+        ...(preset.temperature != null ? { temperature: preset.temperature } : {}),
       }),
     });
     if (!r.ok) {
@@ -1502,10 +1749,37 @@ async function runSend() {
                            : null;
     if (tps) ctxLabelTps.textContent = tps + " tok/s";
     updateCtxMeter(totalToks, m?.ctx || 131072);
+    budgetBase = lastUsage ? { tokens: lastUsage.total_tokens, length: conversation.length } : null;
     await serverAppendMessages(currentChatId, [{ role: "assistant", content: conversation[convoIndex].content }]);
     await saveCurrentChat();
+    renderTurnActions();
   } catch (e) {
+    if (e.name === "AbortError") {
+      // Stopped by the user: keep whatever arrived, marked as interrupted.
+      const partial = parseThinking(streamRaw);
+      if (partial.content.trim()) {
+        conversation[convoIndex].content = partial.content;
+        conversation[convoIndex].thinking = partial.thinking;
+        renderMarkdown(assistantMsg.content, partial.content);
+        assistantMsg.div.classList.add("stopped");
+        const note = document.createElement("div");
+        note.className = "stopped-note";
+        note.textContent = "Stopped";
+        assistantMsg.div.appendChild(note);
+        budgetBase = null;
+        await serverAppendMessages(currentChatId, [{ role: "assistant", content: partial.content }]);
+        await saveCurrentChat();
+        renderTurnActions();
+      } else {
+        assistantMsg.div.remove();
+        lastAssistantDiv = null;
+        conversation.pop();
+        renderTurnActions();
+      }
+      return;
+    }
     assistantMsg.div.remove();
+    lastAssistantDiv = null;
     conversation.pop();
     if (e.structured) {
       // The user turn is the last transcript entry again; retry re-enters
@@ -1515,6 +1789,7 @@ async function runSend() {
       showError("Generation failed: " + e.message);
     }
   } finally {
+    if (activeAbort === controller) activeAbort = null;
     lastUsage = null;
     streamStartTime = null;
     streamTokenCount = 0;
@@ -1623,6 +1898,7 @@ function renderThinking(messageDiv, thinkingText) {
 
 function finishGeneration() {
   generating = false;
+  setStopMode(false);
   sendButton.disabled = false;
   inputWrap.classList.remove("generating");
   const indicator = $("#streaming-indicator");
@@ -1693,12 +1969,26 @@ function addAttachment(file) {
   const a = { id, file, text: "", processing: true, error: "" };
   attachments.push(a);
   renderAttachments();
-  processAttachment(a).finally(renderAttachments);
+  processAttachment(a).finally(() => { renderAttachments(); refreshBudget(); });
+}
+
+function isImageFile(file) {
+  return (file.type || "").startsWith("image/");
 }
 
 async function processAttachment(a) {
   try {
-    if (isPdfFile(a.file)) {
+    if (isImageFile(a.file)) {
+      if (!modelCanSeeImages(selectedModel)) throw new Error("This model cannot read images");
+      if (a.file.size > IMAGE_LIMIT_BYTES) throw new Error("Image is larger than 10 MB");
+      a.image = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Could not read image"));
+        reader.readAsDataURL(a.file);
+      });
+      a.text = "";
+    } else if (isPdfFile(a.file)) {
       const form = new FormData();
       form.append("file", a.file);
       const r = await fetch("/admin/parse-pdf", {
@@ -1741,14 +2031,16 @@ function clearAttachments() {
 function buildAttachmentText() {
   const parts = [];
   for (const a of attachments) {
-    if (a.error || a.processing || !a.text) continue;
+    if (a.error || a.processing) continue;
+    if (a.image) { parts.push(`[Image: ${a.file.name}]`); continue; }
+    if (!a.text) continue;
     parts.push(`[Attachment: ${a.file.name}]\n${a.text.trim()}`);
   }
   return parts.join("\n\n");
 }
 
 function hasReadyAttachments() {
-  return attachments.some(a => !a.processing && !a.error && a.text);
+  return attachments.some(a => !a.processing && !a.error && (a.text || a.image));
 }
 
 function hasProcessingAttachments() {
@@ -2054,6 +2346,10 @@ input.addEventListener("keydown", async (e) => {
 });
 
 sendButton.addEventListener("click", async () => {
+  if (generating && activeAbort) {
+    activeAbort.abort();
+    return;
+  }
   const text = input.value.trim();
   if (await executeSlashCommand(text)) {
     input.value = "";
@@ -2071,6 +2367,7 @@ sendButton.addEventListener("click", async () => {
 $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 
 input.addEventListener("input", () => {
+  refreshBudget();
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 96) + "px";
   updateCommandPalette();

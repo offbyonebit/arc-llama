@@ -497,6 +497,7 @@ def create_app(
                         "loaded": bool(srv and srv.is_running and srv.ready),
                         "aliases": list(m.aliases),
                         "capabilities": model_capabilities(m),
+                        "ctx": (m.recipe or {}).get("ctx"),
                     },
                 }
             )
