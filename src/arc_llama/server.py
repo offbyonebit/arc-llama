@@ -49,6 +49,13 @@ from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
+from arc_llama.model_library import (
+    DownloadManager,
+    deletable_files,
+    disk_report,
+    repo_options,
+    search_repos,
+)
 from arc_llama.perf_history import METRICS as PERF_METRICS
 from arc_llama.perf_history import PerfHistory
 from arc_llama.plugin_api import PLUGIN_API_VERSION, _event_bus
@@ -285,6 +292,9 @@ def create_app(
                 app.state.api_keys.flush()
             if app.state.perf_history is not None:
                 app.state.perf_history.flush()
+            downloads = getattr(app.state, "downloads", None)
+            if downloads is not None:
+                await downloads.shutdown()
             await shutdown_plugins(app_plugins, app)
             if tuner is not None:
                 await tuner.stop()
@@ -1701,6 +1711,144 @@ def create_app(
         return {
             "found": len(found),
             "added": [m.name for m in added],
+        }
+
+    # ------------------------------------------------------------------
+    # Model library: Hugging Face search, downloads, disk usage
+    # ------------------------------------------------------------------
+
+    def _library_vram(c: Config) -> int | None:
+        gpu = next((g for g in c.gpus if g.enabled), None)
+        return gpu.vram_mb if gpu is not None else None
+
+    def _downloads(request: Request) -> DownloadManager:
+        manager = getattr(request.app.state, "downloads", None)
+        if manager is None:
+            c: Config = request.app.state.cfg
+            rt: Router = request.app.state.router
+
+            async def register(path: Path) -> list[str]:
+                from arc_llama.config import default_config_path
+                from arc_llama.models import register_discovered
+
+                added = register_discovered(c, [path])
+                if added:
+                    c.save(config_path or default_config_path())
+                    rt._build_servers()  # type: ignore[attr-defined]
+                return [m.name for m in added]
+
+            manager = DownloadManager(c, register)
+            request.app.state.downloads = manager
+        return manager
+
+    @app.get("/admin/library/search")
+    async def library_search(
+        request: Request,
+        q: str = Query(..., min_length=2, max_length=100),
+        limit: int = Query(20, ge=1, le=50),
+        _auth: None = Depends(_require_admin),
+    ) -> dict[str, Any]:
+        try:
+            results = await asyncio.to_thread(search_repos, q, limit=limit)
+        except Exception as e:  # noqa: BLE001 - network or hub errors
+            raise HTTPException(status_code=502, detail=f"Hugging Face search failed: {e}") from e
+        return {"results": results}
+
+    @app.get("/admin/library/repo")
+    async def library_repo(
+        request: Request,
+        repo: str = Query(..., max_length=200),
+        _auth: None = Depends(_require_admin),
+    ) -> dict[str, Any]:
+        c: Config = request.app.state.cfg
+        try:
+            return await asyncio.to_thread(repo_options, repo, _library_vram(c))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Could not read {repo}: {e}") from e
+
+    @app.post("/admin/library/download")
+    async def library_download(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        body = await _read_json_body(request)
+        repo, file = body.get("repo"), body.get("file")
+        size_mb = body.get("size_mb")
+        if not isinstance(repo, str) or not isinstance(file, str):
+            raise HTTPException(status_code=400, detail="repo and file must be strings")
+        total = int(size_mb) * 1_048_576 if isinstance(size_mb, int) and size_mb > 0 else None
+        try:
+            job = _downloads(request).submit(repo, file, total)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return job.public()
+
+    @app.get("/admin/library/jobs")
+    async def library_jobs(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        manager = getattr(request.app.state, "downloads", None)
+        jobs = list(manager.jobs.values()) if manager is not None else []
+        return {"jobs": [j.public() for j in sorted(jobs, key=lambda j: -j.started_at)]}
+
+    @app.get("/admin/library/disk")
+    async def library_disk(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        c: Config = request.app.state.cfg
+        history: PerfHistory | None = getattr(request.app.state, "perf_history", None)
+        last_used: dict[str, float] = {}
+        if history is not None:
+            for point in history.query(days=90):
+                last_used[point["model"]] = max(last_used.get(point["model"], 0), point["t"])
+        return await asyncio.to_thread(disk_report, c, last_used)
+
+    @app.delete("/admin/library/models/{name}")
+    async def library_remove(
+        name: str,
+        request: Request,
+        delete_files: bool = False,
+        _auth: None = Depends(_require_admin),
+    ) -> dict[str, Any]:
+        """Unregister a model, optionally deleting its files.
+
+        Files are deleted only inside ``paths.models_dir`` and only when no
+        other registered model uses them.
+        """
+        from arc_llama.config import default_config_path
+
+        c: Config = request.app.state.cfg
+        rt: Router = request.app.state.router
+        model = next((m for m in c.models if m.name == name), None)
+        if model is None:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
+        doomed = deletable_files(c, model) if delete_files else []
+        await rt.stop_one(name)
+        previous = list(c.models)
+        c.models = [m for m in c.models if m.name != name]
+        try:
+            c.save(config_path or default_config_path())
+        except OSError as e:
+            c.models = previous
+            raise HTTPException(
+                status_code=500, detail=f"Could not persist config; nothing removed: {e}"
+            ) from e
+        rt._servers.pop(name, None)
+        freed = 0
+        failed: list[str] = []
+        for path in doomed:
+            try:
+                size = path.stat().st_size
+                path.unlink()
+                freed += size
+            except OSError:
+                failed.append(str(path))
+        return {
+            "removed": name,
+            "deleted_files": len(doomed) - len(failed),
+            "freed_mb": freed // 1_048_576,
+            "failed": failed,
         }
 
     # ------------------------------------------------------------------

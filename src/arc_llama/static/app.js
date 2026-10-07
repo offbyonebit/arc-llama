@@ -969,6 +969,192 @@ bindCopyButton("#copy-ollama-command", () => $("#ollama-command")?.textContent);
 bindCopyButton("#copy-generic-url", () => $("#generic-url")?.textContent);
 bindCopyButton("#copy-generic-curl", () => $("#generic-curl")?.textContent);
 
+// ---------------------------------------------------------------------------
+// Model library. Every string from Hugging Face is set with textContent.
+// ---------------------------------------------------------------------------
+
+const FIT_LABELS = {
+  fits: ["Fits", "ready"],
+  tight: ["Tight: short context", "warn"],
+  too_big: ["Too big for this GPU", "error"],
+  unknown: ["Size unknown", "warn"],
+};
+
+function fmtMb(mb) {
+  if (mb == null) return "?";
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
+
+function libraryMessage(host, text, cls = "library-note") {
+  const p = document.createElement("p");
+  p.className = cls;
+  p.textContent = text;
+  host.replaceChildren(p);
+}
+
+async function librarySearch(event) {
+  event.preventDefault();
+  const host = $("#library-results");
+  const query = $("#library-query").value.trim();
+  if (query.length < 2) return;
+  libraryMessage(host, "Searching…");
+  try {
+    const r = await fetch(`/admin/library/search?q=${encodeURIComponent(query)}`, { headers: authHeaders() });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    host.replaceChildren();
+    if (!data.results.length) { libraryMessage(host, "No GGUF repositories matched."); return; }
+    for (const item of data.results) {
+      const card = document.createElement("article");
+      card.className = "plugin-card library-repo";
+      const main = document.createElement("div");
+      const title = document.createElement("h3");
+      title.textContent = item.repo;
+      const meta = document.createElement("p");
+      meta.className = "plugin-meta";
+      meta.textContent = `${(item.downloads ?? 0).toLocaleString()} downloads · ${(item.likes ?? 0).toLocaleString()} likes`;
+      const options = document.createElement("div");
+      options.className = "library-options";
+      main.append(title, meta, options);
+      const side = document.createElement("div");
+      side.appendChild(button("Show files", "secondary", () => libraryShowRepo(item.repo, options)));
+      card.append(main, side);
+      host.appendChild(card);
+    }
+  } catch (e) {
+    libraryMessage(host, `Search failed: ${e.message}`, "library-note error");
+  }
+}
+
+async function libraryShowRepo(repo, host) {
+  libraryMessage(host, "Reading files…");
+  try {
+    const r = await fetch(`/admin/library/repo?repo=${encodeURIComponent(repo)}`, { headers: authHeaders() });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    host.replaceChildren();
+    if (data.vision) {
+      const v = document.createElement("p");
+      v.className = "plugin-meta";
+      v.textContent = "Vision model: its projector downloads alongside.";
+      host.appendChild(v);
+    }
+    if (!data.options.length) { libraryMessage(host, "No downloadable GGUF files."); return; }
+    for (const option of data.options) {
+      const row = document.createElement("div");
+      row.className = "library-option";
+      const name = document.createElement("span");
+      name.className = "library-file";
+      name.textContent = `${option.quant} · ${fmtMb(option.size_mb)}${option.shards > 1 ? ` · ${option.shards} parts` : ""}`;
+      name.title = option.file;
+      const [label, tone] = FIT_LABELS[option.fit] || FIT_LABELS.unknown;
+      const badge = document.createElement("span");
+      badge.className = `status-pill ${tone}`;
+      badge.textContent = label;
+      const download = button("Download", "secondary", async () => {
+        download.disabled = true;
+        try {
+          const resp = await fetch("/admin/library/download", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ repo, file: option.file, size_mb: option.size_mb }),
+          });
+          const job = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(job.detail || `HTTP ${resp.status}`);
+          pollLibraryJobs();
+        } catch (e) {
+          download.disabled = false;
+          badge.textContent = `Download failed: ${e.message}`;
+          badge.className = "status-pill error";
+        }
+      });
+      if (option.fit === "too_big") download.title = "Larger than this GPU's memory; it will not load without offloading.";
+      row.append(name, badge, download);
+      host.appendChild(row);
+    }
+  } catch (e) {
+    libraryMessage(host, `Could not read ${repo}: ${e.message}`, "library-note error");
+  }
+}
+
+let libraryJobTimer = null;
+
+async function pollLibraryJobs() {
+  const host = $("#library-jobs");
+  if (!host) return;
+  let jobs = [];
+  try {
+    const r = await fetch("/admin/library/jobs", { headers: authHeaders() });
+    if (r.ok) jobs = (await r.json()).jobs || [];
+  } catch (_) { return; }
+  host.replaceChildren();
+  for (const job of jobs.slice(0, 6)) {
+    const row = document.createElement("div");
+    row.className = "library-job";
+    const name = document.createElement("span");
+    name.textContent = `${job.repo} · ${job.file.split("/").pop()}`;
+    const state = document.createElement("strong");
+    if (job.status === "downloading") {
+      const pct = job.bytes_total ? Math.min(99, Math.round(job.bytes_done / job.bytes_total * 100)) : null;
+      state.textContent = pct == null ? `downloading ${fmtMb(Math.round(job.bytes_done / 1048576))}` : `downloading ${pct}%`;
+    } else if (job.status === "done") {
+      state.textContent = job.registered.length ? `ready as ${job.registered.join(", ")}` : "downloaded (already registered)";
+    } else if (job.status === "error") {
+      state.textContent = `failed: ${job.error}`;
+      state.className = "library-error";
+    } else {
+      state.textContent = job.status;
+    }
+    row.append(name, state);
+    host.appendChild(row);
+  }
+  const active = jobs.some(j => j.status === "queued" || j.status === "downloading" || j.status === "registering");
+  clearTimeout(libraryJobTimer);
+  if (active) libraryJobTimer = setTimeout(pollLibraryJobs, 2000);
+  else if (jobs.some(j => j.status === "done")) fetchStatus(true);
+}
+
+async function loadLibraryDisk() {
+  const host = $("#library-disk");
+  if (!host) return;
+  try {
+    const r = await fetch("/admin/library/disk", { headers: authHeaders() });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    host.replaceChildren();
+    const summary = document.createElement("p");
+    summary.className = "plugin-meta";
+    const used = data.models.reduce((n, m) => n + m.size_mb, 0);
+    summary.textContent = `${fmtMb(used)} in ${data.models.length} model(s) · ${fmtMb(data.free_mb)} free in ${data.models_dir}`;
+    host.appendChild(summary);
+    for (const m of data.models) {
+      const row = document.createElement("div");
+      row.className = "library-option";
+      const name = document.createElement("span");
+      const when = m.last_used ? new Date(m.last_used * 1000).toLocaleDateString() : "no recorded use";
+      name.textContent = `${m.name} · ${fmtMb(m.size_mb)} · ${m.missing ? "file missing" : when}`;
+      const remove = button(m.managed ? "Delete" : "Unregister", "ghost", async () => {
+        const verb = m.managed ? `Delete ${m.name} and its files` : `Unregister ${m.name} (files stay where they are)`;
+        if (!confirm(`${verb}?`)) return;
+        remove.disabled = true;
+        const resp = await fetch(`/admin/library/models/${encodeURIComponent(m.name)}?delete_files=${m.managed}`, {
+          method: "DELETE", headers: authHeaders(),
+        });
+        if (resp.ok) { await loadLibraryDisk(); fetchStatus(true); }
+        else remove.disabled = false;
+      });
+      remove.title = m.managed ? "Files inside the models folder are deleted" : "Outside the models folder: only the registration is removed";
+      row.append(name, remove);
+      host.appendChild(row);
+    }
+  } catch (e) {
+    libraryMessage(host, `Disk usage unavailable: ${e.message}`, "library-note error");
+  }
+}
+
+$("#library-search")?.addEventListener("submit", librarySearch);
+$("#library-disk-details")?.addEventListener("toggle", (event) => { if (event.target.open) loadLibraryDisk(); });
+
 $("#refresh").addEventListener("click", () => fetchStatus(true));
 $("#scan").addEventListener("click", scanModels);
 $("#stop-all").addEventListener("click", stopAll);
@@ -979,6 +1165,7 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
   await fetchStatus(true);
   await fetchPlugins();
   await fetchMeasurements();
+  pollLibraryJobs();
   bindUiLayout();
   setInterval(fetchStatus, 5000);
   setInterval(fetchMeasurements, 15000);

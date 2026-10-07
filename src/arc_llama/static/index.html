@@ -65,6 +65,25 @@
     <div id="model-list" class="model-list" role="listbox" aria-label="Available local models" aria-busy="true"></div>
   </section>
 
+  <section class="flow-section library-section" aria-labelledby="library-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="library-title">Model library</h2>
+        <p class="section-copy">Find GGUF models on Hugging Face. Badges compare each file with your GPU's memory; downloads register automatically.</p>
+      </div>
+    </div>
+    <form id="library-search" class="library-search" role="search">
+      <input id="library-query" type="search" minlength="2" maxlength="100" placeholder="Search, e.g. qwen3 8b" aria-label="Search Hugging Face GGUF models">
+      <button type="submit" class="secondary">Search</button>
+    </form>
+    <div id="library-results" class="library-results" aria-live="polite"></div>
+    <div id="library-jobs" class="library-jobs" aria-live="polite"></div>
+    <details id="library-disk-details" class="library-disk-details">
+      <summary>Disk usage</summary>
+      <div id="library-disk" class="library-disk"></div>
+    </details>
+  </section>
+
   <section class="flow-section plugins-section" aria-labelledby="plugins-title">
     <div class="section-head compact">
       <div>

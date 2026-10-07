@@ -231,3 +231,14 @@ footer.error .status-dot { background: var(--red); }
 
 .measure-trend { align-items: center; }
 .measure-sparkline { color: var(--accent, currentColor); flex: 0 0 auto; max-width: 40vw; }
+
+.library-search { display: flex; gap: 8px; margin: 0 0 12px; }
+.library-search input { flex: 1 1 auto; min-width: 0; font: inherit; padding: 7px 10px; border: 1px solid var(--border-muted); border-radius: 5px; background: var(--surface); color: inherit; }
+.library-results, .library-jobs, .library-disk { display: grid; gap: 8px; }
+.library-options { display: grid; gap: 6px; margin-top: 8px; }
+.library-option, .library-job { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; }
+.library-option .library-file { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.library-job span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.library-note.error, .library-error { color: var(--red); }
+.library-disk-details { margin-top: 12px; }
+.library-disk-details summary { cursor: pointer; font-size: 13px; }

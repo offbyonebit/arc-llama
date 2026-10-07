@@ -634,6 +634,45 @@ async function testDashboardGenerationTrend({ page, origin }) {
   if (!text.includes("3 hours") || !text.includes("now 24.8 tok/s")) throw new Error(`unexpected trend row: ${text}`);
 }
 
+async function testLibrarySearchAndDownload({ page, origin }) {
+  const downloads = [];
+  let jobPolls = 0;
+  await page.route("**/admin/library/search**", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ results: [{ repo: "unsloth/<b>Qwen3</b>-GGUF", downloads: 1200, likes: 40 }] }),
+  }));
+  await page.route("**/admin/library/repo**", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ repo: "unsloth/<b>Qwen3</b>-GGUF", vision: true, vram_mb: 24576, options: [
+      { file: "Qwen3-Q4_K_M.gguf", quant: "Q4_K_M", size_mb: 5000, shards: 1, fit: "fits" },
+      { file: "Q8/Qwen3-Q8_0-00001-of-00002.gguf", quant: "Q8_0", size_mb: 30000, shards: 2, fit: "too_big" },
+    ] }),
+  }));
+  await page.route("**/admin/library/download", route => {
+    downloads.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "j1", status: "queued" }) });
+  });
+  await page.route("**/admin/library/jobs", route => {
+    jobPolls++;
+    const jobs = downloads.length ? [{ id: "j1", repo: "unsloth/Qwen3-GGUF", file: "Qwen3-Q4_K_M.gguf", status: "done", registered: ["qwen3-q4_k_m"], bytes_done: 1, bytes_total: 1, started_at: 1 }] : [];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs }) });
+  });
+  await page.goto(origin);
+  await page.fill("#library-query", "qwen3");
+  await page.click("#library-search button[type=submit]");
+  await page.waitForSelector(".library-repo h3");
+  if (await page.locator(".library-repo b").count() !== 0) throw new Error("repo name was rendered as HTML");
+  await page.locator(".library-repo button", { hasText: "Show files" }).click();
+  await page.waitForSelector(".library-option .status-pill");
+  const badges = await page.locator(".library-option .status-pill").allInnerTexts();
+  if (badges[0] !== "Fits" || badges[1] !== "Too big for this GPU") throw new Error(`unexpected badges ${badges}`);
+  const firstRow = await page.locator(".library-option").first().innerText();
+  if (!firstRow.includes("Q4_K_M") || !firstRow.includes("4.9 GB")) throw new Error(`unexpected row ${firstRow}`);
+  await page.locator(".library-option button", { hasText: "Download" }).first().click();
+  await page.waitForFunction(() => document.querySelector("#library-jobs")?.textContent.includes("ready as qwen3-q4_k_m"));
+  if (downloads.length !== 1 || downloads[0].file !== "Qwen3-Q4_K_M.gguf" || downloads[0].size_mb !== 5000) throw new Error("download request was wrong");
+}
+
 const TESTS = [
   ["chat-selection", testChatSelection],
   ["chat-send", testChatSend],
@@ -646,6 +685,7 @@ const TESTS = [
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
   ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
   ["dashboard-generation-trend", testDashboardGenerationTrend],
+  ["library-search-and-download", testLibrarySearchAndDownload],
   ["regenerate-and-edit", testRegenerateAndEdit],
   ["stop-keeps-partial-answer", testStopKeepsPartialAnswer],
   ["budget-before-sending", testBudgetShownBeforeSending],
