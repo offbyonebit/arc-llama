@@ -35,6 +35,10 @@ The rule for `/v1/*` and `/api/*`:
 The bundled chat page asks for a key the first time a remote browser is
 refused and remembers it in that browser.
 
+A reverse proxy on the same machine connects from loopback, so requests it
+forwards skip the key check. Enforce authentication in the proxy, or run it on
+another host.
+
 Keys are bearer secrets sent in clear text over plain HTTP. On anything but a
 trusted home network, put a reverse proxy with TLS and rate limits in front of
 Arc Llama, or use a VPN or SSH tunnel.

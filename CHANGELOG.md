@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Versioned plugin API (`arc_llama.plugin_api`, 1.0): admin auth, GPU leases,
+  model and GPU status, and model lifecycle events. Plugins declare
+  `requires_api`; incompatible ones are reported instead of loaded. Plugin
+  pages on the dashboard, `arc-llama plugin new` and `plugin list`, and plugin
+  health in `doctor` and the support bundle.
+- Vision-language models: projectors (`mmproj`) are paired during discovery
+  and Hugging Face downloads, launched with `--mmproj`, and counted in the VRAM
+  fit. Image requests to text-only models fail with HTTP 400 before loading.
+- Split GGUFs register as one model, size and fit across every shard,
+  download completely, and fail fast when a shard is missing.
+- `POST /v1/rerank` for models with `reranking = true`; `/v1/models` reports
+  each model's capabilities and context size.
+- `arc-llama runtime update` installs a llama.cpp release beside the current
+  one, checks its flags against your recipes, runs a canary prompt, and only
+  then switches. `arc-llama runtime rollback` undoes it.
+- API keys for remote clients (`arc-llama keys`, `/admin/api-keys`) and
+  `arc-llama serve --lan`.
+- Chat: stop keeps the partial answer, regenerate and edit the latest turn,
+  a context estimate while typing, per-model system prompt and temperature
+  presets, and image attachments for vision models.
+- `arc-llama benchmark --depths` measures decode speed after real prefill
+  sizes.
+- `arc-llama speculative --auto` measures every fitting draft and n-gram and
+  keeps the fastest.
+- Experimental multi-GPU tensor split via `tensor_split` and `split_gpus`.
+- Hourly performance history at `/admin/metrics/history` with a dashboard
+  trend line.
+- Model library on the dashboard: Hugging Face search with fit badges,
+  background downloads, disk usage, and removal.
+
+### Changed
+
+- llama-server backends always listen on 127.0.0.1 instead of following
+  `server.host`, which exposed every backend port when serving on a network.
+- Tuned recipes are invalidated when the kernel, GPU compute runtime, Level
+  Zero, IGC, Mesa Vulkan driver, or oneAPI version changes.
+- Hugging Face downloads with an explicit file name now list the repository
+  to fetch remaining shards and the projector.
+
 ## [0.9.1] - 2026-10-07
 
 ### Fixed
