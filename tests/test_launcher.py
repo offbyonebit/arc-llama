@@ -319,9 +319,12 @@ class TestLlamaServerLifecycle:
         try:
             srv.start(log_dir=log_dir)
             assert log_dir.exists()
+            assert srv.is_running is True
         finally:
             subprocess.Popen = original_popen
-        assert srv.is_running is True
+            # Discard the mock child before closing real log/lock handles.
+            srv.process = None
+            srv.stop()
 
     @pytest.mark.asyncio
     async def test_wait_ready_true_when_healthy(self, monkeypatch: pytest.MonkeyPatch):
@@ -573,12 +576,15 @@ class TestWindowsLifecycle:
         subprocess.Popen = _fake_popen
         try:
             srv.start(log_dir=log_dir)
+            assert called["kwargs"]["creationflags"] == getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+            assert "preexec_fn" not in called["kwargs"]
         finally:
             subprocess.Popen = original_popen
-        assert called["kwargs"]["creationflags"] == getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-        )
-        assert "preexec_fn" not in called["kwargs"]
+            # Discard the mock child before closing real log/lock handles.
+            srv.process = None
+            srv.stop()
 
     def test_stop_sends_ctrl_break_then_force_kills_tree_on_timeout(self, monkeypatch):
         from arc_llama import launcher as launcher_mod

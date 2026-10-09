@@ -46,7 +46,7 @@ jobs:
       - name: Test with pytest
         # Print every skip reason so an environment change cannot hide missing
         # coverage in an otherwise green job.
-        run: pytest tests/ -q -ra --tb=short -p no:cacheprovider
+        run: pytest tests/ -W error -q -ra --tb=short -p no:cacheprovider
 
   browser-tests:
     # Real-browser regression suite for the bundled web UI. Kept separate
