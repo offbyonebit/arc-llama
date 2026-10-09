@@ -15,9 +15,15 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Version 0.9.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.0).
+> **Version 0.9.1 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1).
 
-## What's new in 0.9.0
+## What's new in 0.9.1
+
+- **Compatibility with current llama.cpp builds:** recipes using `no_mmap` or
+  `mlock` now launch with `--load-mode` when the runtime supports it. Older
+  binaries continue to use the legacy flags.
+
+## Highlights from 0.9.0
 
 - **One-command setup and launch:** `arc-llama run` accepts a registered model,
   local GGUF, or Hugging Face GGUF source; it prepares the runtime and model,
