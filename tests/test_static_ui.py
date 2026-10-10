@@ -25,6 +25,28 @@ def test_brand_logo_is_referenced_accessibly_on_both_surfaces() -> None:
     assert (STATIC / "assets" / "arc-llama-logo-dark.png").is_file()
 
 
+def test_dashboard_components_load_before_coordinator_and_start_explicitly() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    library = (STATIC / "dashboard" / "library.js").read_text(encoding="utf-8")
+    measurements = (STATIC / "dashboard" / "measurements.js").read_text(encoding="utf-8")
+    plugins = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
+    integration = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
+
+    assert html.index("dashboard/library.js") < html.index("dashboard/measurements.js") < html.index("dashboard/plugins.js") < html.index("dashboard/integration.js") < html.index("/app.js")
+    assert "createLibraryController" in library and "createMeasurementsController" in measurements
+    assert "createPluginsController" in plugins and "createIntegrationController" in integration
+    assert "window.ArcDashboard.createLibraryController" in app
+    assert "window.ArcDashboard.createMeasurementsController" in app
+    assert "window.ArcDashboard.createPluginsController" in app
+    assert "window.ArcDashboard.createIntegrationController" in app
+    assert "libraryController.start()" in app
+    assert "measurementsController.start()" in app
+    # Neither component performs requests or starts timers while being loaded.
+    assert "setInterval" not in library.split("createLibraryController", 1)[0]
+    assert "setInterval" not in measurements.split("createMeasurementsController", 1)[0]
+
+
 def test_theme_toggle_and_persistent_theme_are_present_on_both_surfaces() -> None:
     for name, script in (("index.html", "app.js"), ("chat.html", "chat.js")):
         html = (STATIC / name).read_text(encoding="utf-8")
@@ -51,7 +73,7 @@ NODE = shutil.which("node")
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
-@pytest.mark.parametrize("script", sorted(STATIC.glob("*.js")))
+@pytest.mark.parametrize("script", sorted(STATIC.rglob("*.js")))
 def test_javascript_syntax(script: Path):
     completed = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
@@ -158,6 +180,8 @@ def test_scan_button_lifecycle_under_stubbed_dom():
       const scanButton = el("scan");
       scanButton.textContent = "Scan for models";
       const statusText = el("scan-status-text");
+      globalThis.window = globalThis;
+      globalThis.navigator = {{ platform: "linux" }};
       globalThis.document = {{
         querySelector: (sel) => el(sel.slice(1)),
         createElement: () => el("created-" + elements.size),
@@ -168,10 +192,14 @@ def test_scan_button_lifecycle_under_stubbed_dom():
         if (next instanceof Error) throw next;
         return {{ ok: next.ok, status: next.status, json: async () => next.body }};
       }};
+      for (const component of ["library.js", "measurements.js", "plugins.js", "integration.js"]) {{
+        const path = {json.dumps(str(STATIC / "dashboard"))} + "/" + component;
+        (0, eval)(fs.readFileSync(path, "utf8"));
+      }}
       const source = fs.readFileSync({json.dumps(str(app))}, "utf8");
       // Evaluate definitions only: cut before the DOM event wiring and the
       // top-level init IIFE, which need a fuller browser environment.
-      const cut = source.indexOf('$("#connect-frontend").addEventListener');
+      const cut = source.indexOf("// Dashboard event binding and bootstrap.");
       (0, eval)(source.slice(0, cut));
 
       (async () => {{
@@ -225,7 +253,7 @@ EM_DASH = "—"
 
 @pytest.mark.parametrize(
     "filename",
-    ["index.html", "app.js", "chat.html", "chat.js", "style.css", "chat.css"],
+    ["index.html", "app.js", "dashboard/library.js", "dashboard/measurements.js", "chat.html", "chat.js", "chat/history.js", "chat/attachments.js", "chat/settings.js", "chat/rendering.js", "style.css", "chat.css"],
 )
 def test_no_em_dashes_in_user_visible_ui_text(filename: str):
     content = (STATIC / filename).read_text(encoding="utf-8")
@@ -291,7 +319,25 @@ def test_marked_renderer_handles_safe_and_hostile_markdown():
 
 def test_chat_loads_safety_policy_before_renderer():
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
-    assert html.index("markdown_safety.js") < html.index("chat.js")
+    assert html.index("markdown_safety.js") < html.index("chat/rendering.js")
+    assert html.index("chat/rendering.js") < html.index("chat/attachments.js") < html.index("chat/settings.js") < html.index("chat/history.js") < html.index("chat.js")
+
+
+def test_chat_components_load_before_coordinator_and_start_explicitly():
+    html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    chat = (STATIC / "chat.js").read_text(encoding="utf-8")
+    history = (STATIC / "chat" / "history.js").read_text(encoding="utf-8")
+    attachments = (STATIC / "chat" / "attachments.js").read_text(encoding="utf-8")
+    settings = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
+    rendering = (STATIC / "chat" / "rendering.js").read_text(encoding="utf-8")
+
+    assert html.index("chat/rendering.js") < html.index("chat/attachments.js") < html.index("chat/settings.js") < html.index("chat/history.js") < html.index("/chat.js")
+    for module, factory in ((history, "createHistory"), (attachments, "createAttachments"), (settings, "createSettings"), (rendering, "createRendering")):
+        assert f"ArcChat.{factory} = function" in module
+        assert "function start()" in module
+    assert all(f"{name}Component.start()" in chat for name in ("history", "attachments", "settings", "rendering"))
+    assert "function runSend()" in chat
+    assert "activeAbort.abort()" in chat
 
 
 def test_chat_uses_clear_on_demand_model_status():
@@ -310,13 +356,13 @@ def test_chat_uses_clear_on_demand_model_status():
 
 def test_dashboard_offers_connect_a_frontend_action():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
     assert 'id="connect-frontend"' in html
     assert "Connect a frontend" in html
     # The action opens the guided dialog, not a new page.
     assert "openFrontendDialog" in js
-    assert '$("#frontend-dialog").showModal()' in js
+    assert 'doc.querySelector("#frontend-dialog").showModal()' in js
 
 
 def test_frontend_dialog_lists_three_guided_choices():
@@ -343,9 +389,9 @@ def test_frontend_dialog_uses_no_external_assets():
 
 
 def test_frontend_panel_reads_admin_integration_endpoint():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
-    assert 'fetch("/admin/integration"' in js
+    assert 'request("/admin/integration"' in js
     assert "authHeaders()" in js
 
 
@@ -361,7 +407,7 @@ def test_frontend_copies_use_no_credentials():
 
 def test_openwebui_panel_shows_copyable_base_url_and_key_guidance():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
     assert 'id="openwebui-url"' in html
     assert 'id="copy-openwebui-url"' in html
@@ -373,7 +419,7 @@ def test_openwebui_panel_shows_copyable_base_url_and_key_guidance():
 
 def test_ollama_panel_uses_existing_upstream_flow_copyably():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
     # The panel shows a copyable upstream add command, sourced from the
     # backend's discovery payload.
@@ -386,7 +432,7 @@ def test_ollama_panel_uses_existing_upstream_flow_copyably():
 
 def test_generic_panel_shows_curl_example():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
     assert 'id="generic-url"' in html
     assert 'id="generic-curl"' in html
@@ -398,7 +444,7 @@ def test_generic_panel_shows_curl_example():
 
 def test_frontend_tabs_are_keyboard_accessible():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
     assert 'role="tablist"' in html
     assert html.count('role="tab"') == 3
@@ -429,14 +475,14 @@ def test_plugins_panel_is_present_and_labeled():
 
 
 def test_plugins_panel_reads_admin_plugins_endpoint():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
 
-    assert 'fetch("/admin/plugins"' in js
+    assert 'request("/admin/plugins"' in js
     assert "authHeaders()" in js
 
 
 def test_plugins_panel_renders_name_status_and_optional_metadata():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
 
     assert "plugin.name" in js
     assert "plugin.status" in js
@@ -447,15 +493,15 @@ def test_plugins_panel_renders_name_status_and_optional_metadata():
 
 
 def test_plugins_panel_empty_state_mentions_entry_point_discovery():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
 
     assert "No plugins installed" in js
     assert "arc_llama.plugins" in js
 
 
 def test_plugin_fetch_failure_is_isolated():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    block = js[js.index("async function fetchPlugins") : js.index("// Connect-a-frontend")]
+    js = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
+    block = js[js.index("async function poll") : js.index("function bind()") ]
 
     # The whole request/render path is wrapped so a failing plugins fetch
     # can never break the model panels it shares the page with.
@@ -473,6 +519,8 @@ def test_plugins_panel_lifecycle_under_stubbed_dom():
       const fs = require("fs");
       const cards = [];
       const pluginList = {{ replaceChildren() {{ cards.length = 0; }}, appendChild(node) {{ cards.push(node); }} }};
+      globalThis.window = globalThis;
+      globalThis.navigator = {{ platform: "linux" }};
       globalThis.document = {{
         querySelector: (sel) => (sel === "#plugin-list" ? pluginList : null),
         createElement: () => ({{
@@ -480,8 +528,12 @@ def test_plugins_panel_lifecycle_under_stubbed_dom():
           classList: {{ add() {{}} }},
         }}),
       }};
+      for (const component of ["library.js", "measurements.js", "plugins.js", "integration.js"]) {{
+        const path = {json.dumps(str(STATIC / "dashboard"))} + "/" + component;
+        (0, eval)(fs.readFileSync(path, "utf8"));
+      }}
       const source = fs.readFileSync({json.dumps(str(app))}, "utf8");
-      const cut = source.indexOf('$("#connect-frontend").addEventListener');
+      const cut = source.indexOf("// Dashboard event binding and bootstrap.");
       (0, eval)(source.slice(0, cut));
 
       (async () => {{
@@ -670,6 +722,11 @@ def test_vision_composer_flow_under_stubbed_dom():
         return {{ ok: next.ok, status: next.status, json: async () => next.body, text: async () => JSON.stringify(next.body) }};
       }};
 
+      globalThis.window = globalThis;
+      for (const component of ["rendering.js", "attachments.js", "settings.js", "history.js"]) {{
+        const path = {json.dumps(str(STATIC / "chat"))} + "/" + component;
+        (0, eval)(fs.readFileSync(path, "utf8"));
+      }}
       const source = fs.readFileSync({json.dumps(str(chat))}, "utf8");
       const cut = source.indexOf("(async function init()");
       (0, eval)(source.slice(0, cut));

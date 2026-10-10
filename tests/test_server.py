@@ -1434,6 +1434,7 @@ async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
             status = (await client.get("/admin/status")).json()
         entry = next(m for m in status["models"] if m["name"] == "qwen")
         assert entry["loaded"] is False
+        assert entry["file_readiness"]["status"] in {"available", "missing"}
 
 
 def test_client_preserves_application_lifespan_across_requests(monkeypatch):

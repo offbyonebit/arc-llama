@@ -290,6 +290,54 @@ async function testChatSelection({ page, origin }) {
   await page.waitForTimeout(100);
 }
 
+async function testChatHistoryComponents({ page, origin }) {
+  const chats = [
+    { id: "chat-history-a", title: "General notes", folder: "", created_at: 1, updated_at: 3, message_count: 1 },
+    { id: "chat-history-b", title: "Project notes", folder: "Project", created_at: 2, updated_at: 4, message_count: 1 },
+  ];
+  let imported = null;
+  await page.route("**/v1/chats", route => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ object: "list", data: chats }),
+  }));
+  await page.route("**/v1/chats/folders", route => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ name: "Project", count: 1 }] }),
+  }));
+  await page.route("**/v1/chats/chat-history-b", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ id: "chat-history-b", title: "Project notes", folder: "Project", model: "qwen", messages: [{ role: "user", content: "Saved project message" }] }),
+  }));
+  await page.route("**/v1/chats/export", route => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ chats }),
+  }));
+  await page.route("**/v1/chats/import", async route => {
+    imported = route.request().postDataJSON();
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ imported: 1, skipped: 0, errors: 0 }) });
+  });
+  await openChat(page, origin);
+  await page.click("#history-toggle");
+  await page.waitForSelector("#h-list .h-card");
+  const titles = await page.locator("#h-list .h-card-title").allTextContents();
+  if (!titles.includes("Project notes") || !titles.includes("General notes")) throw new Error(`history component omitted chats: ${titles}`);
+  await page.selectOption("#h-folder", "Project");
+  if ((await page.locator("#h-list .h-card-title").allTextContents()).join(",") !== "Project notes") throw new Error("folder filter did not isolate its chats");
+  await page.locator("#h-list .h-card").click();
+  await page.waitForSelector(".message.user .content");
+  if (!(await page.locator(".message.user .content").innerText()).includes("Saved project message")) throw new Error("history component did not restore the selected chat");
+
+  await page.click("#history-toggle");
+  const downloadPromise = page.waitForEvent("download");
+  await page.click("#h-export");
+  const download = await downloadPromise;
+  if (!download.suggestedFilename().startsWith("arc-llama-chats-")) throw new Error("history export used an unexpected filename");
+
+  await page.setInputFiles("#h-import-input", {
+    name: "fixture.json", mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ chats: [{ title: "Imported fixture", messages: [] }] })),
+  });
+  await page.waitForFunction(() => document.querySelector(".message.error .content")?.textContent.includes("Imported 1, skipped 0, errors 0"));
+  if (!imported || imported.overwrite !== false || imported.chats[0].title !== "Imported fixture") throw new Error("history import did not preserve its safe import payload");
+}
+
 async function testChatSend({ page, origin }) {
   await openChat(page, origin);
   await page.fill("#message-input", "hi there");
@@ -441,7 +489,7 @@ async function testRetrySendsOriginalTurnOnce({ page, origin }) {
 }
 
 async function testDashboardMeasurements({ page, origin }) {
-  await page.goto(origin);
+  await page.goto(`${origin}/#system`);
   await page.waitForFunction(() => document.querySelector("#measurements")?.textContent.includes("24.8"));
   const content = await page.locator("#measurements").innerText();
   if (!content.includes("tok/s") || content.includes("n/a")) throw new Error("generation rates have incorrect units or values");
@@ -493,8 +541,94 @@ async function testDashboardFitAndEmptyMeasurements({ page, origin }) {
     status: 200, contentType: "application/json", body: JSON.stringify({ ...METRICS, timings: { models: {}, queue_wait: null } }),
   }));
   await page.evaluate(() => fetchMeasurements());
+  await page.locator('[data-view-link="system"]').click();
   const empty = await page.locator("#measurements").innerText();
   if (!empty.includes("No measurements yet") || empty.includes("24.8")) throw new Error("dashboard retained stale rates in empty state");
+}
+
+async function testDashboardPluginLayoutController({ page, origin }) {
+  let saved = { layout: { toolbar: ["demo.open"], plugins: [], chat: [] }, hidden: [] };
+  let layoutWrite = null;
+  await page.route("**/admin/plugins", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ plugins: [{
+      name: "demo", status: "active", version: "1.2", description: "Browser fixture plugin",
+      api: ["/plugins/demo/run"], ui: { pages: [{ path: "/plugins/demo/", label: "Open demo" }], actions: [{ id: "demo.open", label: "Open demo action", route: "/plugins/demo/" }] },
+    }] }),
+  }));
+  await page.route("**/admin/ui/layout", route => {
+    if (route.request().method() === "PUT") {
+      layoutWrite = route.request().postDataJSON();
+      saved = layoutWrite;
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(saved) });
+  });
+  await page.goto(`${origin}/#system`);
+  await page.getByRole("heading", { name: "demo" }).waitFor();
+  if (!(await page.locator(".plugin-page-link").getAttribute("href")).includes("/plugins/demo/")) throw new Error("plugin page link was not rendered");
+  await page.locator(".plugin-action").waitFor();
+  await page.click("#customize-ui");
+  const actionRow = page.locator("#ui-layout-list .plugin-card").filter({ hasText: "Open demo action" });
+  await actionRow.locator("select").selectOption("plugins");
+  await page.click("#ui-layout-save");
+  await page.waitForFunction(() => !document.querySelector("#ui-layout-dialog")?.open);
+  if (!layoutWrite?.layout.plugins.includes("demo.open")) throw new Error("layout save did not move action into Plugins");
+  await page.locator("#plugin-action-list").getByRole("button", { name: "Open demo action" }).waitFor();
+  await page.click("#customize-ui");
+  const reopened = page.locator("#ui-layout-list .plugin-card").filter({ hasText: "Open demo action" });
+  if ((await reopened.locator("select").inputValue()) !== "plugins") throw new Error("saved layout was not restored on reopen");
+}
+
+async function testFrontendIntegrationController({ page, origin }) {
+  let integrationReads = 0;
+  let authHeader = null;
+  await page.addInitScript(() => {
+    window.__copiedText = null;
+    window.__failClipboard = false;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async text => {
+        if (window.__failClipboard) throw new Error("clipboard unavailable");
+        window.__copiedText = text;
+      } },
+    });
+  });
+  await page.route("**/admin/integration", route => {
+    integrationReads += 1;
+    authHeader = route.request().headers().authorization;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      base_url: "http://127.0.0.1:11437/v1",
+      api_key_guidance: "any non-empty string",
+      curl_example: "curl http://127.0.0.1:11437/v1/models",
+      curl_example_windows: "curl.exe http://127.0.0.1:11437/v1/models",
+      server: { port: 11437 },
+      ollama: { reachable: true, version: "0.6.1", already_registered: false, upstream_add_command: "arc-llama upstream add ollama http://127.0.0.1:11434" },
+    }) });
+  });
+  await page.goto(`${origin}/#system`);
+  await page.getByRole("button", { name: "Connect a frontend" }).click();
+  await page.waitForFunction(() => document.querySelector("#openwebui-url")?.textContent === "http://127.0.0.1:11437/v1");
+  if (authHeader !== "Bearer browser-test-token") throw new Error("integration request omitted admin authentication");
+  if ((await page.locator("#openwebui-key-note").innerText()) !== "API Key: any non-empty string") throw new Error("API key guidance was not rendered");
+  await page.click("#tab-generic");
+  if (await page.locator("#tab-generic").getAttribute("aria-selected") !== "true" || !(await page.locator("#panel-generic").isVisible())) throw new Error("generic tab did not activate accessibly");
+  await page.click("#copy-generic-url");
+  await page.waitForFunction(() => window.__copiedText === "http://127.0.0.1:11437/v1");
+  await page.waitForFunction(() => document.querySelector("#copy-generic-url")?.textContent === "Copied");
+  await page.evaluate(() => {
+    window.__failClipboard = true;
+    document.execCommand = command => {
+      window.__fallbackCopiedText = document.querySelector("textarea[readonly]")?.value;
+      return command === "copy";
+    };
+  });
+  await page.click("#copy-generic-curl");
+  await page.waitForFunction(() => window.__fallbackCopiedText === "curl http://127.0.0.1:11437/v1/models");
+  await page.waitForFunction(() => document.querySelector("#copy-generic-curl")?.textContent === "Copied");
+  await page.click("#frontend-close");
+  await page.getByRole("button", { name: "Connect a frontend" }).click();
+  if (integrationReads !== 1) throw new Error("opening the cached integration dialog repeated its request");
+  if (!(await page.locator("#ollama-command").textContent()).includes("upstream add ollama")) throw new Error("copyable Ollama guidance was lost");
 }
 
 async function testRegenerateAndEdit({ page, origin }) {
@@ -541,7 +675,13 @@ async function testStopKeepsPartialAnswer({ page, origin }) {
   await page.waitForFunction(() => document.querySelector(".message.assistant .content")?.textContent.includes("Partial answer"));
   if (!(await page.getAttribute("#send-button", "class") || "").includes("stop")) throw new Error("send button did not become a stop button");
   await page.click("#send-button");
-  await page.waitForSelector(".message.assistant.stopped .stopped-note");
+  await page.waitForFunction(() => {
+    const stopped = document.querySelector(".message.assistant.stopped .stopped-note");
+    const send = document.getElementById("send-button");
+    const regenerate = [...document.querySelectorAll(".message.assistant .turn-action")]
+      .some(action => action.textContent.includes("Regenerate"));
+    return stopped && send && !send.classList.contains("stop") && regenerate;
+  });
   const text = await page.textContent(".message.assistant .content");
   if (!text.includes("Partial answer")) throw new Error("stopping discarded the partial answer");
   if ((await page.getAttribute("#send-button", "class") || "").includes("stop")) throw new Error("stop mode did not reset");
@@ -581,6 +721,29 @@ const PNG_1PX = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
   "base64",
 );
+
+async function testTextAttachmentExtensionFallback({ page, origin }) {
+  const requests = [];
+  await page.route("**/v1/chat/completions", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "text/event-stream", body: ASSISTANT_REPLY });
+  });
+  await openChat(page, origin);
+  await page.setInputFiles("#pdf-input", {
+    name: "notes.md", mimeType: "", buffer: Buffer.from("# Field notes\nKeep the blue folder."),
+  });
+  await page.waitForFunction(() => {
+    const chip = document.querySelector(".attachment-chip");
+    return chip && !chip.classList.contains("processing") && !chip.classList.contains("error");
+  });
+  await page.fill("#message-input", "Summarize this file");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.assistant .turn-action");
+  const user = requests[0]?.messages.find(message => message.role === "user");
+  if (!user?.content.includes("[Attachment: notes.md]") || !user.content.includes("Keep the blue folder.")) {
+    throw new Error("text extension fallback did not include the attachment content");
+  }
+}
 
 async function testImagesNeedVisionModel({ page, origin }) {
   await openChat(page, origin);
@@ -628,7 +791,7 @@ async function testDashboardGenerationTrend({ page, origin }) {
       ],
     }),
   }));
-  await page.goto(origin);
+  await page.goto(`${origin}/#system`);
   await page.waitForSelector("#measurements .measure-sparkline polyline");
   const text = await page.locator("#measurements .measure-trend").innerText();
   if (!text.includes("3 hours") || !text.includes("now 24.8 tok/s")) throw new Error(`unexpected trend row: ${text}`);
@@ -636,7 +799,17 @@ async function testDashboardGenerationTrend({ page, origin }) {
 
 async function testLibrarySearchAndDownload({ page, origin }) {
   const downloads = [];
-  let jobPolls = 0;
+  let postDownloadStatusReads = 0;
+  let showDownloadedModels = false;
+  let includeUnregisteredJob = false;
+  await page.route("**/admin/status", route => {
+    if (downloads.length && ++postDownloadStatusReads > 1) showDownloadedModels = true;
+    const downloaded = showDownloadedModels ? [
+      { ...ADMIN_STATUS.models[1], name: "qwen3-q4_k_m", display_name: "Qwen 3 Q4" },
+      { ...ADMIN_STATUS.models[1], name: "gemma-q8", display_name: "Gemma Q8" },
+    ] : [];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...ADMIN_STATUS, models: [...ADMIN_STATUS.models, ...downloaded] }) });
+  });
   await page.route("**/admin/library/search**", route => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ results: [{ repo: "unsloth/<b>Qwen3</b>-GGUF", downloads: 1200, likes: 40 }] }),
@@ -653,8 +826,8 @@ async function testLibrarySearchAndDownload({ page, origin }) {
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "j1", status: "queued" }) });
   });
   await page.route("**/admin/library/jobs", route => {
-    jobPolls++;
-    const jobs = downloads.length ? [{ id: "j1", repo: "unsloth/Qwen3-GGUF", file: "Qwen3-Q4_K_M.gguf", status: "done", registered: ["qwen3-q4_k_m"], bytes_done: 1, bytes_total: 1, started_at: 1 }] : [];
+    const jobs = downloads.length ? [{ id: "j1", repo: "unsloth/Qwen3-GGUF", file: "Qwen3-Q4_K_M.gguf", status: "done", registered: ["qwen3-q4_k_m", "gemma-q8"], bytes_done: 1, bytes_total: 1, started_at: 1 }] : [];
+    if (includeUnregisteredJob) jobs.push({ id: "j2", repo: "unsloth/Other-GGUF", file: "other-Q4.gguf", status: "done", registered: [], bytes_done: 1, bytes_total: 1, started_at: 2 });
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs }) });
   });
   await page.goto(origin);
@@ -662,19 +835,452 @@ async function testLibrarySearchAndDownload({ page, origin }) {
   await page.click("#library-search button[type=submit]");
   await page.waitForSelector(".library-repo h3");
   if (await page.locator(".library-repo b").count() !== 0) throw new Error("repo name was rendered as HTML");
-  await page.locator(".library-repo button", { hasText: "Show files" }).click();
+  await page.locator(".library-repo button", { hasText: "Compare versions" }).click();
   await page.waitForSelector(".library-option .status-pill");
   const badges = await page.locator(".library-option .status-pill").allInnerTexts();
-  if (badges[0] !== "Fits" || badges[1] !== "Too big for this GPU") throw new Error(`unexpected badges ${badges}`);
+  if (badges[0] !== "Likely to fit" || badges[1] !== "Likely too large") throw new Error(`unexpected badges ${badges}`);
   const firstRow = await page.locator(".library-option").first().innerText();
-  if (!firstRow.includes("Q4_K_M") || !firstRow.includes("4.9 GB")) throw new Error(`unexpected row ${firstRow}`);
+  if (!firstRow.includes("4-bit compressed") || !firstRow.includes("4.9 GiB") || !firstRow.includes("less memory")) throw new Error(`unexpected row ${firstRow}`);
+  if (await page.locator(".library-technical").first().evaluate(node => node.open)) throw new Error("technical detail was expanded by default");
+  await page.locator(".library-technical summary").first().click();
+  if (!(await page.locator(".library-technical").first().innerText()).includes("Q4_K_M")) throw new Error("exact encoding missing from expandable details");
+  if (!(await page.locator(".library-options").innerText()).includes("extra size is not included")) throw new Error("projector download cost was not explained");
   await page.locator(".library-option button", { hasText: "Download" }).first().click();
-  await page.waitForFunction(() => document.querySelector("#library-jobs")?.textContent.includes("ready as qwen3-q4_k_m"));
+  await page.waitForFunction(() => document.querySelector("#library-jobs")?.textContent.includes("downloaded and added"));
   if (downloads.length !== 1 || downloads[0].file !== "Qwen3-Q4_K_M.gguf" || downloads[0].size_mb !== 5000) throw new Error("download request was wrong");
+  if (!(await page.locator("#library-jobs").innerText()).includes("Registration is not visible yet")) throw new Error("pending registration was not explained");
+  if ((await page.locator(".model-card.selected h3").innerText()) !== "Qwen 3") throw new Error("job completion changed the current model selection");
+  await page.locator("#library-jobs").getByRole("button", { name: "Refresh to review" }).click();
+  await page.getByRole("button", { name: "Review model qwen3-q4_k_m" }).waitFor();
+  await page.getByRole("button", { name: "Review model gemma-q8" }).waitFor();
+
+  const qwenCard = page.locator(".model-card", { has: page.locator("h3", { hasText: "Qwen 3 Q4" }) });
+  const details = qwenCard.locator("details");
+  await details.locator("summary").click();
+  if (!(await details.evaluate(node => node.open))) throw new Error("Advanced details did not open before review");
+  await page.getByRole("button", { name: "Review model qwen3-q4_k_m" }).focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelector(".model-card.selected h3")?.textContent === "Qwen 3 Q4" && document.activeElement?.id === "readiness-title");
+  if (!page.url().endsWith("/")) throw new Error("review did not expose Models view");
+  if ((await page.locator("#chat-primary").getAttribute("href")) !== "/chat?model=qwen3-q4_k_m") throw new Error("review did not set the exact chat model");
+  if (!(await page.locator(".model-card.selected details").evaluate(node => node.open))) throw new Error("Advanced details state was lost during review");
+
+  await page.getByRole("button", { name: "Review model gemma-q8" }).click();
+  await page.waitForFunction(() => document.querySelector(".model-card.selected h3")?.textContent === "Gemma Q8");
+  if ((await page.locator("#chat-primary").getAttribute("href")) !== "/chat?model=gemma-q8") throw new Error("second review action did not select its exact model");
+  includeUnregisteredJob = true;
+  await page.evaluate(() => pollLibraryJobs({ refreshStatus: false }));
+  await page.locator("#library-jobs").getByRole("button", { name: "View your models" }).waitFor();
+  await page.locator("#library-jobs").getByRole("button", { name: "View your models" }).click();
+  await page.waitForFunction(() => document.activeElement?.id === "choose-title");
+  if ((await page.locator("#chat-primary").getAttribute("href")) !== "/chat?model=gemma-q8") throw new Error("generic route guessed a model or changed selection");
+}
+
+
+async function testDashboardNavigationAndBlockedModel({ page, origin }) {
+  await page.goto(origin);
+  await page.waitForSelector("#model-list .model-card");
+  if (!(await page.locator("#library-title").isVisible())) throw new Error("Models view did not expose library");
+  if (await page.locator("#system-readiness").isVisible()) throw new Error("System content flashed into default Models view");
+  await page.locator('[data-view-link="system"]').click();
+  await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "system");
+  if (!(await page.locator("#plugin-list").isVisible())) throw new Error("System view did not expose plugins");
+  await page.goBack();
+  await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "models");
+  await page.goto(`${origin}/#library-title`);
+  if (!(await page.locator("#library-title").isVisible())) throw new Error("deep library link did not expose model library");
+
+  let statusModels = [{ ...ADMIN_STATUS.models[1], loaded: false, state: "idle", path: "/models/missing.gguf", file_readiness: { status: "missing", available: false, detail: "Missing file: /models/missing.gguf" } }];
+  let statusUnavailable = false;
+  await page.route("**/admin/status", route => statusUnavailable
+    ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "temporarily unavailable" }) })
+    : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...ADMIN_STATUS, models: statusModels }) }));
+  const refresh = () => page.evaluate(() => fetchStatus(true));
+  await refresh();
+  const brokenCard = page.locator("#model-list .model-card");
+  await brokenCard.locator("details summary").click();
+  if (!(await brokenCard.locator("details").evaluate(node => node.open))) throw new Error("Advanced details did not open for a broken model");
+  await brokenCard.getByRole("button", { name: "Review model Gemma" }).focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelector(".model-card.selected h3")?.textContent === "Gemma" && document.activeElement?.id === "readiness-title");
+  if (!(await page.locator("#model-list").innerText()).includes("Missing file")) throw new Error("broken model was not inspectable");
+  if (!(await page.locator(".model-card.selected details").evaluate(node => node.open))) throw new Error("Advanced details interaction changed after review");
+  if (await page.locator("#chat-primary").getAttribute("href")) throw new Error("reviewing a broken model enabled chat");
+  if ((await page.locator("#readiness-card").innerText()).indexOf("/models/missing.gguf") < 0) throw new Error("selected-model panel omitted broken path");
+
+  statusUnavailable = true;
+  await page.locator(".model-card.selected .choose-button").click();
+  await page.waitForFunction(() => document.querySelector("#model-review-status")?.textContent.includes("Could not refresh") && document.activeElement?.id === "model-review-status");
+  if (!(await page.locator("#model-review-status").innerText()).includes("Could not refresh")) throw new Error("failed review refresh had no visible retry message");
+  if ((await page.locator(".model-card.selected h3").innerText()) !== "Gemma") throw new Error("failed refresh changed model selection");
+  statusUnavailable = false;
+  statusModels = [];
+  await page.locator(".model-card.selected .choose-button").click();
+  await page.waitForFunction(() => document.querySelector("#model-review-status")?.textContent.includes("no longer registered") && document.activeElement?.id === "model-review-status");
+  if (!(await page.locator("#model-review-status").innerText()).includes("no longer registered")) throw new Error("missing exact model did not get a visible message");
+  if (await page.locator(".model-card.selected").count()) throw new Error("missing model review fell back to another model");
+
+  statusModels = [{ ...ADMIN_STATUS.models[1], loaded: false, state: "idle", file_readiness: { status: "available", available: true, detail: "Files are present and readable" } }];
+  await refresh();
+  await page.getByRole("button", { name: "Review model Gemma" }).click();
+  await page.waitForFunction(() => document.activeElement?.id === "readiness-title");
+  if (!(await page.locator("#chat-primary").getAttribute("href"))) throw new Error("reviewed available idle model could not start chat");
+  if (!(await page.locator("#model-list").innerText()).includes("Files available")) throw new Error("available idle model was mislabeled");
+  for (const state of ["loading", "draining"]) {
+    statusModels = [{ ...statusModels[0], state }];
+    await refresh();
+    if (!(await page.locator("#model-list").innerText()).includes(state === "loading" ? "Loading" : "Draining")) throw new Error(`${state} state was mislabeled`);
+  }
+  statusModels = [{ ...ADMIN_STATUS.models[1], loaded: true, state: "ready", file_readiness: { status: "missing", available: false, detail: "Missing file: /models/gemma.gguf" } }];
+  await refresh();
+  if (!(await page.locator("#chat-primary").getAttribute("href"))) throw new Error("loaded model was disabled after its file disappeared");
+  if (!(await page.locator("#readiness-card").innerText()).includes("This model remains loaded")) throw new Error("missing file warning did not explain loaded model state");
+
+  statusModels = [];
+  await refresh();
+  await page.getByRole("button", { name: "Browse model library" }).click();
+  if (!page.url().endsWith("#library-title") || !(await page.locator("#library-title").isVisible())) throw new Error("empty model list did not lead to discovery");
+  await page.goto(`${origin}/chat`);
+  await page.getByRole("link", { name: "System", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "system");
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "system");
+  if (await page.locator("#library-title").isVisible()) throw new Error("System deep link showed Models content");
+  await page.locator('[data-view-link="models"]').click();
+  await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "models");
+}
+
+async function testFirstRunJourney({ page, origin }) {
+  let status = { ...ADMIN_STATUS, models: [] };
+  let jobs = [];
+  let jobsUnavailable = false;
+  const inference = [];
+  await page.route("**/admin/load", route => { inference.push(route.request().url()); return route.abort(); });
+  await page.route("**/v1/chat/completions", route => { inference.push(route.request().url()); return route.abort(); });
+  await page.route("**/admin/status", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(status) }));
+  await page.route("**/admin/library/jobs", route => route.fulfill({ status: jobsUnavailable ? 503 : 200, contentType: "application/json", body: JSON.stringify({ jobs }) }));
+  const waitTitle = text => page.waitForFunction(text => document.querySelector("#next-step-title")?.textContent === text, text);
+  const refreshJobs = () => page.evaluate(() => libraryController.poll({ refreshStatus: false }));
+  const refreshStatus = () => page.evaluate(() => fetchStatus(true));
+  await page.goto(`${origin}/`);
+  await waitTitle("Get your first model");
+  const placement = await page.evaluate(() => {
+    const library = document.querySelector(".library-section");
+    const models = document.querySelector("#choose-title").closest("section");
+    return {
+      libraryFirst: !!(library.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING),
+      emptyReviewHidden: document.querySelector(".readiness-section").hidden,
+      chatInsideReview: document.querySelector(".readiness-section").contains(document.querySelector("#chat-primary")),
+    };
+  });
+  if (!placement.libraryFirst || !placement.emptyReviewHidden || !placement.chatInsideReview) throw new Error("discovery/review layout does not follow the first-run order");
+  await page.locator("#next-step-action").click();
+  if (!(await page.locator("#library-title").isVisible()) || await page.locator("#library-title").evaluate(node => node !== document.activeElement)) throw new Error("first model action did not focus discovery");
+  jobs = [{ id: "new-download", repo: "test/New-GGUF", file: "new.gguf", status: "downloading", bytes_done: 25, bytes_total: 100, started_at: 10 }];
+  await refreshJobs(); await waitTitle("Your model download is in progress");
+  if (!(await page.locator("#next-step").innerText()).includes("25%")) throw new Error("download progress not visible on Models");
+  await page.locator("#next-step-action").focus();
+  await refreshStatus();
+  if (await page.locator("#next-step-action").evaluate(node => node !== document.activeElement)) throw new Error("unchanged status polling stole next-step action focus");
+  jobs[0] = { ...jobs[0], status: "error", error: "Network interrupted" };
+  await refreshJobs(); await waitTitle("Your download needs attention");
+  if (!(await page.locator("#library-jobs .library-technical").textContent()).includes("Network interrupted")) throw new Error("failed download diagnostics were lost");
+  jobs[0] = { ...jobs[0], status: "done", registered: ["exact-new"] };
+  await refreshJobs(); await waitTitle("Review your downloaded model");
+  if ((await page.locator("#next-step-action").innerText()) !== "Refresh to review") throw new Error("pending registration offered wrong model");
+  jobsUnavailable = true;
+  await refreshJobs(); await waitTitle("Get your first model");
+  if (!(await page.locator("#next-step").innerText()).includes("status is unavailable")) throw new Error("job lookup failure advertised stale completion");
+  jobsUnavailable = false;
+  await refreshJobs();
+  status = { ...status, models: [{ ...ADMIN_STATUS.models[1], name: "exact-new", display_name: "New model", loaded: false, file_readiness: { available: true } }] };
+  await page.locator("#next-step-action").click();
+  await page.waitForFunction(() => document.querySelector("#next-step-action")?.textContent === "Review New model");
+  if (await page.locator(".model-card.selected").count()) throw new Error("download polling automatically selected new model");
+  await page.locator("#next-step-action").click();
+  await waitTitle("Open chat with New model");
+  if ((await page.locator("#next-step-action").getAttribute("href")) !== "/chat?model=exact-new") throw new Error("review did not target exact downloaded registration");
+  if (!(await page.locator("#next-step").innerText()).includes("does not verify inference")) throw new Error("estimated readiness overstated inference verification");
+  // Opposite arrival order: registry status appears before the completion job.
+  jobs = [];
+  await page.reload();
+  await waitTitle("Open chat with New model");
+  jobs = [{ id: "status-first", repo: "test/New-GGUF", file: "new.gguf", status: "done", registered: ["exact-new"], started_at: 11 }];
+  await refreshJobs(); await waitTitle("Review your downloaded model");
+  if ((await page.locator("#next-step-action").innerText()) !== "Review New model") throw new Error("status-first completion did not offer exact model review");
+  if (inference.length) throw new Error("first-run navigation triggered loading or inference");
+}
+
+async function testFirstRunBlockers({ page, origin }) {
+  let status = { ...ADMIN_STATUS, models: [], gpus: [] };
+  let responseCode = 200;
+  await page.route("**/admin/status", route => route.fulfill({ status: responseCode, contentType: "application/json", body: JSON.stringify(status) }));
+  const waitTitle = text => page.waitForFunction(text => document.querySelector("#next-step-title")?.textContent === text, text);
+  await page.goto(`${origin}/`);
+  await waitTitle("Check your GPU setup");
+  if (!(await page.locator("#next-step").innerText()).includes("arc-llama doctor")) throw new Error("GPU blocker had no actionable diagnostic");
+  await page.locator("#next-step-action").click();
+  await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "system");
+  await page.locator('[data-view-link="models"]').click();
+  status = { ...ADMIN_STATUS, models: [{ ...ADMIN_STATUS.models[1], file_readiness: { available: false, detail: "Missing file: /models/gemma.gguf" } }] };
+  await page.locator("#refresh").click();
+  await page.locator(".model-card").first().click();
+  await waitTitle("Restore or replace this model's files");
+  if (await page.locator("#chat-primary").getAttribute("href")) throw new Error("missing file enabled chat");
+  await page.locator("#next-step-action").click();
+  if (await page.locator("#readiness-title").evaluate(node => node !== document.activeElement)) throw new Error("missing-file action did not focus review");
+  status = { ...status, gpus: [], models: [{ ...status.models[0], loaded: true }] };
+  await page.locator("#refresh").click(); await waitTitle("Open chat with Gemma");
+  if (!(await page.locator("#chat-primary").getAttribute("href"))) throw new Error("loaded model disabled after source or GPU configuration disappeared");
+  responseCode = 503;
+  await page.locator("#refresh").click(); await waitTitle("Reconnect to Arc Llama");
+  if (await page.locator("#chat-primary").getAttribute("href") || await page.locator("#next-step a").count()) throw new Error("offline snapshot exposed stale chat action");
+  responseCode = 401;
+  await page.locator("#next-step-action").click();
+  await page.waitForFunction(() => document.querySelector("#next-step")?.textContent.includes("Local admin access is unavailable"));
+  responseCode = 200;
+  await page.locator("#next-step-action").click(); await waitTitle("Open chat with Gemma");
+  if (!(await page.locator("#chat-primary").getAttribute("href"))) throw new Error("recovery did not restore chat");
+}
+
+async function testModelChoiceExplanations({ page, origin }) {
+  await page.route("**/admin/library/search**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ results: [{ repo: "test/Choices-GGUF" }] }) }));
+  await page.route("**/admin/library/repo**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ vram_mb: null, vision: false, options: [
+    { file: "unknown-<img>.gguf", quant: "unknown", size_mb: 0, shards: 1, fit: "unknown" },
+    { file: "small-IQ3_S.gguf", quant: "IQ3_S", size_mb: 2000, shards: 1, fit: "tight" },
+    { file: "medium-Q6_K.gguf", quant: "Q6_K", size_mb: 4000, shards: 1, fit: "fits" },
+    { file: "large-BF16.gguf", quant: "BF16", size_mb: 10000, shards: 1, fit: "too_big" },
+  ] }) }));
+  await page.goto(origin);
+  await page.fill("#library-query", "choices");
+  await page.locator("#library-search button").click();
+  await page.getByRole("button", { name: "Compare versions" }).click();
+  await page.waitForSelector(".library-technical");
+  const choices = await page.locator(".library-options").innerText();
+  for (const phrase of ["Compression not reported", "Size not reported", "Fit unknown", "GPU memory capacity is unavailable", "3-bit compressed", "Limited memory headroom", "shorter conversation", "6-bit compressed", "middle ground", "16-bit precision", "larger download"]) {
+    if (!choices.includes(phrase)) throw new Error(`missing plain-language explanation: ${phrase}`);
+  }
+  if (await page.locator(".library-options img").count()) throw new Error("remote filename was rendered as HTML");
+  if (await page.locator(".library-technical").evaluateAll(nodes => nodes.some(node => node.open))) throw new Error("technical details were expanded automatically");
+  await page.locator(".library-technical summary").first().click();
+  if (!(await page.locator(".library-technical").first().innerText()).includes("unknown-<img>.gguf")) throw new Error("exact unknown filename not preserved safely");
+  if ((await page.locator(".library-option > button").count()) !== 4) throw new Error("model options lack clear download actions");
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error("mobile model choices overflow horizontally");
+}
+
+async function testPollingEfficiency({ page, origin }) {
+  let status = JSON.parse(JSON.stringify(ADMIN_STATUS));
+  let statusReads = 0;
+  let jobReads = 0;
+  let failStatus = false;
+  let jobs = [];
+  await page.route("**/admin/status", route => { statusReads++; return route.fulfill({ status: failStatus ? 503 : 200, contentType: "application/json", body: JSON.stringify(status) }); });
+  await page.route("**/admin/library/jobs", route => { jobReads++; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs }) }); });
+  await page.goto(origin);
+  await page.waitForFunction(() => document.querySelector(".model-card") && typeof libraryController !== "undefined");
+  await page.evaluate(async () => { await fetchStatus(); await pollLibraryJobs(); });
+  await page.locator(".model-card").first().locator("details summary").click();
+  await page.locator(".model-card").first().locator(".choose-button").focus();
+  await page.evaluate(() => { window.optimizationCard = document.querySelector(".model-card"); });
+  const before = statusReads;
+  await page.evaluate(() => Promise.all([fetchStatus(), fetchStatus(), fetchStatus()]));
+  if (statusReads !== before + 1) throw new Error("concurrent background status reads did not coalesce");
+  const unchanged = await page.evaluate(() => ({ same: window.optimizationCard === document.querySelector(".model-card"), open: document.querySelector(".model-card details").open, focused: document.activeElement.classList.contains("choose-button") }));
+  if (!unchanged.same || !unchanged.open || !unchanged.focused) throw new Error("unchanged poll rebuilt the card or lost interaction state");
+  status.models[0].ctx = 16384;
+  await page.evaluate(() => fetchStatus());
+  if (!(await page.locator(".model-card").first().innerText()).includes("16,384")) throw new Error("changed model configuration did not render");
+  if (!(await page.locator(".model-card details").first().evaluate(node => node.open))) throw new Error("changed poll closed Advanced details");
+  if (!(await page.locator(".model-card .choose-button").first().evaluate(node => node === document.activeElement))) throw new Error("changed poll lost keyboard focus");
+  jobs = [{ id: "completion", repo: "test/Qwen", file: "qwen.gguf", status: "done", registered: ["qwen"], started_at: 1 }];
+  const initialCompletionReads = statusReads;
+  await page.evaluate(() => pollLibraryJobs());
+  if (statusReads !== initialCompletionReads + 1) throw new Error("newly completed download did not refresh registration once");
+  const afterCompletionReads = statusReads;
+  const afterCompletionJobs = jobReads;
+  await page.evaluate(() => Promise.all([pollLibraryJobs(), pollLibraryJobs(), pollLibraryJobs()]));
+  if (statusReads !== afterCompletionReads || jobReads !== afterCompletionJobs + 1) throw new Error("handled completion caused repeated status reads or overlapping job reads");
+  jobs.push({ id: "retry-completion", repo: "test/Gemma", file: "gemma.gguf", status: "done", registered: ["gemma"], started_at: 2 });
+  failStatus = true;
+  await page.evaluate(() => pollLibraryJobs());
+  const failedReads = statusReads;
+  failStatus = false;
+  await page.evaluate(() => pollLibraryJobs());
+  if (statusReads !== failedReads + 1) throw new Error("failed completion refresh was incorrectly considered handled");
+  const recoveredReads = statusReads;
+  await page.evaluate(() => pollLibraryJobs());
+  if (statusReads !== recoveredReads) throw new Error("successful retry kept refreshing completed jobs");
+}
+
+async function testQueuedStatusRefresh({ page, origin }) {
+  let reads = 0;
+  let hold = false;
+  let release;
+  let signalStarted;
+  let status = JSON.parse(JSON.stringify(ADMIN_STATUS));
+  const started = new Promise(resolve => { signalStarted = resolve; });
+  await page.route("**/admin/status", async route => {
+    reads++;
+    const response = JSON.stringify(status);
+    if (hold) { signalStarted(); await new Promise(resolve => { release = resolve; }); }
+    return route.fulfill({ status: 200, contentType: "application/json", body: response });
+  });
+  await page.goto(origin);
+  await page.waitForSelector(".model-card");
+  await page.evaluate(() => fetchStatus());
+  await page.locator(".model-card .choose-button").first().focus();
+  hold = true;
+  const before = reads;
+  const pending = page.evaluate(() => Promise.all([fetchStatus(), fetchStatus(), fetchStatus(true), fetchStatus(true)]));
+  await started;
+  if (reads !== before + 1) throw new Error("forced refresh raced the older in-flight response");
+  await page.locator("#library-query").focus();
+  status.models[0].ctx = 32768;
+  hold = false;
+  release();
+  await pending;
+  if (reads !== before + 2) throw new Error("forced refreshes did not share one fresh follow-up read");
+  if (!(await page.locator("#readiness-card").innerText()).includes("32,768")) throw new Error("older status overwrote the fresh follow-up");
+  if (!(await page.locator("#library-query").evaluate(node => node === document.activeElement))) throw new Error("slow poll restored stale focus after the user moved elsewhere");
+  // A download started during an older jobs read must get a fresh follow-up.
+  let jobReads = 0;
+  let holdJobs = true;
+  let releaseJobs;
+  let signalJobs;
+  let jobs = [];
+  const jobsStarted = new Promise(resolve => { signalJobs = resolve; });
+  await page.route("**/admin/library/jobs", async route => {
+    jobReads++;
+    const response = JSON.stringify({ jobs });
+    if (holdJobs) { signalJobs(); await new Promise(resolve => { releaseJobs = resolve; }); }
+    return route.fulfill({ status: 200, contentType: "application/json", body: response });
+  });
+  const jobPending = page.evaluate(() => Promise.all([pollLibraryJobs(), pollLibraryJobs({ force: true }), pollLibraryJobs({ force: true })]));
+  await jobsStarted;
+  if (jobReads !== 1) throw new Error("new-download refresh raced an older jobs read");
+  jobs = [{ id: "fresh-download", repo: "test/Qwen", file: "qwen.gguf", status: "done", registered: ["qwen"], started_at: 1 }];
+  holdJobs = false;
+  releaseJobs();
+  await jobPending;
+  if (jobReads !== 2 || !(await page.locator("#library-jobs").innerText()).includes("downloaded and added")) throw new Error("fresh follow-up missed the newly completed download");
+}
+
+async function testHiddenTabPolling({ page, origin }) {
+  await page.addInitScript(() => {
+    window.optimizationHidden = false;
+    window.optimizationDelays = [];
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => window.optimizationHidden });
+    const nativeTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) => { window.optimizationDelays.push(delay); return nativeTimeout(callback, delay, ...args); };
+  });
+  const counts = { status: 0, jobs: 0, metrics: 0, history: 0 };
+  await page.route("**/admin/status", route => { counts.status++; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ADMIN_STATUS) }); });
+  await page.route("**/admin/library/jobs", route => { counts.jobs++; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs: [{ id: "active", repo: "test/Qwen", file: "qwen.gguf", status: "downloading", bytes_done: 1, bytes_total: 10, started_at: 1 }] }) }); });
+  await page.route("**/admin/metrics", route => { counts.metrics++; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(METRICS) }); });
+  await page.route("**/admin/metrics/history**", route => { counts.history++; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ points: [] }) }); });
+  await page.goto(origin);
+  await page.waitForFunction(() => typeof statusPolling !== "undefined" && statusPolling);
+  await page.evaluate(async () => { await Promise.all([fetchStatus(), pollLibraryJobs(), fetchMeasurements()]); });
+  const before = { ...counts };
+  const delays = await page.evaluate(() => { window.optimizationHidden = true; window.optimizationDelays = []; document.dispatchEvent(new Event("visibilitychange")); return window.optimizationDelays; });
+  if (delays.length !== 3 || delays.some(delay => delay !== 30000)) throw new Error(`hidden polling did not slow all three controllers: ${delays}`);
+  if (Object.keys(counts).some(key => counts[key] !== before[key])) throw new Error("hiding the tab triggered unnecessary requests");
+  await page.evaluate(async () => { window.optimizationHidden = false; document.dispatchEvent(new Event("visibilitychange")); await Promise.all([fetchStatus(), pollLibraryJobs(), fetchMeasurements()]); });
+  for (const key of Object.keys(counts)) if (counts[key] !== before[key] + 1) throw new Error(`returning to the tab did not perform exactly one ${key} refresh`);
+  const activeDelays = await page.evaluate(() => window.optimizationDelays.slice(3));
+  for (const delay of [2000, 5000, 15000]) if (!activeDelays.includes(delay)) throw new Error(`active polling cadence not restored: ${delay}`);
+}
+
+async function testDownloadRecovery({ page, origin }) {
+  let jobs = [{ id: "failed", repo: "test/Recover", file: "nested/model-Q4.gguf", status: "error", error: "Connection interrupted <script>bad()</script>", bytes_total: 5000 * 1048576, started_at: 1 }];
+  let rejectRetry = true;
+  let releaseRejected;
+  let signalRejected;
+  const rejectedStarted = new Promise(resolve => { signalRejected = resolve; });
+  let releaseRetry;
+  let signalRetry;
+  const startedRetry = new Promise(resolve => { signalRetry = resolve; });
+  const submissions = [];
+  await page.route("**/admin/library/jobs", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs }) }));
+  await page.route("**/admin/library/download", async route => {
+    submissions.push(route.request().postDataJSON());
+    if (rejectRetry) {
+      signalRejected();
+      await new Promise(resolve => { releaseRejected = resolve; });
+      return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Try again later" }) });
+    }
+    signalRetry();
+    await new Promise(resolve => { releaseRetry = resolve; });
+    jobs = [{ ...jobs[0], id: "retried", status: "queued", error: null, started_at: 2 }, ...jobs];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(jobs[0]) });
+  });
+  await page.goto(origin);
+  await page.waitForSelector("#library-jobs .library-technical");
+  await page.fill("#library-query", "keep my search");
+  await page.locator(".model-card").nth(1).click();
+  const originalSelection = await page.evaluate(() => selectedModel);
+  if (!(await page.locator("#library-jobs .library-technical").isVisible()) || await page.locator("#library-jobs script").count()) throw new Error("unsafe download diagnostic rendering");
+  if (await page.locator("#library-jobs details").evaluate(node => node.open)) throw new Error("download diagnostics expanded automatically");
+  await page.locator("#library-jobs details summary").click();
+  if (!(await page.locator("#library-jobs pre").innerText()).includes("<script>bad()</script>")) throw new Error("exact error not preserved safely");
+  const retry = page.locator("#library-jobs button").filter({ hasText: "Retry download" });
+  await retry.click();
+  await rejectedStarted;
+  await page.evaluate(() => pollLibraryJobs({ refreshStatus: false }));
+  if (!(await retry.isDisabled())) throw new Error("polling replaced a busy retry with an enabled button");
+  releaseRejected();
+  await page.waitForFunction(() => document.querySelector("#library-recovery-status")?.textContent.includes("Could not start"));
+  await page.waitForFunction(() => !document.querySelector('#library-jobs button[aria-label^="Retry download"]')?.disabled);
+  if (await retry.isDisabled()) throw new Error("failed retry did not re-enable its replaced button");
+  rejectRetry = false;
+  const retryPending = page.evaluate(() => Promise.all([libraryController.retry(libraryJobs[0]), libraryController.retry(libraryJobs[0])]));
+  await startedRetry;
+  if (submissions.length !== 2) throw new Error("duplicate retries submitted overlapping downloads");
+  releaseRetry();
+  await retryPending;
+  if (JSON.stringify(submissions[1]) !== JSON.stringify({ repo: "test/Recover", file: "nested/model-Q4.gguf", size_mb: 5000 })) throw new Error("retry changed the requested file or size");
+  if ((await page.locator("#library-query").inputValue()) !== "keep my search" || (await page.evaluate(() => selectedModel)) !== originalSelection) throw new Error("retry lost the search or model selection");
+  if ((await page.locator("#library-jobs button").filter({ hasText: "Retry download" }).count()) !== 0) throw new Error("superseded failure still offers another retry");
+  jobs[0] = { ...jobs[0], status: "done", registered: ["gemma"] };
+  await page.evaluate(() => pollLibraryJobs());
+  if (!(await page.locator("#library-recovery-status").innerText()).includes("Download finished")) throw new Error("queued retry notice did not reflect completion");
+  await page.locator("#library-jobs").getByRole("button", { name: "Review model gemma" }).click();
+  if ((await page.locator("#chat-primary").getAttribute("href")) !== "/chat?model=gemma") throw new Error("successful retry did not lead to the exact model review");
+}
+
+async function testMissingFileRecovery({ page, origin }) {
+  let scans = 0;
+  const model = { ...ADMIN_STATUS.models[1], ctx: 8192, file_readiness: { available: false, detail: "Missing file: /models/gemma.gguf" } };
+  await page.route("**/admin/status", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...ADMIN_STATUS, models: [model] }) }));
+  await page.route("**/admin/scan", route => {
+    scans++;
+    model.file_readiness = { available: true, detail: "File restored" };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ found: 1, added: [] }) });
+  });
+  await page.goto(origin);
+  await page.waitForSelector("#readiness-card .toolbar");
+  await page.fill("#library-query", "my replacement query");
+  await page.getByRole("button", { name: "Find replacement", exact: true }).click();
+  if (!(await page.locator("#library-title").isVisible()) || (await page.locator("#library-query").inputValue()) !== "my replacement query") throw new Error("replacement action did not preserve search");
+  await page.getByRole("button", { name: "Scan again", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("#chat-primary")?.getAttribute("href") === "/chat?model=gemma");
+  if (scans !== 1 || (await page.evaluate(() => selectedModel)) !== "gemma") throw new Error("file recovery changed selection or repeated scanning");
+  if (!(await page.locator("#readiness-card").innerText()).includes("8,192")) throw new Error("file recovery discarded existing model settings");
+  if ((await page.locator("#library-query").inputValue()) !== "my replacement query") throw new Error("scanning discarded the search");
 }
 
 const TESTS = [
+  ["recovery-download", testDownloadRecovery],
+  ["recovery-missing-file", testMissingFileRecovery],
+  ["polling-efficiency", testPollingEfficiency],
+  ["polling-queued-status", testQueuedStatusRefresh],
+  ["polling-hidden-tab", testHiddenTabPolling],
+  ["model-choice-explanations", testModelChoiceExplanations],
+  ["first-run-journey", testFirstRunJourney],
+  ["first-run-blockers", testFirstRunBlockers],
   ["chat-selection", testChatSelection],
+  ["chat-history-components", testChatHistoryComponents],
   ["chat-send", testChatSend],
   ["structured-load-failure", testStructuredLoadFailure],
   ["refresh-preserves-edits", testRefreshPreservesEdits],
@@ -684,12 +1290,16 @@ const TESTS = [
   ["dashboard-measurements", testDashboardMeasurements],
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
   ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
+  ["dashboard-navigation-and-blocked-model", testDashboardNavigationAndBlockedModel],
   ["dashboard-generation-trend", testDashboardGenerationTrend],
   ["library-search-and-download", testLibrarySearchAndDownload],
+  ["dashboard-plugin-layout-controller", testDashboardPluginLayoutController],
+  ["frontend-integration-controller", testFrontendIntegrationController],
   ["regenerate-and-edit", testRegenerateAndEdit],
   ["stop-keeps-partial-answer", testStopKeepsPartialAnswer],
   ["budget-before-sending", testBudgetShownBeforeSending],
   ["preset-shapes-request", testPresetShapesRequest],
+  ["text-attachment-extension-fallback", testTextAttachmentExtensionFallback],
   ["images-need-vision-model", testImagesNeedVisionModel],
 ];
 

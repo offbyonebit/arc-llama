@@ -13,6 +13,7 @@ from arc_llama.model_library import (
     DownloadManager,
     deletable_files,
     disk_report,
+    file_readiness,
     fit_badge,
     group_repo_files,
     quant_label,
@@ -241,3 +242,47 @@ async def test_library_endpoints(monkeypatch, tmp_path) -> None:
             assert app.state.cfg.models == []
             assert app.state.router.stopped == "qwen"
     assert not (tmp_path / "models" / "q.gguf").exists()
+
+
+def test_file_readiness_reports_missing_and_non_file(tmp_path: Path) -> None:
+    model = ModelConfig("model", str(tmp_path / "missing.gguf"), 1, "gpu")
+    assert file_readiness(model)["status"] == "missing"
+    folder = tmp_path / "folder.gguf"
+    folder.mkdir()
+    model.path = str(folder)
+    assert file_readiness(model)["status"] == "not_file"
+
+
+def test_file_readiness_reports_empty_split_shards_and_projector(tmp_path: Path) -> None:
+    primary = tmp_path / "model-Q4_K_M-00001-of-00002.gguf"
+    second = tmp_path / "model-Q4_K_M-00002-of-00002.gguf"
+    primary.write_bytes(b"first")
+    model = ModelConfig("split", str(primary), 1, "gpu")
+    assert file_readiness(model)["status"] == "missing"  # second shard absent
+    second.write_bytes(b"")
+    assert file_readiness(model)["status"] == "empty"  # empty shard
+    second.write_bytes(b"second")
+    model.recipe = {"mmproj": str(tmp_path / "mmproj.gguf")}
+    assert file_readiness(model)["status"] == "missing"  # projector absent
+    (tmp_path / "mmproj.gguf").write_bytes(b"projector")
+    result = file_readiness(model)
+    assert result["status"] == "available" and result["available"] is True
+    assert "not been checked" in result["detail"]
+    (tmp_path / "mmproj.gguf").write_bytes(b"")
+    assert file_readiness(model)["status"] == "empty"
+
+
+def test_file_readiness_detects_read_access_failure(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "unreadable.gguf"
+    path.write_bytes(b"data")
+    model = ModelConfig("unreadable", str(path), 1, "gpu")
+    original_open = Path.open
+
+    def deny_read(candidate: Path, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("permission denied")
+        return original_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_read)
+    result = file_readiness(model)
+    assert result["status"] == "inaccessible" and result["available"] is False

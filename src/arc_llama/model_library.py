@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import shutil
+import stat
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -320,3 +321,36 @@ def deletable_files(cfg: Config, model: ModelConfig) -> list[Path]:
         p for p in model_files(model)
         if _inside(p, root) and p.resolve() not in shared
     ]
+
+
+def file_readiness(model: ModelConfig) -> dict[str, Any]:
+    """Check that configured model files are regular, readable, and non-empty.
+
+    Reads at most one byte from each file. This does not validate GGUF
+    contents or test inference.
+    """
+    primary = Path(model.path).expanduser()
+    try:
+        split = split_info(primary)
+        files = gguf_shards(primary) if split is not None else [primary]
+    except (OSError, ValueError):
+        files = [primary]
+    projector_raw = (model.recipe or {}).get("mmproj")
+    if projector_raw:
+        files.append(Path(projector_raw).expanduser())
+
+    for path in files:
+        try:
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                return {"status": "not_file", "available": False, "detail": f"Not a regular file: {path}"}
+            if info.st_size == 0:
+                return {"status": "empty", "available": False, "detail": f"File is empty: {path}"}
+            with path.open("rb") as source:
+                if not source.read(1):
+                    return {"status": "empty", "available": False, "detail": f"File is empty: {path}"}
+        except FileNotFoundError:
+            return {"status": "missing", "available": False, "detail": f"Missing file: {path}"}
+        except OSError:
+            return {"status": "inaccessible", "available": False, "detail": f"Cannot read file: {path}"}
+    return {"status": "available", "available": True, "detail": "Files are present and readable; GGUF contents and inference have not been checked."}

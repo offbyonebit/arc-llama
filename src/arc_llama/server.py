@@ -44,6 +44,8 @@ from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
+from arc_llama.api.integration import register_integration_route
+from arc_llama.api.library import register_library_routes
 from arc_llama.api_keys import ApiKeyStore
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
@@ -1043,6 +1045,8 @@ def create_app(
         if vram_cache is None:
             vram_cache = {}
             request.app.state.vram_estimate_cache = vram_cache
+        from arc_llama.model_library import file_readiness
+
         models = []
         for m in rt.all_models():
             srv = rt._servers.get(m.name)
@@ -1061,12 +1065,14 @@ def create_app(
                 fit_info["headroom_mb"] = None
                 fit_info["fit"] = None
                 fit_info["detail"] = "Per-model estimate; available memory depends on co-resident models."
+            files = await asyncio.to_thread(file_readiness, m)
             models.append(
                 {
                     "name": m.name,
                     "display_name": m.display_name,
                     "path": m.path,
                     "model_file_mb": model_file_mb,
+                    "file_readiness": files,
                     "gpu_pci_slot": m.gpu_pci_slot,
                     "port": m.port,
                     "loaded": loaded,
@@ -1121,23 +1127,7 @@ def create_app(
             "upstreams": mgr.upstreams_status(),
         }
 
-    @app.get("/admin/integration")
-    async def admin_integration(
-        request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict[str, Any]:
-        """Read-only discovery for the dashboard's Connect-a-frontend panel.
-
-        Returns the base URL a client should paste, loopback Ollama
-        reachability, and registered upstreams. The bundled UI renders this
-        as copy-only guidance — nothing here transmits credentials, mutates
-        config, or touches external Open WebUI accounts. ``integration`` is
-        imported lazily so importing ``arc_llama.server`` stays cheap.
-        """
-        from arc_llama.integration import integration_payload, probe_ollama
-
-        c: Config = request.app.state.cfg
-        ollama = await probe_ollama()
-        return integration_payload(c, ollama)
+    register_integration_route(app, require_admin=_require_admin)
 
     @app.get("/admin/plugins")
     async def admin_plugins(
@@ -1713,143 +1703,17 @@ def create_app(
             "added": [m.name for m in added],
         }
 
-    # ------------------------------------------------------------------
-    # Model library: Hugging Face search, downloads, disk usage
-    # ------------------------------------------------------------------
-
-    def _library_vram(c: Config) -> int | None:
-        gpu = next((g for g in c.gpus if g.enabled), None)
-        return gpu.vram_mb if gpu is not None else None
-
-    def _downloads(request: Request) -> DownloadManager:
-        manager = getattr(request.app.state, "downloads", None)
-        if manager is None:
-            c: Config = request.app.state.cfg
-            rt: Router = request.app.state.router
-
-            async def register(path: Path) -> list[str]:
-                from arc_llama.config import default_config_path
-                from arc_llama.models import register_discovered
-
-                added = register_discovered(c, [path])
-                if added:
-                    c.save(config_path or default_config_path())
-                    rt._build_servers()  # type: ignore[attr-defined]
-                return [m.name for m in added]
-
-            manager = DownloadManager(c, register)
-            request.app.state.downloads = manager
-        return manager
-
-    @app.get("/admin/library/search")
-    async def library_search(
-        request: Request,
-        q: str = Query(..., min_length=2, max_length=100),
-        limit: int = Query(20, ge=1, le=50),
-        _auth: None = Depends(_require_admin),
-    ) -> dict[str, Any]:
-        try:
-            results = await asyncio.to_thread(search_repos, q, limit=limit)
-        except Exception as e:  # noqa: BLE001 - network or hub errors
-            raise HTTPException(status_code=502, detail=f"Hugging Face search failed: {e}") from e
-        return {"results": results}
-
-    @app.get("/admin/library/repo")
-    async def library_repo(
-        request: Request,
-        repo: str = Query(..., max_length=200),
-        _auth: None = Depends(_require_admin),
-    ) -> dict[str, Any]:
-        c: Config = request.app.state.cfg
-        try:
-            return await asyncio.to_thread(repo_options, repo, _library_vram(c))
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"Could not read {repo}: {e}") from e
-
-    @app.post("/admin/library/download")
-    async def library_download(
-        request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict[str, Any]:
-        body = await _read_json_body(request)
-        repo, file = body.get("repo"), body.get("file")
-        size_mb = body.get("size_mb")
-        if not isinstance(repo, str) or not isinstance(file, str):
-            raise HTTPException(status_code=400, detail="repo and file must be strings")
-        total = int(size_mb) * 1_048_576 if isinstance(size_mb, int) and size_mb > 0 else None
-        try:
-            job = _downloads(request).submit(repo, file, total)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        return job.public()
-
-    @app.get("/admin/library/jobs")
-    async def library_jobs(
-        request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict[str, Any]:
-        manager = getattr(request.app.state, "downloads", None)
-        jobs = list(manager.jobs.values()) if manager is not None else []
-        return {"jobs": [j.public() for j in sorted(jobs, key=lambda j: -j.started_at)]}
-
-    @app.get("/admin/library/disk")
-    async def library_disk(
-        request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict[str, Any]:
-        c: Config = request.app.state.cfg
-        history: PerfHistory | None = getattr(request.app.state, "perf_history", None)
-        last_used: dict[str, float] = {}
-        if history is not None:
-            for point in history.query(days=90):
-                last_used[point["model"]] = max(last_used.get(point["model"], 0), point["t"])
-        return await asyncio.to_thread(disk_report, c, last_used)
-
-    @app.delete("/admin/library/models/{name}")
-    async def library_remove(
-        name: str,
-        request: Request,
-        delete_files: bool = False,
-        _auth: None = Depends(_require_admin),
-    ) -> dict[str, Any]:
-        """Unregister a model, optionally deleting its files.
-
-        Files are deleted only inside ``paths.models_dir`` and only when no
-        other registered model uses them.
-        """
-        from arc_llama.config import default_config_path
-
-        c: Config = request.app.state.cfg
-        rt: Router = request.app.state.router
-        model = next((m for m in c.models if m.name == name), None)
-        if model is None:
-            raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
-        doomed = deletable_files(c, model) if delete_files else []
-        await rt.stop_one(name)
-        previous = list(c.models)
-        c.models = [m for m in c.models if m.name != name]
-        try:
-            c.save(config_path or default_config_path())
-        except OSError as e:
-            c.models = previous
-            raise HTTPException(
-                status_code=500, detail=f"Could not persist config; nothing removed: {e}"
-            ) from e
-        rt._servers.pop(name, None)
-        freed = 0
-        failed: list[str] = []
-        for path in doomed:
-            try:
-                size = path.stat().st_size
-                path.unlink()
-                freed += size
-            except OSError:
-                failed.append(str(path))
-        return {
-            "removed": name,
-            "deleted_files": len(doomed) - len(failed),
-            "freed_mb": freed // 1_048_576,
-            "failed": failed,
-        }
+    register_library_routes(
+        app,
+        require_admin=_require_admin,
+        read_json_body=lambda request: _read_json_body(request),
+        config_path=config_path,
+        search_repos_fn=lambda q, **kwargs: search_repos(q, **kwargs),
+        repo_options_fn=lambda repo, vram: repo_options(repo, vram),
+        disk_report_fn=lambda config, last_used: disk_report(config, last_used),
+        deletable_files_fn=lambda config, model: deletable_files(config, model),
+        download_manager_factory=lambda config, register: DownloadManager(config, register),
+    )
 
     # ------------------------------------------------------------------
     # Static web UI (optional; only mounted if the static dir is present)

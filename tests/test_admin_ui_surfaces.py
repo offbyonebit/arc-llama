@@ -10,7 +10,7 @@ STATIC = Path(__file__).parent.parent / "src" / "arc_llama" / "static"
 
 
 def test_settings_panel_renders_vram_fit_line():
-    js = (STATIC / "chat.js").read_text(encoding="utf-8")
+    js = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
     assert "function vramFitText" in js
     # Honest wording for every branch: fit with headroom, does-not-fit with
     # an action, unknown capacity, and not-estimated.
@@ -22,14 +22,15 @@ def test_settings_panel_renders_vram_fit_line():
 
 def test_settings_panel_consumes_admin_status_vram_estimate():
     js = (STATIC / "chat.js").read_text(encoding="utf-8")
+    settings = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
     assert "s.vram_estimate" in js
     assert "m.vram_estimate = s.vram_estimate" in js
-    assert 'id="s-fit"' in js
+    assert 'id="s-fit"' in settings
 
 
 def test_apply_settings_refreshes_the_fit_line():
-    js = (STATIC / "chat.js").read_text(encoding="utf-8")
-    body = js[js.index("async function applySettings") : js.index("function estimateTokens")]
+    js = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
+    body = js[js.index("async function applySettings") : js.index("function start()", js.index("async function applySettings"))]
     # After saving recipe edits the status is refetched so the fit line and
     # loaded state re-render instead of showing stale estimates.
     assert "fetchStatus().catch" in body
@@ -48,16 +49,18 @@ def test_dashboard_has_measurements_section():
 
 
 def test_dashboard_renders_only_measured_values():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    js = (STATIC / "dashboard" / "measurements.js").read_text(encoding="utf-8")
     assert "function renderMeasurements" in js
-    assert "fetchMeasurements" in js
+    assert "fetchMeasurements" in app
     # The empty state is explicit that numbers come from real traffic.
     assert "No measurements yet" in js
     # Never invents throughput: generation speed rows come straight from
     # the server's summary, labelled tok/s.
     assert '" tok/s"' in js
     # The section is refreshed on its own slower cadence alongside status.
-    assert js.count("setInterval(fetchMeasurements") == 1
+    assert app.count("measurementsController.start()") == 1
+    assert "intervalMs = 15000" in js
 
 
 def test_measurements_css_exists():

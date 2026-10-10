@@ -1,5 +1,28 @@
 // arc-llama dashboard: a first-run friendly view over the local model registry.
 
+/*
+ * Isaiah 43:19 (KJV): UTF-8, in binary.
+ * 01000010 01100101 01101000 01101111 01101100 01100100 00101100 00100000
+ * 01001001 00100000 01110111 01101001 01101100 01101100 00100000 01100100
+ * 01101111 00100000 01100001 00100000 01101110 01100101 01110111 00100000
+ * 01110100 01101000 01101001 01101110 01100111 00111011 00100000 01101110
+ * 01101111 01110111 00100000 01101001 01110100 00100000 01110011 01101000
+ * 01100001 01101100 01101100 00100000 01110011 01110000 01110010 01101001
+ * 01101110 01100111 00100000 01100110 01101111 01110010 01110100 01101000
+ * 00111011 00100000 01110011 01101000 01100001 01101100 01101100 00100000
+ * 01111001 01100101 00100000 01101110 01101111 01110100 00100000 01101011
+ * 01101110 01101111 01110111 00100000 01101001 01110100 00111111 00100000
+ * 01001001 00100000 01110111 01101001 01101100 01101100 00100000 01100101
+ * 01110110 01100101 01101110 00100000 01101101 01100001 01101011 01100101
+ * 00100000 01100001 00100000 01110111 01100001 01111001 00100000 01101001
+ * 01101110 00100000 01110100 01101000 01100101 00100000 01110111 01101001
+ * 01101100 01100100 01100101 01110010 01101110 01100101 01110011 01110011
+ * 00101100 00100000 01100001 01101110 01100100 00100000 01110010 01101001
+ * 01110110 01100101 01110010 01110011 00100000 01101001 01101110 00100000
+ * 01110100 01101000 01100101 00100000 01100100 01100101 01110011 01100101
+ * 01110010 01110100 00101110
+ */
+
 const $ = (selector) => document.querySelector(selector);
 const THEME_KEY = "arc-llama-theme";
 function applyTheme(theme) {
@@ -14,9 +37,17 @@ const MIB = 1024;
 const SELECTED_MODEL_KEY = "arc-llama-selected-model";
 
 let snapshot = null;
+let statusOnline = false;
+let statusError = "";
+let libraryJobs = null;
+let libraryJobsUnavailable = false;
+const reviewedDownloads = new Set();
 let selectedModel = null;
+let modelSelectionInitialized = false;
 let adminToken = null;
-let fetching = false;
+let statusRequest = null;
+let queuedStatusRequest = null;
+let renderedModelsSignature = null;
 let scanning = false;
 const openDetailModels = new Set();
 
@@ -63,16 +94,31 @@ function gpuFor(model) {
   return snapshot?.gpus?.find((gpu) => gpu.pci_slot === model.gpu_pci_slot) || null;
 }
 
+function readiness(model) {
+  return model.file_readiness || { status: "unknown", available: null, detail: "File availability was not reported by this server." };
+}
+
 function modelStatus(model) {
-  return model.loaded ? { label: "Loaded", tone: "ready" } : { label: "Ready on first message", tone: "idle" };
+  if (model.state === "loading") return { label: "Loading", tone: "warn" };
+  if (model.state === "draining") return { label: "Draining", tone: "warn" };
+  if (model.state === "ready" || model.loaded) return { label: "Loaded", tone: "ready" };
+  const files = readiness(model);
+  if (files.available === false) return { label: "File problem", tone: "error" };
+  return { label: files.available === true ? "Files available" : "Configured", tone: "idle" };
+}
+
+function canStart(model) {
+  return !!model.loaded || readiness(model).available !== false;
 }
 
 function preserveSelection(models) {
   const preferred = selectedModel || sessionStorage.getItem(SELECTED_MODEL_KEY);
   selectedModel = preferred && models.some((model) => model.name === preferred)
     ? preferred
-    : models[0]?.name || null;
+    : modelSelectionInitialized ? null : models[0]?.name || null;
+  modelSelectionInitialized = true;
   if (selectedModel) sessionStorage.setItem(SELECTED_MODEL_KEY, selectedModel);
+  else sessionStorage.removeItem(SELECTED_MODEL_KEY);
 }
 
 function button(label, className, onClick) {
@@ -82,6 +128,18 @@ function button(label, className, onClick) {
   node.textContent = label;
   node.addEventListener("click", onClick);
   return node;
+}
+
+function fmtMb(mb) {
+  if (mb == null) return "?";
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
+
+function libraryMessage(host, text, cls = "library-note") {
+  const p = document.createElement("p");
+  p.className = cls;
+  p.textContent = text;
+  host.replaceChildren(p);
 }
 
 function createDetails(model, gpu) {
@@ -130,6 +188,7 @@ function createModelCard(model) {
   const status = modelStatus(model);
   const card = document.createElement("article");
   card.className = `model-card ${model.name === selectedModel ? "selected" : ""}`;
+  card.dataset.modelName = model.name;
   card.tabIndex = 0;
   card.setAttribute("role", "option");
   card.setAttribute("aria-selected", String(model.name === selectedModel));
@@ -141,6 +200,7 @@ function createModelCard(model) {
   };
   card.addEventListener("click", pick);
   card.addEventListener("keydown", (event) => {
+    if (event.target !== card) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       pick();
@@ -158,6 +218,13 @@ function createModelCard(model) {
     gpu?.name || "GPU assignment unavailable",
   ].join(" · ");
   body.append(title, meta);
+  const fileState = readiness(model);
+  if (fileState.available === false) {
+    const problem = document.createElement("p");
+    problem.className = "model-card-file-warning";
+    problem.textContent = `${fileState.detail || "Model files are unavailable."} ${model.loaded ? "This model remains loaded; restore the original file(s) before its next load." : "Inspect the path in Advanced details. Restore the original file(s) or scan a replacement."}`;
+    body.appendChild(problem);
+  }
 
   const side = document.createElement("div");
   side.className = "model-card-side";
@@ -165,30 +232,41 @@ function createModelCard(model) {
   pill.className = `status-pill ${status.tone}`;
   pill.textContent = status.label;
   side.appendChild(pill);
-  const choose = button(model.name === selectedModel ? "Selected" : "Choose", "choose-button", (event) => {
+  const review = button("Review", "choose-button", (event) => {
     event.stopPropagation();
-    pick();
+    reviewModel(model.name);
   });
-  choose.disabled = model.name === selectedModel;
-  side.appendChild(choose);
+  review.setAttribute("aria-label", `Review model ${displayName(model)}`);
+  review.title = `Review ${displayName(model)} and open its selected-model details`;
+  side.appendChild(review);
   card.append(body, side, createDetails(model, gpu));
   return card;
 }
 
 function renderModels() {
   const list = $("#model-list");
+  const models = snapshot?.models || [];
+  const fields = ["name", "display_name", "path", "model_file_mb", "gpu_pci_slot", "port", "loaded", "state", "ctx", "cache_type_k", "cache_type_v", "kv_class", "file_readiness"];
+  const signature = JSON.stringify([selectedModel, models.map(model => fields.map(key => model[key])), (snapshot?.gpus || []).map(gpu => [gpu.pci_slot, gpu.name, gpu.sycl_index, gpu.vram_mb])]);
+  if (signature === renderedModelsSignature) return;
   list.replaceChildren();
   list.setAttribute("aria-busy", "false");
-  const models = snapshot?.models || [];
   if (!models.length) {
     const empty = document.createElement("div");
     empty.className = "empty-panel";
-    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Add a GGUF file to a scan folder, then scan again.</p>";
+    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Download a model above, or scan for files already on disk.</p>";
     empty.appendChild(button("Scan for models", "secondary", scanModels));
+    empty.appendChild(button("Browse model library", "secondary", () => {
+      if (location.hash !== "#library-title") history.pushState(null, "", "#library-title");
+      updateDashboardView();
+      $("#library-title").scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
     list.appendChild(empty);
+    renderedModelsSignature = signature;
     return;
   }
   for (const model of models) list.appendChild(createModelCard(model));
+  renderedModelsSignature = signature;
 }
 
 function renderReadiness() {
@@ -228,13 +306,14 @@ function renderReadiness() {
       fitValue = `~${mb} MiB · ${fit.detail || "GPU capacity unknown"}`;
     }
   }
+  const fileState = readiness(model);
   const values = [
     ["Model size", model.model_file_mb != null ? `${fmtGiB(model.model_file_mb)} on disk` : "Unavailable"],
     ["GPU capacity", gpu ? `${gpu.name} · ${fmtGiB(gpu.vram_mb)}` : "GPU assignment unavailable"],
     ["Memory fit", fitValue],
   ["Estimate basis", fit?.confidence === "estimated_from_file_size" ? "File size + KV and overhead (approximate)" : fit ? "Model metadata and heuristic overhead (approximate)" : "Unavailable"],
     ["Context", fmtCtx(model.ctx)],
-    ["Status", model.loaded ? "Loaded and ready" : "Loads when you send a message"],
+    ["Status", modelStatus(model).label],
   ];
   for (const [label, value] of values) {
     const item = document.createElement("div");
@@ -249,10 +328,27 @@ function renderReadiness() {
   }
   const note = document.createElement("p");
   note.className = "readiness-note";
-  note.textContent = model.loaded
-    ? "This model is loaded now. You can start a conversation immediately."
-    : "The first message starts the model. arc-llama will stop another local model first when your memory policy requires it.";
-  container.append(heading, metrics, note, createDetails(model, gpu));
+  note.textContent = model.state === "loading" ? "This model is loading. Chat will wait until it is ready."
+    : model.state === "draining" ? "This model is stopping. A new message will wait for it to finish."
+    : model.loaded ? "This model is loaded now."
+    : fileState.available === false ? "Fix the file problem before loading this model."
+    : fileState.available === true ? "The first message loads this model. File contents and inference have not been checked."
+    : "File availability has not been reported. The first message attempts to load this model.";
+  container.append(heading, metrics, note);
+  if (fileState.available === false) {
+    const problem = document.createElement("p");
+    problem.className = "model-card-file-warning";
+    problem.textContent = `${fileState.detail || "Model files are unavailable."} ${model.loaded ? "This model remains loaded; restore the original file(s) before its next load." : "Inspect the path in Advanced details. Restore the original file(s) or scan a replacement."}`;
+    container.appendChild(problem);
+    const recovery = document.createElement("div");
+    recovery.className = "toolbar";
+    recovery.append(
+      button("Find replacement", "secondary", () => showModelsView("#library-title")),
+      button("Scan again", "ghost", scanModels),
+    );
+    container.appendChild(recovery);
+  }
+  container.appendChild(createDetails(model, gpu));
 }
 
 function metricRow(label, value, tone) {
@@ -267,6 +363,14 @@ function metricRow(label, value, tone) {
   return item;
 }
 
+function modelRegistrySummary(models, loadedCount) {
+  const known = models.filter((model) => readiness(model).available != null).length;
+  const available = models.filter((model) => readiness(model).available === true).length;
+  const state = `${models.length} registered · ${loadedCount} loaded`;
+  if (!known) return `${state} · file availability unknown`;
+  return `${state} · ${available} files available`;
+}
+
 function setSystemReadinessAction(container, noteText, action) {
   const area = document.createElement("div");
   area.className = "system-readiness-action";
@@ -278,7 +382,7 @@ function setSystemReadinessAction(container, noteText, action) {
 }
 
 // One system-level readiness view over the /admin/status snapshot:
-// server reachability, runtime/GPU detection, and model availability,
+// server reachability, GPU detection, and model file availability,
 // with exactly one next action for whatever is blocking first-run.
 function renderSystemReadiness() {
   const container = $("#system-readiness");
@@ -295,13 +399,13 @@ function renderSystemReadiness() {
     container.className = "system-readiness pending";
     metrics.append(
       metricRow("Server", "Running", "ok"),
-      metricRow("Runtime", "No GPU detected", "warn"),
+      metricRow("GPU", "No GPU configured", "warn"),
       metricRow("Models", "None found", "warn"),
     );
     container.appendChild(metrics);
     setSystemReadinessAction(
       container,
-      "arc-llama is running but did not detect an Arc GPU. Check the llama.cpp runtime, then check again.",
+      "arc-llama is running, but no GPU is configured. Check GPU settings, then check again.",
       button("Check again", "secondary", () => fetchStatus(true)),
     );
     return;
@@ -311,7 +415,7 @@ function renderSystemReadiness() {
     container.className = "system-readiness degraded";
     metrics.append(
       metricRow("Server", "Running", "ok"),
-      metricRow("Runtime", gpus[0]?.name ? `${gpus[0].name} detected` : "GPU detection unavailable", gpus[0]?.name ? "ok" : "warn"),
+      metricRow("GPU", gpus[0]?.name ? `${gpus[0].name} configured` : "GPU configuration unavailable", gpus[0]?.name ? "ok" : "warn"),
       metricRow("Models", "None found", "warn"),
     );
     container.appendChild(metrics);
@@ -328,8 +432,8 @@ function renderSystemReadiness() {
     container.className = "system-readiness degraded";
     metrics.append(
       metricRow("Server", "Running", "ok"),
-      metricRow("Runtime", gpus[0]?.name ? `${gpus[0].name} detected` : "GPU detection unavailable", gpus[0]?.name ? "ok" : "warn"),
-      metricRow("Models", `${models.length} available · none loaded`, null),
+      metricRow("GPU", gpus[0]?.name ? `${gpus[0].name} configured` : "GPU configuration unavailable", gpus[0]?.name ? "ok" : "warn"),
+      metricRow("Models", modelRegistrySummary(models, 0), null),
     );
     container.appendChild(metrics);
     const chat = document.createElement("a");
@@ -338,8 +442,10 @@ function renderSystemReadiness() {
     chat.textContent = "Start chatting";
     setSystemReadinessAction(
       container,
-      "Everything is set up. Models start on their first message.",
-      chat,
+      readiness(model).available === false
+        ? `${displayName(model)} has a file problem. Inspect the path in Advanced details, restore the original file(s), or scan a replacement.`
+        : "The first message loads this model.",
+      readiness(model).available === false ? null : chat,
     );
     return;
   }
@@ -347,8 +453,8 @@ function renderSystemReadiness() {
   container.className = "system-readiness ok";
   metrics.append(
     metricRow("Server", "Running", "ok"),
-    metricRow("Runtime", gpus[0]?.name ? `${gpus[0].name} detected` : "GPU detection unavailable", gpus[0]?.name ? "ok" : "warn"),
-    metricRow("Models", `${models.length} available · ${loaded.length} loaded`, "ok"),
+    metricRow("GPU", gpus[0]?.name ? `${gpus[0].name} configured` : "GPU configuration unavailable", gpus[0]?.name ? "ok" : "warn"),
+    metricRow("Models", modelRegistrySummary(models, loaded.length), "ok"),
   );
   container.appendChild(metrics);
   const active = loaded.find((model) => model.name === selectedModel) || loaded[0];
@@ -358,7 +464,7 @@ function renderSystemReadiness() {
   chat.textContent = "Open chat";
   setSystemReadinessAction(
     container,
-    `${displayName(active)} is loaded and ready.`,
+    `${displayName(active)} is loaded.`,
     chat,
   );
 }
@@ -372,7 +478,7 @@ function renderSystemReadinessOffline() {
   metrics.className = "readiness-metrics";
   metrics.append(
     metricRow("Server", "Offline", "error"),
-    metricRow("Runtime", "Unknown", null),
+    metricRow("GPU", "Unknown", null),
     metricRow("Models", "Unknown", null),
   );
   container.appendChild(metrics);
@@ -383,24 +489,212 @@ function renderSystemReadinessOffline() {
   );
 }
 
+// The coordinator combines status and library jobs without starting any work.
+function renderNextStep() {
+  const host = $("#next-step");
+  if (!host?.dataset) return;
+  let title, detail, label, action, href;
+  const models = snapshot?.models || [];
+  const model = selected();
+  const loaded = models.some(item => item.loaded);
+  const jobs = [...(libraryJobs || [])].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+  const active = jobs.find(job => ["queued", "downloading", "registering"].includes(job.status));
+  const latest = jobs[0];
+  const findModels = () => showModelsView("#library-title");
+  if (!statusOnline) {
+    title = statusError ? "Reconnect to Arc Llama" : "Checking your setup";
+    detail = statusError || "Waiting for server status.";
+    if (statusError) { label = "Check again"; action = () => fetchStatus(true); }
+  } else if (!snapshot?.gpus?.length && !loaded) {
+    title = "Check your GPU setup";
+    detail = "No GPU is configured. Run arc-llama doctor to check drivers and permissions, then review System details.";
+    label = "Open System details";
+    action = () => { location.hash = "system"; updateDashboardView(); };
+  } else if (active) {
+    title = active.status === "registering" ? "Adding your downloaded model" : "Your model download is in progress";
+    const pct = active.bytes_total ? `${Math.min(99, Math.round((active.bytes_done || 0) / active.bytes_total * 100))}%` : "size unknown";
+    detail = `${active.repo} · ${active.file?.split("/").pop() || "GGUF"} · ${active.status === "downloading" ? pct : active.status}. You can keep using your existing models.`;
+    label = "View download"; action = findModels;
+  } else if (latest?.status === "done" && !reviewedDownloads.has(latest.id)) {
+    const names = Array.isArray(latest.registered) ? latest.registered : [];
+    const exact = names.find(name => models.some(item => item.name === name));
+    title = "Review your downloaded model";
+    detail = "The download is complete. Review its files and launch settings; memory fit is an estimate, and inference has not been verified.";
+    if (exact) { label = `Review ${displayName(models.find(item => item.name === exact))}`; action = () => reviewModel(exact); }
+    else if (!names.length) { detail += " Registration details are unavailable; choose the model from your library."; label = "View your models"; action = () => showModelsView("#choose-title"); }
+    else { detail += " Registration is not visible yet."; label = "Refresh to review"; action = async () => { await fetchStatus(true); await libraryController.poll({ refreshStatus: false }); }; }
+  } else if (!models.length && latest?.status === "error") {
+    title = "Your download needs attention";
+    detail = "The download did not finish. Retry the same file; technical details and other choices are in the download list.";
+    label = "Retry download"; action = event => libraryController.retry(latest, event.currentTarget);
+  } else if (!models.length) {
+    title = "Get your first model";
+    detail = libraryJobsUnavailable ? "Download status is unavailable. Check the library again, or scan for a GGUF already on disk." : "Download a model from Hugging Face, or scan for one already on disk. Downloads are added to your library automatically.";
+    label = "Find a model"; action = findModels;
+  } else if (model && !canStart(model)) {
+    title = "Restore or replace this model's files";
+    detail = `${readiness(model).detail || "The model files are unavailable."} Review the path in Advanced details, restore the files, or find a replacement.`;
+    label = "Review model files"; action = () => showModelsView("#readiness-title");
+  } else if (model) {
+    title = `Open chat with ${displayName(model)}`;
+    detail = model.loaded ? "This model is loaded." : "Review its files and launch settings. The first message loads the model; estimated memory fit does not verify inference.";
+    label = "Open chat"; href = `/chat?model=${encodeURIComponent(model.name)}`;
+  } else {
+    title = "Choose a model to review";
+    detail = "Select a model from your library to review its files and launch settings.";
+    label = "Choose a model"; action = () => showModelsView("#choose-title");
+  }
+  // Preserve the action node (and keyboard focus) when polling changes nothing.
+  const signature = JSON.stringify([title, detail, label, href, latest?.id, active?.id, selectedModel]);
+  if (host.dataset.signature === signature) return;
+  const focused = document.activeElement?.id === "next-step-action";
+  host.dataset.signature = signature;
+  host.replaceChildren();
+  const heading = document.createElement("h2"); heading.id = "next-step-title"; heading.textContent = title;
+  const copy = document.createElement("p"); copy.textContent = detail;
+  host.append(heading, copy);
+  if (label) {
+    const node = href ? document.createElement("a") : button(label, "secondary", action);
+    node.id = "next-step-action";
+    if (href) { node.href = href; node.textContent = label; node.className = "primary-cta"; }
+    host.appendChild(node);
+    if (focused) node.focus({ preventScroll: true });
+  }
+}
+
 function renderStart() {
   const link = $("#chat-primary");
   const copy = $("#start-copy");
   const model = selected();
-  if (!model) {
+  const reviewSection = $(".readiness-section");
+  if (reviewSection) reviewSection.hidden = !model && !$("#model-review-status")?.textContent;
+  if (!statusOnline || !model) {
     link.removeAttribute("href");
     link.classList.add("is-disabled");
     link.setAttribute("aria-disabled", "true");
     link.textContent = "Start chatting";
-    copy.textContent = "Select a model to continue.";
+    copy.textContent = statusOnline ? "Select a model to continue." : "Reconnect to the server to continue.";
     return;
   }
-  link.href = `/chat?model=${encodeURIComponent(model.name)}`;
-  link.classList.remove("is-disabled");
-  link.setAttribute("aria-disabled", "false");
+  if (canStart(model)) link.href = `/chat?model=${encodeURIComponent(model.name)}`;
+  else link.removeAttribute("href");
+  link.classList.toggle("is-disabled", !canStart(model));
+  link.setAttribute("aria-disabled", String(!canStart(model)));
   link.textContent = `Start chatting with ${displayName(model)}`;
-  copy.textContent = model.loaded ? "This model is ready now." : "The model will load when you send your first message.";
+  if (model.loaded) copy.textContent = "This model is loaded.";
+  else if (!canStart(model)) copy.textContent = `${readiness(model).detail || "Model files are unavailable."} Inspect the path in Advanced details, restore the original file(s), or scan a replacement.`;
+  else copy.textContent = "The first message loads the model.";
 }
+
+function updateDashboardView() {
+  const dashboard = $(".dashboard");
+  if (!dashboard) return;
+  const system = location.hash === "#system";
+  dashboard.dataset.dashboardView = system ? "system" : "models";
+  for (const link of document.querySelectorAll("[data-view-link]")) {
+    const active = link.dataset.viewLink === (system ? "system" : "models");
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+  }
+  document.title = system ? "System: arc-llama" : "Models: arc-llama";
+  const title = $("#page-title");
+  const description = title?.parentElement?.querySelector("p:not(.eyebrow)");
+  if (title) title.textContent = system ? "System" : "Models";
+  if (description) description.textContent = system
+    ? "Server, GPU, plugins, measurements, and frontend integration."
+    : "Find a model, choose it from your library, and open chat.";
+}
+
+function showModelsView(targetSelector = "#choose-title") {
+  if (location.hash) history.pushState(null, "", `${location.pathname}${location.search}`);
+  updateDashboardView();
+  const target = $(targetSelector);
+  if (target) {
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    target.focus({ preventScroll: true });
+  }
+}
+
+function setReviewMessage(message = "", { focus = false } = {}) {
+  const notice = $("#model-review-status");
+  if (!notice) return;
+  notice.textContent = message;
+  notice.hidden = !message;
+  const reviewSection = $(".readiness-section");
+  if (reviewSection) reviewSection.hidden = !selected() && !message;
+  if (message && focus) {
+    notice.scrollIntoView({ behavior: "smooth", block: "center" });
+    notice.focus({ preventScroll: true });
+  }
+}
+
+async function reviewModel(modelName) {
+  const refreshed = await fetchStatus(true);
+  if (!refreshed) {
+    setReviewMessage("Could not refresh the model list. Use Refresh and try reviewing again.", { focus: true });
+    return false;
+  }
+  const model = snapshot?.models?.find((item) => item.name === modelName);
+  if (!model) {
+    setReviewMessage("This model is no longer registered. Refresh the model list and choose a currently registered model.", { focus: true });
+    return false;
+  }
+  setReviewMessage();
+  selectedModel = modelName;
+  for (const job of libraryJobs || []) {
+    if (job.status === "done" && job.registered?.includes(modelName)) reviewedDownloads.add(job.id);
+  }
+  sessionStorage.setItem(SELECTED_MODEL_KEY, modelName);
+  render();
+  showModelsView("#readiness-title");
+  return true;
+}
+
+const measurementsController = window.ArcDashboard.createMeasurementsController({
+  document,
+  request: (...args) => fetch(...args),
+  authHeaders,
+});
+function fetchMeasurements() { return measurementsController.poll(); }
+
+const libraryController = window.ArcDashboard.createLibraryController({
+  document,
+  request: (...args) => fetch(...args),
+  authHeaders,
+  makeButton: button,
+  getDisplayName: displayName,
+  formatMb: fmtMb,
+  writeMessage: libraryMessage,
+  getSnapshot: () => snapshot,
+  fetchStatus,
+  reviewModel,
+  showModelsView,
+  onJobsChange: (jobs) => {
+    libraryJobs = jobs;
+    libraryJobsUnavailable = jobs === null;
+    renderNextStep();
+  },
+});
+function pollLibraryJobs(options) { return libraryController.poll(options); }
+function loadLibraryDisk() { return libraryController.loadDisk(); }
+
+const pluginsController = window.ArcDashboard.createPluginsController({
+  document,
+  request: (...args) => fetch(...args),
+  authHeaders,
+  makeButton: button,
+  navigate: (route) => { window.location.href = route; },
+});
+function fetchPlugins() { return pluginsController.poll(); }
+function renderPlugins() { return pluginsController.render(); }
+
+const integrationController = window.ArcDashboard.createIntegrationController({
+  document,
+  request: (...args) => fetch(...args),
+  authHeaders,
+  browserNavigator: navigator,
+});
+function openFrontendDialog() { return integrationController.open(); }
 
 function render() {
   const loadedCount = snapshot?.models?.filter((model) => model.loaded).length || 0;
@@ -410,31 +704,73 @@ function render() {
   renderReadiness();
   renderSystemReadiness();
   renderStart();
+  renderNextStep();
   renderPlugins();
 }
 
-async function fetchStatus(force = false) {
-  if (fetching && !force) return;
-  fetching = true;
+function modelListFocusTarget() {
+  const active = document.activeElement;
+  const card = active?.closest?.(".model-card");
+  if (!card) return null;
+  let control = "card";
+  if (active.matches(".choose-button")) control = "review";
+  else if (active.matches("details summary")) control = "details";
+  else if (active.matches(".advanced-edit")) control = "advanced";
+  return { modelName: card.dataset.modelName, control };
+}
+
+function restoreModelListFocus(target) {
+  if (!target) return;
+  const card = [...document.querySelectorAll(".model-card")]
+    .find((item) => item.dataset.modelName === target.modelName);
+  const node = !card ? null : target.control === "review" ? card.querySelector(".choose-button")
+    : target.control === "details" ? card.querySelector("details summary")
+      : target.control === "advanced" ? card.querySelector(".advanced-edit") : card;
+  node?.focus({ preventScroll: true });
+}
+
+function fetchStatus(force = false) {
+  if (statusRequest) {
+    if (!force) return statusRequest;
+    // A mutation/manual refresh gets one fresh read after the older read ends.
+    if (!queuedStatusRequest) queuedStatusRequest = statusRequest.then(() => fetchStatus()).finally(() => { queuedStatusRequest = null; });
+    return queuedStatusRequest;
+  }
+  statusRequest = fetchStatusRequest().finally(() => { statusRequest = null; });
+  return statusRequest;
+}
+
+async function fetchStatusRequest() {
   try {
     const response = await fetch("/admin/status", { headers: authHeaders() });
     if (!response.ok) {
       throw new Error(response.status === 401 ? "Local admin access is unavailable" : `Server returned ${response.status}`);
     }
     snapshot = await response.json();
+    statusOnline = true;
+    statusError = "";
     preserveSelection(snapshot.models || []);
+    const focusedModelControl = modelListFocusTarget();
     render();
+    restoreModelListFocus(focusedModelControl);
     setFooter(`Updated ${new Date().toLocaleTimeString()}`);
+    return true;
   } catch (error) {
+    statusOnline = false;
+    statusError = error.message === "Local admin access is unavailable"
+      ? "Local admin access is unavailable. Open the dashboard on the server machine and check again."
+      : "Could not reach Arc Llama. Check that the server is running, then try again.";
+    renderStart();
+    renderNextStep();
     setServerState("error", "Could not reach arc-llama");
     $("#model-list").setAttribute("aria-busy", "false");
     if (!snapshot) {
+      renderedModelsSignature = null;
       $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach arc-llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
     }
     renderSystemReadinessOffline();
     setFooter(error.message, true);
-  } finally {
-    fetching = false;
+    return false;
   }
 }
 
@@ -504,656 +840,46 @@ async function stopAll() {
   }
 }
 
-// Plugins panel. The backend's /admin/plugins catalog reflects what was
-// discovered at app creation; here we only render it. Fetch failures are
-// isolated: the panel quietly stays empty and the rest of the page is
-// unaffected.
-let pluginList = null;
-let uiLayout = null;
+// Plugin catalog and frontend integration guidance use focused controllers.
 
-const PLUGIN_LABELS = {
-  active: "Active",
-  error: "Failed to load",
-  registered: "Registered",
-  failed: "Failed to load",
-  disabled: "Disabled",
-  incompatible: "Incompatible",
-};
+// Frontend connection guidance is owned by its focused controller.
 
-function pluginStatusLabel(status) {
-  return PLUGIN_LABELS[status] || "Registered";
+// Timers wait for their request to finish; hidden tabs use a quieter cadence.
+let statusTimer = null;
+let statusPolling = false;
+function scheduleStatusPoll() {
+  clearTimeout(statusTimer);
+  if (!statusPolling) return;
+  statusTimer = setTimeout(async () => { await fetchStatus(); scheduleStatusPoll(); }, document.hidden ? 30000 : 5000);
+}
+function startStatusPolling() {
+  if (statusPolling) return;
+  statusPolling = true;
+  document.addEventListener("visibilitychange", async () => {
+    clearTimeout(statusTimer);
+    if (!document.hidden) await fetchStatus();
+    scheduleStatusPoll();
+  });
+  scheduleStatusPoll();
 }
 
-function createPluginCard(plugin) {
-  const card = document.createElement("article");
-  card.className = "plugin-card";
+// Dashboard event binding and bootstrap.
+integrationController.bind();
 
-  const body = document.createElement("div");
-  body.className = "plugin-card-main";
-  const title = document.createElement("h3");
-  title.textContent = plugin.name;
-  body.appendChild(title);
-  if (plugin.description) {
-    const description = document.createElement("p");
-    description.className = "plugin-meta";
-    description.textContent = plugin.description;
-    body.appendChild(description);
-  }
-  if (plugin.error) {
-    // Discovery-recorded failure: show the short error so the operator can
-    // fix it from the dashboard. No plugin code was executed to collect it.
-    const errorEl = document.createElement("p");
-    errorEl.className = "plugin-error";
-    errorEl.textContent = plugin.error;
-    body.appendChild(errorEl);
-  }
-  const extra = [plugin.version ? `v${plugin.version}` : null, plugin.ui?.actions?.length ? `${plugin.ui.actions.length} action(s)` : null]
-    .filter(Boolean)
-    .join(" · ");
-  if (extra) {
-    const meta = document.createElement("p");
-    meta.className = "plugin-meta";
-    meta.textContent = extra;
-    body.appendChild(meta);
-  }
-  const apiRoutes = Array.isArray(plugin.api)
-    ? plugin.api.filter((route) => typeof route === "string").slice(0, 8)
-    : [];
-  if (apiRoutes.length) {
-    const api = document.createElement("p");
-    api.className = "plugin-meta";
-    const shown = apiRoutes.map((route) => route.slice(0, 128));
-    api.textContent = `API: ${shown.join(", ")}${plugin.api.length > shown.length ? ", …" : ""}`;
-    body.appendChild(api);
-  }
-
-  const side = document.createElement("div");
-  side.className = "plugin-card-side";
-  const pill = document.createElement("span");
-  pill.className = `status-pill ${(plugin.status === "error" || plugin.status === "failed") ? "error" : ((plugin.status === "disabled" || plugin.status === "incompatible") ? "warn" : "ready")}`;
-  pill.textContent = pluginStatusLabel(plugin.status);
-  side.appendChild(pill);
-  // Plugin pages: same-origin links validated server-side to stay under
-  // /plugins/. They open in a new tab; no plugin markup runs in the dashboard.
-  for (const page of (plugin.ui?.pages || []).slice(0, 4)) {
-    if (typeof page.path !== "string" || !page.path.startsWith("/plugins/")) continue;
-    const link = document.createElement("a");
-    link.className = "secondary plugin-page-link";
-    link.href = page.path;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.textContent = page.label || "Open";
-    side.appendChild(link);
-  }
-
-  card.append(body, side);
-  return card;
-}
-
-function renderPlugins() {
-  const list = $("#plugin-list");
-  if (!list || pluginList == null) return;
-  list.replaceChildren();
-  if (!pluginList.length) {
-    const empty = document.createElement("p");
-    empty.className = "plugin-empty";
-    empty.textContent = "No plugins installed. Add-ons exposing an arc_llama.plugins entry point appear here.";
-    list.appendChild(empty);
-    return;
-  }
-  for (const plugin of pluginList) list.appendChild(createPluginCard(plugin));
-}
-
-function allPluginActions() {
-  return (pluginList || []).flatMap((p) => (p.ui?.actions || []).map((a) => ({...a, plugin: p.name})));
-}
-
-function renderPluginActions() {
-  const toolbar = document.querySelector(".section-head .toolbar");
-  const pluginActions = $("#plugin-action-list");
-  if (!toolbar || !pluginActions || !uiLayout) return;
-  toolbar.querySelectorAll(".plugin-action").forEach((n) => n.remove());
-  pluginActions.replaceChildren();
-  const byId = Object.fromEntries(allPluginActions().map((a) => [a.id, a]));
-  for (const id of uiLayout.layout.toolbar || []) {
-    const action = byId[id];
-    if (!action || (uiLayout.hidden || []).includes(id)) continue;
-    const node = button(action.label, "secondary plugin-action", () => {
-      if (action.route) window.location.href = action.route;
-    });
-    toolbar.insertBefore(node, toolbar.lastElementChild);
-  }
-  for (const id of uiLayout.layout.plugins || []) {
-    const action = byId[id];
-    if (!action || (uiLayout.hidden || []).includes(id)) continue;
-    const node = button(action.label, "secondary plugin-action", () => {
-      if (action.route) window.location.href = action.route;
-    });
-    pluginActions.appendChild(node);
-  }
-}
-
-function renderLayoutEditor() {
-  const list = $("#ui-layout-list");
-  if (!list || !uiLayout) return;
-  list.replaceChildren();
-  const actions = allPluginActions();
-  for (const action of actions) {
-    const row = document.createElement("div"); row.className = "plugin-card";
-    const label = document.createElement("label");
-    const check = document.createElement("input"); check.type = "checkbox"; check.checked = !(uiLayout.hidden || []).includes(action.id);
-    check.dataset.action = action.id; label.append(check, ` ${action.label} (${action.plugin})`);
-    const select = document.createElement("select"); select.dataset.action = action.id;
-    for (const p of ["toolbar", "plugins", "chat"]) { const o = document.createElement("option"); o.value = p; o.textContent = p; o.selected = (uiLayout.layout[p] || []).includes(action.id); select.append(o); }
-    const up = button("↑", "ghost", () => { const prev = row.previousElementSibling; if (prev) row.parentNode.insertBefore(row, prev); });
-    const down = button("↓", "ghost", () => { const next = row.nextElementSibling; if (next) row.parentNode.insertBefore(next, row); });
-    up.setAttribute("aria-label", `Move ${action.label} up`); down.setAttribute("aria-label", `Move ${action.label} down`);
-    row.append(label, select, up, down); list.append(row);
-  }
-}
-
-async function loadUiLayout() {
-  try { const r = await fetch("/admin/ui/layout", {headers: authHeaders()}); if (r.ok) uiLayout = await r.json(); }
-  catch (_) { uiLayout = {layout: {toolbar: [], plugins: []}, hidden: []}; }
-  renderPluginActions();
-}
-
-function bindUiLayout() {
-  const dialog = $("#ui-layout-dialog");
-  $("#customize-ui")?.addEventListener("click", () => { renderLayoutEditor(); dialog.showModal(); });
-  $("#ui-layout-close")?.addEventListener("click", () => dialog.close());
-  $("#ui-layout-cancel")?.addEventListener("click", () => dialog.close());
-  $("#ui-layout-reset")?.addEventListener("click", () => { uiLayout.layout = {toolbar: allPluginActions().map(a => a.id), plugins: [], chat: []}; uiLayout.hidden = []; renderLayoutEditor(); });
-  $("#ui-layout-save")?.addEventListener("click", async () => {
-    const layout = {toolbar: [], plugins: [], chat: []}, hidden = [];
-    document.querySelectorAll("#ui-layout-list .plugin-card").forEach((row) => { const id = row.querySelector("input").dataset.action; const p = row.querySelector("select").value; if (row.querySelector("input").checked) layout[p].push(id); else hidden.push(id); });
-    const r = await fetch("/admin/ui/layout", {method: "PUT", headers: {...authHeaders(), "Content-Type": "application/json"}, body: JSON.stringify({layout, hidden})});
-    if (r.ok) { uiLayout = await r.json(); dialog.close(); renderPluginActions(); }
+// In-page System view; ordinary modified/middle clicks retain native link behavior.
+for (const link of document.querySelectorAll("[data-view-link]")) {
+  link.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    const hash = link.dataset.viewLink === "system" ? "#system" : "";
+    if (location.hash !== hash) history.pushState(null, "", hash || "/");
+    updateDashboardView();
+    window.scrollTo(0, 0);
   });
 }
-
-async function fetchPlugins() {
-  try {
-    const response = await fetch("/admin/plugins", { headers: authHeaders() });
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    const data = await response.json();
-    pluginList = data.plugins || [];
-    renderPlugins();
-    await loadUiLayout();
-  } catch (_) {
-    // Keep whatever was shown before; discovery is best-effort.
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Measurements panel: real, bounded per-model usage measurements from
-// /admin/metrics. Never invents throughput: the panel renders only what the
-// server recorded from actual traffic.
-// ---------------------------------------------------------------------------
-
-function fmtSeconds(value) {
-  if (value == null) return "n/a";
-  if (value >= 10) return `${value.toFixed(0)}s`;
-  if (value >= 1) return `${value.toFixed(1)}s`;
-  return `${Math.round(value * 1000)}ms`;
-}
-
-function timingRow(label, summary, unit = "") {
-  if (!summary) return null;
-  const item = document.createElement("div");
-  item.className = "measure-row";
-  const term = document.createElement("span");
-  term.textContent = label;
-  const detail = document.createElement("strong");
-  const fmt = unit === " tok/s"
-    ? (v) => v == null ? "n/a" : Number(v).toFixed(1)
-    : fmtSeconds;
-  const suffix = unit === " tok/s" ? "tok_s" : "s";
-  detail.textContent = `median ${fmt(summary[`median_${suffix}`])}${unit} · p95 ${fmt(summary[`p95_${suffix}`])}${unit} · last ${fmt(summary[`last_${suffix}`])}${unit} (${summary.count})`;
-  item.append(term, detail);
-  return item;
-}
-
-// Hourly generation-speed medians from /admin/metrics/history, by model.
-let generationHistory = new Map();
-
-function sparkline(points) {
-  const values = points.map((p) => p.median);
-  const min = Math.min(...values), max = Math.max(...values);
-  const width = 160, height = 32, span = max - min || 1;
-  const step = width / (values.length - 1);
-  const coords = values.map((v, i) => `${(i * step).toFixed(1)},${(height - 2 - (v - min) / span * (height - 4)).toFixed(1)}`);
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.setAttribute("width", String(width));
-  svg.setAttribute("height", String(height));
-  svg.setAttribute("class", "measure-sparkline");
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `Generation speed trend: ${min.toFixed(1)} to ${max.toFixed(1)} tok/s`);
-  const line = document.createElementNS(ns, "polyline");
-  line.setAttribute("points", coords.join(" "));
-  line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "currentColor");
-  line.setAttribute("stroke-width", "1.5");
-  svg.appendChild(line);
-  return svg;
-}
-
-function historyRow(name) {
-  const points = generationHistory.get(name) || [];
-  if (points.length < 2) return null;
-  const row = document.createElement("div");
-  row.className = "measure-row measure-trend";
-  const label = document.createElement("span");
-  const days = Math.max(1, Math.round((points[points.length - 1].t - points[0].t) / 86400));
-  label.textContent = `Generation trend (${points.length} hours over ${days} day${days === 1 ? "" : "s"})`;
-  const latest = document.createElement("strong");
-  latest.textContent = `now ${points[points.length - 1].median.toFixed(1)} tok/s`;
-  row.append(label, sparkline(points), latest);
-  return row;
-}
-
-function renderMeasurements(metrics) {
-  const host = $("#measurements");
-  if (!host) return;
-  host.replaceChildren();
-  const timings = metrics?.timings || {};
-  const timingModels = timings?.models || {};
-  const entries = Object.entries(timingModels);
-  const queue = timings?.queue_wait;
-  const tuned = (metrics?.autotune?.models || []).filter(m => m.before_after);
-
-  const card = document.createElement("div");
-  card.className = "measurements-card";
-  if (!entries.length && !queue && !tuned.length) {
-    const empty = document.createElement("p");
-    empty.className = "measurements-empty";
-    empty.textContent = "No measurements yet. Send chat messages and load models; real timings appear here.";
-    card.appendChild(empty);
-    host.appendChild(card);
-    return;
-  }
-  for (const [name, entry] of entries) {
-    const block = document.createElement("div");
-    block.className = "measure-block";
-    const title = document.createElement("h3");
-    title.textContent = name;
-    block.appendChild(title);
-    const rows = document.createElement("div");
-    rows.className = "measure-rows";
-    if (entry.cold_start) rows.appendChild(timingRow("Cold start", entry.cold_start));
-    if (entry.ttft) rows.appendChild(timingRow("Time to first token", entry.ttft));
-    if (entry.model_wait) rows.appendChild(timingRow("Model wait (load/switch included)", entry.model_wait));
-    if (entry.generation_tok_s) rows.appendChild(timingRow("Generation speed", entry.generation_tok_s, " tok/s"));
-    const trend = historyRow(name);
-    if (trend) rows.appendChild(trend);
-    block.appendChild(rows);
-    card.appendChild(block);
-  }
-  if (queue) card.appendChild(timingRow("Model wait across requests (load/switch included)", queue));
-  for (const model of tuned) {
-    const result = model.before_after;
-    const block = document.createElement("div");
-    block.className = "measure-block";
-    const title = document.createElement("h3");
-    title.textContent = `${model.name} · last completed autotune this session`;
-    block.appendChild(title);
-    for (const [key, label] of [["prompt_tok_s", "Prompt processing"], ["generation_tok_s", "Generation"]]) {
-      const before = result.before?.[key], after = result.after?.[key];
-      if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
-      const row = document.createElement("p");
-      row.textContent = `${label}: ${before.toFixed(1)} → ${after.toFixed(1)} tok/s (${result.applied ? "applied" : "measured only"})`;
-      block.appendChild(row);
-    }
-    card.appendChild(block);
-  }
-  host.appendChild(card);
-}
-
-async function fetchMeasurements() {
-  try {
-    const [response, history] = await Promise.all([
-      fetch("/admin/metrics", { headers: authHeaders() }),
-      fetch("/admin/metrics/history?metric=generation_tok_s&days=30", { headers: authHeaders() }).catch(() => null),
-    ]);
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    if (history && history.ok) {
-      const grouped = new Map();
-      for (const point of (await history.json()).points || []) {
-        if (!grouped.has(point.model)) grouped.set(point.model, []);
-        grouped.get(point.model).push(point);
-      }
-      generationHistory = grouped;
-    }
-    renderMeasurements(await response.json());
-  } catch (_) {
-    // Measurements are best-effort; keep whatever was rendered.
-  }
-}
-
-// Connect-a-frontend guided panel. The endpoint returns only locally computed
-// discovery data (base URL from the configured host/port, loopback Ollama
-// reachability, registered upstreams); the panel is copy-only and never
-// mutates anything on the user's side or ours.
-let integrationLoaded = false;
-const frontendTabs = [
-  ["#tab-openwebui", "#panel-openwebui"],
-  ["#tab-ollama", "#panel-ollama"],
-  ["#tab-generic", "#panel-generic"],
-];
-let activeFrontendTab = "openwebui";
-
-function isWindows() {
-  return navigator.platform && /win/i.test(navigator.platform);
-}
-
-async function copyToClipboard(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (_) {
-    // Older or non-secure contexts may lack the async clipboard API.
-    try {
-      const helper = document.createElement("textarea");
-      helper.value = text;
-      helper.setAttribute("readonly", "true");
-      helper.style.position = "fixed";
-      helper.style.opacity = "0";
-      document.body.appendChild(helper);
-      helper.select();
-      const ok = document.execCommand("copy");
-      helper.remove();
-      return ok;
-    } catch (_) {
-      return false;
-    }
-  }
-}
-
-function markCopied(buttonNode) {
-  const original = buttonNode.textContent;
-  buttonNode.textContent = "Copied";
-  buttonNode.classList.add("copied");
-  setTimeout(() => {
-    buttonNode.textContent = original;
-    buttonNode.classList.remove("copied");
-  }, 1500);
-}
-
-function bindCopyButton(id, getText) {
-  const node = $(id);
-  if (!node) return;
-  node.addEventListener("click", async () => {
-    if (await copyToClipboard(getText())) markCopied(node);
-  });
-}
-
-function selectFrontendTab(kind) {
-  activeFrontendTab = kind;
-  for (const [tabId, panelId] of frontendTabs) {
-    const tab = $(tabId);
-    const panel = $(panelId);
-    const active = tabId.includes(kind);
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", String(active));
-    panel.toggleAttribute("hidden", !active);
-  }
-}
-
-function renderOllamaStatus(ollama) {
-  const status = $("#ollama-status");
-  const registered = $("#ollama-registered-note");
-  if (!ollama?.reachable) {
-    status.textContent =
-      "No Ollama found on this machine (checked its default address). " +
-      "The command below still works later; run it once Ollama is installed and running.";
-    status.classList.add("unreachable");
-  } else {
-    status.textContent = `Ollama detected${ollama.version ? ` (version ${ollama.version})` : ""}.`;
-    status.classList.remove("unreachable");
-  }
-  registered.hidden = !ollama?.already_registered;
-}
-
-function renderIntegration(data) {
-  const openwebuiUrl = $("#openwebui-url");
-  const genericUrl = $("#generic-url");
-  const genericCurl = $("#generic-curl");
-  const ollamaCommand = $("#ollama-command");
-  const portHint = $("#frontend-port-hint");
-  if (!openwebuiUrl || !data) return;
-  openwebuiUrl.textContent = data.base_url;
-  genericUrl.textContent = data.base_url;
-  genericCurl.textContent = isWindows() ? data.curl_example_windows : data.curl_example;
-  ollamaCommand.textContent = data.ollama?.upstream_add_command || "";
-  portHint.textContent = `port ${data.server?.port}, at /v1/chat/completions and /v1/models`;
-  const lanNote = $("#openwebui-lan-note");
-  if (data.lan_note) {
-    lanNote.textContent = data.lan_note;
-    lanNote.hidden = false;
-  } else {
-    lanNote.hidden = true;
-  }
-  const apiKeyNote = $("#openwebui-key-note");
-  if (data.api_key_guidance) {
-    apiKeyNote.textContent = `API Key: ${data.api_key_guidance}`;
-  }
-  renderOllamaStatus(data.ollama);
-  integrationLoaded = true;
-}
-
-async function loadIntegration(force = false) {
-  if (integrationLoaded && !force) return;
-  try {
-    const response = await fetch("/admin/integration", { headers: authHeaders() });
-    if (!response.ok) throw new Error(`status ${response.status}`);
-    renderIntegration(await response.json());
-  } catch (_) {
-    renderIntegration(null);
-  }
-}
-
-function openFrontendDialog() {
-  $("#frontend-dialog").showModal();
-  loadIntegration();
-}
-
-$("#connect-frontend").addEventListener("click", openFrontendDialog);
-$("#frontend-close").addEventListener("click", () => $("#frontend-dialog").close());
-for (const [tabId] of frontendTabs) {
-  $(tabId).addEventListener("click", () => selectFrontendTab(tabId.split("-")[1]));
-}
-bindCopyButton("#copy-openwebui-url", () => $("#openwebui-url")?.textContent);
-bindCopyButton("#copy-ollama-command", () => $("#ollama-command")?.textContent);
-bindCopyButton("#copy-generic-url", () => $("#generic-url")?.textContent);
-bindCopyButton("#copy-generic-curl", () => $("#generic-curl")?.textContent);
-
-// ---------------------------------------------------------------------------
-// Model library. Every string from Hugging Face is set with textContent.
-// ---------------------------------------------------------------------------
-
-const FIT_LABELS = {
-  fits: ["Fits", "ready"],
-  tight: ["Tight: short context", "warn"],
-  too_big: ["Too big for this GPU", "error"],
-  unknown: ["Size unknown", "warn"],
-};
-
-function fmtMb(mb) {
-  if (mb == null) return "?";
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
-}
-
-function libraryMessage(host, text, cls = "library-note") {
-  const p = document.createElement("p");
-  p.className = cls;
-  p.textContent = text;
-  host.replaceChildren(p);
-}
-
-async function librarySearch(event) {
-  event.preventDefault();
-  const host = $("#library-results");
-  const query = $("#library-query").value.trim();
-  if (query.length < 2) return;
-  libraryMessage(host, "Searching…");
-  try {
-    const r = await fetch(`/admin/library/search?q=${encodeURIComponent(query)}`, { headers: authHeaders() });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-    host.replaceChildren();
-    if (!data.results.length) { libraryMessage(host, "No GGUF repositories matched."); return; }
-    for (const item of data.results) {
-      const card = document.createElement("article");
-      card.className = "plugin-card library-repo";
-      const main = document.createElement("div");
-      const title = document.createElement("h3");
-      title.textContent = item.repo;
-      const meta = document.createElement("p");
-      meta.className = "plugin-meta";
-      meta.textContent = `${(item.downloads ?? 0).toLocaleString()} downloads · ${(item.likes ?? 0).toLocaleString()} likes`;
-      const options = document.createElement("div");
-      options.className = "library-options";
-      main.append(title, meta, options);
-      const side = document.createElement("div");
-      side.appendChild(button("Show files", "secondary", () => libraryShowRepo(item.repo, options)));
-      card.append(main, side);
-      host.appendChild(card);
-    }
-  } catch (e) {
-    libraryMessage(host, `Search failed: ${e.message}`, "library-note error");
-  }
-}
-
-async function libraryShowRepo(repo, host) {
-  libraryMessage(host, "Reading files…");
-  try {
-    const r = await fetch(`/admin/library/repo?repo=${encodeURIComponent(repo)}`, { headers: authHeaders() });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-    host.replaceChildren();
-    if (data.vision) {
-      const v = document.createElement("p");
-      v.className = "plugin-meta";
-      v.textContent = "Vision model: its projector downloads alongside.";
-      host.appendChild(v);
-    }
-    if (!data.options.length) { libraryMessage(host, "No downloadable GGUF files."); return; }
-    for (const option of data.options) {
-      const row = document.createElement("div");
-      row.className = "library-option";
-      const name = document.createElement("span");
-      name.className = "library-file";
-      name.textContent = `${option.quant} · ${fmtMb(option.size_mb)}${option.shards > 1 ? ` · ${option.shards} parts` : ""}`;
-      name.title = option.file;
-      const [label, tone] = FIT_LABELS[option.fit] || FIT_LABELS.unknown;
-      const badge = document.createElement("span");
-      badge.className = `status-pill ${tone}`;
-      badge.textContent = label;
-      const download = button("Download", "secondary", async () => {
-        download.disabled = true;
-        try {
-          const resp = await fetch("/admin/library/download", {
-            method: "POST",
-            headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ repo, file: option.file, size_mb: option.size_mb }),
-          });
-          const job = await resp.json().catch(() => ({}));
-          if (!resp.ok) throw new Error(job.detail || `HTTP ${resp.status}`);
-          pollLibraryJobs();
-        } catch (e) {
-          download.disabled = false;
-          badge.textContent = `Download failed: ${e.message}`;
-          badge.className = "status-pill error";
-        }
-      });
-      if (option.fit === "too_big") download.title = "Larger than this GPU's memory; it will not load without offloading.";
-      row.append(name, badge, download);
-      host.appendChild(row);
-    }
-  } catch (e) {
-    libraryMessage(host, `Could not read ${repo}: ${e.message}`, "library-note error");
-  }
-}
-
-let libraryJobTimer = null;
-
-async function pollLibraryJobs() {
-  const host = $("#library-jobs");
-  if (!host) return;
-  let jobs = [];
-  try {
-    const r = await fetch("/admin/library/jobs", { headers: authHeaders() });
-    if (r.ok) jobs = (await r.json()).jobs || [];
-  } catch (_) { return; }
-  host.replaceChildren();
-  for (const job of jobs.slice(0, 6)) {
-    const row = document.createElement("div");
-    row.className = "library-job";
-    const name = document.createElement("span");
-    name.textContent = `${job.repo} · ${job.file.split("/").pop()}`;
-    const state = document.createElement("strong");
-    if (job.status === "downloading") {
-      const pct = job.bytes_total ? Math.min(99, Math.round(job.bytes_done / job.bytes_total * 100)) : null;
-      state.textContent = pct == null ? `downloading ${fmtMb(Math.round(job.bytes_done / 1048576))}` : `downloading ${pct}%`;
-    } else if (job.status === "done") {
-      state.textContent = job.registered.length ? `ready as ${job.registered.join(", ")}` : "downloaded (already registered)";
-    } else if (job.status === "error") {
-      state.textContent = `failed: ${job.error}`;
-      state.className = "library-error";
-    } else {
-      state.textContent = job.status;
-    }
-    row.append(name, state);
-    host.appendChild(row);
-  }
-  const active = jobs.some(j => j.status === "queued" || j.status === "downloading" || j.status === "registering");
-  clearTimeout(libraryJobTimer);
-  if (active) libraryJobTimer = setTimeout(pollLibraryJobs, 2000);
-  else if (jobs.some(j => j.status === "done")) fetchStatus(true);
-}
-
-async function loadLibraryDisk() {
-  const host = $("#library-disk");
-  if (!host) return;
-  try {
-    const r = await fetch("/admin/library/disk", { headers: authHeaders() });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-    host.replaceChildren();
-    const summary = document.createElement("p");
-    summary.className = "plugin-meta";
-    const used = data.models.reduce((n, m) => n + m.size_mb, 0);
-    summary.textContent = `${fmtMb(used)} in ${data.models.length} model(s) · ${fmtMb(data.free_mb)} free in ${data.models_dir}`;
-    host.appendChild(summary);
-    for (const m of data.models) {
-      const row = document.createElement("div");
-      row.className = "library-option";
-      const name = document.createElement("span");
-      const when = m.last_used ? new Date(m.last_used * 1000).toLocaleDateString() : "no recorded use";
-      name.textContent = `${m.name} · ${fmtMb(m.size_mb)} · ${m.missing ? "file missing" : when}`;
-      const remove = button(m.managed ? "Delete" : "Unregister", "ghost", async () => {
-        const verb = m.managed ? `Delete ${m.name} and its files` : `Unregister ${m.name} (files stay where they are)`;
-        if (!confirm(`${verb}?`)) return;
-        remove.disabled = true;
-        const resp = await fetch(`/admin/library/models/${encodeURIComponent(m.name)}?delete_files=${m.managed}`, {
-          method: "DELETE", headers: authHeaders(),
-        });
-        if (resp.ok) { await loadLibraryDisk(); fetchStatus(true); }
-        else remove.disabled = false;
-      });
-      remove.title = m.managed ? "Files inside the models folder are deleted" : "Outside the models folder: only the registration is removed";
-      row.append(name, remove);
-      host.appendChild(row);
-    }
-  } catch (e) {
-    libraryMessage(host, `Disk usage unavailable: ${e.message}`, "library-note error");
-  }
-}
-
-$("#library-search")?.addEventListener("submit", librarySearch);
-$("#library-disk-details")?.addEventListener("toggle", (event) => { if (event.target.open) loadLibraryDisk(); });
+window.addEventListener("popstate", updateDashboardView);
+window.addEventListener("hashchange", updateDashboardView);
+updateDashboardView();
 
 $("#refresh").addEventListener("click", () => fetchStatus(true));
 $("#scan").addEventListener("click", scanModels);
@@ -1161,12 +887,13 @@ $("#stop-all").addEventListener("click", stopAll);
 $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 
 (async () => {
+  libraryController.bind();
   await initAdminToken();
   await fetchStatus(true);
-  await fetchPlugins();
+  await pluginsController.start();
+  pluginsController.bind();
   await fetchMeasurements();
-  pollLibraryJobs();
-  bindUiLayout();
-  setInterval(fetchStatus, 5000);
-  setInterval(fetchMeasurements, 15000);
+  libraryController.start();
+  measurementsController.start();
+  startStatusPolling();
 })();

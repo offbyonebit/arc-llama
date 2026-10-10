@@ -1753,3 +1753,7 @@ header > * { position: relative; z-index: 1; }
   padding: 7px 10px;
   resize: vertical;
 }
+
+.app-nav { display: flex; align-items: center; gap: 4px; }
+.app-nav .nav-link { color: var(--fg-dim); text-decoration: none; font-weight: 600; font-size: 13px; padding: 7px 9px; border-radius: 4px; }
+.app-nav .nav-link:hover, .app-nav .nav-link.active { color: var(--fg); background: var(--bg-sunk); }
