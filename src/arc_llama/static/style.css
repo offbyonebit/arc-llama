@@ -170,7 +170,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .start-section { display: flex; justify-content: space-between; align-items: end; gap: 24px; }
 .primary-cta { display: inline-flex; justify-content: center; align-items: center; min-height: 42px; padding: 10px 15px; border: 1px solid #dfddd7; border-radius: var(--radius-small); background: #dfddd7; color: #161616; text-decoration: none; font-size: 13px; font-weight: 720; text-align: center; transition: background .16s ease, border-color .16s ease; }
 .primary-cta:hover:not(.is-disabled) { background: #f1efe9; border-color: #f1efe9; }
-.primary-cta.is-disabled { color: var(--text-faint); background: var(--surface-raised); border-color: var(--border); cursor: not-allowed; }
+.primary-cta.is-disabled { pointer-events: none; color: var(--text-faint); background: var(--surface-raised); border-color: var(--border); cursor: not-allowed; }
 
 /* Connect a frontend: guided integration dialog */
 .frontend-dialog { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 60px); padding: 26px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
@@ -228,3 +228,68 @@ footer.error .status-dot { background: var(--red); }
   .header-actions { justify-content: flex-end; }
   .flow-section { padding-block: 26px; }
 }
+
+.measure-trend { align-items: center; }
+.measure-sparkline { color: var(--accent, currentColor); flex: 0 0 auto; max-width: 40vw; }
+
+.library-search { display: flex; gap: 8px; margin: 0 0 12px; }
+.library-search input { flex: 1 1 auto; min-width: 0; font: inherit; padding: 7px 10px; border: 1px solid var(--border-muted); border-radius: 5px; background: var(--surface); color: inherit; }
+.library-results, .library-jobs, .library-disk { display: grid; gap: 8px; }
+.library-options { display: grid; gap: 6px; margin-top: 8px; }
+.library-option, .library-job { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; }
+.library-option .library-file { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.library-job span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.library-note.error, .library-error { color: var(--red); }
+.library-disk-details { margin-top: 12px; }
+.library-disk-details summary { cursor: pointer; font-size: 13px; }
+
+/* Dashboard views start in the Models state before JavaScript runs. */
+.dashboard[data-dashboard-view="models"] [data-area="system"] { display: none; }
+.dashboard[data-dashboard-view="system"] [data-area="models"] { display: none; }
+.model-card-file-warning { margin: 8px 0 0; color: var(--red); font-size: 12px; }
+.file-readiness-note { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
+
+.library-job-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* Discovery comes before review; guidance stays a quiet status strip. */
+.next-step-section { padding-block: 16px; }
+.next-step { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 20px; padding: 16px; border: 1px solid var(--border-muted); border-radius: 6px; }
+.next-step h2 { margin: 0; font-size: 16px; }
+.next-step p { grid-column: 1; margin: 6px 0 0; color: var(--text-muted); max-width: 75ch; font-size: 13px; }
+.next-step > :last-child:not(p) { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+.next-step .primary-cta { display: inline-block; }
+.readiness-section[hidden] { display: none; }
+.readiness-section .start-section { padding-top: 18px; }
+@media (max-width: 600px) {
+  .next-step { grid-template-columns: 1fr; }
+  .next-step > :last-child:not(p) { grid-column: 1; grid-row: auto; justify-self: start; margin-top: 12px; }
+}
+
+/* Model choices explain the tradeoff before exposing filenames and encodings. */
+.library-options .library-option { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; padding: 14px; border: 1px solid var(--border-muted); border-radius: 6px; }
+.library-option-main { min-width: 0; }
+.library-option-main .plugin-meta { margin: 6px 0 10px; }
+.library-option-size { margin: 8px 0; font-size: 13px; }
+.library-technical { margin-top: 10px; color: var(--text-muted); }
+.library-technical summary { cursor: pointer; }
+.library-technical p { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .library-options .library-option { grid-template-columns: 1fr; }
+  .library-options .library-option > button { justify-self: start; }
+}
+
+.library-job-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-basis: 100%; }
+.library-job-actions .library-technical { flex-basis: 100%; }
+.library-job-actions pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Hugging Face publisher identity; initials remain visible if an avatar fails. */
+.library-repo-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.library-repo-identity > div { min-width: 0; }
+.library-repo-identity h3 { overflow-wrap: anywhere; }
+.library-publisher-avatar { position: relative; display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; overflow: hidden; border-radius: 8px; background: var(--surface); border: 1px solid var(--border-muted); font-size: 12px; font-weight: 600; }
+.library-publisher-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--surface); }
+.library-publisher { margin: 3px 0 0; }
+
+.library-compatibility { margin-top: 10px; }
+.library-compatibility-evidence { margin-top: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.library-compatibility-evidence summary { cursor: pointer; color: var(--text-muted); }

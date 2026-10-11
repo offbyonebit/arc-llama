@@ -314,7 +314,7 @@ async def test_create_app_without_plugins_preserves_core_routes(monkeypatch):
         assert resp.json()["status"] == "ok"
         resp = await client.get("/admin/plugins", headers=AUTH)
         assert resp.status_code == 200
-        assert resp.json() == {"plugins": []}
+        assert resp.json()["plugins"] == []
 
 
 async def test_create_app_admin_plugins_requires_admin_token(monkeypatch):
@@ -331,7 +331,7 @@ async def test_create_app_admin_plugins_lists_installed_plugin(monkeypatch):
     async with _test_client(app) as client:
         resp = await client.get("/admin/plugins", headers=AUTH)
         assert resp.status_code == 200
-        assert resp.json() == {"plugins": [{"name": "fake", "status": "active"}]}
+        assert resp.json()["plugins"] == [{"name": "fake", "status": "active"}]
 
 
 async def test_create_app_admin_plugins_exposes_info_metadata(monkeypatch):

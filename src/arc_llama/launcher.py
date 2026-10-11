@@ -226,13 +226,55 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None) -> int | 
     return None
 
 
+def resolve_split_gpus(cfg: Config, model: ModelConfig) -> list[GPUConfig] | None:
+    """GPUs a tensor-split model spans, primary first, or None.
+
+    ``recipe.split_gpus`` names the PCI slots; ``recipe.tensor_split`` gives
+    one proportion per slot. Both must agree, every slot must be a known,
+    enabled GPU on the primary's backend, and the model's own GPU must be
+    listed. Anything else falls back to a single GPU with a warning.
+    """
+    recipe = model.recipe or {}
+    ratios = recipe.get("tensor_split")
+    slots = recipe.get("split_gpus")
+    if not ratios or not slots:
+        return None
+    primary = cfg.find_gpu(model.gpu_pci_slot)
+    problem = None
+    gpus: list[GPUConfig] = []
+    if primary is None or model.gpu_pci_slot not in slots:
+        problem = "split_gpus must include the model's own GPU"
+    elif len(slots) != len(ratios):
+        problem = f"{len(slots)} split_gpus but {len(ratios)} tensor_split values"
+    else:
+        ordered = [model.gpu_pci_slot] + [s for s in slots if s != model.gpu_pci_slot]
+        for slot in ordered:
+            g = cfg.find_gpu(slot)
+            if g is None or not g.enabled:
+                problem = f"GPU {slot} is unknown or disabled"
+                break
+            if g.backend != primary.backend:
+                problem = f"GPU {slot} uses {g.backend}, not {primary.backend}"
+                break
+            gpus.append(g)
+    if problem:
+        log.warning("[%s] tensor split disabled: %s", model.name, problem)
+        return None
+    return gpus
+
+
 def build_env(
     profile: ArchProfile,
     gpu: GPUConfig,
     llama_server: str | Path | None = None,
     oneapi_setvars: str | None = None,
+    extra_gpus: list[GPUConfig] | None = None,
 ) -> dict[str, str]:
-    """Compose the environment for llama-server based on backend and arch."""
+    """Compose the environment for llama-server based on backend and arch.
+
+    ``extra_gpus`` widens device visibility for a tensor-split model; the
+    primary ``gpu`` always comes first so llama.cpp's main device is it.
+    """
     backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
     env = os.environ.copy()
 
@@ -249,16 +291,23 @@ def build_env(
         # so on a box with a discrete NVIDIA/AMD card the Arc can be Vulkan1
         # while sycl_index is still 0. Using sycl_index there silently ran
         # models on the other vendor's GPU.
-        index = _vulkan_index_for(gpu, llama_server)
-        if index is not None:
-            env["GGML_VK_VISIBLE_DEVICES"] = str(index)
+        indices = [_vulkan_index_for(g, llama_server) for g in [gpu, *(extra_gpus or [])]]
+        if all(i is not None for i in indices):
+            env["GGML_VK_VISIBLE_DEVICES"] = ",".join(str(i) for i in indices)
+        elif extra_gpus:
+            log.warning(
+                "Vulkan: could not map every split GPU to a device index; set "
+                "vulkan_index for each GPU. Not restricting visible devices."
+            )
         return env
 
     # SYCL path: apply arch-specific env, stripping known-bad inherited vars.
     for k in profile.sycl_env_remove:
         env.pop(k, None)
     env.update(profile.sycl_env)
-    env["ONEAPI_DEVICE_SELECTOR"] = f"level_zero:{gpu.sycl_index}"
+    env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:" + ",".join(
+        str(g.sycl_index) for g in [gpu, *(extra_gpus or [])]
+    )
 
     # If the current environment is missing the oneAPI runtime libraries, try to
     # source a setvars.sh automatically. This helps tarball/custom-prefix installs
@@ -300,13 +349,17 @@ def build_plan(
     arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
     profile = profile_for(arch)
     backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
+    split_gpus = resolve_split_gpus(cfg, model)
     env = build_env(
         profile,
         gpu,
         llama_server=cfg.paths.llama_server,
         oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None),
+        extra_gpus=split_gpus[1:] if split_gpus else None,
     )
     recipe = model.launch_recipe()
+    if recipe.tensor_split and split_gpus is None:
+        recipe.tensor_split = None
 
     # --- MTP head detection & safety wiring ---
     mtp_present = has_mtp_heads(model.path)
@@ -384,6 +437,21 @@ def build_plan(
         log.warning("[%s] %s has no --spec-draft-model; starting target-only", model.name, cfg.paths.llama_server)
         recipe.spec_type = None
         recipe.spec_draft_model = None
+
+    if recipe.mmproj and not caps.supports_mmproj:
+        log.warning(
+            "[%s] %s has no --mmproj; starting text-only (image input disabled)",
+            model.name, cfg.paths.llama_server,
+        )
+        recipe.mmproj = None
+    if recipe.reranking and not caps.supports_reranking:
+        log.warning("[%s] %s has no --reranking; rerank disabled", model.name, cfg.paths.llama_server)
+        recipe.reranking = False
+    if recipe.tensor_split and not caps.supports_tensor_split:
+        log.warning(
+            "[%s] %s has no --tensor-split; using a single GPU", model.name, cfg.paths.llama_server
+        )
+        recipe.tensor_split = None
 
     argv: list[str] = [
         cfg.paths.llama_server,

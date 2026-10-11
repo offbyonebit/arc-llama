@@ -27,16 +27,22 @@ from arc_llama.config import Config, GPUConfig, ModelConfig
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
+    gguf_total_bytes,
     kv_bytes_per_token_f16,
     override_tensor_saved_bytes,
     scan_weight_tensors,
     weight_tensor_table,
 )
-from arc_llama.launcher import LlamaServer, build_plan
+from arc_llama.launcher import LlamaServer, build_plan, resolve_split_gpus
 from arc_llama.preflight import preflight_launch
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
 log = logging.getLogger("arc_llama.router")
+
+BACKEND_HOST = "127.0.0.1"
+"""Where llama-server backends listen. Always loopback: arc-llama is the only
+client, and binding them to ``server.host`` exposed every backend port,
+unauthenticated, whenever the router itself was bound to the network."""
 
 # Rough overhead budgets for VRAM estimation (MiB).
 _VRAM_COMPUTE_BUFFER_MB = 768
@@ -98,6 +104,9 @@ class ModelTimings:
         self.queue: list[float] = []
         self.model_wait: dict[str, list[float]] = {}
         self._cap = cap
+        # Optional perf_history.PerfHistory; the server attaches one so the
+        # same real samples also build a long-term record.
+        self.history: Any = None
 
     def _append(self, store: dict[str, list[float]], name: str, value: float) -> None:
         if not math.isfinite(value) or value < 0:
@@ -114,9 +123,13 @@ class ModelTimings:
 
     def record_ttft(self, name: str, seconds: float) -> None:
         self._append(self.ttft, name, seconds)
+        if self.history is not None:
+            self.history.add(name, "ttft_s", seconds)
 
     def record_generation_tok_s(self, name: str, tok_per_s: float) -> None:
         self._append(self.generation_tok_s, name, tok_per_s)
+        if self.history is not None:
+            self.history.add(name, "generation_tok_s", tok_per_s)
 
     def record_queue_wait(self, seconds: float, name: str | None = None) -> None:
         if name is not None:
@@ -177,10 +190,9 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
     recipe = model.recipe or {}
     if recipe.get("n_cpu_moe") or recipe.get("override_tensor"):
         return None
-    try:
-        size = Path(model.path).stat().st_size
-    except OSError:
+    if not Path(model.path).exists():
         return None
+    size = gguf_total_bytes(model.path)
     mib = 1_048_576
     weight_mb = (size + mib - 1) // mib
     ctx = int(recipe.get("ctx", 8192))
@@ -194,7 +206,24 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         )
         // mib
     )
-    return weight_mb + kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+    return (
+        weight_mb + kv_mb + mmproj_vram_mb(recipe)
+        + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+    )
+
+
+def mmproj_vram_mb(recipe: dict[str, Any]) -> int:
+    """VRAM held by an offloaded multimodal projector, in MiB (0 if none)."""
+    mmproj = recipe.get("mmproj")
+    if not mmproj or recipe.get("mmproj_offload") is False:
+        return 0
+    try:
+        size = Path(str(mmproj)).expanduser().stat().st_size
+    except OSError:
+        return 0
+    # Projectors also allocate an image-encoder compute buffer; a quarter of
+    # their weight size is a conservative allowance measured on CLIP/SigLIP.
+    return int(size * 1.25) // 1_048_576
 
 
 def _estimate_model_vram_mb(
@@ -272,10 +301,7 @@ def _estimate_model_vram_mb(
     if weight_bytes is None:
         weight_bytes = estimate_weight_vram_bytes(path)
         if weight_bytes is None:
-            try:
-                weight_bytes = path.stat().st_size
-            except OSError:
-                weight_bytes = 0
+            weight_bytes = gguf_total_bytes(path)
             log.debug(
                 "VRAM estimate for %s falling back to file size: %.0f MiB",
                 model.name,
@@ -291,7 +317,7 @@ def _estimate_model_vram_mb(
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
-    return weight_mb + kv_mb + buffer_mb + _VRAM_SAFETY_MARGIN_MB
+    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
 
 _VRAM_ESTIMATE_CACHE_TTL_SECONDS = 120.0
@@ -436,6 +462,8 @@ class Router:
         self.cfg = cfg
         self.log_dir = log_dir
         self.resources: Any = None
+        # Optional plugin_api.EventBus; set by the server lifespan.
+        self.events: Any = None
         self._servers: dict[str, LlamaServer] = {}  # keyed by model.name
         self._lock = asyncio.Lock()
         self._loading_futures: dict[str, asyncio.Future[tuple[ModelConfig, LlamaServer]]] = {}
@@ -469,6 +497,11 @@ class Router:
         self._stopping: set[str] = set()
         self._build_servers()
 
+    def _emit(self, event: str, **payload: Any) -> None:
+        bus = self.events
+        if bus is not None:
+            bus.emit(event, payload)
+
     def acquire_model(self, name: str) -> None:
         """Count a request as actively using *name*. Called by _proxy_post
         once the request has resolved to a local model."""
@@ -501,7 +534,7 @@ class Router:
                     m.gpu_pci_slot,
                 )
                 continue
-            plan = build_plan(self.cfg, m, gpu, host=self.cfg.server.host)
+            plan = build_plan(self.cfg, m, gpu, host=BACKEND_HOST)
             self._servers[m.name] = LlamaServer(plan, name=m.name)
 
     # ------------------------------------------------------------------
@@ -762,6 +795,7 @@ class Router:
                 self.timings.record_cold_start(
                     target_model.name, time.monotonic() - load_started_at
                 )
+                self._emit("model_loaded", model=target_model.name, gpu=target_gpu.pci_slot)
                 result = (target_model, target_srv)
                 future.set_result(result)
                 if acquire:
@@ -782,6 +816,7 @@ class Router:
                 if not future.done():
                     self.metrics["load_errors"] += 1
                     self.metrics["last_error"] = str(exc)
+                    self._emit("model_load_failed", model=target_model.name, error=str(exc))
                     # Give waiters the same detailed error the starter raises
                     # (including the llama-server log tail), so _proxy_post can
                     # surface a 503 with real diagnostics rather than a bare
@@ -814,6 +849,12 @@ class Router:
         """
         if not target_gpu.vram_mb:
             return
+        capacity_mb = target_gpu.vram_mb
+        split = resolve_split_gpus(self.cfg, target)
+        if split:
+            # Weights and KV spread across every split GPU; admission is
+            # against their combined memory.
+            capacity_mb = sum(g.vram_mb or 0 for g in split)
         target_mb = _estimate_model_vram_mb(target)
         if target_mb is None:
             # Expert offload is in force but its bytes cannot be accounted.
@@ -844,10 +885,10 @@ class Router:
                 )
                 continue
             used_mb += other_mb
-        if used_mb > target_gpu.vram_mb:
+        if used_mb > capacity_mb:
             message = (
                 f"model {target.name!r} needs ~{target_mb} MiB on GPU "
-                f"{target_gpu.pci_slot} but only {target_gpu.vram_mb} MiB is available "
+                f"{target_gpu.pci_slot} but only {capacity_mb} MiB is available "
                 f"(estimated total with co-residents: {used_mb} MiB)"
             )
             raise StartupFailureError(
@@ -859,7 +900,7 @@ class Router:
                     "gpu": target_gpu.pci_slot,
                     "estimated_model_mb": target_mb,
                     "estimated_total_mb": used_mb,
-                    "available_mb": target_gpu.vram_mb,
+                    "available_mb": capacity_mb,
                 },
             )
 
@@ -982,6 +1023,7 @@ class Router:
                 )
             log.info("evicting %s before starting %s", name, target.name)
             await srv.astop()
+            self._emit("model_stopped", model=name, reason="evicted")
             return None
         finally:
             # Always clear the draining mark, whatever happened above — a
@@ -1001,6 +1043,7 @@ class Router:
                 return False
             await srv.astop()
             self.metrics["stops"] += 1
+            self._emit("model_stopped", model=name, reason="stopped")
             return True
 
     async def stop_all(self) -> int:
@@ -1008,7 +1051,7 @@ class Router:
         async with self._lock:
             stopped = 0
             failure = None
-            for srv in self._servers.values():
+            for name, srv in self._servers.items():
                 running = srv.is_running
                 if running or getattr(srv, "process", None) is not None:
                     try:
@@ -1017,6 +1060,8 @@ class Router:
                         failure = failure or exc
                     else:
                         stopped += int(running)
+                        if running:
+                            self._emit("model_stopped", model=name, reason="stopped")
             self.metrics["stops"] += stopped
             if failure is not None:
                 raise failure
@@ -1076,7 +1121,7 @@ class Router:
             gpu = self.cfg.find_gpu(cfg_model.gpu_pci_slot)
             if gpu is None:
                 return False, was_running
-            plan = build_plan(self.cfg, cfg_model, gpu, host=self.cfg.server.host)
+            plan = build_plan(self.cfg, cfg_model, gpu, host=BACKEND_HOST)
             self._servers[name] = LlamaServer(plan, name=name)
             return True, was_running
 

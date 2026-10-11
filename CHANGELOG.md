@@ -3,7 +3,72 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
+
+## [Unreleased]
+
+## [0.9.1.2] - 2026-10-10
+
+### Added
+
+- Versioned plugin API (`arc_llama.plugin_api`, 1.0): admin auth, GPU leases,
+  model and GPU status, and model lifecycle events. Plugins declare
+  `requires_api`; incompatible ones are reported instead of loaded. Plugin
+  pages on the dashboard, `arc-llama plugin new` and `plugin list`, and plugin
+  health in `doctor` and the support bundle.
+- Vision-language models: projectors (`mmproj`) are paired during discovery
+  and Hugging Face downloads, launched with `--mmproj`, and counted in the VRAM
+  fit. Image requests to text-only models fail with HTTP 400 before loading.
+- Split GGUFs register as one model, size and fit across every shard,
+  download completely, and fail fast when a shard is missing.
+- `POST /v1/rerank` for models with `reranking = true`; `/v1/models` reports
+  each model's capabilities and context size.
+- `arc-llama runtime update` installs a llama.cpp release beside the current
+  one, checks its flags against your recipes, runs a canary prompt, and only
+  then switches. `arc-llama runtime rollback` undoes it.
+- API keys for remote clients (`arc-llama keys`, `/admin/api-keys`) and
+  `arc-llama serve --lan`.
+- Chat: stop keeps the partial answer, regenerate and edit the latest turn,
+  a context estimate while typing, per-model system prompt and temperature
+  presets, and image attachments for vision models.
+- `arc-llama benchmark --depths` measures decode speed after real prefill
+  sizes.
+- `arc-llama speculative --auto` measures every fitting draft and n-gram and
+  keeps the fastest.
+- Experimental multi-GPU tensor split via `tensor_split` and `split_gpus`.
+- Hourly performance history at `/admin/metrics/history` with a dashboard
+  trend line.
+- Model library on the dashboard: Hugging Face search with fit badges,
+  background downloads, disk usage, and removal.
+
+- Model setup and recovery guidance, a review step before chat, and clearer
+  context and runtime settings. Hugging Face discovery stays beside local models.
+- Publisher avatars in Hugging Face search and explicit runtime architecture
+  checks before downloading. Runtime recognition is shown separately from memory
+  fit and does not guarantee full model compatibility.
+- A six-screen screenshot walkthrough and an offline gallery with keyboard and
+  mobile swipe navigation.
+
+### Fixed
+
+- Compatibility checks now have bounded network reads, overall deadlines, and
+  limited concurrency. Disconnects, runtime changes, and shutdown cancel pending
+  work, close streams, and reap loader subprocesses; stale results cannot replace
+  newer checks. Failed checks remain retryable with actionable messages.
+- Light-theme settings fields remain readable.
+- Close native smoke-test subprocess pipes after cleanup so successful inference
+  does not fail strict warning checks.
+
+### Changed
+
+- Separate browser fixtures, runner, and chat/dashboard/library regression cases
+  into modules; add coverage for abandoned compatibility checks.
+- llama-server backends always listen on 127.0.0.1 instead of following
+  `server.host`, which exposed every backend port when serving on a network.
+- Tuned recipes are invalidated when the kernel, GPU compute runtime, Level
+  Zero, IGC, Mesa Vulkan driver, or oneAPI version changes.
+- Hugging Face downloads with an explicit file name now list the repository
+  to fetch remaining shards and the projector.
 
 ## [0.9.1] - 2026-10-07
 

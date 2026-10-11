@@ -68,8 +68,6 @@ let selectedModel = null;
 let loadingModel = null;
 let generating = false;
 let sendingMessage = false;
-let settingsDirty = false;
-let settingsDraftModel = null;
 let statusPoller = null;
 let adminToken = null;
 const MIN_VISION_LOADER_MS = 850;
@@ -250,11 +248,97 @@ async function initAdminToken() {
 function authHeaders(extra = {}) {
   return adminToken ? { ...extra, Authorization: `Bearer ${adminToken}` } : extra;
 }
+
+// Remote (LAN) browsers cannot fetch the admin token, so the inference API
+// needs an API key there. Same-origin /v1 and /api calls get the admin token
+// or the stored key automatically; a 401 asks for a key once and retries.
+const API_KEY_STORAGE = "arc-llama-api-key";
+function storedApiKey() {
+  try { return localStorage.getItem(API_KEY_STORAGE) || null; } catch (_) { return null; }
+}
+function rememberApiKey(key) {
+  try { if (key) localStorage.setItem(API_KEY_STORAGE, key); else localStorage.removeItem(API_KEY_STORAGE); } catch (_) {}
+}
+function isClientApiPath(input) {
+  const url = typeof input === "string" ? input : (input && input.url) || "";
+  return url.startsWith("/v1/") || url.startsWith("/api/");
+}
+function withClientAuth(init = {}) {
+  const credential = adminToken || storedApiKey();
+  const headers = new Headers(init.headers || {});
+  if (credential && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${credential}`);
+  return { ...init, headers };
+}
+// A small modal; the UI never uses blocking browser dialogs.
+function askForApiKey() {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "api-key-dialog";
+    const form = document.createElement("form");
+    form.method = "dialog";
+    const label = document.createElement("label");
+    label.textContent = "This server needs an API key for remote access.";
+    const field = document.createElement("input");
+    field.type = "password";
+    field.autocomplete = "off";
+    field.placeholder = "arc_...";
+    label.appendChild(field);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.value = "save";
+    save.textContent = "Use key";
+    const cancel = document.createElement("button");
+    cancel.type = "submit";
+    cancel.value = "cancel";
+    cancel.className = "ghost";
+    cancel.textContent = "Cancel";
+    form.append(label, save, cancel);
+    dialog.appendChild(form);
+    document.body.appendChild(dialog);
+    dialog.addEventListener("close", () => {
+      const value = dialog.returnValue === "save" ? field.value.trim() : "";
+      dialog.remove();
+      resolve(value || null);
+    });
+    dialog.showModal();
+    field.focus();
+  });
+}
+
+// Called once from init(): wraps fetch so every existing /v1 call site gets
+// credentials without being rewritten.
+function installClientAuth() {
+  const nativeFetch = window.fetch.bind(window);
+  let apiKeyPrompted = false;
+  window.fetch = async (input, init = {}) => {
+    if (!isClientApiPath(input)) return nativeFetch(input, init);
+    const response = await nativeFetch(input, withClientAuth(init));
+    if (response.status !== 401 || adminToken || apiKeyPrompted) return response;
+    apiKeyPrompted = true;
+    const key = await askForApiKey();
+    if (!key) return response;
+    rememberApiKey(key.trim());
+    const retry = await nativeFetch(input, withClientAuth(init));
+    if (retry.status === 401) {
+      rememberApiKey(null);
+      apiKeyPrompted = false;
+    }
+    return retry;
+  };
+}
 let lastUsage = null;
 let streamStartTime = null;
 let streamTokenCount = 0;
 const conversation = [];
-let attachments = [];
+// Abort handle for the generation in flight; the send button stops it.
+let activeAbort = null;
+// DOM of the latest exchange, for Regenerate / Edit.
+let lastUserDiv = null;
+let lastAssistantDiv = null;
+// Measured prompt size from the last reply: {tokens, length}. Context
+// estimates start from it and only approximate what was added since.
+let budgetBase = null;
+const PRESETS_KEY = "arc-llama-presets";
 
 const ctxMeter   = $("#ctx-meter");
 const ctxBarFill = $("#ctx-bar-fill");
@@ -277,75 +361,147 @@ const hImportInput   = $("#h-import-input");
 const hFolder        = $("#h-folder");
 const hNewFolder     = $("#h-new-folder");
 
-const HISTORY_KEY    = "arc-llama-chats";
-const MAX_HISTORY    = 50;
-const ALL_FOLDERS    = "__all__";
+let currentChatId = null;
 
-let currentFolder    = ALL_FOLDERS;
-let folders          = [];
-
-// Configure Markdown renderer with syntax highlighting and safe defaults.
-if (typeof marked !== "undefined") {
-  marked.use({
-    gfm: true,
-    breaks: false,
-    headerIds: false,
-    mangle: false,
-  });
-}
-const mdRenderer = typeof marked !== "undefined" ? new marked.Renderer() : {};
-Object.assign(mdRenderer, {
-  code(code, language) {
-    const validLang = language && hljs.getLanguage(language) ? language : "plaintext";
-    const highlighted = hljs.highlight(code, { language: validLang }).value;
-    const langLabel = validLang === "plaintext" ? "" : `<span class="code-lang">${escapeHtml(validLang)}</span>`;
-    return `<div class="code-block-wrapper">${langLabel}<pre><code class="hljs language-${escapeHtml(validLang)}">${highlighted}</code></pre><button class="copy-code-btn" title="Copy" aria-label="Copy code"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg></button></div>`;
-  },
-  blockquote(quote) {
-    return `<blockquote>${quote}</blockquote>`;
-  },
-  html(text) {
-    return escapeHtml(text);
-  },
-  link(href, title, text) {
-    return ArcMarkdownSafety.link(href, title, text);
-  },
-  image(href, title, text) {
-    return ArcMarkdownSafety.image(href, title, text);
-  },
+const renderingComponent = window.ArcChat.createRendering({
+  chatLog,
+  emptyState,
+  autoScroll,
+  shouldAutoScroll,
 });
+const {
+  attachCopyButtons,
+  createMessage,
+  escapeHtml,
+  parseThinking,
+  renderMarkdown,
+  renderThinking,
+  showError,
+  appendChunk,
+} = renderingComponent;
 
-function attachCopyButtons(root) {
-  for (const btn of root.querySelectorAll(".copy-code-btn")) {
-    btn.addEventListener("click", async () => {
-      const code = btn.closest(".code-block-wrapper").querySelector("code");
-      const text = code ? code.textContent : "";
-      try {
-        await navigator.clipboard.writeText(text);
-        btn.classList.add("copied");
-        btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
-        setTimeout(() => {
-          btn.classList.remove("copied");
-          btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>`;
-        }, 1500);
-      } catch (e) {
-        console.warn("Copy failed", e);
-      }
-    });
-  }
-}
-
-let currentChatId    = null;
-let chatCache        = loadChatsFromStorage();
-
-const KV_TYPES    = ["f16","f32","q8_0","q5_1","q5_0","q4_1","q4_0"];
-const KV_CLASSES  = ["default","moe_a3b","qwen3_27b_dense","gemma_swa"];
-
-settingsToggle.addEventListener("click", () => {
-  const open = settingsPanel.classList.toggle("open");
-  settingsToggle.classList.toggle("open", open);
-  if (open) renderSettingsPanel();
+const attachmentsComponent = window.ArcChat.createAttachments({
+  attachmentStrip,
+  attachButton,
+  pdfInput,
+  inputWrap,
+  authHeaders,
+  request: (...args) => fetch(...args),
+  escapeHtml,
+  modelCanSeeImages,
+  refreshBudget,
+  get selectedModel() { return selectedModel; },
 });
+const {
+  addAttachment,
+  buildAttachmentText,
+  clearAttachments,
+  hasProcessingAttachments,
+  hasReadyAttachments,
+  isImageFile,
+  isPdfFile,
+  isTextFile,
+  processAttachment,
+  removeAttachment,
+  renderAttachments,
+  getItems: getAttachments,
+} = attachmentsComponent;
+
+const settingsComponent = window.ArcChat.createSettings({
+  $,
+  authHeaders,
+  fetchStatus,
+  request: (...args) => fetch(...args),
+  storage: { getItem: (...args) => localStorage.getItem(...args), setItem: (...args) => localStorage.setItem(...args) },
+  refreshBudget,
+  sFeedback,
+  sFields,
+  sModelName,
+  settingsToggle,
+  settingsPanel,
+  get models() { return models; },
+  get budgetBase() { return budgetBase; },
+  set budgetBase(value) { budgetBase = value; },
+  get selectedModel() { return selectedModel; },
+});
+const {
+  applySettings,
+  loadPresets,
+  presetFor,
+  renderPresetPanel,
+  renderSettingsPanel,
+  savePreset,
+  vramFitText,
+} = settingsComponent;
+
+const historyComponent = window.ArcChat.createHistory({
+  request: (...args) => fetch(...args),
+  storage: { getItem: (...args) => localStorage.getItem(...args), setItem: (...args) => localStorage.setItem(...args) },
+  autoScroll,
+  chatLog,
+  conversation,
+  createMessage,
+  emptyState,
+  estimateTokens,
+  escapeHtml,
+  hFolder,
+  hImportInput,
+  hList,
+  hNew,
+  hNewFolder,
+  hExport,
+  hImport,
+  historyPanel,
+  historyToggle,
+  input,
+  parseStructuredFailure,
+  renderMarkdown,
+  renderThinking,
+  shouldAutoScroll,
+  showError,
+  updateCtxMeter,
+  updatePickerStatus,
+  get budgetBase() { return budgetBase; },
+  set budgetBase(value) { budgetBase = value; },
+  get currentChatId() { return currentChatId; },
+  set currentChatId(value) { currentChatId = value; },
+  get lastAssistantDiv() { return lastAssistantDiv; },
+  set lastAssistantDiv(value) { lastAssistantDiv = value; },
+  get lastUserDiv() { return lastUserDiv; },
+  set lastUserDiv(value) { lastUserDiv = value; },
+  get loadingModel() { return loadingModel; },
+  set loadingModel(value) { loadingModel = value; },
+  modelSelect,
+  get models() { return models; },
+  get selectedModel() { return selectedModel; },
+  set selectedModel(value) { selectedModel = value; },
+  newChat,
+});
+const {
+  apiRequest,
+  buildMoveSelect,
+  createFolder,
+  deleteChat,
+  ensureServerChat,
+  exportChats,
+  formatRelativeTime,
+  generateId,
+  importChatsFromFile,
+  loadChat,
+  loadFolders,
+  loadChats,
+  moveChat,
+  populateFolderSelects,
+  renderHistoryPanel,
+  saveChats,
+  serverAppendMessages,
+  serverChatToLocal,
+  syncChatsFromServer,
+  truncateTitle,
+  getChats,
+  getCurrentFolder,
+} = historyComponent;
+
 
 function openSettingsFromLink() {
   if (new URLSearchParams(window.location.search).get("settings") !== "1") return;
@@ -354,201 +510,7 @@ function openSettingsFromLink() {
   renderSettingsPanel();
 }
 
-historyToggle.addEventListener("click", async () => {
-  const open = historyPanel.classList.toggle("open");
-  historyToggle.classList.toggle("open", open);
-  if (open) {
-    await loadFolders();
-    await syncChatsFromServer();
-    renderHistoryPanel();
-  }
-});
 
-hNew.addEventListener("click", newChat);
-
-if (hFolder) {
-  hFolder.addEventListener("change", () => {
-    currentFolder = hFolder.value;
-    renderHistoryPanel();
-  });
-}
-
-if (hNewFolder) {
-  hNewFolder.addEventListener("click", createFolder);
-}
-
-if (hExport) hExport.addEventListener("click", exportChats);
-if (hImport) hImport.addEventListener("click", () => hImportInput?.click());
-if (hImportInput) hImportInput.addEventListener("change", importChatsFromFile);
-
-function loadChatsFromStorage() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && Array.isArray(parsed.chats)) return parsed.chats;
-  } catch (e) {
-    // storage may be full / disabled
-  }
-  return [];
-}
-
-function loadChats() {
-  return chatCache;
-}
-
-function saveChats(chats) {
-  chatCache = chats;
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(chats));
-  } catch (e) {
-    // storage may be full / disabled
-  }
-}
-
-function serverChatToLocal(data, modelHint) {
-  return {
-    id: data.id,
-    title: data.title || "New chat",
-    folder: data.folder || "",
-    model: modelHint || null,
-    createdAt: Math.round((data.created_at || Date.now() / 1000) * 1000),
-    updatedAt: Math.round((data.updated_at || Date.now() / 1000) * 1000),
-    messages: (data.messages || []).map(m => ({ role: m.role, content: m.content })),
-  };
-}
-
-async function apiRequest(path, options = {}) {
-  const r = await fetch(path, options);
-    if (!r.ok) {
-      const structured = await parseStructuredFailure(r);
-      if (structured) {
-        const err = new Error(structured.message);
-        err.structured = structured;
-        throw err;
-      }
-      const t = await r.text();
-      throw new Error(`${r.status} ${t}`);
-    }
-  return r.json();
-}
-
-async function syncChatsFromServer() {
-  try {
-    const data = await apiRequest("/v1/chats");
-    const summaries = data.data || [];
-    const map = new Map(chatCache.map(c => [c.id, c]));
-    // Server is the source of truth for the chat list. Update titles and
-    // ordering from summaries; full messages are lazy-loaded by loadChat().
-    for (const s of summaries) {
-      const existing = map.get(s.id);
-      const updatedAt = Math.round((s.updated_at || 0) * 1000);
-      if (existing) {
-        existing.title = s.title;
-        existing.folder = s.folder || "";
-        existing.createdAt = Math.round((s.created_at || 0) * 1000);
-        existing.updatedAt = updatedAt;
-        existing.message_count = s.message_count;
-      } else {
-        map.set(s.id, {
-          id: s.id,
-          title: s.title,
-          folder: s.folder || "",
-          model: null,
-          messages: [],
-          createdAt: Math.round((s.created_at || 0) * 1000),
-          updatedAt: updatedAt,
-          message_count: s.message_count,
-        });
-      }
-    }
-    const merged = Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_HISTORY);
-    saveChats(merged);
-    if (historyPanel.classList.contains("open")) renderHistoryPanel();
-  } catch (e) {
-    console.warn("Could not sync chats from server:", e.message);
-  }
-}
-
-async function ensureServerChat(titleHint, folder) {
-  if (currentChatId) return;
-  const title = truncateTitle(titleHint || "New chat");
-  const chatFolder = folder === ALL_FOLDERS ? "" : folder;
-  try {
-    const body = { title };
-    if (chatFolder !== undefined) body.folder = chatFolder;
-    const data = await apiRequest("/v1/chats", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    currentChatId = data.id;
-    const now = Date.now();
-    const chats = loadChats();
-    chats.unshift(serverChatToLocal(data, selectedModel));
-    chats[0].createdAt = now;
-    chats[0].updatedAt = now;
-    saveChats(chats);
-  } catch (e) {
-    console.warn("Could not create chat on server:", e.message);
-    // Local-only fallback so the UI keeps working offline.
-    const id = generateId();
-    currentChatId = id;
-    const now = Date.now();
-    const chats = loadChats();
-    chats.unshift({ id, title, folder: chatFolder || "", model: selectedModel, messages: [], createdAt: now, updatedAt: now });
-    saveChats(chats);
-  }
-}
-
-async function serverAppendMessages(chatId, messages, title) {
-  if (!chatId) return;
-  if ((!messages || messages.length === 0) && !title) return;
-  const body = {};
-  if (messages && messages.length > 0) body.messages = messages;
-  if (title) body.title = title;
-  try {
-    await apiRequest(`/v1/chats/${encodeURIComponent(chatId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    console.warn("Could not append messages to server:", e.message);
-  }
-}
-
-function generateId() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
-
-function truncateTitle(text, max = 60) {
-  if (!text) return "New chat";
-  const single = text.replace(/\s+/g, " ").trim();
-  if (single.length <= max) return single || "New chat";
-  return single.slice(0, max - 1).trimEnd() + "…";
-}
-
-function formatRelativeTime(ms) {
-  const now = Date.now();
-  const diff = now - ms;
-  const sec = Math.floor(diff / 1000);
-  if (sec < 10) return "just now";
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day === 1) return "yesterday";
-  if (day < 7) return `${day} days ago`;
-  const d = new Date(ms);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
 
 async function saveCurrentChat() {
   if (conversation.length === 0) return;
@@ -591,12 +553,15 @@ async function saveCurrentChat() {
     chats.unshift(chatDoc);
   }
   chats.sort((a, b) => b.updatedAt - a.updatedAt);
-  while (chats.length > MAX_HISTORY) chats.pop();
+  while (chats.length > historyComponent.maxHistory()) chats.pop();
   saveChats(chats);
 }
 
 async function newChat() {
   conversation.length = 0;
+  budgetBase = null;
+  lastUserDiv = null;
+  lastAssistantDiv = null;
   currentChatId = null;
   chatLog.innerHTML = "";
   chatLog.appendChild(emptyState);
@@ -608,359 +573,8 @@ async function newChat() {
   updateCtxMeter(0, models.find(m => m.id === selectedModel)?.ctx || 131072);
   ctxMeter.classList.remove("visible");
   ctxLabelTps.textContent = "";
-  await ensureServerChat("New chat", currentFolder);
+  await ensureServerChat("New chat", getCurrentFolder());
   input.focus();
-}
-
-function renderHistoryPanel() {
-  const chats = loadChats().filter(c => currentFolder === ALL_FOLDERS || c.folder === currentFolder);
-  hList.innerHTML = "";
-  if (chats.length === 0) {
-    hList.innerHTML = '<div class="h-empty">No chats in this folder yet.</div>';
-    return;
-  }
-  for (const c of chats) {
-    const card = document.createElement("div");
-    card.className = "h-card";
-    card.dataset.id = c.id;
-    const ICON_CLOSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
-    card.innerHTML = `
-      <div class="h-card-title">${escapeHtml(c.title)}</div>
-      <div class="h-card-meta">
-        <span>${escapeHtml(c.model || "unknown")}</span>
-        <span>${formatRelativeTime(c.updatedAt)}</span>
-      </div>
-      <button class="h-delete" aria-label="Delete chat">${ICON_CLOSE}</button>
-    `;
-    card.appendChild(buildMoveSelect(c));
-    card.addEventListener("click", (e) => {
-      if (e.target.closest(".h-delete") || e.target.closest(".h-move")) return;
-      loadChat(c.id);
-    });
-    card.querySelector(".h-delete").addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteChat(c.id);
-    });
-    hList.appendChild(card);
-  }
-}
-
-async function loadChat(id) {
-  // Always refresh from the server so switching browsers / clearing localStorage
-  // shows the latest persisted state.
-  let chat = null;
-  try {
-    const data = await apiRequest(`/v1/chats/${encodeURIComponent(id)}`);
-    const cached = chatCache.find(c => c.id === id);
-    chat = serverChatToLocal(data, cached?.model || null);
-    const idx = chatCache.findIndex(c => c.id === id);
-    if (idx >= 0) chatCache[idx] = chat; else chatCache.push(chat);
-    saveChats(chatCache);
-  } catch (e) {
-    console.warn("Could not load chat from server:", e.message);
-    chat = chatCache.find(c => c.id === id);
-    if (!chat) return;
-  }
-  if (!chat) return;
-  conversation.length = 0;
-  if (Array.isArray(chat.messages)) {
-    conversation.push(...chat.messages);
-  }
-  currentChatId = chat.id;
-  chatLog.innerHTML = "";
-  if (conversation.length === 0) {
-    chatLog.appendChild(emptyState);
-    emptyState.style.display = "";
-  } else {
-    for (const m of conversation) {
-      if (m.role === "assistant") {
-        const { div, content } = createMessage("assistant", m.content || "");
-        if (m.thinking) renderThinking(div, m.thinking);
-        if (m.content) renderMarkdown(content, m.content);
-      } else {
-        createMessage(m.role, m.content || "");
-      }
-    }
-  }
-  if (chat.model && models.some(m => m.id === chat.model)) {
-    selectedModel = chat.model;
-    modelSelect.value = chat.model;
-    loadingModel = null;
-    updatePickerStatus();
-  }
-  historyPanel.classList.remove("open");
-  historyToggle.classList.remove("open");
-  const m = models.find(x => x.id === selectedModel);
-  updateCtxMeter(estimateTokens(), m?.ctx || 131072);
-  if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
-  input.focus();
-}
-
-async function deleteChat(id) {
-  try {
-    await apiRequest(`/v1/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
-  } catch (e) {
-    console.warn("Could not delete chat on server:", e.message);
-  }
-  const chats = loadChats().filter(c => c.id !== id);
-  saveChats(chats);
-  if (currentChatId === id) {
-    currentChatId = null;
-  }
-  renderHistoryPanel();
-}
-
-function getFolderLabel(name) {
-  return name || "Default";
-}
-
-function populateFolderSelects() {
-  if (!hFolder) return;
-
-  const saved = hFolder.value;
-  hFolder.innerHTML = `<option value="${ALL_FOLDERS}">All folders</option>`;
-  for (const f of folders) {
-    const label = getFolderLabel(f.name);
-    hFolder.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(f.name)}">${escapeHtml(label)} (${f.count})</option>`);
-  }
-  if ([...hFolder.options].some(o => o.value === saved)) {
-    hFolder.value = saved;
-  } else {
-    hFolder.value = ALL_FOLDERS;
-    currentFolder = ALL_FOLDERS;
-  }
-
-}
-
-async function loadFolders() {
-  try {
-    const data = await apiRequest("/v1/chats/folders");
-    folders = data.data || [];
-  } catch (e) {
-    console.warn("Could not load folders:", e.message);
-    folders = [];
-  }
-  populateFolderSelects();
-}
-
-async function createFolder() {
-  const name = prompt("Name for the new folder:");
-  if (!name || !name.trim()) return;
-  const folder = name.trim();
-  await ensureServerChat("New chat", folder);
-  currentFolder = folder;
-  hFolder.value = folder;
-  await loadFolders();
-  renderHistoryPanel();
-  historyPanel.classList.add("open");
-  historyToggle.classList.add("open");
-}
-
-async function moveChat(chatId, folder) {
-  try {
-    await apiRequest(`/v1/chats/${encodeURIComponent(chatId)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folder }),
-    });
-  } catch (e) {
-    console.warn("Could not move chat:", e.message);
-    showError("Could not move chat: " + e.message);
-    return;
-  }
-  const chats = loadChats();
-  const chat = chats.find(c => c.id === chatId);
-  if (chat) {
-    chat.folder = folder;
-    saveChats(chats);
-  }
-  await loadFolders();
-  renderHistoryPanel();
-}
-
-function buildMoveSelect(chat) {
-  const select = document.createElement("select");
-  select.className = "h-move";
-  select.innerHTML = `<option value="">Move to…</option>`;
-  for (const f of folders) {
-    if (f.name === chat.folder) continue;
-    const label = getFolderLabel(f.name);
-    select.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(f.name)}">${escapeHtml(label)}</option>`);
-  }
-  select.insertAdjacentHTML("beforeend", `<option value="__new__">+ New folder</option>`);
-  select.addEventListener("change", async (e) => {
-    const value = e.target.value;
-    e.target.value = "";
-    if (value === "__new__") {
-      const name = prompt("Name for the new folder:");
-      if (!name || !name.trim()) return;
-      await moveChat(chat.id, name.trim());
-    } else if (value) {
-      await moveChat(chat.id, value);
-    }
-  });
-  return select;
-}
-
-async function exportChats() {
-  try {
-    const data = await apiRequest("/v1/chats/export");
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `arc-llama-chats-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    console.warn("Could not export chats:", e.message);
-    showError("Export failed: " + e.message);
-  }
-}
-
-async function importChatsFromFile() {
-  const file = hImportInput.files?.[0];
-  if (!file) return;
-  hImportInput.value = "";
-  let body;
-  try {
-    const text = await file.text();
-    body = JSON.parse(text);
-  } catch (e) {
-    showError("Import failed: invalid JSON file");
-    return;
-  }
-  const chats = body.chats;
-  if (!Array.isArray(chats)) {
-    showError("Import failed: missing 'chats' array");
-    return;
-  }
-  try {
-    const r = await fetch("/v1/chats/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chats, overwrite: false }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-    await syncChatsFromServer();
-    showError(`Imported ${data.imported || 0}, skipped ${data.skipped || 0}, errors ${data.errors || 0}.`);
-  } catch (e) {
-    showError("Import failed: " + e.message);
-  }
-}
-
-function renderSettingsPanel() {
-  const m = models.find(m => m.id === selectedModel);
-  if (settingsDraftModel === selectedModel && (settingsDirty || sFields.contains(document.activeElement))) {
-    const fitLine = $("#s-fit");
-    if (fitLine) fitLine.textContent = settingsDirty
-      ? "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate."
-      : vramFitText(m || {});
-    return;
-  }
-  settingsDraftModel = selectedModel;
-  settingsDirty = false;
-  sModelName.textContent = selectedModel || "Not selected";
-  if (!m || (m.owned_by && m.owned_by.startsWith("upstream:"))) {
-    sFields.innerHTML = '<div class="s-upstream">Settings not available for upstream models.</div>';
-    return;
-  }
-  const ctx        = m.ctx        ?? 32768;
-  const ctk        = m.cache_type_k ?? "q8_0";
-  const ctv        = m.cache_type_v ?? "q8_0";
-  const parallel   = m.parallel   ?? 1;
-  const kvClass    = m.kv_class   ?? "default";
-
-  const kvOpts = KV_TYPES.map(v => `<option value="${v}"${v===ctk?" selected":""}>${v}</option>`).join("");
-  const kvOptsV = KV_TYPES.map(v => `<option value="${v}"${v===ctv?" selected":""}>${v}</option>`).join("");
-  const classOpts = KV_CLASSES.map(v => `<option value="${v}"${v===kvClass?" selected":""}>${v}</option>`).join("");
-
-  sFields.innerHTML = `
-    <div class="s-field"><label>Context (tokens)</label>
-      <input id="s-ctx" type="number" min="256" max="1048576" step="1024" value="${ctx}"></div>
-    <div class="s-field"><label>KV Cache K</label>
-      <select id="s-ctk">${kvOpts}</select></div>
-    <div class="s-field"><label>KV Cache V</label>
-      <select id="s-ctv">${kvOptsV}</select></div>
-    <div class="s-field"><label>Parallel slots</label>
-      <input id="s-par" type="number" min="1" max="32" value="${parallel}"></div>
-    <div class="s-field"><label>KV Class</label>
-      <select id="s-kvc">${classOpts}</select></div>
-    <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
-    <button class="s-apply" id="s-apply">Apply</button>
-    <div class="s-note">Takes effect on next model load.</div>
-  `;
-  $("#s-apply").addEventListener("click", applySettings);
-  sFields.querySelectorAll("input, select").forEach((field) => {
-    const markDirty = () => {
-      settingsDirty = true;
-      $("#s-fit").textContent = "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate.";
-    };
-    field.addEventListener("input", markDirty);
-    field.addEventListener("change", markDirty);
-  });
-}
-
-// Honest VRAM fit line for the settings panel, from /admin/status's
-// vram_estimate block. Never invents a number: when the server could not
-// estimate, says so plainly.
-function vramFitText(m) {
-  const fit = m.vram_estimate;
-  if (!fit || fit.estimated_mb == null) return "Memory fit: not estimated yet.";
-  const est = `est. ${fit.estimated_mb.toLocaleString()} MiB`;
-  if (fit.fit === false) {
-    const head = fit.headroom_mb != null
-      ? `exceeds the GPU by ${Math.abs(fit.headroom_mb).toLocaleString()} MiB`
-      : "will not fit on the configured GPU";
-    return `Memory fit: ${est}, ${head}. Reduce context or KV size, or pick a smaller model.`;
-  }
-  if (fit.fit === true && fit.headroom_mb != null) {
-    return `Memory fit: ${est}, ${fit.headroom_mb.toLocaleString()} MiB headroom on the assigned GPU.`;
-  }
-  return `Memory fit: ${est}. ${fit.detail || "GPU capacity unknown; no fit verdict."}`;
-}
-
-async function applySettings() {
-  const m = models.find(m => m.id === selectedModel);
-  if (!m) return;
-  const btn = $("#s-apply");
-  btn.disabled = true;
-  sFeedback.textContent = "";
-  const body = {
-    ctx:          parseInt($("#s-ctx").value, 10),
-    cache_type_k: $("#s-ctk").value,
-    cache_type_v: $("#s-ctv").value,
-    parallel:     parseInt($("#s-par").value, 10),
-    kv_class:     $("#s-kvc").value,
-  };
-  try {
-    const r = await fetch(`/admin/models/${encodeURIComponent(selectedModel)}/edit`, {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || r.status);
-    m.ctx          = body.ctx;
-    m.cache_type_k = body.cache_type_k;
-    m.cache_type_v = body.cache_type_v;
-    m.parallel     = body.parallel;
-    m.kv_class     = body.kv_class;
-    sFeedback.style.color = "var(--accent-bright)";
-    sFeedback.textContent = "Saved.";
-    settingsDirty = false;
-    // The VRAM estimate depends on ctx/KV; refresh status so the settings
-    // panel re-renders an honest fit line instead of the stale one.
-    fetchStatus().catch(() => {});
-  } catch (e) {
-    sFeedback.style.color = "#e8b0b0";
-    sFeedback.textContent = "Error: " + e.message;
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 function estimateTokens() {
@@ -984,6 +598,10 @@ async function fetchModels() {
     if (!r.ok) throw new Error(`status ${r.status}`);
     const data = await r.json();
     const local = (data.data || []).filter(m => m.object === "model" && m.owned_by !== "arc-llama-alias");
+    for (const m of local) {
+      m.ctx = m.ctx ?? m.metadata?.ctx;
+      m.capabilities = m.metadata?.capabilities || [];
+    }
     models = local;
     renderModelPicker();
   } catch (e) {
@@ -1058,6 +676,7 @@ async function fetchStatus() {
 }
 
 function updatePickerStatus() {
+  refreshBudget();
   const m = models.find(m => m.id === selectedModel);
   if (!m) {
     updateStatus("unavailable");
@@ -1086,57 +705,7 @@ modelSelect.addEventListener("change", () => {
   restoreDraft();
 });
 
-function createMessage(role, text = "") {
-  if (emptyState) emptyState.style.display = "none";
-  const div = document.createElement("div");
-  div.className = "message " + role;
-  const roleLabel = document.createElement("div");
-  roleLabel.className = "role";
-  roleLabel.textContent = role === "user" ? "You" : role === "system" ? "System" : "Assistant";
-  div.appendChild(roleLabel);
-  if (role === "assistant") {
-    const indicator = document.createElement("span");
-    indicator.id = "streaming-indicator";
-    indicator.textContent = "●";
-    indicator.style.color = "var(--accent-bright)";
-    indicator.style.opacity = "0";
-    roleLabel.appendChild(indicator);
-    const thinkingBlock = document.createElement("div");
-    thinkingBlock.className = "thinking-block";
-    thinkingBlock.style.display = "none";
-    const thinkingToggle = document.createElement("div");
-    thinkingToggle.className = "thinking-toggle";
-    thinkingToggle.innerHTML = '<span class="chevron">▶</span><span>Thinking</span>';
-    thinkingToggle.addEventListener("click", () => {
-      thinkingToggle.classList.toggle("open");
-      thinkingContent.classList.toggle("open");
-    });
-    const thinkingContent = document.createElement("div");
-    thinkingContent.className = "thinking-content";
-    thinkingBlock.appendChild(thinkingToggle);
-    thinkingBlock.appendChild(thinkingContent);
-    div.appendChild(thinkingBlock);
-  }
-  const content = document.createElement("div");
-  content.className = "content";
-  content.textContent = text;
-  div.appendChild(content);
-  chatLog.appendChild(div);
-  if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
-  return { div, content };
-}
 
-function showError(text) {
-  const { content } = createMessage("error", text);
-  content.parentElement.classList.add("error-card");
-  content.parentElement.querySelector(".role").textContent = "Error";
-}
-
-// Render one structured /admin/load or chat-completions startup failure as a
-// readable card: message, action, diagnostics id, a Retry button that
-// re-runs the load (returning to a prior send when one was pending), and an
-// expandable diagnostics region with the server-provided details. A plain
-// Error (network drop, non-JSON reply) degrades to showError.
 function showStartupFailure(failure, { onRetry = null, retryLabel = "Retry" } = {}) {
   const category = failure?.category;
   const message = failure?.message || "";
@@ -1257,6 +826,161 @@ async function ensureModelLoaded() {
   }
 }
 
+// ------------------------------------------------------------------
+// Presets, context budget, and request shaping
+// ------------------------------------------------------------------
+
+
+function modelCanSeeImages(modelId) {
+  const m = models.find(x => x.id === modelId);
+  return !!(m && (m.capabilities || []).includes("vision"));
+}
+
+// OpenAI messages for a transcript: images become image_url parts, local
+// bookkeeping fields are dropped, and the model's preset system prompt leads.
+function toApiMessages(entries, modelId = selectedModel) {
+  const out = [];
+  const preset = presetFor(modelId);
+  if (preset.system) out.push({ role: "system", content: preset.system });
+  for (const m of entries) {
+    if (m.images && m.images.length) {
+      out.push({
+        role: m.role,
+        content: [
+          { type: "text", text: m.content || "" },
+          ...m.images.map(url => ({ type: "image_url", image_url: { url } })),
+        ],
+      });
+    } else {
+      out.push({ role: m.role, content: m.content || "" });
+    }
+  }
+  return out;
+}
+
+// Rough cost of an image in prompt tokens; projectors vary (256..1500).
+const IMAGE_TOKEN_ESTIMATE = 768;
+
+function estimateBudget(draft = "") {
+  const pending = getAttachments().filter(a => !a.error);
+  const chars = (entries) => entries.reduce((n, m) => n + (m.content || "").length, 0);
+  const images = (entries) => entries.reduce((n, m) => n + (m.images ? m.images.length : 0), 0);
+  let tokens;
+  let exact = false;
+  if (budgetBase && budgetBase.length <= conversation.length) {
+    const added = conversation.slice(budgetBase.length);
+    tokens = budgetBase.tokens + Math.round(chars(added) / 4) + images(added) * IMAGE_TOKEN_ESTIMATE;
+    exact = added.length === 0;
+  } else {
+    tokens = Math.round(chars(conversation) / 4) + images(conversation) * IMAGE_TOKEN_ESTIMATE;
+  }
+  const preset = presetFor(selectedModel);
+  if (!budgetBase && preset.system) tokens += Math.round(preset.system.length / 4);
+  const draftChars = draft.length + pending.reduce((n, a) => n + (a.text || "").length, 0);
+  tokens += Math.round(draftChars / 4) + pending.filter(a => a.image).length * IMAGE_TOKEN_ESTIMATE;
+  return { tokens, exact: exact && !draftChars && !pending.length };
+}
+
+function refreshBudget() {
+  const m = models.find(x => x.id === selectedModel);
+  if (!m || !m.ctx) return;
+  const { tokens, exact } = estimateBudget(input.value);
+  if (!tokens) { ctxMeter.classList.remove("visible"); return; }
+  updateCtxMeter(tokens, m.ctx);
+  if (!exact) ctxLabelL.textContent = `~${tokens.toLocaleString()} / ${m.ctx.toLocaleString()} tokens`;
+  const over = tokens > m.ctx;
+  ctxMeter.classList.toggle("over-budget", over);
+  ctxMeter.title = over
+    ? "This conversation is larger than the model's context. Older turns will be cut off; start a new chat or run /compact."
+    : "";
+}
+
+function setStopMode(on) {
+  sendButton.classList.toggle("stop", on);
+  sendButton.setAttribute("aria-label", on ? "Stop generating" : "Send");
+  sendButton.title = on ? "Stop generating" : "";
+  if (on) sendButton.disabled = false;
+}
+
+function clearTurnActions() {
+  for (const node of document.querySelectorAll(".turn-actions")) node.remove();
+}
+
+function turnButton(label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "turn-action";
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// Regenerate and Edit act on the latest exchange only, which keeps the
+// transcript, the DOM, and the stored chat trivially in step.
+function renderTurnActions() {
+  clearTurnActions();
+  if (lastAssistantDiv && conversation.length && conversation[conversation.length - 1].role === "assistant") {
+    const bar = document.createElement("div");
+    bar.className = "turn-actions";
+    bar.appendChild(turnButton("Regenerate", regenerateLast));
+    lastAssistantDiv.appendChild(bar);
+  }
+  if (lastUserDiv) {
+    const bar = document.createElement("div");
+    bar.className = "turn-actions";
+    bar.appendChild(turnButton("Edit", editLastUser));
+    lastUserDiv.appendChild(bar);
+  }
+}
+
+async function regenerateLast() {
+  if (generating || sendingMessage) return;
+  if (!conversation.length || conversation[conversation.length - 1].role !== "assistant") return;
+  conversation.pop();
+  if (lastAssistantDiv) lastAssistantDiv.remove();
+  lastAssistantDiv = null;
+  budgetBase = null;
+  clearTurnActions();
+  await saveCurrentChat();
+  await runSend();
+}
+
+async function editLastUser() {
+  if (generating || sendingMessage) return;
+  let i = conversation.length - 1;
+  while (i >= 0 && conversation[i].role !== "user") i--;
+  if (i < 0) return;
+  const entry = conversation[i];
+  conversation.length = i;
+  if (lastAssistantDiv) lastAssistantDiv.remove();
+  if (lastUserDiv) lastUserDiv.remove();
+  lastAssistantDiv = null;
+  lastUserDiv = null;
+  budgetBase = null;
+  clearTurnActions();
+  input.value = entry.content || "";
+  input.dispatchEvent(new Event("input"));
+  input.focus();
+  if (entry.images && entry.images.length) {
+    showError("Images from the edited message were not kept; attach them again if needed.");
+  }
+  await saveCurrentChat();
+}
+
+function renderUserImages(div, images) {
+  if (!images || !images.length) return;
+  const strip = document.createElement("div");
+  strip.className = "message-images";
+  for (const url of images) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "Attached image";
+    img.loading = "lazy";
+    strip.appendChild(img);
+  }
+  div.appendChild(strip);
+}
+
 async function sendMessage() {
   if (isComposerActionActive()) { sendComposerAction(); return; }
   if (generating || sendingMessage || !selectedModel) return;
@@ -1267,6 +991,11 @@ async function sendMessage() {
     return;
   }
 
+  const images = getAttachments().filter(a => a.image && !a.error && !a.processing);
+  if (images.length && !modelCanSeeImages(selectedModel)) {
+    showError(`${selectedModel} cannot read images. Pick a vision model or remove the image.`);
+    return;
+  }
   const attachmentText = buildAttachmentText();
   const fullText = text
     ? attachmentText ? `${text}\n\n${attachmentText}` : text
@@ -1276,13 +1005,19 @@ async function sendMessage() {
   input.style.height = "auto";
   clearAttachments();
   clearDraft();
-  conversation.push({ role: "user", content: fullText });
-  createMessage("user", fullText);
+  const userEntry = { role: "user", content: fullText };
+  if (images.length) userEntry.images = images.map(a => a.image);
+  conversation.push(userEntry);
+  clearTurnActions();
+  const userMsg = createMessage("user", fullText);
+  renderUserImages(userMsg.div, userEntry.images);
+  lastUserDiv = userMsg.div;
+  lastAssistantDiv = null;
 
   // Reserve this send while persistence awaits, before generation begins.
   sendingMessage = true;
   try {
-    await ensureServerChat(fullText, currentFolder);
+    await ensureServerChat(fullText, getCurrentFolder());
     serverAppendMessages(currentChatId, [{ role: "user", content: fullText }]);
     await runSend();
   } finally {
@@ -1342,8 +1077,13 @@ async function runSend() {
   if (loadingCard) loadingCard.div.remove();
 
   const assistantMsg = createMessage("assistant");
+  lastAssistantDiv = assistantMsg.div;
   conversation.push({ role: "assistant", content: "", thinking: "" });
   const convoIndex = conversation.length - 1;
+  const controller = new AbortController();
+  activeAbort = controller;
+  setStopMode(true);
+  const preset = presetFor(selectedModel);
 
   let streamRaw = "";
   let lastDisplayedContent = "";
@@ -1353,11 +1093,13 @@ async function runSend() {
     const r = await fetch("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         model: selectedModel,
-        messages: conversation.slice(0, -1),
+        messages: toApiMessages(conversation.slice(0, -1)),
         stream: true,
         stream_options: { include_usage: true },
+        ...(preset.temperature != null ? { temperature: preset.temperature } : {}),
       }),
     });
     if (!r.ok) {
@@ -1424,10 +1166,37 @@ async function runSend() {
                            : null;
     if (tps) ctxLabelTps.textContent = tps + " tok/s";
     updateCtxMeter(totalToks, m?.ctx || 131072);
+    budgetBase = lastUsage ? { tokens: lastUsage.total_tokens, length: conversation.length } : null;
     await serverAppendMessages(currentChatId, [{ role: "assistant", content: conversation[convoIndex].content }]);
     await saveCurrentChat();
+    renderTurnActions();
   } catch (e) {
+    if (e.name === "AbortError") {
+      // Stopped by the user: keep whatever arrived, marked as interrupted.
+      const partial = parseThinking(streamRaw);
+      if (partial.content.trim()) {
+        conversation[convoIndex].content = partial.content;
+        conversation[convoIndex].thinking = partial.thinking;
+        renderMarkdown(assistantMsg.content, partial.content);
+        assistantMsg.div.classList.add("stopped");
+        const note = document.createElement("div");
+        note.className = "stopped-note";
+        note.textContent = "Stopped";
+        assistantMsg.div.appendChild(note);
+        budgetBase = null;
+        await serverAppendMessages(currentChatId, [{ role: "assistant", content: partial.content }]);
+        await saveCurrentChat();
+        renderTurnActions();
+      } else {
+        assistantMsg.div.remove();
+        lastAssistantDiv = null;
+        conversation.pop();
+        renderTurnActions();
+      }
+      return;
+    }
     assistantMsg.div.remove();
+    lastAssistantDiv = null;
     conversation.pop();
     if (e.structured) {
       // The user turn is the last transcript entry again; retry re-enters
@@ -1437,6 +1206,7 @@ async function runSend() {
       showError("Generation failed: " + e.message);
     }
   } finally {
+    if (activeAbort === controller) activeAbort = null;
     lastUsage = null;
     streamStartTime = null;
     streamTokenCount = 0;
@@ -1467,84 +1237,10 @@ function processSseLine(line) {
   }
 }
 
-function parseThinking(text) {
-  const tail = text.slice(-15);
-  const lastLt = tail.lastIndexOf("<");
-  if (lastLt !== -1) {
-    const afterLt = tail.slice(lastLt);
-    const possible = ["<think>", "<thinking>", "</think>", "</thinking>"];
-    for (const tag of possible) {
-      if (tag.startsWith(afterLt) && afterLt.length < tag.length) {
-        return { thinking: "", content: text, hasPartialTag: true };
-      }
-    }
-  }
-  let thinking = "";
-  let content = text;
-  const thinkMatches = [...text.matchAll(/<think>([\s\S]*?)<\/think>/g)];
-  // Reasoning arrives in small SSE deltas. Preserve the model's whitespace;
-  // adding a newline for every delta turns normal prose into a column.
-  for (const m of thinkMatches) thinking += m[1];
-  content = content.replace(/<think>[\s\S]*?<\/think>/g, "");
-  const thinkingMatches = [...text.matchAll(/<thinking>([\s\S]*?)<\/thinking>/g)];
-  for (const m of thinkingMatches) thinking += m[1];
-  content = content.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
-  const unclosedThink = content.match(/<think>([\s\S]*)$/);
-  const unclosedThinking = content.match(/<thinking>([\s\S]*)$/);
-  if (unclosedThink) {
-    thinking += unclosedThink[1];
-    content = content.replace(/<think>[\s\S]*$/, "");
-  } else if (unclosedThinking) {
-    thinking += unclosedThinking[1];
-    content = content.replace(/<thinking>[\s\S]*$/, "");
-  }
-  return { thinking: thinking.trim(), content: content.trimEnd(), hasPartialTag: false };
-}
-
-function appendChunk(container, text) {
-  const span = document.createElement("span");
-  span.className = "token-chunk";
-  span.textContent = text;
-  container.appendChild(span);
-  requestAnimationFrame(() => span.classList.add("revealed"));
-}
-
-function renderMarkdown(container, text) {
-  if (typeof marked === "undefined" || typeof hljs === "undefined") {
-    container.textContent = text;
-    return;
-  }
-  const raw = text
-    .replace(/<think>[\s\S]*?<\/think>/g, "")
-    .replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
-    .replace(/[\n\r]+$/, "")
-    .trimEnd();
-  try {
-    let html = marked.parse(raw, { renderer: mdRenderer });
-    html = html.replace(/<p>\s*<\/p>/g, "").replace(/<p><br\s*\/?><\/p>/g, "");
-    container.innerHTML = html;
-    attachCopyButtons(container);
-  } catch (e) {
-    console.warn("Markdown render failed, falling back to plain text", e);
-    container.textContent = text;
-  }
-}
-
-function escapeHtml(s) {
-  return ArcMarkdownSafety.escapeHtml(s);
-}
-
-function renderThinking(messageDiv, thinkingText) {
-  const thinkingBlock = messageDiv.querySelector(".thinking-block");
-  if (!thinkingBlock) return;
-  const thinkingContent = thinkingBlock.querySelector(".thinking-content");
-  const trimmed = String(thinkingText || "").trim();
-  thinkingContent.textContent = trimmed;
-  thinkingBlock.style.display = trimmed ? "" : "none";
-}
 
 function finishGeneration() {
   generating = false;
+  setStopMode(false);
   sendButton.disabled = false;
   inputWrap.classList.remove("generating");
   const indicator = $("#streaming-indicator");
@@ -1564,145 +1260,6 @@ function finishGeneration() {
   input.focus();
 }
 
-// ------------------------------------------------------------------
-// File attachments
-// ------------------------------------------------------------------
-
-const TEXT_EXTENSIONS = new Set([".txt", ".md", ".py", ".json", ".yaml", ".yml", ".csv"]);
-
-function isTextFile(file) {
-  if (file.type.startsWith("text/")) return true;
-  const name = file.name.toLowerCase();
-  for (const ext of TEXT_EXTENSIONS) {
-    if (name.endsWith(ext)) return true;
-  }
-  return false;
-}
-
-function isPdfFile(file) {
-  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-}
-
-function generateAttachmentId() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
-
-function renderAttachments() {
-  attachmentStrip.innerHTML = "";
-  if (attachments.length === 0) return;
-  for (const a of attachments) {
-    const chip = document.createElement("div");
-    chip.className = "attachment-chip" + (a.error ? " error" : a.processing ? " processing" : "");
-    chip.dataset.id = a.id;
-    const ICON_CLIP = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M16.5 6v11.5c0 2.485-2.015 4.5-4.5 4.5S7.5 19.985 7.5 17.5V5c0-1.657 1.343-3 3-3s3 1.343 3 3v12.5c0 .828-.672 1.5-1.5 1.5s-1.5-.672-1.5-1.5V6h-2v11.5c0 1.933 1.567 3.5 3.5 3.5s3.5-1.567 3.5-3.5V5c0-2.761-2.239-5-5-5S5 2.239 5 5v12.5c0 3.59 2.91 6.5 6.5 6.5s6.5-2.91 6.5-6.5V6h-2z"/></svg>';
-    const ICON_CLOSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
-    const icon = a.processing ? '<span class="spinner"></span>'
-                 : a.error ? '<span>!</span>'
-                 : `<span class="attachment-icon">${ICON_CLIP}</span>`;
-    chip.innerHTML = `
-      ${icon}
-      <span class="filename" title="${escapeHtml(a.file.name)}">${escapeHtml(a.file.name)}</span>
-      <button class="remove" aria-label="Remove attachment">${ICON_CLOSE}</button>
-    `;
-    chip.querySelector(".remove").addEventListener("click", () => removeAttachment(a.id));
-    attachmentStrip.appendChild(chip);
-  }
-}
-
-function addAttachment(file) {
-  const id = generateAttachmentId();
-  const a = { id, file, text: "", processing: true, error: "" };
-  attachments.push(a);
-  renderAttachments();
-  processAttachment(a).finally(renderAttachments);
-}
-
-async function processAttachment(a) {
-  try {
-    if (isPdfFile(a.file)) {
-      const form = new FormData();
-      form.append("file", a.file);
-      const r = await fetch("/admin/parse-pdf", {
-        method: "POST",
-        headers: authHeaders(),
-        body: form,
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-      a.text = data.text || "";
-    } else if (isTextFile(a.file)) {
-      a.text = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("Could not read file"));
-        reader.readAsText(a.file);
-      });
-    } else {
-      throw new Error("Unsupported file type");
-    }
-    a.error = "";
-  } catch (e) {
-    a.error = e.message;
-    a.text = "";
-  } finally {
-    a.processing = false;
-  }
-}
-
-function removeAttachment(id) {
-  attachments = attachments.filter(a => a.id !== id);
-  renderAttachments();
-}
-
-function clearAttachments() {
-  attachments = [];
-  renderAttachments();
-}
-
-function buildAttachmentText() {
-  const parts = [];
-  for (const a of attachments) {
-    if (a.error || a.processing || !a.text) continue;
-    parts.push(`[Attachment: ${a.file.name}]\n${a.text.trim()}`);
-  }
-  return parts.join("\n\n");
-}
-
-function hasReadyAttachments() {
-  return attachments.some(a => !a.processing && !a.error && a.text);
-}
-
-function hasProcessingAttachments() {
-  return attachments.some(a => a.processing);
-}
-
-attachButton.addEventListener("click", () => pdfInput.click());
-
-pdfInput.addEventListener("change", () => {
-  const files = Array.from(pdfInput.files || []);
-  pdfInput.value = "";
-  for (const file of files) addAttachment(file);
-});
-
-// Drag-and-drop on the input area
-inputWrap.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  inputWrap.style.borderColor = "var(--accent-bright)";
-});
-inputWrap.addEventListener("dragleave", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  inputWrap.style.borderColor = "";
-});
-inputWrap.addEventListener("drop", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  inputWrap.style.borderColor = "";
-  const files = Array.from(e.dataTransfer?.files || []);
-  for (const file of files) addAttachment(file);
-});
 
 function shouldAutoScroll(container) {
   if (!container) return true;
@@ -1976,6 +1533,10 @@ input.addEventListener("keydown", async (e) => {
 });
 
 sendButton.addEventListener("click", async () => {
+  if (generating && activeAbort) {
+    activeAbort.abort();
+    return;
+  }
   const text = input.value.trim();
   if (await executeSlashCommand(text)) {
     input.value = "";
@@ -1993,6 +1554,7 @@ sendButton.addEventListener("click", async () => {
 $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 
 input.addEventListener("input", () => {
+  refreshBudget();
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 96) + "px";
   updateCommandPalette();
@@ -2023,6 +1585,11 @@ function restoreDraft() {
 
 (async function init() {
   await initAdminToken();
+  installClientAuth();
+  renderingComponent.start();
+  attachmentsComponent.start();
+  settingsComponent.start();
+  historyComponent.start();
   await loadPluginActions();
   await fetchModels();
   await fetchStatus();

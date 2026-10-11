@@ -9,6 +9,58 @@ Plugins are discovered through Python packaging entry points and loaded
 lazily, so the core's dependency set is unchanged and a plugin's optional
 dependencies are never imported at core import time.
 
+## The public plugin API (`arc_llama.plugin_api`)
+
+Plugins should import only from `arc_llama.plugin_api`. Every other core
+module (`router`, `launcher`, `server`, ...) is private and may change in any
+release. The module carries a `MAJOR.MINOR` version, currently `1.0`:
+additions bump the minor number, breaking changes bump the major number.
+
+Declare the version your plugin was written against:
+
+```python
+from arc_llama.plugin_api import Plugin, plugin_context
+
+class AudioPlugin(Plugin):
+    name = "audio"
+    requires_api = "1.0"
+```
+
+A plugin whose required major version differs from the core's, or whose
+required minor version is newer, is not loaded. It appears in
+`GET /admin/plugins`, `arc-llama plugin list`, and `arc-llama doctor` with
+status `incompatible` and the reason. Plugins without `requires_api` load as
+before.
+
+`plugin_context(app)` returns a `PluginContext` with:
+
+| Member | Purpose |
+| --- | --- |
+| `require_admin` | FastAPI dependency enforcing the core admin token: `dependencies=[ctx.require_admin]` |
+| `gpu_lease(owner, exclusive=True)` | `async with` block that drains text requests and evicts resident models before GPU work, and holds new loads until it exits |
+| `models()` | registered local models with `loaded`, `aliases`, and `vision` flags |
+| `gpus()` | configured GPUs with arch, backend, and VRAM |
+| `base_url` | loopback URL of the core OpenAI-compatible API |
+| `subscribe(event, callback)` | receive `model_loaded`, `model_stopped`, and `model_load_failed`; returns an unsubscribe function |
+| `api_version` | the running core's plugin API version |
+
+Event callbacks run synchronously inside the core and must return quickly.
+Schedule a task for anything slow. A failing callback is logged and ignored.
+
+### Starting a new plugin
+
+```bash
+arc-llama plugin new audio_tools
+cd arc-llama-audio-tools
+pip install -e ".[dev]"
+pytest
+```
+
+The generated package declares its entry point, targets the current plugin
+API, shows an admin-protected route that holds a GPU lease, subscribes to a
+lifecycle event, and includes a test. `arc-llama plugin list` shows whether
+each installed plugin loads.
+
 ## The plugin contract
 
 A plugin is any object exposing:
@@ -118,6 +170,20 @@ def info(self):
 The dashboard accepts only string action metadata and never executes
 plugin-supplied JavaScript. Placement and hidden state are stored through
 `/admin/ui/layout`.
+
+### Plugin pages
+
+A plugin that serves its own HTML can list pages that the dashboard links to
+from its plugin card:
+
+```python
+def info(self):
+    return {"ui": {"pages": [{"id": "main", "label": "Open audio", "path": "/plugins/audio/"}]}}
+```
+
+Paths must be same-origin and start with `/plugins/`; anything else is
+dropped. Pages open in a new tab, so plugin markup never runs inside the
+dashboard.
 
 ### Enabling / disabling
 

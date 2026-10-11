@@ -68,6 +68,26 @@ def _model_text(cfg: Config | None) -> str:
     return "\n".join(lines)
 
 
+def _plugin_text() -> str:
+    from arc_llama.plugin_api import PLUGIN_API_VERSION
+    from arc_llama.plugins import plugin_health
+
+    try:
+        health = plugin_health()
+    except Exception as exc:  # noqa: BLE001 - diagnostics must still be written
+        return f"plugin discovery failed: {_safe_text(str(exc))}"
+    lines = [f"plugin_api={PLUGIN_API_VERSION}"]
+    for entry in health:
+        parts = [f"name={entry.get('name')}", f"status={entry.get('status')}"]
+        for key in ("version", "requires_api", "error"):
+            if entry.get(key):
+                parts.append(f"{key}={_safe_text(str(entry[key]))}")
+        lines.append(" | ".join(parts))
+    if len(lines) == 1:
+        lines.append("No plugins installed.")
+    return "\n".join(lines)
+
+
 def create_support_bundle(
     output: Path,
     *,
@@ -89,7 +109,7 @@ def create_support_bundle(
             f"arc-llama={__version__}",
             f"python={sys.version.split()[0]}",
             f"platform={platform.platform()}",
-            "contents=config.toml (redacted), hardware.txt, models.txt",
+            "contents=config.toml (redacted), hardware.txt, models.txt, plugins.txt",
             "model files, environment variables, and credentials are excluded",
         )
     ) + "\n"
@@ -98,4 +118,5 @@ def create_support_bundle(
         archive.writestr("config.toml", config_text)
         archive.writestr("hardware.txt", _gpu_text(gpus) + "\n")
         archive.writestr("models.txt", _model_text(cfg) + "\n")
+        archive.writestr("plugins.txt", _plugin_text() + "\n")
     return output

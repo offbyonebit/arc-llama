@@ -97,7 +97,45 @@ def _validated_ui(data: Any) -> dict[str, Any]:
         actions.append(action)
     if "actions" in data:
         result["actions"] = actions
+    if "pages" in data:
+        result["pages"] = _validated_pages(data.get("pages"))
     return result
+
+
+def _validated_pages(raw_pages: Any) -> list[dict[str, str]]:
+    """Plugin pages are same-origin links under ``/plugins/`` only.
+
+    The dashboard links to them; it never embeds plugin markup, so a page
+    is limited to a label and a path that cannot leave the server.
+    """
+    pages: list[dict[str, str]] = []
+    if not isinstance(raw_pages, list):
+        return pages
+    seen: set[str] = set()
+    for raw in raw_pages:
+        if not isinstance(raw, dict):
+            continue
+        page_id, label, path = raw.get("id"), raw.get("label"), raw.get("path")
+        if not (
+            isinstance(page_id, str) and page_id
+            and isinstance(label, str) and label
+            and isinstance(path, str)
+        ):
+            continue
+        if page_id in seen or not path.startswith("/plugins/") or "//" in path or ".." in path:
+            continue
+        seen.add(page_id)
+        pages.append({"id": page_id, "label": label, "path": path})
+    return pages
+
+
+def _api_compatible(required: Any) -> bool:
+    # Imported lazily: plugin_api imports this module for the Plugin base.
+    from arc_llama.plugin_api import api_compatible
+
+    if required is not None and not isinstance(required, str):
+        return False
+    return api_compatible(required)
 
 
 class Plugin:
@@ -109,6 +147,9 @@ class Plugin:
     """
 
     name: str = "unnamed"
+    requires_api: str | None = None
+    """Plugin API version (``MAJOR.MINOR``) this plugin was written against.
+    ``None`` skips the compatibility check. See ``arc_llama.plugin_api``."""
 
     def register(self, app: FastAPI) -> None:
         """Add routes/middleware to the app. Called once, before startup."""
@@ -212,6 +253,25 @@ def load_plugins(
         except Exception as exc:  # noqa: BLE001
             log.warning("plugin %s failed to instantiate: %s", name, exc)
             discovery.record(name, status="failed", error=f"instantiate failed: {exc}")
+            continue
+        required = getattr(plugin, "requires_api", None)
+        if not _api_compatible(required):
+            from arc_llama.plugin_api import PLUGIN_API_VERSION
+
+            log.warning(
+                "plugin %s requires plugin API %s; this core provides %s; skipping",
+                name,
+                required,
+                PLUGIN_API_VERSION,
+            )
+            discovery.record(
+                name,
+                status="incompatible",
+                error=(
+                    f"requires plugin API {required}; this arc-llama provides "
+                    f"{PLUGIN_API_VERSION}"
+                ),
+            )
             continue
         if not hasattr(plugin, "register"):
             log.warning("plugin %s has no register() method; skipping", name)
@@ -396,3 +456,26 @@ async def shutdown_plugins(plugins: list[Any], app: FastAPI) -> None:
     """Run every plugin's ``shutdown`` hook (sync or async), isolating failures."""
     for plugin in plugins:
         await _run_hook(plugin, "shutdown", app)
+
+
+def plugin_health(entry_points: Any = None) -> list[dict[str, Any]]:
+    """Load installed plugins without registering them and report outcomes.
+
+    Used by ``arc-llama doctor`` and the support bundle so a broken or
+    incompatible plugin is visible without starting the server. Importing a
+    plugin runs its module code, exactly as ``serve`` would; no hooks run.
+    """
+    discovery = PluginDiscovery()
+    loaded = load_plugins(entry_points, discovery=discovery)
+    report: list[dict[str, Any]] = []
+    for plugin in loaded:
+        info = plugin_info(plugin)
+        entry: dict[str, Any] = {"name": getattr(plugin, "name", "?"), "status": "loaded"}
+        if isinstance(info.get("version"), str):
+            entry["version"] = info["version"]
+        required = getattr(plugin, "requires_api", None)
+        if isinstance(required, str):
+            entry["requires_api"] = required
+        report.append(entry)
+    report.extend(discovery.catalog())
+    return sorted(report, key=lambda e: str(e.get("name", "")))

@@ -16,11 +16,15 @@ that measured it.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import logging
 import os
+import platform
+import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -50,12 +54,71 @@ def _file_fingerprint(path: str) -> str:
         return ""
 
 
+# Libraries whose upgrade changes kernel code generation or scheduling, and
+# therefore which recipe is fastest: the GPU compute runtime, Level Zero,
+# the IGC shader compiler, and Mesa's Vulkan driver.
+_DRIVER_LIBRARY_GLOBS = (
+    "libze_intel_gpu.so*",
+    "libze_loader.so*",
+    "libigc.so*",
+    "libvulkan_intel.so*",
+)
+_LINUX_LIBRARY_DIRS = (
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/local/lib",
+)
+
+
+@functools.lru_cache(maxsize=1)
+def driver_stack_key() -> str:
+    """Identify the installed GPU driver stack, cheaply and without a GPU.
+
+    Linux: kernel release, the resolved file names and sizes of the compute
+    runtime, Level Zero, IGC, and Mesa Vulkan libraries, and the version
+    directory oneAPI's ``latest`` link points at. Windows: the Intel display
+    driver versions. Computed once per process; a driver upgrade needs a
+    restart anyway.
+    """
+    parts: list[str] = [f"os={platform.system()}"]
+    if sys.platform == "win32":
+        try:
+            from arc_llama.detect import detect_gpus
+
+            parts.extend(sorted(f"driver={g.driver}" for g in detect_gpus() if g.driver))
+        except Exception:  # noqa: BLE001 - fingerprint stays usable without it
+            log.debug("could not read Windows driver versions", exc_info=True)
+        return "|".join(parts)
+    parts.append(f"kernel={platform.release()}")
+    for pattern in _DRIVER_LIBRARY_GLOBS:
+        for directory in _LINUX_LIBRARY_DIRS:
+            matches = sorted(Path(directory).glob(pattern))
+            if not matches:
+                continue
+            try:
+                real = matches[0].resolve()
+                parts.append(f"{pattern}={real.name}:{real.stat().st_size}")
+            except OSError:
+                continue
+            break
+    for root in (os.environ.get("ONEAPI_ROOT"), "/opt/intel/oneapi"):
+        if not root:
+            continue
+        latest = Path(root) / "compiler" / "latest"
+        if latest.exists():
+            parts.append(f"oneapi={latest.resolve().name}")
+            break
+    return "|".join(parts)
+
+
 def compute_fingerprint(
     model: ModelConfig,
     llama_server_path: str,
     gpu: GPUConfig | None,
     arc_llama_version: str,
     workload_key: str = "",
+    stack_key: str | None = None,
 ) -> str:
     """SHA256 over everything that invalidates a tuned recipe.
 
@@ -66,6 +129,8 @@ def compute_fingerprint(
     automatically. The workload profile key makes changing any workload answer
     retune too: the profile changes what the sweep measures, so a recipe
     tuned under the old answers was never measured for the new workload.
+    The driver stack key (``driver_stack_key``) retunes after a kernel,
+    compute-runtime, Mesa, or oneAPI upgrade.
     """
     h = hashlib.sha256()
     h.update(b"model:")
@@ -88,6 +153,8 @@ def compute_fingerprint(
     h.update(workload_key.encode())
     h.update(b"\nschema:")
     h.update(str(TUNE_SCHEMA_VERSION).encode())
+    h.update(b"\ndrivers:")
+    h.update((driver_stack_key() if stack_key is None else stack_key).encode())
     return h.hexdigest()
 
 

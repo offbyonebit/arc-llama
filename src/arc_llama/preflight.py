@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from arc_llama.config import GPUConfig, ModelConfig
 from arc_llama.failures import StartupFailureError
+from arc_llama.gguf_meta import missing_shards
 from arc_llama.gpu_ownership import check_gpu_ownership
 from arc_llama.launcher import LaunchPlan
 
@@ -22,15 +23,24 @@ def _argv_value(argv: list[str], flag: str) -> str | None:
     return argv[index + 1] if index + 1 < len(argv) else None
 
 
-def _check_gguf(path_value: str, *, draft: bool = False) -> None:
+_GGUF_KINDS = {
+    "model": ("Model", "model_missing", "Update the model path or remove this registration."),
+    "draft": (
+        "Draft model",
+        "draft_missing",
+        "Update or disable the speculative draft configuration.",
+    ),
+    "mmproj": (
+        "Vision projector",
+        "mmproj_missing",
+        "Update the model's mmproj path, or clear it to run text-only.",
+    ),
+}
+
+
+def _check_gguf(path_value: str, *, draft: bool = False, kind: str | None = None) -> None:
     path = Path(path_value).expanduser()
-    label = "Draft model" if draft else "Model"
-    category = "draft_missing" if draft else "model_missing"
-    action = (
-        "Update or disable the speculative draft configuration."
-        if draft
-        else "Update the model path or remove this registration."
-    )
+    label, category, action = _GGUF_KINDS[kind or ("draft" if draft else "model")]
     if not path.exists():
         raise StartupFailureError(
             category,
@@ -55,6 +65,20 @@ def _check_gguf(path_value: str, *, draft: bool = False) -> None:
             action,
             details={"path": str(path), "reason": str(exc)},
         ) from exc
+
+
+def _check_shards(path_value: str) -> None:
+    """A split model needs every shard; llama.cpp only reports this late."""
+    missing = missing_shards(Path(path_value).expanduser())
+    if missing:
+        action = "Finish downloading the remaining shards or remove this registration."
+        names = ", ".join(p.name for p in missing[:3]) + (" ..." if len(missing) > 3 else "")
+        raise StartupFailureError(
+            "shard_missing",
+            f"Split model is incomplete: {len(missing)} shard(s) missing ({names}). {action}",
+            action,
+            details={"path": path_value, "missing": [str(p) for p in missing]},
+        )
 
 
 def _runtime_path(command: str) -> Path | None:
@@ -140,6 +164,10 @@ def preflight_launch(
         )
     _check_runtime(plan.argv[0])
     _check_gguf(model.path)
+    _check_shards(model.path)
+    mmproj_path = _argv_value(plan.argv, "--mmproj")
+    if mmproj_path:
+        _check_gguf(mmproj_path, kind="mmproj")
     draft_path = _argv_value(plan.argv, "--spec-draft-model")
     if draft_path:
         _check_gguf(draft_path, draft=True)

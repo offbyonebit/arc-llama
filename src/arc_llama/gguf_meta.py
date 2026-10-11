@@ -651,6 +651,62 @@ def _expert_tensor_layer(name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# llama.cpp's gguf-split naming: ``<prefix>-00001-of-00003.gguf``. Only the
+# first shard is passed to ``-m``; llama.cpp opens the siblings itself.
+_SPLIT_RE = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$", re.IGNORECASE)
+
+
+def split_info(path: Path | str) -> tuple[int, int] | None:
+    """Return ``(index, total)`` for a split GGUF shard name, else None."""
+    match = _SPLIT_RE.match(Path(path).name)
+    if match is None:
+        return None
+    index, total = int(match["index"]), int(match["total"])
+    if total < 1 or index < 1 or index > total:
+        return None
+    return index, total
+
+
+def is_secondary_shard(path: Path | str) -> bool:
+    """True for shards 2..N, which are never registered or passed to ``-m``."""
+    info = split_info(path)
+    return info is not None and info[0] > 1
+
+
+def gguf_shards(path: Path | str) -> list[Path]:
+    """Every shard path of a split model (expected, not necessarily present).
+
+    A single-file model returns ``[path]``.
+    """
+    p = Path(path)
+    match = _SPLIT_RE.match(p.name)
+    info = split_info(p)
+    if match is None or info is None:
+        return [p]
+    width = len(match["index"])
+    total_text = match["total"]
+    return [
+        p.with_name(f"{match['prefix']}-{i:0{width}d}-of-{total_text}.gguf")
+        for i in range(1, info[1] + 1)
+    ]
+
+
+def missing_shards(path: Path | str) -> list[Path]:
+    """Shards of a split model that are not on disk."""
+    return [shard for shard in gguf_shards(path) if not shard.exists()]
+
+
+def gguf_total_bytes(path: Path | str) -> int:
+    """Combined size of every present shard (the file size for single files)."""
+    total = 0
+    for shard in gguf_shards(path):
+        try:
+            total += shard.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
     """One pass over the GGUF tensor table.
 
@@ -663,16 +719,18 @@ def scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
     p = Path(path)
     if not p.exists():
         return None
-    try:
-        reader = gguf.GGUFReader(p)
-    except Exception as exc:
-        log.debug("gguf weight scan failed for %s: %s", p, exc)
-        return None
+    tensors: list[Any] = []
+    for shard in gguf_shards(p):
+        try:
+            tensors.extend(gguf.GGUFReader(shard).tensors)
+        except Exception as exc:
+            log.debug("gguf weight scan failed for %s: %s", shard, exc)
+            return None
 
     total = 0
     expert_by_layer: dict[int, int] = {}
     unmatched_expert_names: list[str] = []
-    for tensor in reader.tensors:
+    for tensor in tensors:
         nbytes = _tensor_vram_bytes(tensor)
         total += nbytes
         name = getattr(tensor, "name", "") or ""
@@ -759,11 +817,13 @@ def weight_tensor_table(path: Path | str) -> dict[str, int] | None:
     p = Path(path)
     if not p.exists():
         return None
-    try:
-        reader = gguf.GGUFReader(p)
-    except Exception as exc:
-        log.debug("gguf weight table read failed for %s: %s", p, exc)
-        return None
-    return {
-        getattr(tensor, "name", "") or "": _tensor_vram_bytes(tensor) for tensor in reader.tensors
-    }
+    table: dict[str, int] = {}
+    for shard in gguf_shards(p):
+        try:
+            reader = gguf.GGUFReader(shard)
+        except Exception as exc:
+            log.debug("gguf weight table read failed for %s: %s", shard, exc)
+            return None
+        for tensor in reader.tensors:
+            table[getattr(tensor, "name", "") or ""] = _tensor_vram_bytes(tensor)
+    return table

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>arc-llama: Local inference</title>
 <link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
-<link rel="stylesheet" href="/style.css?v=ui-0.15" />
+<link rel="stylesheet" href="/style.css?v=ui-0.28" />
 </head>
 <body>
 <header class="app-header">
@@ -15,8 +15,9 @@
     <span class="tagline">Local inference</span>
   </div>
   <nav class="app-nav" aria-label="Primary navigation">
-    <a class="nav-link active" href="/" aria-current="page">Models</a>
+    <a class="nav-link active" data-view-link="models" href="/">Models</a>
     <a class="nav-link" id="chat-nav" href="/chat">Chat</a>
+    <a class="nav-link" data-view-link="system" href="/#system">System</a>
   </nav>
   <div class="header-actions">
     <button id="theme-toggle" class="ghost theme-toggle" type="button" aria-label="Switch to light theme">Light theme</button>
@@ -25,36 +26,60 @@
   </div>
 </header>
 
-<main class="dashboard">
+<main class="dashboard" data-dashboard-view="models">
   <section class="intro" aria-labelledby="page-title">
     <div>
       <p class="eyebrow">LOCAL INFERENCE</p>
       <h2 id="page-title">Models</h2>
-      <p>Select a local GGUF to open chat. Nothing starts until you send a message.</p>
+      <p>Find a model, choose it from your library, and open chat.</p>
     </div>
   </section>
 
-  <section class="flow-section system-readiness-section" aria-labelledby="system-readiness-title">
+  <section class="flow-section next-step-section" data-area="models" aria-labelledby="next-step-title">
+    <div id="next-step" class="next-step" aria-live="polite">
+      <h2 id="next-step-title">Checking your setup</h2>
+      <p>Waiting for server status.</p>
+    </div>
+  </section>
+
+  <section class="flow-section system-readiness-section" data-area="system" aria-labelledby="system-readiness-title">
       <div class="section-head compact">
       <div>
-        <h2 id="system-readiness-title">Readiness</h2>
+        <h2 id="system-readiness-title">System status</h2>
       </div>
-      <button id="customize-ui" class="secondary">Customize UI</button>
+      <div class="toolbar"><button id="connect-frontend" class="secondary">Connect a frontend</button><button id="customize-ui" class="secondary">Customize UI</button></div>
     </div>
     <div id="system-readiness" class="system-readiness pending" aria-live="polite">
       <p>Waiting for server status</p>
     </div>
   </section>
 
-  <section class="flow-section" aria-labelledby="choose-title">
+  <section class="flow-section library-section" data-area="models" aria-labelledby="library-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="library-title" tabindex="-1">Find models on Hugging Face</h2>
+        <p class="section-copy">Search Hugging Face to download a model. It will appear in Your models when added.</p>
+      </div>
+    </div>
+    <form id="library-search" class="library-search" role="search">
+      <input id="library-query" type="search" minlength="2" maxlength="100" placeholder="Search, e.g. qwen3 8b" aria-label="Search Hugging Face GGUF models">
+      <button type="submit" class="secondary">Search</button>
+    </form>
+    <p class="section-copy">Memory fit is an estimate. Review the downloaded model before chatting.</p>
+    <div id="library-results" class="library-results" aria-live="polite"></div>
+    <p id="library-recovery-status" class="section-copy" role="status" tabindex="-1" hidden></p>
+    <div id="library-jobs" class="library-jobs" aria-live="polite"></div>
+
+  </section>
+
+  <section class="flow-section" data-area="models" aria-labelledby="choose-title">
     <div class="section-head">
       <div>
-        <h2 id="choose-title">Available models</h2>
-        <p class="section-copy">Core details are visible here; launch settings stay out of the way until you need them.</p>
+        <h2 id="choose-title" tabindex="-1">Your models</h2>
+        <p class="section-copy">Models on this computer. Choose one to review and chat.</p>
       </div>
       <div class="toolbar">
         <button id="scan" class="secondary">Scan for models</button>
-        <button id="connect-frontend" class="secondary">Connect a frontend</button>
         <button id="refresh" class="ghost">Refresh</button>
       </div>
     </div>
@@ -62,10 +87,14 @@
       <span id="scan-status-text" class="scan-status-text"></span>
       <span id="scan-progress" class="scan-progress" hidden></span>
     </div>
-    <div id="model-list" class="model-list" role="listbox" aria-label="Available local models" aria-busy="true"></div>
+    <div id="model-list" class="model-list" role="listbox" aria-label="Registered local models" aria-busy="true"></div>
+    <details id="library-disk-details" class="library-disk-details">
+      <summary>Disk usage</summary>
+      <div id="library-disk" class="library-disk"></div>
+    </details>
   </section>
 
-  <section class="flow-section plugins-section" aria-labelledby="plugins-title">
+  <section class="flow-section plugins-section" data-area="system" aria-labelledby="plugins-title">
     <div class="section-head compact">
       <div>
         <h2 id="plugins-title">Plugins</h2>
@@ -76,7 +105,7 @@
     <div id="plugin-action-list" class="toolbar" aria-label="Plugin actions"></div>
   </section>
 
-  <section class="flow-section measurements-section" aria-labelledby="measurements-title">
+  <section class="flow-section measurements-section" data-area="system" aria-labelledby="measurements-title">
     <div class="section-head compact">
       <div>
         <h2 id="measurements-title">Measurements</h2>
@@ -86,10 +115,10 @@
     <div id="measurements" class="measurements" aria-live="polite"></div>
   </section>
 
-  <section class="flow-section readiness-section" aria-labelledby="readiness-title">
+  <section class="flow-section readiness-section" data-area="models" hidden aria-labelledby="readiness-title">
     <div class="section-head compact">
       <div>
-        <h2 id="readiness-title">Selected model</h2>
+        <h2 id="readiness-title" tabindex="-1">Selected model</h2>
       </div>
     </div>
     <div id="readiness-card" class="readiness-card empty" aria-live="polite">
@@ -99,15 +128,19 @@
         <p>We will show its configured GPU, context, and memory capacity before you start.</p>
       </div>
     </div>
-  </section>
-
-  <section class="flow-section start-section" aria-labelledby="start-title">
+    <p id="model-review-status" class="library-note error" role="status" tabindex="-1" hidden></p>
+  <div class="start-section" aria-labelledby="start-title">
     <div>
       <h2 id="start-title">Open chat</h2>
       <p id="start-copy" class="section-copy">Select a model to continue.</p>
     </div>
     <a id="chat-primary" class="primary-cta is-disabled" aria-disabled="true">Start chatting</a>
+  </div>
   </section>
+
+
+
+
 </main>
 
 <dialog id="ui-layout-dialog" class="frontend-dialog" aria-labelledby="ui-layout-title">
@@ -121,7 +154,7 @@
   <span class="status-dot"></span>
   <span id="last-updated">Waiting for server status</span>
   <span class="dot"></span>
-  <span>Updates every 5 seconds</span>
+  <span>Updates while this tab is active</span>
 </footer>
 
 <dialog id="frontend-dialog" class="frontend-dialog" aria-labelledby="frontend-dialog-title">
@@ -178,6 +211,10 @@
   <p class="frontend-hint">Prefer to type it yourself? The API listens on OpenAI paths under <span id="frontend-port-hint" class="frontend-port">…</span>.</p>
 </dialog>
 
-    <script src="/app.js?v=ui-0.16"></script>
+    <script src="/dashboard/library.js?v=ui-0.28"></script>
+    <script src="/dashboard/measurements.js?v=ui-0.25"></script>
+    <script src="/dashboard/plugins.js?v=ui-0.21"></script>
+    <script src="/dashboard/integration.js?v=ui-0.21"></script>
+    <script src="/app.js?v=ui-0.28"></script>
 </body>
 </html>

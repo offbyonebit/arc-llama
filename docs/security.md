@@ -4,11 +4,44 @@ Arc Llama binds to `127.0.0.1` by default. Keep that default for a workstation
 used by one person.
 
 Binding to `0.0.0.0`, a LAN address, or a public interface exposes the inference
-API to that network. The admin routes require the generated admin token, while
-the OpenAI-compatible inference routes are intended for trusted local clients
-and do not provide complete internet-facing authentication. Put a reverse proxy
-with TLS, authentication, request-size limits, and rate limits in front of Arc
-Llama before allowing remote access. A VPN or SSH tunnel is usually simpler.
+API to that network. llama-server backends always listen on `127.0.0.1`
+regardless of `server.host`, so only Arc Llama's own routes are reachable.
+
+## API keys and LAN mode
+
+`arc-llama serve --lan` binds every interface after asking for confirmation
+(`--yes` skips it), creates an API key named `lan` if none exists, and prints
+the addresses other devices can use. Manage keys with:
+
+```bash
+arc-llama keys create phone     # prints the key once; only its hash is stored
+arc-llama keys list             # usage counts and last use
+arc-llama keys revoke <id>
+```
+
+Keys live in `<state_dir>/api-keys.json` (mode 0600), not in `config.toml`, and
+a running server picks up changes immediately. The same operations are
+available to admin-token holders at `GET/POST /admin/api-keys` and
+`DELETE /admin/api-keys/{id}`.
+
+The rule for `/v1/*` and `/api/*`:
+
+- Loopback callers never need a key.
+- Remote callers need `Authorization: Bearer <key>` (or the admin token) once
+  at least one key exists.
+- With no keys at all, remote callers are let through. This keeps existing
+  Docker and LAN setups working; create a key to close it.
+
+The bundled chat page asks for a key the first time a remote browser is
+refused and remembers it in that browser.
+
+A reverse proxy on the same machine connects from loopback, so requests it
+forwards skip the key check. Enforce authentication in the proxy, or run it on
+another host.
+
+Keys are bearer secrets sent in clear text over plain HTTP. On anything but a
+trusted home network, put a reverse proxy with TLS and rate limits in front of
+Arc Llama, or use a VPN or SSH tunnel.
 
 Set `ARC_LLAMA_ADMIN_TOKEN` to a long random value when running as a service.
 Do not place it in browser URLs, logs, screenshots, or a public configuration

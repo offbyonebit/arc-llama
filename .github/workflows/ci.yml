@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/model-journey-and-organization]
   pull_request:
     branches: [main]
 
@@ -34,8 +34,21 @@ jobs:
 
       - name: Check browser scripts
         run: |
+          node --check browser-tests/run.mjs
+          node --check browser-tests/harness.mjs
+          node --check browser-tests/chat-cases.mjs
+          node --check browser-tests/dashboard-cases.mjs
+          node --check browser-tests/library-cases.mjs
           node --check src/arc_llama/static/app.js
+          node --check src/arc_llama/static/dashboard/library.js
+          node --check src/arc_llama/static/dashboard/measurements.js
+          node --check src/arc_llama/static/dashboard/plugins.js
+          node --check src/arc_llama/static/dashboard/integration.js
           node --check src/arc_llama/static/chat.js
+          node --check src/arc_llama/static/chat/rendering.js
+          node --check src/arc_llama/static/chat/attachments.js
+          node --check src/arc_llama/static/chat/settings.js
+          node --check src/arc_llama/static/chat/history.js
           node --check src/arc_llama/static/markdown_safety.js
           node --check src/arc_llama/static/vendor/marked-12.0.2.min.js
           node --check src/arc_llama/static/vendor/highlight-11.9.0.min.js
