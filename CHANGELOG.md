@@ -3,9 +3,11 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
+
+## [0.9.1.2] - 2026-10-10
 
 ### Added
 
@@ -39,8 +41,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model library on the dashboard: Hugging Face search with fit badges,
   background downloads, disk usage, and removal.
 
+- Model setup and recovery guidance, a review step before chat, and clearer
+  context and runtime settings. Hugging Face discovery stays beside local models.
+- Publisher avatars in Hugging Face search and explicit runtime architecture
+  checks before downloading. Runtime recognition is shown separately from memory
+  fit and does not guarantee full model compatibility.
+- A six-screen screenshot walkthrough and an offline gallery with keyboard and
+  mobile swipe navigation.
+
+### Fixed
+
+- Compatibility checks now have bounded network reads, overall deadlines, and
+  limited concurrency. Disconnects, runtime changes, and shutdown cancel pending
+  work, close streams, and reap loader subprocesses; stale results cannot replace
+  newer checks. Failed checks remain retryable with actionable messages.
+- Light-theme settings fields remain readable.
+- Close native smoke-test subprocess pipes after cleanup so successful inference
+  does not fail strict warning checks.
+
 ### Changed
 
+- Separate browser fixtures, runner, and chat/dashboard/library regression cases
+  into modules; add coverage for abandoned compatibility checks.
 - llama-server backends always listen on 127.0.0.1 instead of following
   `server.host`, which exposed every backend port when serving on a network.
 - Tuned recipes are invalidated when the kernel, GPU compute runtime, Level

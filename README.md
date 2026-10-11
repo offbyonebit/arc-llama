@@ -19,14 +19,34 @@ something useful before lunch.
 **[Click through the screenshot tour →](docs/showcase/01-models.md)** ·
 [All screenshots and swipeable gallery](docs/showcase/README.md)
 
-*Development UI preview. Screenshots show the local branch; released versions may differ.*
+*Actual app captures of the interface included in 0.9.1.2.*
 
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Version 0.9.1 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1).
+> **Version 0.9.1.2 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1.2).
 
-## What's new in 0.9.1
+## What's new in 0.9.1.2
+
+- **Find, download, and use a model in one place:** Hugging Face discovery sits
+  beside your library, with publisher avatars, memory-fit estimates, background
+  downloads, automatic registration, and a review step before chat.
+- **Check your runtime before downloading:** architecture checks explain when
+  your llama.cpp build explicitly rejects a model. Recognition is separate from
+  memory fit and does not guarantee that every model will load or run.
+- **More control over chat and access:** stop, regenerate, edit, per-model
+  presets, vision attachments, API keys, and LAN mode.
+- **Safer runtime updates and broader model support:** canary checks and rollback,
+  split GGUFs, vision projectors, rerankers, and a versioned plugin API.
+- **Better tuning and reliability:** depth benchmarks, driver-aware retuning,
+  performance history, and compatibility checks that cancel and clean up properly.
+- **See the interface first:** the screenshot tour above covers discovery,
+  compatibility, model review, chat, and system status.
+
+See the [changelog](CHANGELOG.md) for the full changes, including experimental
+multi-GPU tensor split.
+
+## Highlights from 0.9.1
 
 - **Compatibility with current llama.cpp builds:** recipes using `no_mmap` or
   `mlock` now launch with `--load-mode` when the runtime supports it. Older

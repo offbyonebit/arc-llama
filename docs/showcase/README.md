@@ -1,6 +1,6 @@
 # A quick look at Arc Llama
 
-A six-screen walkthrough of the local development UI. Released versions may differ.
+A six-screen walkthrough of the interface included in Arc Llama 0.9.1.2.
 These are actual app captures on an Intel Arc Pro B60, using an isolated example
 configuration and a real local LFM2.5 conversation. No personal history is included.
 

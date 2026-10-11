@@ -8,6 +8,6 @@ Memory fit and architecture support answer different questions.
 
 This real DeepSeek V4.1 GGUF declares deepseek41, which the captured runtime rejects. Architecture recognition remains separate from encoding, GPU execution, and inference verification.
 
-Development UI preview. [Open the full-size screenshot](images/03-compatibility.png).
+Arc Llama 0.9.1.2 interface. [Open the full-size screenshot](images/03-compatibility.png).
 
 [← Previous](02-discover.md) · [All screenshots](README.md) · [Next →](04-review.md)

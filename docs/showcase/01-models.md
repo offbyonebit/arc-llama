@@ -8,6 +8,6 @@ One home for finding models, reviewing your setup, and opening chat.
 
 The Models screen gives the next action and keeps local models close to Hugging Face discovery.
 
-Development UI preview. [Open the full-size screenshot](images/01-models.png).
+Arc Llama 0.9.1.2 interface. [Open the full-size screenshot](images/01-models.png).
 
 [← Overview](README.md) · [All screenshots](README.md) · [Next →](02-discover.md)

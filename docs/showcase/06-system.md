@@ -8,6 +8,6 @@ Check GPU status and measurements from actual requests.
 
 System separates runtime visibility and measured activity from the model browsing flow. Any measurements shown come from the captured local example, not a benchmark claim.
 
-Development UI preview. [Open the full-size screenshot](images/06-system.png).
+Arc Llama 0.9.1.2 interface. [Open the full-size screenshot](images/06-system.png).
 
 [← Previous](05-chat.md) · [All screenshots](README.md) · [Back to overview →](README.md)

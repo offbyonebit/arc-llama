@@ -48,7 +48,7 @@ wheels = [
 
 [[package]]
 name = "arc-llama"
-version = "0.9.1"
+version = "0.9.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

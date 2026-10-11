@@ -8,6 +8,6 @@ See the selected model, GPU, context, and estimated memory use together.
 
 The local model shown here is LFM2.5, configured with a 4,096-token context on an Intel Arc Pro B60. Its architecture check does not claim full inference compatibility.
 
-Development UI preview. [Open the full-size screenshot](images/04-review.png).
+Arc Llama 0.9.1.2 interface. [Open the full-size screenshot](images/04-review.png).
 
 [← Previous](03-compatibility.md) · [All screenshots](README.md) · [Next →](05-chat.md)

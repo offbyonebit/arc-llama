@@ -8,6 +8,6 @@ Search Hugging Face with recognizable publishers and plain-language download cho
 
 Publisher avatars identify the repository owner. Version comparisons keep file size and estimated memory fit visible.
 
-Development UI preview. [Open the full-size screenshot](images/02-discover.png).
+Arc Llama 0.9.1.2 interface. [Open the full-size screenshot](images/02-discover.png).
 
 [← Previous](01-models.md) · [All screenshots](README.md) · [Next →](03-compatibility.md)
