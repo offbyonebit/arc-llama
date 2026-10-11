@@ -8,6 +8,7 @@ runs at startup.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import shutil
@@ -339,9 +340,11 @@ def file_readiness(model: ModelConfig) -> dict[str, Any]:
     if projector_raw:
         files.append(Path(projector_raw).expanduser())
 
+    identities = []
     for path in files:
         try:
             info = path.stat()
+            identities.append((str(path.resolve()), info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
             if not stat.S_ISREG(info.st_mode):
                 return {"status": "not_file", "available": False, "detail": f"Not a regular file: {path}"}
             if info.st_size == 0:
@@ -353,4 +356,4 @@ def file_readiness(model: ModelConfig) -> dict[str, Any]:
             return {"status": "missing", "available": False, "detail": f"Missing file: {path}"}
         except OSError:
             return {"status": "inaccessible", "available": False, "detail": f"Cannot read file: {path}"}
-    return {"status": "available", "available": True, "detail": "Files are present and readable; GGUF contents and inference have not been checked."}
+    return {"status": "available", "available": True, "identity": hashlib.sha256(repr(identities).encode()).hexdigest()[:12], "detail": "Files are present and readable; GGUF contents and inference have not been checked."}

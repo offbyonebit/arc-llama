@@ -1113,7 +1113,11 @@ def create_app(
             for g in c.gpus
         ]
         mgr: UpstreamManager = request.app.state.upstream_mgr
+        from arc_llama.model_compatibility import runtime_identity
+
+        compatibility_identity = await asyncio.to_thread(runtime_identity, c.paths.llama_server)
         return {
+            "runtime_compatibility_identity": compatibility_identity[1][:12] if compatibility_identity else None,
             "server": {
                 "host": c.server.host,
                 "port": c.server.port,

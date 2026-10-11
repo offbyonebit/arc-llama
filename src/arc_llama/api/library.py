@@ -82,6 +82,19 @@ def register_library_routes(
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Could not read {repo}: {e}") from e
 
+    @app.post("/admin/library/compatibility")
+    async def library_compatibility(
+        request: Request, _auth: None = Depends(require_admin)
+    ) -> dict[str, Any]:
+        from arc_llama.model_compatibility import assess_compatibility, validate_request
+
+        body = await read_json_body(request)
+        try:
+            validate_request(body)
+            return await asyncio.to_thread(assess_compatibility, request.app.state.cfg, body)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     @app.post("/admin/library/download")
     async def library_download(
         request: Request, _auth: None = Depends(require_admin)

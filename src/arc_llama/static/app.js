@@ -348,6 +348,7 @@ function renderReadiness() {
     );
     container.appendChild(recovery);
   }
+  if (fileState.available !== false) container.appendChild(libraryController.compatibilityControl({ name: model.name }));
   container.appendChild(createDetails(model, gpu));
 }
 
@@ -697,6 +698,7 @@ const integrationController = window.ArcDashboard.createIntegrationController({
 function openFrontendDialog() { return integrationController.open(); }
 
 function render() {
+  libraryController.invalidateCompatibility();
   const loadedCount = snapshot?.models?.filter((model) => model.loaded).length || 0;
   $("#stop-all").disabled = loadedCount === 0;
   setServerState("online", loadedCount ? `${loadedCount} model${loadedCount === 1 ? "" : "s"} loaded` : "Server ready");

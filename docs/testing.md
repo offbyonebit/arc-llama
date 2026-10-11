@@ -50,6 +50,30 @@ When adding frontend assets, build a wheel and check that scripts referenced by
 `index.html` and `chat.html` are included under `arc_llama/static/`. A browser
 pass from a source checkout does not verify installed-package assets.
 
+## Runtime compatibility guidance
+
+The library's explicit compatibility action reads at most 256 KiB of the exact
+selected GGUF at an immutable Hugging Face commit. A registered-model check reads
+its local header. Missing/gated metadata, unsupported header layout, and network
+errors remain unknown; repository names and memory fit are not support evidence.
+
+Architecture recognition is probed with a temporary zero-tensor GGUF, CPU-only
+arguments, and a ten-second subprocess deadline. An architecture-specific loader
+rejection establishes a mismatch. Reaching an architecture-specific missing-key
+error establishes recognition only. This does not validate tensor encodings,
+backend kernels, projectors, draft models, or successful inference. No probe runs
+on search, status polling, or page load. Definitive probe results are cached by
+runtime identity; transient unknown results remain retryable. Runtime identity
+tracks executable and adjacent shared-library file metadata, not a build support
+manifest or a cryptographic hash of their contents. Status polling clears shown
+assessments when this identity changes, and local assessments also reset when
+registered file identity changes.
+
+Run `tests/test_model_compatibility.py` for bounded parsing, evidence rules,
+identity changes, immutable revisions, and authentication. The browser case
+`runtime-compatibility-guidance` checks exact-file requests, separation from
+memory fit, downloaded-model assessment, and runtime-change invalidation.
+
 ## Restricted execution environments
 
 A TestClient stall is not necessarily an application startup deadlock. On

@@ -39,6 +39,68 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb} MiB`;
   }
 
+  let localCompatibility = null;
+  const compatibilityHosts = new Map();
+  function invalidateCompatibility() {
+    const identity = getSnapshot()?.runtime_compatibility_identity;
+    for (const [host, state] of compatibilityHosts) {
+      if (!host.isConnected) { compatibilityHosts.delete(host); continue; }
+      if (state.identity !== identity) { state.reset(); state.identity = identity; }
+    }
+  }
+  function compatibilityControl(target) {
+    const snapshot = getSnapshot();
+    const model = target.name && snapshot?.models?.find(item => item.name === target.name);
+    const localKey = target.name ? JSON.stringify([target.name, snapshot?.runtime_compatibility_identity, model?.path, model?.file_readiness, model?.gpu_pci_slot]) : null;
+    if (localKey && localCompatibility?.key === localKey) return localCompatibility.host;
+    const host = doc.createElement("div");
+    host.className = "library-compatibility";
+    const message = doc.createElement("p");
+    message.className = "plugin-meta";
+    message.setAttribute("role", "status");
+    message.textContent = "Runtime compatibility has not been checked.";
+    const evidence = doc.createElement("details");
+    evidence.className = "library-compatibility-evidence";
+    evidence.hidden = true;
+    const summary = doc.createElement("summary");
+    summary.textContent = "What was checked";
+    const explanation = doc.createElement("p");
+    evidence.append(summary, explanation);
+    const reset = () => {
+      evidence.hidden = true;
+      message.className = "plugin-meta";
+      message.textContent = "Runtime changed. Check compatibility again.";
+    };
+    compatibilityHosts.set(host, { identity: snapshot?.runtime_compatibility_identity, reset });
+    const check = makeButton("Check runtime compatibility", "secondary", async () => {
+      const checkedIdentity = getSnapshot()?.runtime_compatibility_identity;
+      check.disabled = true;
+      evidence.hidden = true;
+      message.textContent = "Checking model architecture against the installed runtime…";
+      try {
+        const response = await request("/admin/library/compatibility", {
+          method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(target),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+        if (checkedIdentity !== getSnapshot()?.runtime_compatibility_identity) throw new Error("Runtime changed. Check again.");
+        message.textContent = `${result.label}: ${result.detail} ${result.action}`;
+        message.className = `plugin-meta${result.status === "incompatible" ? " library-error" : ""}`;
+        explanation.textContent = [result.scope, result.source, result.runtime && `Runtime: ${result.runtime} (${result.runtime_fingerprint || "unknown identity"})`, result.backend && `Configured backend: ${result.backend}`, result.architecture && `Architecture: ${result.architecture}`, result.revision && `Model revision: ${result.revision}`].filter(Boolean).join(" · ");
+        evidence.hidden = false;
+      } catch (e) {
+        message.textContent = `Compatibility unknown: ${e.message}`;
+        message.className = "plugin-meta";
+      } finally {
+        check.disabled = false;
+      }
+    });
+    host.append(check, message, evidence);
+    if (localKey) localCompatibility = { key: localKey, host };
+    return host;
+  }
+
   async function librarySearch(event) {
     event.preventDefault();
     const host = doc.querySelector("#library-results");
@@ -62,7 +124,33 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         meta.textContent = `${(item.downloads ?? 0).toLocaleString()} downloads · ${(item.likes ?? 0).toLocaleString()} likes`;
         const options = doc.createElement("div");
         options.className = "library-options";
-        main.append(title, meta, options);
+        const identity = doc.createElement("div");
+        identity.className = "library-repo-identity";
+        const publisher = String(item.repo || "").split("/")[0];
+        const avatar = doc.createElement("span");
+        avatar.className = "library-publisher-avatar";
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.textContent = publisher.slice(0, 2).toUpperCase() || "HF";
+        // Derive a fixed HF URL from a namespace, never accept an arbitrary image URL.
+        if (/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(publisher)) {
+          const image = doc.createElement("img");
+          image.alt = "";
+          image.width = 36;
+          image.height = 36;
+          image.loading = "lazy";
+          image.referrerPolicy = "no-referrer";
+          image.addEventListener("error", () => image.remove(), { once: true });
+          image.src = `https://huggingface.co/api/avatars/${encodeURIComponent(publisher)}`;
+          avatar.appendChild(image);
+        }
+        const heading = doc.createElement("div");
+        const byline = doc.createElement("p");
+        byline.className = "plugin-meta library-publisher";
+        byline.textContent = `Published by ${publisher || "an unknown account"} on Hugging Face`;
+        byline.title = "The repository publisher may differ from the original model developer.";
+        heading.append(title, byline);
+        identity.append(avatar, heading);
+        main.append(identity, meta, options);
         const side = doc.createElement("div");
         side.appendChild(makeButton("Compare versions", "secondary", () => libraryShowRepo(item.repo, options)));
         card.append(main, side);
@@ -124,7 +212,8 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         const encoding = doc.createElement("p");
         encoding.textContent = `Encoding: ${option.quant || "unknown"}`;
         details.append(detailLabel, filename, encoding);
-        main.append(name, summary, size, badge, fit, details);
+        const compatibility = compatibilityControl({ repo, file: option.file });
+        main.append(name, summary, size, badge, fit, compatibility, details);
         const download = makeButton("Download", "secondary", async () => {
           download.disabled = true;
           try {
@@ -378,6 +467,8 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
 
   return {
     bind,
+    compatibilityControl,
+    invalidateCompatibility,
     start() {
       if (started) return;
       started = true;

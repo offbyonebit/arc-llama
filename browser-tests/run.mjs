@@ -170,6 +170,8 @@ function installApiMocks(context) {
     .then(() =>
       context.route("**/*", async (route) => {
         const url = new URL(route.request().url());
+        // Remote publisher avatars are explicitly mocked; keep this suite offline.
+        if (url.hostname !== "127.0.0.1") return route.abort();
         if (url.pathname.startsWith("/plugin") || url.pathname === "/plugins/vision/generate") {
           // No plugin is loaded in these tests; return a minimal error so a
           // stray plugin action fails deterministically instead of hanging.
@@ -797,6 +799,71 @@ async function testDashboardGenerationTrend({ page, origin }) {
   if (!text.includes("3 hours") || !text.includes("now 24.8 tok/s")) throw new Error(`unexpected trend row: ${text}`);
 }
 
+async function testRuntimeCompatibilityGuidance({ page, origin }) {
+  const calls = [];
+  let outcome = "incompatible";
+  let identity = "old-runtime";
+  await page.route("**/admin/status", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...ADMIN_STATUS, runtime_compatibility_identity: identity }) }));
+  await page.route("**/admin/library/search**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ results: [{ repo: "test/Model-GGUF" }] }) }));
+  await page.route("**/admin/library/repo**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ options: [{ file: "model-Q4_K_M.gguf", quant: "Q4_K_M", size_mb: 1024, fit: "fits" }] }) }));
+  await page.route("**/admin/library/compatibility", route => {
+    calls.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: outcome, label: outcome === "incompatible" ? "Requires a different runtime" : "Architecture recognized", detail: "Runtime architecture assessment.", action: "Review runtime requirements.", scope: "Encoding and inference remain unverified.", runtime: "llama-server", runtime_fingerprint: identity, architecture: "llama" }) });
+  });
+  await page.goto(origin);
+  if (calls.length) throw new Error("compatibility check ran automatically");
+  await page.fill("#library-query", "model");
+  await page.click("#library-search button[type=submit]");
+  await page.getByRole("button", { name: "Compare versions" }).click();
+  const option = page.locator(".library-option");
+  await option.getByRole("button", { name: "Check runtime compatibility" }).click();
+  await page.waitForFunction(() => document.querySelector(".library-option .library-compatibility")?.textContent.includes("Requires a different runtime"));
+  if (calls[0].repo !== "test/Model-GGUF" || calls[0].file !== "model-Q4_K_M.gguf") throw new Error("checked the wrong model file");
+  if (!(await option.innerText()).includes("Likely to fit")) throw new Error("compatibility replaced the memory-fit estimate");
+  if (await option.getByRole("button", { name: "Download", exact: true }).isDisabled()) throw new Error("compatibility prevented a deliberate download");
+  await option.getByText("What was checked", { exact: true }).click();
+  if (!(await option.innerText()).includes("inference remain unverified")) throw new Error("evidence limits were hidden");
+  outcome = "recognized";
+  await page.locator("#readiness-card").getByRole("button", { name: "Check runtime compatibility" }).click();
+  await page.waitForFunction(() => document.querySelector("#readiness-card .library-compatibility")?.textContent.includes("Architecture recognized"));
+  if (calls[1].name !== ADMIN_STATUS.models[0].name) throw new Error("local check used the wrong registration");
+  await page.evaluate(() => fetchStatus(true));
+  if (!(await page.locator("#readiness-card .library-compatibility").innerText()).includes("Architecture recognized")) throw new Error("unchanged polling lost assessment");
+  identity = "new-runtime";
+  await page.evaluate(() => fetchStatus(true));
+  if (!(await page.locator("#readiness-card .library-compatibility").innerText()).includes("has not been checked")) throw new Error("runtime change retained stale assessment");
+  if (!(await option.locator(".library-compatibility").innerText()).includes("Runtime changed")) throw new Error("remote result retained a stale runtime assessment");
+}
+
+async function testLibraryPublisherAvatars({ page, origin }) {
+  const avatarRequests = [];
+  await page.route("https://huggingface.co/api/avatars/**", route => {
+    avatarRequests.push(route.request().url());
+    if (route.request().url().endsWith("/missing")) return route.abort();
+    return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><rect width="36" height="36" fill="green"/></svg>' });
+  });
+  await page.route("**/admin/library/search**", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ results: [
+      { repo: "unsloth/model-GGUF" }, { repo: "missing/model-GGUF" }, { repo: "<script>/model-GGUF" },
+    ] }),
+  }));
+  await page.goto(origin);
+  await page.fill("#library-query", "model");
+  await page.click("#library-search button[type=submit]");
+  await page.waitForFunction(() => document.querySelector(".library-publisher-avatar img")?.naturalWidth > 0);
+  await page.waitForFunction(() => document.querySelectorAll(".library-repo")[1]?.querySelector(".library-publisher-avatar img") === null);
+  const cards = page.locator(".library-repo");
+  if (!(await cards.first().innerText()).includes("Published by unsloth on Hugging Face")) throw new Error("publisher attribution missing");
+  if ((await cards.nth(1).locator(".library-publisher-avatar").innerText()) !== "MI") throw new Error("failed image did not retain initials");
+  if (await cards.nth(2).locator("img, script").count()) throw new Error("invalid publisher generated active markup or image URL");
+  const img = cards.first().locator("img");
+  if ((await img.getAttribute("referrerpolicy")) !== "no-referrer") throw new Error("avatar leaked page referrer");
+  if (avatarRequests.length !== 2) throw new Error(`unexpected avatar requests: ${avatarRequests}`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error("publisher identity overflowed mobile layout");
+}
+
 async function testLibrarySearchAndDownload({ page, origin }) {
   const downloads = [];
   let postDownloadStatusReads = 0;
@@ -1292,6 +1359,8 @@ const TESTS = [
   ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
   ["dashboard-navigation-and-blocked-model", testDashboardNavigationAndBlockedModel],
   ["dashboard-generation-trend", testDashboardGenerationTrend],
+  ["runtime-compatibility-guidance", testRuntimeCompatibilityGuidance],
+  ["library-publisher-avatars", testLibraryPublisherAvatars],
   ["library-search-and-download", testLibrarySearchAndDownload],
   ["dashboard-plugin-layout-controller", testDashboardPluginLayoutController],
   ["frontend-integration-controller", testFrontendIntegrationController],
