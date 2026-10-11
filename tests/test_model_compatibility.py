@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -179,7 +180,15 @@ def test_registered_file_identity_changes_when_file_is_replaced(tmp_path):
     path.write_bytes(header("llama"))
     model = ModelConfig("local", str(path), 18080, "gpu")
     before = file_readiness(model)["identity"]
-    path.write_bytes(header("qwen3"))
+    original = path.stat()
+    replacement = tmp_path / "replacement.gguf"
+    replacement.write_bytes(header("qwen3"))
+    # An in-place rewrite can share a timestamp tick on Windows. Exercise an
+    # actual replacement, even when the size and modification time are unchanged.
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    replacement.replace(path)
+    assert path.stat().st_size == original.st_size
+    assert path.stat().st_mtime_ns == original.st_mtime_ns
     assert before != file_readiness(model)["identity"]
 
 
