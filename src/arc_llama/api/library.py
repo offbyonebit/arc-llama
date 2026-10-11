@@ -14,6 +14,28 @@ from arc_llama.perf_history import PerfHistory
 from arc_llama.router import Router
 
 
+async def _compatibility_until_disconnect(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    async def disconnected() -> None:
+        # Body parsing has finished; a blocking receive can now watch the
+        # disconnect directly without polling or nested cancellation scopes.
+        while True:
+            if (await request.receive())["type"] == "http.disconnect":
+                return
+
+    check = asyncio.create_task(request.app.state.compatibility_checks.assess(request.app.state.cfg, body))
+    watcher = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait({check, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if check in done:
+            return await check
+        raise HTTPException(status_code=499, detail="Compatibility check cancelled after disconnect")
+    finally:
+        for task in (check, watcher):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(check, watcher, return_exceptions=True)
+
+
 def register_library_routes(
     app: FastAPI,
     *,
@@ -86,12 +108,12 @@ def register_library_routes(
     async def library_compatibility(
         request: Request, _auth: None = Depends(require_admin)
     ) -> dict[str, Any]:
-        from arc_llama.model_compatibility import assess_compatibility, validate_request
+        from arc_llama.model_compatibility import validate_request
 
         body = await read_json_body(request)
         try:
             validate_request(body)
-            return await asyncio.to_thread(assess_compatibility, request.app.state.cfg, body)
+            return await _compatibility_until_disconnect(request, body)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 

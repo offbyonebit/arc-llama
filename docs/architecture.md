@@ -20,6 +20,7 @@ Paths below are relative to `src/arc_llama/`.
 | Runtime installation | `runtime.py`, `runtime_update.py`, `binary.py`, `binary_caps.py` | Select and validate runtime assets, manage installation/update/rollback, and inspect binary capabilities. |
 | Hardware discovery and launch policy | `detect.py`, `arch.py`, `platform_checks.py`, `policy.py` | Identify hardware and apply backend-specific constraints. Configuration and detection are not proof of successful inference. |
 | Model discovery and registration | `models.py`, `gguf_meta.py`, `model_library.py` | Scan/register GGUFs, read metadata, search/download from Hugging Face, and report storage/file availability. |
+| Explicit architecture checks | `model_compatibility.py`, `compatibility_io.py` | Own bounded header/evidence rules, app-scoped admission and deadlines, cancellable Hub reads, and temporary CPU-only probes. These checks do not establish inference compatibility or load model weights. |
 | Configuration and recipes | `config.py`, `recipes.py`, `recipe_share.py`, `workload.py` | Validate and persist configuration, select recipes, and describe workload goals. Frontends consume these rules rather than reimplementing them. |
 | Tuning and measurement | `tune.py`, `autotune.py`, `benchmark.py`, `stream_metrics.py`, `perf_history.py` | Run explicit or configured tuning, measure real requests, and retain bounded performance history. |
 | Chat persistence | `chat_store.py` | Store conversations and folders; HTTP handlers expose the operations. Browser drafts remain separate from saved conversations. |

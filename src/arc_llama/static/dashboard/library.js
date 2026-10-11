@@ -44,7 +44,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
   function invalidateCompatibility() {
     const identity = getSnapshot()?.runtime_compatibility_identity;
     for (const [host, state] of compatibilityHosts) {
-      if (!host.isConnected) { compatibilityHosts.delete(host); continue; }
+      if (!host.isConnected) { state.cancel(); compatibilityHosts.delete(host); continue; }
       if (state.identity !== identity) { state.reset(); state.identity = identity; }
     }
   }
@@ -66,23 +66,33 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     summary.textContent = "What was checked";
     const explanation = doc.createElement("p");
     evidence.append(summary, explanation);
+    let activeCheck = null;
+    let revision = 0;
+    const cancel = () => { revision++; activeCheck?.abort(); activeCheck = null; };
     const reset = () => {
+      cancel();
+      check.disabled = false;
       evidence.hidden = true;
       message.className = "plugin-meta";
       message.textContent = "Runtime changed. Check compatibility again.";
     };
-    compatibilityHosts.set(host, { identity: snapshot?.runtime_compatibility_identity, reset });
+    compatibilityHosts.set(host, { identity: snapshot?.runtime_compatibility_identity, reset, cancel });
     const check = makeButton("Check runtime compatibility", "secondary", async () => {
       const checkedIdentity = getSnapshot()?.runtime_compatibility_identity;
+      const attempt = ++revision;
+      const controller = new AbortController();
+      activeCheck = controller;
+      const timeout = setTimeout(() => controller.abort(), 30000);
       check.disabled = true;
       evidence.hidden = true;
       message.textContent = "Checking model architecture against the installed runtime…";
       try {
         const response = await request("/admin/library/compatibility", {
           method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
-          body: JSON.stringify(target),
+          body: JSON.stringify(target), signal: controller.signal,
         });
         const result = await response.json().catch(() => ({}));
+        if (attempt !== revision) return;
         if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
         if (checkedIdentity !== getSnapshot()?.runtime_compatibility_identity) throw new Error("Runtime changed. Check again.");
         message.textContent = `${result.label}: ${result.detail} ${result.action}`;
@@ -90,10 +100,12 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         explanation.textContent = [result.scope, result.source, result.runtime && `Runtime: ${result.runtime} (${result.runtime_fingerprint || "unknown identity"})`, result.backend && `Configured backend: ${result.backend}`, result.architecture && `Architecture: ${result.architecture}`, result.revision && `Model revision: ${result.revision}`].filter(Boolean).join(" · ");
         evidence.hidden = false;
       } catch (e) {
-        message.textContent = `Compatibility unknown: ${e.message}`;
+        if (attempt !== revision) return;
+        message.textContent = `Compatibility unknown: ${e.name === "AbortError" ? "The check timed out. Try again." : e.message}`;
         message.className = "plugin-meta";
       } finally {
-        check.disabled = false;
+        clearTimeout(timeout);
+        if (attempt === revision) { activeCheck = null; check.disabled = false; }
       }
     });
     host.append(check, message, evidence);

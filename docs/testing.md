@@ -35,6 +35,12 @@ that simultaneous forced refreshes share one fresh follow-up read. Synthetic
 visibility events check the hidden-tab timer cadence and one refresh on return;
 they do not claim to measure a browser's own background throttling.
 
+`browser-tests/run.mjs` owns only test selection, browser/context lifetime, and
+reporting. `harness.mjs` owns shared fixtures, routes, and static serving;
+`chat-cases.mjs`, `dashboard-cases.mjs`, and `library-cases.mjs` own their cases.
+Importing the harness or cases starts no server, browser, or test run.
+`node run.mjs --only FILTER` selects named cases; a filter matching nothing fails.
+
 The harness serves the real frontend files against synthetic API responses.
 It does not start models or change user configuration. Static UI tests also
 check JavaScript syntax recursively, including dashboard and chat components.
@@ -57,6 +63,19 @@ selected GGUF at an immutable Hugging Face commit. A registered-model check read
 its local header. Missing/gated metadata, unsupported header layout, and network
 errors remain unknown; repository names and memory fit are not support evidence.
 
+Each explicit assessment has a 25-second request deadline, including admission
+wait, network reads, and the loader probe. At most two assessments run per app.
+Disconnects and server shutdown cancel pending checks; network streams close and
+probe processes are killed and reaped before their temporary fixtures are removed.
+Local file/stat reads run in a thread so slow storage does not block the event loop;
+OS filesystem operations themselves cannot be interrupted by asyncio cancellation.
+The browser has a 30-second fallback deadline and aborts checks invalidated by a
+runtime change or a removed control. Stale responses cannot replace newer results.
+
+Hugging Face metadata is capped at 2 MiB and the selected GGUF header at 256 KiB.
+Hub access settings are honored; bearer credentials are stripped on cross-host
+redirects. Diagnostics retain bounded loader output and record failure phase,
+exception class, and HTTP status without logging exception messages or tokens.
 Architecture recognition is probed with a temporary zero-tensor GGUF, CPU-only
 arguments, and a ten-second subprocess deadline. An architecture-specific loader
 rejection establishes a mismatch. Reaching an architecture-specific missing-key
@@ -69,10 +88,14 @@ manifest or a cryptographic hash of their contents. Status polling clears shown
 assessments when this identity changes, and local assessments also reset when
 registered file identity changes.
 
-Run `tests/test_model_compatibility.py` for bounded parsing, evidence rules,
+Run `tests/test_model_compatibility.py` and `tests/test_compatibility_io.py` for
+deadlines, admission, cancellation cleanup, bounded IO, credentials, evidence rules,
 identity changes, immutable revisions, and authentication. The browser case
 `runtime-compatibility-guidance` checks exact-file requests, separation from
 memory fit, downloaded-model assessment, and runtime-change invalidation.
+`compatibility-abandoned-checks` verifies browser timeouts, aborted requests, and
+stale responses. The same CI jobs run on pushes to
+`feature/model-journey-and-organization` and pull requests targeting `main`.
 
 ## Restricted execution environments
 

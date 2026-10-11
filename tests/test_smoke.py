@@ -161,3 +161,11 @@ def test_inference_smoke() -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=10)
+        finally:
+            # Waiting/reaping does not close PIPE file objects. Strict warning
+            # checks must not turn successful native inference into an unclosed
+            # stdout/stderr failure during garbage collection.
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()

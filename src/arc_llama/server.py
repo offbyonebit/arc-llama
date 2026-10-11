@@ -51,6 +51,7 @@ from arc_llama.chat_store import Chat, ChatMessage, ChatStore
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
+from arc_llama.model_compatibility import CompatibilityChecks
 from arc_llama.model_library import (
     DownloadManager,
     deletable_files,
@@ -245,6 +246,7 @@ def create_app(
         app.state.router = Router(cfg, log_dir=state_dir)
         app.state.upstream_mgr = UpstreamManager(cfg.upstreams)
         app.state.cfg = cfg
+        app.state.compatibility_checks = CompatibilityChecks()
         app.state.started_at = time.time()
         # Exclusive GPU arbitration for plugin tasks (vision, ...). Built
         # after the router — it delegates all llama-server process
@@ -294,6 +296,7 @@ def create_app(
                 app.state.api_keys.flush()
             if app.state.perf_history is not None:
                 app.state.perf_history.flush()
+            await app.state.compatibility_checks.shutdown()
             downloads = getattr(app.state, "downloads", None)
             if downloads is not None:
                 await downloads.shutdown()

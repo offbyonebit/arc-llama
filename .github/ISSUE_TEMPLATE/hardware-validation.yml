@@ -1,0 +1,69 @@
+name: Hardware validation report
+description: Report native Intel GPU results and the checks still needed.
+title: "[Hardware] GPU / OS / backend"
+labels: ["help wanted", "untested"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help record which Intel GPU environments have been tested. Include failures as well as successes, and mark checks you have not performed as "not run".
+        See the [validation checklist](https://github.com/offbyonebit/arc-llama/issues/71). Remove tokens and private details before attaching logs.
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU and memory
+      description: Exact GPU model, dedicated/shared memory, and number of GPUs.
+      placeholder: Arc A770 16 GiB, one GPU
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Software environment
+      description: OS/build, kernel (Linux), Intel graphics driver, Arc Llama version, Python version, llama.cpp runtime build/tag, and oneAPI version if using SYCL.
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend tested
+      options:
+        - Vulkan
+        - SYCL
+        - Both (report results separately)
+        - Not run
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic output
+      description: Paste output from arc-llama --version, arc-llama gpus, and arc-llama doctor. These commands do not run inference. State any command you did not run.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Model and configuration
+      description: Model repository/file, quantization, recipe, context size, GPU selection/offload, and any changed settings. If inference was not run, say so.
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Observed results
+      description: Record cold start, model switching, streaming, non-streaming, and shutdown as pass/fail/not run. Include symptoms, timing, or throughput if measured. For multiple backends, distinguish each result.
+      value: |
+        Cold start:
+        Model switching:
+        Streaming:
+        Non-streaming:
+        Shutdown:
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and remaining problems
+      description: Relevant errors, reproducible steps, or logs. Include remaining checks and unexpected GPU/memory behavior.

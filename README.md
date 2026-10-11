@@ -24,9 +24,15 @@ something useful before lunch.
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Version 0.9.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.0).
+> **Version 0.9.1 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1).
 
-## What's new in 0.9.0
+## What's new in 0.9.1
+
+- **Compatibility with current llama.cpp builds:** recipes using `no_mmap` or
+  `mlock` now launch with `--load-mode` when the runtime supports it. Older
+  binaries continue to use the legacy flags.
+
+## Highlights from 0.9.0
 
 - **One-command setup and launch:** `arc-llama run` accepts a registered model,
   local GGUF, or Hugging Face GGUF source; it prepares the runtime and model,
@@ -184,6 +190,23 @@ arc-llama runtime rollback               # undo the last switch
 
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
+
+## Tested hardware
+
+The recorded native validation below used the **0.9.0rc2 candidate** and the
+models and recipes in the linked report. It does not establish validation for
+every driver, model, or later release.
+
+| GPU | Platform | Backend | Recorded validation |
+| --- | --- | --- | --- |
+| Arc Pro B60 (24 GiB) | Linux | Vulkan and SYCL | [Native release validation](docs/release-validation-linux-2026-10-03.md) |
+| Alchemist (A-series) | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
+| Lunar Lake | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
+| Arc Pro B60 | Windows | Vulkan / SYCL | Native Windows validation [requested](https://github.com/offbyonebit/arc-llama/issues/69) |
+
+Have one of these devices? [Submit a hardware validation report](https://github.com/offbyonebit/arc-llama/issues/new?template=hardware-validation.yml)
+with your environment, configuration, and observed results. Reports can include
+checks you have not run; mark them as “not run” so the remaining coverage is clear.
 
 ## Requirements
 
