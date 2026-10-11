@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>Arc Llama · A quick look</title>
+<style>
+:root{--bg:#101110;--surface:#181a18;--line:#30352f;--text:#efeee8;--muted:#a3aaa0;--accent:#c1d2b4}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 70% 0%,#24302380,transparent 65%),var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:inherit}button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:5px}button:disabled{opacity:.35;cursor:default}.shell{max-width:1160px;margin:auto;padding:34px 32px 28px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px}.wordmark{font-size:17px;font-weight:700;letter-spacing:-.04em;display:flex;align-items:center;gap:10px}.mark{width:24px;height:24px;border:2px solid var(--accent);border-radius:50%;position:relative}.mark:after{content:"";position:absolute;width:7px;height:7px;background:var(--accent);border-radius:50%;top:3px;right:2px}.repo{font-size:12px;text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:7px 13px;color:var(--muted)}.intro{margin:28px 0 22px}.eyebrow{text-transform:uppercase;letter-spacing:.18em;font-size:10px;color:var(--accent);margin:0 0 8px}h1{font-weight:600;font-size:clamp(29px,5vw,45px);letter-spacing:-.045em;line-height:1.12;margin:0 0 10px}.intro p:last-child{color:var(--muted);margin:0;font-size:14px}.stage{position:relative}figure{margin:0 0 24px}[hidden]{display:none!important}.screen{border:1px solid #3c443b;border-radius:12px;overflow:hidden;box-shadow:0 25px 70px #0007;background:#101010}.screen-bar{height:31px;background:#20231f;display:flex;align-items:center;justify-content:space-between;padding:0 13px;color:#949b90;font-size:10px;letter-spacing:.03em}.traffic{display:flex;gap:5px;width:60px}.traffic i{width:6px;height:6px;background:#6d7668;border-radius:50%}.screen-mark{width:100px;text-align:right;font-size:8px}.screen img{display:block;width:100%;height:auto;aspect-ratio:1280/740;object-fit:contain;object-position:center;background:#101010}figcaption{display:flex;align-items:baseline;gap:20px;padding:17px 2px 0}.step{font:11px/1.5 ui-monospace,monospace;color:var(--accent);white-space:nowrap}h2{font-size:21px;font-weight:550;letter-spacing:-.025em;margin:0 0 4px}figcaption p{margin:0;color:var(--muted);font-size:13px;max-width:760px}.controls{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:18px}.movement{display:flex;align-items:center;gap:9px}.arrow{border:1px solid var(--line);background:var(--surface);border-radius:50%;width:37px;height:37px;font-size:19px}.counter{color:var(--muted);font-size:11px;min-width:35px;text-align:center}.full{font-size:11px;text-decoration:none;color:var(--muted)}.thumbnails{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:22px}.thumbnail{border:1px solid transparent;border-radius:7px;padding:5px;background:transparent;text-align:left;min-width:0}.thumbnail[aria-current="true"]{border-color:#63745c;background:#28312488}.thumbnail img{display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:contain;background:#141414;border-radius:3px}.thumbnail span{display:block;font-size:10px;padding:5px 2px 0;color:var(--muted)}footer{margin-top:22px;display:flex;justify-content:space-between;gap:18px;border-top:1px solid var(--line);padding-top:13px;color:#848c80;font-size:10px}footer p{margin:0}.enhanced .stage{touch-action:pan-y pinch-zoom}.hint{font-size:10px;color:var(--muted)}@media(min-width:900px){.enhanced .screen img{max-height:530px}}@media(max-width:620px){.shell{padding:22px 16px}.intro{margin:27px 0 20px}.intro p:last-child{font-size:12px}.screen-bar{height:25px}.screen-mark{display:none}.screen img{aspect-ratio:1280/900}figcaption{gap:12px;padding-top:14px}h2{font-size:19px}figcaption p{font-size:12px}.thumbnails{gap:5px;grid-template-columns:repeat(3,minmax(0,1fr))}.thumbnail span{font-size:10px}footer{flex-direction:column;gap:6px}.hint{display:none}}@media(prefers-reduced-motion:no-preference){button,a{transition:border-color .15s,background .15s}}
+</style></head><body><main class="shell">
+<header class="top"><div class="wordmark"><span class="mark" aria-hidden="true"></span>arc-llama</div><a class="repo" href="https://github.com/offbyonebit/arc-llama">View repository ↗</a></header>
+<div class="intro"><p class="eyebrow">A quick look · Development preview</p><h1>From your Arc GPU<br>to your next conversation.</h1><p>Find a model. Check the runtime. Open chat.</p></div>
+<section aria-label="Screenshot tour" aria-roledescription="carousel"><div class="stage" id="stage"><figure id="01-models" data-slide>
+      <div class="screen"><div class="screen-bar" aria-hidden="true"><span class="traffic"><i></i><i></i><i></i></span><span>arc-llama / models</span><span class="screen-mark">LOCAL INFERENCE</span></div><img src="images/01-models.png" alt="Start with a clear next step. One home for finding models, reviewing your setup, and opening chat." width="1280" height="900" draggable="false"></div>
+      <figcaption><span class="step">01 / 06</span><div><h2>Start with a clear next step.</h2><p>One home for finding models, reviewing your setup, and opening chat.</p></div></figcaption>
+    </figure>
+<figure id="02-discover" data-slide>
+      <div class="screen"><div class="screen-bar" aria-hidden="true"><span class="traffic"><i></i><i></i><i></i></span><span>arc-llama / discover</span><span class="screen-mark">LOCAL INFERENCE</span></div><img src="images/02-discover.png" alt="Find your next model. Search Hugging Face with recognizable publishers and plain-language download choices." width="1280" height="900" draggable="false"></div>
+      <figcaption><span class="step">02 / 06</span><div><h2>Find your next model.</h2><p>Search Hugging Face with recognizable publishers and plain-language download choices.</p></div></figcaption>
+    </figure>
+<figure id="03-compatibility" data-slide>
+      <div class="screen"><div class="screen-bar" aria-hidden="true"><span class="traffic"><i></i><i></i><i></i></span><span>arc-llama / compatibility</span><span class="screen-mark">LOCAL INFERENCE</span></div><img src="images/03-compatibility.png" alt="Check the runtime before the download. Memory fit and architecture support answer different questions." width="1280" height="900" draggable="false"></div>
+      <figcaption><span class="step">03 / 06</span><div><h2>Check the runtime before the download.</h2><p>Memory fit and architecture support answer different questions.</p></div></figcaption>
+    </figure>
+<figure id="04-review" data-slide>
+      <div class="screen"><div class="screen-bar" aria-hidden="true"><span class="traffic"><i></i><i></i><i></i></span><span>arc-llama / review</span><span class="screen-mark">LOCAL INFERENCE</span></div><img src="images/04-review.png" alt="Review before you run. See the selected model, GPU, context, and estimated memory use together." width="1280" height="900" draggable="false"></div>
+      <figcaption><span class="step">04 / 06</span><div><h2>Review before you run.</h2><p>See the selected model, GPU, context, and estimated memory use together.</p></div></figcaption>
+    </figure>
+<figure id="05-chat" data-slide>
+      <div class="screen"><div class="screen-bar" aria-hidden="true"><span class="traffic"><i></i><i></i><i></i></span><span>arc-llama / chat</span><span class="screen-mark">LOCAL INFERENCE</span></div><img src="images/05-chat.png" alt="Make it a conversation. Chat with your selected model in a focused interface." width="1280" height="900" draggable="false"></div>
+      <figcaption><span class="step">05 / 06</span><div><h2>Make it a conversation.</h2><p>Chat with your selected model in a focused interface.</p></div></figcaption>
+    </figure>
+<figure id="06-system" data-slide>
+      <div class="screen"><div class="screen-bar" aria-hidden="true"><span class="traffic"><i></i><i></i><i></i></span><span>arc-llama / system</span><span class="screen-mark">LOCAL INFERENCE</span></div><img src="images/06-system.png" alt="Keep your setup in view. Check GPU status and measurements from actual requests." width="1280" height="900" draggable="false"></div>
+      <figcaption><span class="step">06 / 06</span><div><h2>Keep your setup in view.</h2><p>Check GPU status and measurements from actual requests.</p></div></figcaption>
+    </figure></div>
+<nav class="controls" aria-label="Tour navigation" hidden><div class="movement"><button class="arrow" id="previous" aria-label="Previous screenshot">←</button><span class="counter" id="counter" aria-live="polite"></span><button class="arrow" id="next" aria-label="Next screenshot">→</button></div><span class="hint">Arrow keys on desktop · Swipe on mobile</span><a class="full" id="full" href="images/01-models.png" target="_blank" rel="noopener">Open full-size ↗</a></nav>
+<div class="thumbnails" aria-label="Choose a screenshot" hidden><button class="thumbnail" data-to="0" aria-label="Show screenshot 1: Start with a clear next step."><img src="images/01-models.png" alt="" width="160" height="112"><span>Models</span></button>
+<button class="thumbnail" data-to="1" aria-label="Show screenshot 2: Find your next model."><img src="images/02-discover.png" alt="" width="160" height="112"><span>Discover</span></button>
+<button class="thumbnail" data-to="2" aria-label="Show screenshot 3: Check the runtime before the download."><img src="images/03-compatibility.png" alt="" width="160" height="112"><span>Compatibility</span></button>
+<button class="thumbnail" data-to="3" aria-label="Show screenshot 4: Review before you run."><img src="images/04-review.png" alt="" width="160" height="112"><span>Review</span></button>
+<button class="thumbnail" data-to="4" aria-label="Show screenshot 5: Make it a conversation."><img src="images/05-chat.png" alt="" width="160" height="112"><span>Chat</span></button>
+<button class="thumbnail" data-to="5" aria-label="Show screenshot 6: Keep your setup in view."><img src="images/06-system.png" alt="" width="160" height="112"><span>System</span></button></div></section>
+<footer><p>Actual app captures · Intel Arc Pro B60 · LFM2.5 example</p><p>Local development UI; released versions may differ. No personal history shown.</p></footer>
+</main><script>
+(() => {
+ const slides=Array.from(document.querySelectorAll('[data-slide]'));
+ const thumbnails=Array.from(document.querySelectorAll('[data-to]'));
+ const previous=document.getElementById('previous'), next=document.getElementById('next');
+ let current=0, start=null;
+ function show(index,updateHash=true){
+   current=Math.max(0,Math.min(slides.length-1,index));
+   slides.forEach((slide,i)=>{slide.hidden=i!==current;slide.setAttribute('aria-label',`Screenshot ${i+1} of ${slides.length}`);});
+   thumbnails.forEach((button,i)=>{button.setAttribute('aria-current',String(i===current));});
+   previous.disabled=current===0;next.disabled=current===slides.length-1;
+   document.getElementById('counter').textContent=`${current+1} / ${slides.length}`;
+   document.getElementById('full').href=slides[current].querySelector('img').getAttribute('src');
+   if(updateHash)history.replaceState(null,'','#'+slides[current].id);
+ }
+ function fromHash(){const index=slides.findIndex(slide=>'#'+slide.id===location.hash);show(index<0?0:index,false);}
+ document.querySelector('.controls').hidden=false;document.querySelector('.thumbnails').hidden=false;document.body.classList.add('enhanced');
+ previous.addEventListener('click',()=>show(current-1));next.addEventListener('click',()=>show(current+1));
+ thumbnails.forEach(button=>button.addEventListener('click',()=>show(Number(button.dataset.to))));
+ document.addEventListener('keydown',event=>{if(event.altKey||event.ctrlKey||event.metaKey||event.target.closest('input,textarea,[contenteditable]'))return;if(event.key==='ArrowRight'){event.preventDefault();show(current+1);}if(event.key==='ArrowLeft'){event.preventDefault();show(current-1);}if(event.key==='Home'){event.preventDefault();show(0);}if(event.key==='End'){event.preventDefault();show(slides.length-1);}});
+ const stage=document.getElementById('stage');
+ stage.addEventListener('pointerdown',event=>{start={x:event.clientX,y:event.clientY,id:event.pointerId};stage.setPointerCapture(event.pointerId);});
+ stage.addEventListener('pointerup',event=>{if(!start||event.pointerId!==start.id)return;const dx=event.clientX-start.x,dy=event.clientY-start.y;start=null;if(Math.abs(dx)>50&&Math.abs(dx)>Math.abs(dy)*1.3)show(current+(dx<0?1:-1));});
+ stage.addEventListener('pointercancel',()=>{start=null;});
+ window.addEventListener('hashchange',fromHash);fromHash();
+})();
+</script></body></html>

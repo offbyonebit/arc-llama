@@ -12,6 +12,15 @@ have to discover them the hard way.
 It's built for the day you unbox an Arc card, install drivers, and want
 something useful before lunch.
 
+## See it in action
+
+[![Arc Llama interface tour: models, Hugging Face discovery, runtime checks, chat, and system status](docs/showcase/cover.png)](docs/showcase/01-models.md)
+
+**[Click through the screenshot tour →](docs/showcase/01-models.md)** ·
+[All screenshots and swipeable gallery](docs/showcase/README.md)
+
+*Development UI preview. Screenshots show the local branch; released versions may differ.*
+
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
