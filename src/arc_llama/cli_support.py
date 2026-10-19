@@ -1,4 +1,5 @@
 """Registration for API-key and plugin management commands."""
+
 from __future__ import annotations
 
 import json
@@ -19,18 +20,15 @@ def register_support_commands(
     # keys
     # ===========================================================================
 
-
     @cli.group("keys")
     def keys_group() -> None:
         """Manage API keys for remote clients."""
-
 
     def _key_store(ctx: click.Context):
         from arc_llama.api_keys import ApiKeyStore
 
         cfg = load_config(ctx.obj["config_path"])
         return ApiKeyStore.for_state_dir(cfg.paths.state_dir)
-
 
     @keys_group.command("create")
     @click.argument("name")
@@ -47,7 +45,6 @@ def register_support_commands(
             "[dim]Remote clients must now send it as 'Authorization: Bearer <key>'. "
             "A running server picks it up after restart.[/dim]"
         )
-
 
     @keys_group.command("list")
     @click.pass_context
@@ -78,7 +75,6 @@ def register_support_commands(
             )
         console.print(table)
 
-
     @keys_group.command("revoke")
     @click.argument("key_id")
     @click.pass_context
@@ -88,17 +84,13 @@ def register_support_commands(
             raise click.ClickException(f"No key with id {key_id!r}.")
         console.print(f"[green]Revoked {key_id}.[/green]")
 
-
-
     # ===========================================================================
     # plugin
     # ===========================================================================
 
-
     @cli.group("plugin")
     def plugin_group() -> None:
         """Create and inspect arc-llama plugins."""
-
 
     @plugin_group.command("new")
     @click.argument("name")
@@ -131,7 +123,6 @@ def register_support_commands(
             "then restart [bold]arc-llama serve[/bold]."
         )
 
-
     @plugin_group.command("list")
     @click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON.")
     def plugin_list(as_json: bool) -> None:
@@ -159,8 +150,6 @@ def register_support_commands(
                 str(entry.get("error", "")),
             )
         console.print(table)
-
-
 
     return {
         "keys_group": keys_group,

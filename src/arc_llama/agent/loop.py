@@ -3,6 +3,7 @@
 The loop talks to the local OpenAI-compatible server, executes tools in a
 sandboxed project root, and yields SSE events so a UI can stream progress.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -104,7 +105,9 @@ async def run_agent(
                 )
                 plan_response.raise_for_status()
                 plan_data = plan_response.json()
-                plan_content = plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                plan_content = (
+                    plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
@@ -244,12 +247,14 @@ async def run_agent(
                 }
 
                 result_text = format_tool_result(name, arguments, result.content, result.error)
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", call_id),
-                    "name": name,
-                    "content": result_text,
-                })
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", call_id),
+                        "name": name,
+                        "content": result_text,
+                    }
+                )
 
         yield {
             "type": "error",

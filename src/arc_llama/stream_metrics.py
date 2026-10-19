@@ -1,4 +1,5 @@
 """Observe bounded SSE events without changing the forwarded response bytes."""
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,12 @@ def generation_rate(payload: Any) -> float | None:
         if math.isfinite(value) and value > 0:
             return float(value)
     count, elapsed = timings.get("predicted_n"), timings.get("predicted_ms")
-    if (isinstance(count, (int, float)) and not isinstance(count, bool)
-            and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)):
+    if (
+        isinstance(count, (int, float))
+        and not isinstance(count, bool)
+        and isinstance(elapsed, (int, float))
+        and not isinstance(elapsed, bool)
+    ):
         if math.isfinite(count) and math.isfinite(elapsed) and count > 0 and elapsed > 0:
             rate = count * 1000.0 / elapsed
             if math.isfinite(rate):
@@ -41,9 +46,14 @@ def has_generated_content(payload: Any) -> bool:
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
-        if any(isinstance(delta.get(k), str) and delta[k] for k in ("content", "reasoning_content", "reasoning")):
+        if any(
+            isinstance(delta.get(k), str) and delta[k]
+            for k in ("content", "reasoning_content", "reasoning")
+        ):
             return True
-        for call in delta.get("tool_calls", []) if isinstance(delta.get("tool_calls"), list) else []:
+        for call in (
+            delta.get("tool_calls", []) if isinstance(delta.get("tool_calls"), list) else []
+        ):
             if isinstance(call, dict) and isinstance(call.get("function"), dict):
                 if call["function"].get("name") or call["function"].get("arguments"):
                     return True

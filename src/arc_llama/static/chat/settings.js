@@ -18,10 +18,13 @@
           <textarea id="s-system" rows="4" placeholder="Optional instructions sent before every chat"></textarea></div>
         <div class="s-field"><label for="s-temp">Temperature</label>
           <input id="s-temp" type="number" min="0" max="2" step="0.05" placeholder="model default"></div>
+        <div class="s-field"><label for="s-max-tokens">Reply token limit</label>
+          <input id="s-max-tokens" type="number" min="1" step="1" placeholder="1024"></div>
         <button class="s-apply" id="s-preset-save" type="button">Save preset</button>
         <div class="s-note" id="s-preset-note">Saved in this browser; applies to the next message.</div>
       `;
       ctx.$("#s-system").value = preset.system;
+      ctx.$("#s-max-tokens").value = String(preset.max_tokens);
       ctx.$("#s-temp").value = preset.temperature == null ? "" : String(preset.temperature);
       ctx.$("#s-preset-save").addEventListener("click", () => {
         const raw = ctx.$("#s-temp").value.trim();
@@ -30,7 +33,12 @@
           ctx.$("#s-preset-note").textContent = "Temperature must be between 0 and 2.";
           return;
         }
-        savePreset(ctx.selectedModel, { system: ctx.$("#s-system").value.trim(), temperature: temp });
+        const maxTokens = Number(ctx.$("#s-max-tokens").value || 1024);
+        if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0) {
+          ctx.$("#s-preset-note").textContent = "Reply token limit must be a positive whole number.";
+          return;
+        }
+        savePreset(ctx.selectedModel, { system: ctx.$("#s-system").value.trim(), temperature: temp, max_tokens: maxTokens });
         ctx.$("#s-preset-note").textContent = "Preset saved.";
         ctx.budgetBase = null;
         ctx.refreshBudget();
@@ -158,12 +166,13 @@
       return {
         system: typeof p.system === "string" ? p.system : "",
         temperature: typeof p.temperature === "number" ? p.temperature : null,
+        max_tokens: Number.isSafeInteger(p.max_tokens) && p.max_tokens > 0 ? p.max_tokens : 1024,
       };
     }
 
     function savePreset(model, preset) {
       const all = loadPresets();
-      if (!preset.system && preset.temperature == null) delete all[model];
+      if (!preset.system && preset.temperature == null && (!preset.max_tokens || preset.max_tokens === 1024)) delete all[model];
       else all[model] = preset;
       try { ctx.storage.setItem(PRESETS_KEY, JSON.stringify(all)); } catch (_) {}
     }

@@ -41,7 +41,9 @@
         model: modelHint || null,
         createdAt: Math.round((data.created_at || Date.now() / 1000) * 1000),
         updatedAt: Math.round((data.updated_at || Date.now() / 1000) * 1000),
-        messages: (data.messages || []).map(m => ({ role: m.role, content: m.content })),
+        messages: (data.messages || []).map(m => ({ role: m.role, content: m.content,
+          ...(m.images?.length ? { images: m.images } : {}), ...(m.thinking ? { thinking: m.thinking } : {}), ...(m.status ? { status: m.status } : {}) })),
+        compaction: data.compaction || null,
       };
     }
 
@@ -210,6 +212,7 @@
     }
 
     async function loadChat(id) {
+      if (!ctx.allowChatChange()) return;
       // Always refresh from the server so switching browsers / clearing localStorage
       // shows the latest persisted state.
       let chat = null;
@@ -225,7 +228,7 @@
         chat = chatCache.find(c => c.id === id);
         if (!chat) return;
       }
-      if (!chat) return;
+      if (!chat || !ctx.allowChatChange()) return;
       ctx.conversation.length = 0;
       ctx.budgetBase = null;
       ctx.lastUserDiv = null;
@@ -234,6 +237,7 @@
         ctx.conversation.push(...chat.messages);
       }
       ctx.currentChatId = chat.id;
+      ctx.compactionState = chat.compaction || null;
       ctx.chatLog.innerHTML = "";
       if (ctx.conversation.length === 0) {
         ctx.chatLog.appendChild(ctx.emptyState);
@@ -243,9 +247,11 @@
           if (m.role === "assistant") {
             const { div, content } = ctx.createMessage("assistant", m.content || "");
             if (m.thinking) ctx.renderThinking(div, m.thinking);
+            ctx.renderResponseStatus(div, m.status);
             if (m.content) ctx.renderMarkdown(content, m.content);
           } else {
-            ctx.createMessage(m.role, m.content || "");
+            const { div } = ctx.createMessage(m.role, m.content || "");
+            ctx.renderUserImages(div, m.images);
           }
         }
       }
@@ -259,11 +265,13 @@
       ctx.historyToggle.classList.remove("open");
       const m = ctx.models.find(x => x.id === ctx.selectedModel);
       ctx.updateCtxMeter(ctx.estimateTokens(), m?.ctx || 131072);
+      ctx.refreshBudget();
       if (ctx.shouldAutoScroll(ctx.chatLog)) ctx.autoScroll(ctx.chatLog);
       ctx.input.focus();
     }
 
     async function deleteChat(id) {
+      if (!ctx.allowChatChange()) return;
       try {
         await apiRequest(`/v1/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
       } catch (e) {

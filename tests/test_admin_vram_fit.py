@@ -131,6 +131,7 @@ def test_estimate_cache_hits_within_ttl_and_invalidates(tmp_path, monkeypatch):
 
 async def test_admin_status_includes_vram_estimate_block(tmp_path, monkeypatch):
     cfg = _file_config(tmp_path)
+
     async def run_inline(func, *args, **kwargs):
         return func(*args, **kwargs)
 

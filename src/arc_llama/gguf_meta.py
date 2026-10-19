@@ -653,7 +653,9 @@ def _expert_tensor_layer(name: str) -> int | None:
 
 # llama.cpp's gguf-split naming: ``<prefix>-00001-of-00003.gguf``. Only the
 # first shard is passed to ``-m``; llama.cpp opens the siblings itself.
-_SPLIT_RE = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$", re.IGNORECASE)
+_SPLIT_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$", re.IGNORECASE
+)
 
 
 def split_info(path: Path | str) -> tuple[int, int] | None:

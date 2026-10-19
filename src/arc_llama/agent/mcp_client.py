@@ -3,6 +3,7 @@
 This module is optional: it only imports the official ``mcp`` SDK when an MCP
 server is configured. Install the ``mcp`` extra to use it.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,8 +58,7 @@ class MCPClientManager:
             return
         if not _MCP_AVAILABLE:
             raise RuntimeError(
-                "MCP support requires the 'mcp' extra. "
-                "Install with: pip install 'arc-llama[mcp]'"
+                "MCP support requires the 'mcp' extra. Install with: pip install 'arc-llama[mcp]'"
             ) from _MCP_IMPORT_ERROR
 
         try:

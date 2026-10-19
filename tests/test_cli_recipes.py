@@ -114,7 +114,6 @@ def test_recipes_apply_rolls_back_a_regression(recipe_cli, tmp_path, monkeypatch
         restored.append(dict(edits))
         return None
 
-
     monkeypatch.setattr("arc_llama.cli.benchmark_mod.benchmark_model", benchmark)
     monkeypatch.setattr("arc_llama.tune._apply_edits", apply)
     monkeypatch.setattr("arc_llama.tune._restore_final_state", restore)
@@ -156,7 +155,6 @@ def test_recipes_apply_keeps_a_verified_win(recipe_cli, tmp_path, monkeypatch):
     async def restore(_client, _model, edits, cfg=None):
         restored.append(dict(edits))
         return None
-
 
     monkeypatch.setattr("arc_llama.cli.benchmark_mod.benchmark_model", benchmark)
     monkeypatch.setattr("arc_llama.tune._apply_edits", apply)

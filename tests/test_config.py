@@ -277,3 +277,25 @@ host = "127.0.0.1"
         cfg = load_config(path)
     assert cfg.server.host == "127.0.0.1"
     assert "unknown_section" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "field", ["inference_first_response_seconds", "inference_stream_idle_seconds"]
+)
+@pytest.mark.parametrize("value", [-1, True, float("nan"), float("inf"), "60"])
+def test_invalid_inference_deadlines(field, value):
+    from arc_llama.config import ServerConfig
+
+    with pytest.raises(ValueError, match=field):
+        ServerConfig(**{field: value})
+
+
+def test_inference_deadlines_round_trip_and_allow_unlimited(tmp_path):
+    cfg = Config()
+    cfg.server.inference_first_response_seconds = 0
+    cfg.server.inference_stream_idle_seconds = 240
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    loaded = load_config(path)
+    assert loaded.server.inference_first_response_seconds == 0
+    assert loaded.server.inference_stream_idle_seconds == 240

@@ -14,6 +14,7 @@ tuner optimises the workload rather than the benchmark:
 Every field may be empty ("not sure"); an empty profile reproduces the
 pre-profile behaviour exactly.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -50,9 +51,7 @@ DEEP_PROMPT_CTX_RESERVE_TOKENS = 128
 
 #: Axes whose ordering changes with context depth. Flash attention is not
 #: among them — it stays at the shallow measurement depth.
-_DEPTH_SENSITIVE_EDITS = frozenset(
-    {"cache_type_k", "cache_type_v", "ubatch_size", "batch_size"}
-)
+_DEPTH_SENSITIVE_EDITS = frozenset({"cache_type_k", "cache_type_v", "ubatch_size", "batch_size"})
 
 
 def target_ctx(workload: WorkloadConfig) -> int | None:
@@ -86,11 +85,7 @@ def fingerprint_key(workload: WorkloadConfig) -> str:
     because the profile changes both the search space and the measurement
     depth the recipe was chosen under.
     """
-    return (
-        f"ctx={workload.context_length};"
-        f"style={workload.style};"
-        f"priority={workload.priority}"
-    )
+    return f"ctx={workload.context_length};style={workload.style};priority={workload.priority}"
 
 
 def kv_fits_at_ctx(

@@ -32,22 +32,26 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.types import Receive, Scope, Send
 
 from arc_llama import __version__
 from arc_llama.agent import run_agent
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.repo_map import SemanticIndex
+from arc_llama.api.context_budget import register_context_budget_route
 from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
+from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
-from arc_llama.chat_store import Chat, ChatMessage, ChatStore
+from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
@@ -81,14 +85,30 @@ log = logging.getLogger("arc_llama.server")
 _REASONING_FORMATS = {"auto", "none", "deepseek", "deepseek-legacy"}
 
 
-async def _iter_sse_body(response: httpx.Response):
-    """Yield an SSE response and stop once the protocol sends ``[DONE]``."""
+async def _iter_sse_body(response: httpx.Response, *, require_done: bool = False):
+    """Forward bytes unchanged; recognize only an SSE terminator line."""
     tail = b""
     async for chunk in response.aiter_raw():
         yield chunk
-        tail = (tail + chunk)[-64:]
-        if b"data: [DONE]" in tail:
+        combined = tail + chunk
+        if any(line.strip() == b"data: [DONE]" for line in combined.splitlines()):
             return
+        tail = combined[-64:]
+    if require_done:
+        raise httpx.ReadError("Inference stream ended without a completion marker")
+
+
+class _LocalStreamingResponse(StreamingResponse):
+    """Also finalize when the client disappears before body iteration starts."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Local stream finalizers are idempotent; the normal body/background
+            # paths may already have settled this request.
+            if self.background is not None:
+                await self.background()
 
 
 def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -271,6 +291,9 @@ def create_app(
             app.state.chat_store = ChatStore(Path(".arc_llama_chats"))
             app.state.checkpoint_store = CheckpointStore(Path(".arc_llama_checkpoints"))
             app.state.semantic_index = SemanticIndex(Path(".arc_llama_semantic_index"))
+        app.state.work = None
+        if state_dir and (state_dir / "work" / "work.sqlite3").exists():
+            await ensure_work(app)
         load_skills(cfg.paths.skills_dir)
         app.state.mcp_manager = MCPClientManager(cfg.active_mcp_servers())
         tuner: Any | None = None
@@ -292,6 +315,8 @@ def create_app(
             await startup_plugins(app_plugins, app)
             yield
         finally:
+            if getattr(app.state, "work", None) is not None:
+                await app.state.work.shutdown()
             if app.state.api_keys is not None:
                 app.state.api_keys.flush()
             if app.state.perf_history is not None:
@@ -323,9 +348,7 @@ def create_app(
 
     @app.middleware("http")
     async def require_client_key(request: Request, call_next):
-        if request.url.path.startswith(_CLIENT_PROTECTED_PREFIXES) and not client_allowed(
-            request
-        ):
+        if request.url.path.startswith(_CLIENT_PROTECTED_PREFIXES) and not client_allowed(request):
             return JSONResponse(
                 status_code=401,
                 content={
@@ -600,8 +623,12 @@ def create_app(
                 {
                     "name": item["id"],
                     "model": item["id"],
-                    "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.get("created", 0))),
-                    "size": int(item.get("metadata", {}).get("model_file_mb", 0) or 0) * 1024 * 1024,
+                    "modified_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.get("created", 0))
+                    ),
+                    "size": int(item.get("metadata", {}).get("model_file_mb", 0) or 0)
+                    * 1024
+                    * 1024,
                     "digest": "",
                     "details": {"family": item.get("owned_by", "arc-llama")},
                 }
@@ -614,7 +641,9 @@ def create_app(
         body = await _read_json_body(request)
         messages = body.get("messages")
         if not isinstance(messages, list):
-            raise HTTPException(status_code=400, detail="Ollama chat requests require a messages array")
+            raise HTTPException(
+                status_code=400, detail="Ollama chat requests require a messages array"
+            )
         payload = _ollama_to_openai(body, messages=messages)
         request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
         response = await _proxy_post(request, "/v1/chat/completions")
@@ -625,7 +654,9 @@ def create_app(
         body = await _read_json_body(request)
         prompt = body.get("prompt", "")
         if not isinstance(prompt, str):
-            raise HTTPException(status_code=400, detail="Ollama generate requests require a string prompt")
+            raise HTTPException(
+                status_code=400, detail="Ollama generate requests require a string prompt"
+            )
         payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
         payload.pop("messages")
         payload["prompt"] = prompt
@@ -662,8 +693,15 @@ def create_app(
 
         model = body.get("model")
         task = body.get("task")
-        if not isinstance(model, str) or not model.strip() or not isinstance(task, str) or not task.strip():
-            raise HTTPException(status_code=400, detail="'model' and 'task' must be nonempty strings")
+        if (
+            not isinstance(model, str)
+            or not model.strip()
+            or not isinstance(task, str)
+            or not task.strip()
+        ):
+            raise HTTPException(
+                status_code=400, detail="'model' and 'task' must be nonempty strings"
+            )
         for key in ("root", "folder", "profile"):
             if body.get(key) is not None and not isinstance(body[key], str):
                 raise HTTPException(status_code=400, detail=f"{key} must be a string")
@@ -856,7 +894,10 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
-            raise HTTPException(status_code=503, detail="Could not save chat. Check disk space and storage permissions, then retry.") from exc
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save chat. Check disk space and storage permissions, then retry.",
+            ) from exc
 
     @app.get("/v1/chats")
     async def list_chats(request: Request, folder: str | None = Query(None)) -> dict[str, Any]:
@@ -901,7 +942,10 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
-            raise HTTPException(status_code=503, detail="Could not create chat. Check disk space and storage permissions, then retry.") from exc
+            raise HTTPException(
+                status_code=503,
+                detail="Could not create chat. Check disk space and storage permissions, then retry.",
+            ) from exc
         return chat.to_dict()
 
     @app.post("/v1/chats/search")
@@ -989,6 +1033,14 @@ def create_app(
             chat.title = str(body["title"])
         if "messages" in body:
             chat.messages = _chat_messages(body)
+            # A replacement transcript invalidates an old summary unless the
+            # caller explicitly supplies the matching metadata.
+            chat.compaction = None
+        if "compaction" in body:
+            try:
+                chat.compaction = validate_compaction(body["compaction"], len(chat.messages))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         _persist_chat(store, chat)
         return chat.to_dict()
 
@@ -1035,9 +1087,7 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/admin/status")
-    async def admin_status(
-        request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict:
+    async def admin_status(request: Request, _auth: None = Depends(_require_admin)) -> dict:
         rt: Router = request.app.state.router
         c: Config = request.app.state.cfg
         # Reuse one VRAM-estimate cache across this snapshot (and across calls:
@@ -1067,7 +1117,9 @@ def create_app(
             if fit_info and not c.server.single_resident:
                 fit_info["headroom_mb"] = None
                 fit_info["fit"] = None
-                fit_info["detail"] = "Per-model estimate; available memory depends on co-resident models."
+                fit_info["detail"] = (
+                    "Per-model estimate; available memory depends on co-resident models."
+                )
             files = await asyncio.to_thread(file_readiness, m)
             models.append(
                 {
@@ -1080,9 +1132,12 @@ def create_app(
                     "port": m.port,
                     "loaded": loaded,
                     "state": (
-                        "draining" if m.name in getattr(rt, "_stopping", set())
-                        else "ready" if loaded
-                        else "loading" if running
+                        "draining"
+                        if m.name in getattr(rt, "_stopping", set())
+                        else "ready"
+                        if loaded
+                        else "loading"
+                        if running
                         else "idle"
                     ),
                     "pid": getattr(getattr(srv, "process", None), "pid", None) if running else None,
@@ -1120,7 +1175,9 @@ def create_app(
 
         compatibility_identity = await asyncio.to_thread(runtime_identity, c.paths.llama_server)
         return {
-            "runtime_compatibility_identity": compatibility_identity[1][:12] if compatibility_identity else None,
+            "runtime_compatibility_identity": compatibility_identity[1][:12]
+            if compatibility_identity
+            else None,
             "server": {
                 "host": c.server.host,
                 "port": c.server.port,
@@ -1134,6 +1191,8 @@ def create_app(
             "upstreams": mgr.upstreams_status(),
         }
 
+    register_work_routes(app, require_admin=_require_admin, read_json_body=_read_json_body)
+    register_context_budget_route(app)
     register_integration_route(app, require_admin=_require_admin)
 
     @app.get("/admin/plugins")
@@ -1151,9 +1210,7 @@ def create_app(
         any plugin code running here.
         """
         statuses: dict[str, str] = getattr(request.app.state, "plugin_status", {})
-        discovery: PluginDiscovery | None = getattr(
-            request.app.state, "plugin_discovery", None
-        )
+        discovery: PluginDiscovery | None = getattr(request.app.state, "plugin_discovery", None)
         extra = discovery.catalog() if discovery is not None else []
         return {
             "api_version": PLUGIN_API_VERSION,
@@ -1175,7 +1232,9 @@ def create_app(
         return actions
 
     @app.get("/admin/ui/layout")
-    async def get_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+    async def get_ui_layout(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
         actions = _ui_actions()
         ids = {a["id"] for a in actions}
         path = _ui_layout_path()
@@ -1192,11 +1251,15 @@ def create_app(
         for action in actions:
             if action["id"] not in used:
                 result["layout"][action.get("placement", "plugins")].append(action["id"])
-        result["hidden"] = [x for x in (saved.get("hidden", []) if isinstance(saved, dict) else []) if x in ids]
+        result["hidden"] = [
+            x for x in (saved.get("hidden", []) if isinstance(saved, dict) else []) if x in ids
+        ]
         return result
 
     @app.put("/admin/ui/layout")
-    async def put_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+    async def put_ui_layout(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
         body = await request.json()
         actions = _ui_actions()
         ids = {a["id"] for a in actions}
@@ -1205,17 +1268,20 @@ def create_app(
         if not isinstance(layout, dict) or not isinstance(hidden, list):
             raise HTTPException(status_code=400, detail="Invalid UI layout")
         values = [x for p in ("toolbar", "plugins", "chat") for x in layout.get(p, [])]
-        if any(not isinstance(x, str) or x not in ids for x in values + hidden) or len(values) != len(set(values)):
+        if any(not isinstance(x, str) or x not in ids for x in values + hidden) or len(
+            values
+        ) != len(set(values)):
             raise HTTPException(status_code=400, detail="Unknown or duplicate UI action")
-        payload = {"layout": {p: list(layout.get(p, [])) for p in ("toolbar", "plugins", "chat")}, "hidden": hidden}
+        payload = {
+            "layout": {p: list(layout.get(p, [])) for p in ("toolbar", "plugins", "chat")},
+            "hidden": hidden,
+        }
         path = _ui_layout_path()
         path.write_text(json.dumps(payload, indent=2) + "\n")
         return await get_ui_layout(request)
 
     @app.post("/admin/load/{name}")
-    async def admin_load(
-        name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> Any:
+    async def admin_load(name: str, request: Request, _auth: None = Depends(_require_admin)) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -1239,9 +1305,7 @@ def create_app(
         return {"name": model.name, "loaded": bool(srv.is_running and srv.ready)}
 
     @app.post("/admin/stop/{name}")
-    async def admin_stop(
-        name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> Any:
+    async def admin_stop(name: str, request: Request, _auth: None = Depends(_require_admin)) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -1253,7 +1317,9 @@ def create_app(
         try:
             was_running = await rt.stop_one(name)
         except StartupFailureError as exc:
-            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
+            return JSONResponse(
+                status_code=exc.http_status, content=exc.to_dict(include_details=True)
+            )
         return {"name": name, "was_running": was_running, "loaded": False}
 
     @app.post("/admin/stop-all")
@@ -1262,7 +1328,9 @@ def create_app(
         try:
             stopped = await rt.stop_all()
         except StartupFailureError as exc:
-            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
+            return JSONResponse(
+                status_code=exc.http_status, content=exc.to_dict(include_details=True)
+            )
         return {"stopped": stopped}
 
     @app.get("/admin/tune/status")
@@ -1727,6 +1795,10 @@ def create_app(
     # ------------------------------------------------------------------
     static_dir = Path(__file__).parent / "static"
 
+    @app.get("/work")
+    async def work_page() -> Response:
+        return FileResponse(static_dir / "work.html")
+
     @app.get("/chat")
     async def chat_page() -> Response:
         return FileResponse(static_dir / "chat.html")
@@ -1750,8 +1822,16 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
 def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any]) -> dict[str, Any]:
     raw_options = body.get("options")
     options: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
-    payload: dict[str, Any] = {"model": body.get("model", ""), "messages": messages, "stream": bool(body.get("stream", True))}
-    for ollama_key, openai_key in (("temperature", "temperature"), ("top_p", "top_p"), ("stop", "stop")):
+    payload: dict[str, Any] = {
+        "model": body.get("model", ""),
+        "messages": messages,
+        "stream": bool(body.get("stream", True)),
+    }
+    for ollama_key, openai_key in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("stop", "stop"),
+    ):
         if ollama_key in options:
             payload[openai_key] = options[ollama_key]
     if "num_predict" in options:
@@ -1778,6 +1858,7 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
             detail = "Upstream request failed"
         return JSONResponse({"error": str(detail)}, status_code=response.status_code)
     if isinstance(response, StreamingResponse):
+
         async def stream() -> AsyncIterator[bytes]:
             buffer = b""
             async for chunk in response.body_iterator:  # type: ignore[attr-defined]
@@ -1798,9 +1879,35 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
                         delta = choice.get("delta") or {}
                         value = delta.get("content") if not generate else choice.get("text", "")
                         if value:
-                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "message": {"role": "assistant", "content": value}, "response": value if generate else "", "done": False}) + "\n").encode()
+                            yield (
+                                json.dumps(
+                                    {
+                                        "model": model,
+                                        "created_at": time.strftime(
+                                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                                        ),
+                                        "message": {"role": "assistant", "content": value},
+                                        "response": value if generate else "",
+                                        "done": False,
+                                    }
+                                )
+                                + "\n"
+                            ).encode()
                         if choice.get("finish_reason"):
-                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice["finish_reason"]}) + "\n").encode()
+                            yield (
+                                json.dumps(
+                                    {
+                                        "model": model,
+                                        "created_at": time.strftime(
+                                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                                        ),
+                                        "done": True,
+                                        "done_reason": choice["finish_reason"],
+                                    }
+                                )
+                                + "\n"
+                            ).encode()
+
         return StreamingResponse(stream(), media_type="application/x-ndjson")
     try:
         obj = json.loads(bytes(response.body))
@@ -1809,7 +1916,12 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
     choice = (obj.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content = choice.get("text", "") if generate else message.get("content", "")
-    result: dict[str, Any] = {"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice.get("finish_reason")}
+    result: dict[str, Any] = {
+        "model": model,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "done": True,
+        "done_reason": choice.get("finish_reason"),
+    }
     if generate:
         result["response"] = content
     else:
@@ -1974,7 +2086,9 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     # under the user.
     request_entered_at = time.monotonic()
     resources = getattr(request.app.state, "resources", None)
-    lease_context = resources.acquire("local-inference", exclusive=False) if resources is not None else None
+    lease_context = (
+        resources.acquire("local-inference", exclusive=False) if resources is not None else None
+    )
     if lease_context is not None:
         await lease_context.__aenter__()
     rt.inflight += 1
@@ -2027,7 +2141,11 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             rt.last_activity = time.time()
 
         if want_stream:
-            client = httpx.AsyncClient(timeout=None)
+            policy = request.app.state.cfg.server
+            first_timeout = policy.inference_first_response_seconds
+            idle_timeout = policy.inference_stream_idle_seconds
+            first_deadline = time.monotonic() + first_timeout if first_timeout else None
+            client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10.0))
             try:
                 req = client.build_request(
                     "POST",
@@ -2035,7 +2153,21 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                     content=body_bytes,
                     headers=fwd_headers,
                 )
-                upstream = await client.send(req, stream=True)
+                upstream = await asyncio.wait_for(
+                    client.send(req, stream=True), first_timeout or None
+                )
+            except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+                await client.aclose()
+                raise HTTPException(
+                    status_code=504,
+                    detail="The model did not respond in time. Retry, or increase server.inference_first_response_seconds for long prefills.",
+                ) from exc
+            except httpx.HTTPError as exc:
+                await client.aclose()
+                raise HTTPException(
+                    status_code=502,
+                    detail="The model backend disconnected before responding. Retry the request.",
+                ) from exc
             except BaseException:
                 # Nothing was handed to Starlette, so streaming_response_started
                 # stays False and the outer finally does the decrement. Close the
@@ -2063,34 +2195,23 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                     return
                 released = True
 
-                # Drop the counter before awaiting anything. There is no await
-                # between the guard above and this decrement, so once we are
-                # here nothing can stop it -- not a client disconnect, not a
-                # cancellation delivered during shutdown. Closing the socket
-                # below is best effort; a leaked connection is recovered when
-                # the process exits, whereas a leaked count is permanent and
-                # silently disables auto-tune for the life of the process.
-                if rt.inflight > 0:
-                    rt.inflight -= 1
-                else:
-                    # Unreachable unless a future change double-releases. Say so
-                    # rather than letting the counter go negative, which would
-                    # wedge _deferred_restore's "wait for zero" loop.
-                    log.warning("streaming proxy: inflight already 0 at release; not decrementing")
-                if acquired_model is not None:
-                    rt.release_model(acquired_model)
-                rt.last_activity = time.time()
-                if lease_context is not None:
-                    await lease_context.__aexit__(None, None, None)
-
-                try:
-                    await upstream.aclose()
-                except Exception:
-                    log.debug("streaming proxy: upstream close failed", exc_info=True)
-                try:
-                    await client.aclose()
-                except Exception:
-                    log.debug("streaming proxy: client close failed", exc_info=True)
+                # Keep admission through connection cleanup. Shield normal
+                # ASGI cancellation, and settle bookkeeping even if close fails.
+                with anyio.CancelScope(shield=True):
+                    try:
+                        try:
+                            await upstream.aclose()
+                        finally:
+                            await client.aclose()
+                    except Exception:
+                        log.debug("streaming proxy: connection cleanup failed", exc_info=True)
+                    finally:
+                        rt.inflight -= 1
+                        if acquired_model is not None:
+                            rt.release_model(acquired_model)
+                        rt.last_activity = time.time()
+                        if lease_context is not None:
+                            await lease_context.__aexit__(None, None, None)
 
             observer = StreamMetricsObserver()
             ttft_recorded = False
@@ -2099,12 +2220,33 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 nonlocal ttft_recorded
                 timings = getattr(rt, "timings", None)
                 try:
-                    async for chunk in _iter_sse_body(upstream):
+                    require_done = (
+                        upstream.status_code < 400
+                        and "text/event-stream" in upstream.headers.get("content-type", "")
+                    )
+                    iterator = _iter_sse_body(upstream, require_done=require_done).__aiter__()
+                    first = True
+                    while True:
+                        if first:
+                            timeout = (
+                                max(0.001, first_deadline - time.monotonic())
+                                if first_deadline is not None
+                                else None
+                            )
+                        else:
+                            timeout = idle_timeout or None
+                        try:
+                            chunk = await asyncio.wait_for(iterator.__anext__(), timeout)
+                        except StopAsyncIteration:
+                            break
+                        first = False
                         if timings is not None and upstream.status_code < 400:
                             try:
                                 observer.feed(chunk, time.monotonic())
                                 if not ttft_recorded and observer.first_token_at is not None:
-                                    timings.record_ttft(model.name, observer.first_token_at - request_entered_at)
+                                    timings.record_ttft(
+                                        model.name, observer.first_token_at - request_entered_at
+                                    )
                                     ttft_recorded = True
                             except Exception:
                                 log.debug("stream metrics observation failed", exc_info=True)
@@ -2113,11 +2255,20 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                         yield chunk
                     if timings is not None and observer.generation_tok_s is not None:
                         timings.record_generation_tok_s(model.name, observer.generation_tok_s)
+                except (asyncio.TimeoutError, httpx.HTTPError):
+                    error = {
+                        "error": {
+                            "message": "Generation was interrupted. The model stalled or disconnected; retry to continue.",
+                            "type": "server_error",
+                            "code": "inference_interrupted",
+                        }
+                    }
+                    yield ("data: " + json.dumps(error) + "\n\n").encode()
                 finally:
                     await _release()
 
             streaming_response_started = True
-            return StreamingResponse(
+            return _LocalStreamingResponse(
                 body_iter(),
                 status_code=upstream.status_code,
                 headers=_strip_response_headers(dict(upstream.headers)),

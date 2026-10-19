@@ -41,7 +41,42 @@ import {
   testMissingFileRecovery,
 } from "./library-cases.mjs";
 
+import {
+  testCompactionUndoFailureAndEdit,
+  testCompactionRequiresPersistenceAck,
+  testCompactionRoundTrip,
+  testCompactionReloadAndClear,
+  testCompactionFailures,
+  testCompactionSaveFailure,
+  testCompactionCancelAndGuards,
+  testCompactionOversizedAndImages,
+  testCompactionRecentTooLarge,
+} from "./compaction-cases.mjs";
+
+import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudgetAndReplyLimit,
+  testBudgetDiscardsStaleResponses, testDownloadFolderAndRetry } from "./release-cases.mjs";
+
+import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./work-cases.mjs";
+
 const TESTS = [
+  ["work-attempt-settings-and-results", testWorkAttemptSettingsAndResults],
+  ["work-projects-jobs-and-review", testWorkProjectsJobsAndReview],
+  ["work-manual-token-loads-models", testWorkManualTokenLoadsModels],
+  ["interrupted-answer-persists", testInterruptedAnswerPersists],
+  ["stopped-answer-persists", testStoppedAnswerPersists],
+  ["exact-budget-and-reply-limit", testExactBudgetAndReplyLimit],
+  ["budget-discards-stale-responses", testBudgetDiscardsStaleResponses],
+  ["download-folder-and-retry", testDownloadFolderAndRetry],
+  ["compaction-requires-persistence-ack", testCompactionRequiresPersistenceAck],
+  ["compaction-undo-failure-and-edit", testCompactionUndoFailureAndEdit],
+  ["compaction-roundtrip", testCompactionRoundTrip],
+  ["compaction-reloadandclear", testCompactionReloadAndClear],
+  ["compaction-failures", testCompactionFailures],
+  ["compaction-savefailure", testCompactionSaveFailure],
+  ["compaction-cancelandguards", testCompactionCancelAndGuards],
+  ["compaction-oversizedandimages", testCompactionOversizedAndImages],
+  ["compaction-recenttoolarge", testCompactionRecentTooLarge],
+
   ["recovery-download", testDownloadRecovery],
   ["recovery-missing-file", testMissingFileRecovery],
   ["polling-efficiency", testPollingEfficiency],

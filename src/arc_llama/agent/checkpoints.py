@@ -8,6 +8,7 @@ Checkpoints are retained with bounded disk usage: per-run count and age
 limits evict old snapshots automatically, and an optional global size cap
 can trim the oldest checkpoints across all runs.
 """
+
 from __future__ import annotations
 
 import json
@@ -145,9 +146,7 @@ class CheckpointStore:
             oldest_id, _ = kept.pop()
             self._delete_checkpoint(run_id, oldest_id)
 
-    def _all_checkpoints_for_run(
-        self, run_id: str
-    ) -> list[tuple[str, float, Path]]:
+    def _all_checkpoints_for_run(self, run_id: str) -> list[tuple[str, float, Path]]:
         """Return (checkpoint_id, created_at, cp_dir) for a run."""
         run_dir = self._run_dir(run_id)
         result: list[tuple[str, float, Path]] = []

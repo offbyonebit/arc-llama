@@ -1,4 +1,5 @@
 """Tests for the interactive agent REPL loop."""
+
 from __future__ import annotations
 
 import asyncio
@@ -58,6 +59,7 @@ def agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> InteractiveAgent:
 
     async def fake_execute(name: str, args: dict[str, Any], ctx: Any) -> Any:
         from arc_llama.agent.tools import ToolResult
+
         return ToolResult("ok", error=False)
 
     monkeypatch.setattr(interactive_mod.TOOLS, "execute", fake_execute)
@@ -76,14 +78,21 @@ async def collect_events(
     confirm_callback: Any = None,
     plan_callback: Any = None,
 ) -> list[dict[str, Any]]:
-    return [e async for e in agent.chat(text, confirm_callback=confirm_callback, plan_callback=plan_callback)]
+    return [
+        e
+        async for e in agent.chat(
+            text, confirm_callback=confirm_callback, plan_callback=plan_callback
+        )
+    ]
 
 
 def test_interactive_agent_conversation_persisted(agent: InteractiveAgent) -> None:
     agent._client = FakeAsyncClient(base_url="http://test")
-    agent._client.set_responses([
-        {"choices": [{"message": {"content": "Hello!"}}]},
-    ])
+    agent._client.set_responses(
+        [
+            {"choices": [{"message": {"content": "Hello!"}}]},
+        ]
+    )
 
     events = asyncio.run(collect_events(agent, "hi"))
     assert any(e["type"] == "assistant" and e["content"] == "Hello!" for e in events)
@@ -93,20 +102,29 @@ def test_interactive_agent_conversation_persisted(agent: InteractiveAgent) -> No
 
 def test_interactive_agent_tool_loop(agent: InteractiveAgent) -> None:
     agent._client = FakeAsyncClient(base_url="http://test")
-    agent._client.set_responses([
-        {
-            "choices": [{
-                "message": {
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "function": {"name": "read_file", "arguments": '{"path": "readme.md"}'},
-                    }],
-                },
-            }],
-        },
-        {"choices": [{"message": {"content": "Done reading."}}]},
-    ])
+    agent._client.set_responses(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{"path": "readme.md"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+            {"choices": [{"message": {"content": "Done reading."}}]},
+        ]
+    )
 
     events = asyncio.run(collect_events(agent, "read the readme"))
     types = [e["type"] for e in events]
@@ -119,9 +137,11 @@ def test_interactive_agent_tool_loop(agent: InteractiveAgent) -> None:
 def test_interactive_agent_plan_mode_denied(agent: InteractiveAgent) -> None:
     agent.plan_mode = True
     agent._client = FakeAsyncClient(base_url="http://test")
-    agent._client.set_responses([
-        {"choices": [{"message": {"content": "1. Do thing"}}]},
-    ])
+    agent._client.set_responses(
+        [
+            {"choices": [{"message": {"content": "1. Do thing"}}]},
+        ]
+    )
 
     async def deny(_plan: str) -> bool:
         return False

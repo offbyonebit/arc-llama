@@ -1,4 +1,5 @@
 """Tests for arc_llama.upstream — manager, caching, proxy."""
+
 from __future__ import annotations
 
 import json
@@ -33,6 +34,7 @@ class FakeHttpxResponse:
 
 class FakeHttpxClient:
     """Minimal async httpx client mock."""
+
     def __init__(self, responses: dict[str, FakeHttpxResponse] | None = None, timeout: float = 5.0):
         self.timeout = timeout
         self._responses = responses or {}
@@ -68,15 +70,19 @@ class TestFetch:
     @pytest.mark.asyncio
     async def test_fetch_models(self, sample_upstreams, monkeypatch):
         mgr = UpstreamManager(sample_upstreams)
-        fake_resp = FakeHttpxResponse(json_data={
-            "data": [
-                {"id": "llama3.1", "object": "model"},
-                {"id": "mistral", "object": "model"},
-            ]
-        })
-        fake_client = FakeHttpxClient({
-            "http://127.0.0.1:11434/v1/models": fake_resp,
-        })
+        fake_resp = FakeHttpxResponse(
+            json_data={
+                "data": [
+                    {"id": "llama3.1", "object": "model"},
+                    {"id": "mistral", "object": "model"},
+                ]
+            }
+        )
+        fake_client = FakeHttpxClient(
+            {
+                "http://127.0.0.1:11434/v1/models": fake_resp,
+            }
+        )
         monkeypatch.setattr("arc_llama.upstream.httpx.AsyncClient", lambda **kw: fake_client)
 
         models = await mgr.models()
@@ -90,9 +96,11 @@ class TestFetch:
         mgr = UpstreamManager(sample_upstreams)
         # Prime cache with a successful fetch
         fake_resp = FakeHttpxResponse(json_data={"data": [{"id": "llama3.1"}]})
-        fake_client = FakeHttpxClient({
-            "http://127.0.0.1:11434/v1/models": fake_resp,
-        })
+        fake_client = FakeHttpxClient(
+            {
+                "http://127.0.0.1:11434/v1/models": fake_resp,
+            }
+        )
         monkeypatch.setattr("arc_llama.upstream.httpx.AsyncClient", lambda **kw: fake_client)
         await mgr.models()
 
@@ -111,12 +119,12 @@ class TestFindModel:
     @pytest.mark.asyncio
     async def test_find_existing(self, sample_upstreams, monkeypatch):
         mgr = UpstreamManager(sample_upstreams)
-        fake_resp = FakeHttpxResponse(json_data={
-            "data": [{"id": "llama3.1"}]
-        })
-        fake_client = FakeHttpxClient({
-            "http://127.0.0.1:11434/v1/models": fake_resp,
-        })
+        fake_resp = FakeHttpxResponse(json_data={"data": [{"id": "llama3.1"}]})
+        fake_client = FakeHttpxClient(
+            {
+                "http://127.0.0.1:11434/v1/models": fake_resp,
+            }
+        )
         monkeypatch.setattr("arc_llama.upstream.httpx.AsyncClient", lambda **kw: fake_client)
         await mgr.models()
 
@@ -134,12 +142,12 @@ class TestUpstreamStatus:
     @pytest.mark.asyncio
     async def test_upstreams_status(self, sample_upstreams, monkeypatch):
         mgr = UpstreamManager(sample_upstreams)
-        fake_resp = FakeHttpxResponse(json_data={
-            "data": [{"id": "llama3.1"}]
-        })
-        fake_client = FakeHttpxClient({
-            "http://127.0.0.1:11434/v1/models": fake_resp,
-        })
+        fake_resp = FakeHttpxResponse(json_data={"data": [{"id": "llama3.1"}]})
+        fake_client = FakeHttpxClient(
+            {
+                "http://127.0.0.1:11434/v1/models": fake_resp,
+            }
+        )
         monkeypatch.setattr("arc_llama.upstream.httpx.AsyncClient", lambda **kw: fake_client)
         await mgr.models()
 

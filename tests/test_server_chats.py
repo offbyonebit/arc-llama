@@ -1,6 +1,8 @@
 """Tests for the /v1/chats server endpoints."""
+
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from helpers import ConfigRouter as FakeRouter
 
@@ -199,46 +201,169 @@ def test_move_chat_via_patch(tmp_path, monkeypatch):
 
 
 def test_invalid_chat_requests_report_400_and_preserve_saved_history(tmp_path, monkeypatch):
-    monkeypatch.setattr(server_mod, 'Router', FakeRouter)
-    monkeypatch.setattr(server_mod, 'UpstreamManager', FakeUpstreamManager)
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     with TestClient(_app(tmp_path)) as client:
-        assert client.post('/v1/chats', json={'id': 'safe', 'title': 'Original'}).status_code == 200
-        for route in ['/v1/chats', '/v1/chats/search', '/v1/chats/import']:
+        assert client.post("/v1/chats", json={"id": "safe", "title": "Original"}).status_code == 200
+        for route in ["/v1/chats", "/v1/chats/search", "/v1/chats/import"]:
             assert client.post(route, json=[]).status_code == 400
         for method in [client.put, client.patch]:
-            for body in [[], {'messages': [None]}, {'messages': 'bad'}, {'messages': [{'content': 123}]}]:
-                assert method('/v1/chats/safe', json=body).status_code == 400
-        for body in [{'query': 123}, {'query': 'x', 'limit': 'bad'}, {'query': 'x', 'limit': 0}]:
-            assert client.post('/v1/chats/search', json=body).status_code == 400
-        assert client.post('/v1/chats', json={'id': 'bad', 'folder': '..'}).status_code == 400
-        assert client.patch('/v1/chats/safe', json={'folder': '..'}).status_code == 400
-        assert client.post('/v1/chats/import', json={'chats': [], 'overwrite': 'false'}).status_code == 400
-        saved = client.get('/v1/chats/safe').json()
-        assert saved['title'] == 'Original'
-        assert saved['messages'] == []
-        assert saved['folder'] == ''
+            for body in [
+                [],
+                {"messages": [None]},
+                {"messages": "bad"},
+                {"messages": [{"content": 123}]},
+            ]:
+                assert method("/v1/chats/safe", json=body).status_code == 400
+        for body in [{"query": 123}, {"query": "x", "limit": "bad"}, {"query": "x", "limit": 0}]:
+            assert client.post("/v1/chats/search", json=body).status_code == 400
+        assert client.post("/v1/chats", json={"id": "bad", "folder": ".."}).status_code == 400
+        assert client.patch("/v1/chats/safe", json={"folder": ".."}).status_code == 400
+        assert (
+            client.post("/v1/chats/import", json={"chats": [], "overwrite": "false"}).status_code
+            == 400
+        )
+        saved = client.get("/v1/chats/safe").json()
+        assert saved["title"] == "Original"
+        assert saved["messages"] == []
+        assert saved["folder"] == ""
 
 
 def test_chat_storage_failure_reports_retryable_error_and_keeps_history(tmp_path, monkeypatch):
     from pathlib import Path
-    monkeypatch.setattr(server_mod, 'Router', FakeRouter)
-    monkeypatch.setattr(server_mod, 'UpstreamManager', FakeUpstreamManager)
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     with TestClient(_app(tmp_path)) as client:
-        client.post('/v1/chats', json={'id': 'safe', 'title': 'Original'})
+        client.post("/v1/chats", json={"id": "safe", "title": "Original"})
         original_replace = Path.replace
+
         def failed_replace(path, target):
-            if Path(target).name == 'safe.json':
-                raise OSError('disk full')
+            if Path(target).name == "safe.json":
+                raise OSError("disk full")
             return original_replace(path, target)
-        monkeypatch.setattr(Path, 'replace', failed_replace)
-        response = client.patch('/v1/chats/safe', json={'title': 'Changed'})
+
+        monkeypatch.setattr(Path, "replace", failed_replace)
+        response = client.patch("/v1/chats/safe", json={"title": "Changed"})
         assert response.status_code == 503
-        assert 'disk space' in response.json()['detail']
-        assert client.get('/v1/chats/safe').json()['title'] == 'Original'
+        assert "disk space" in response.json()["detail"]
+        assert client.get("/v1/chats/safe").json()["title"] == "Original"
 
 
 def test_invalid_folder_query_returns_client_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(server_mod, 'Router', FakeRouter)
-    monkeypatch.setattr(server_mod, 'UpstreamManager', FakeUpstreamManager)
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     with TestClient(_app(tmp_path)) as client:
-        assert client.get('/v1/chats', params={'folder': '..'}).status_code == 400
+        assert client.get("/v1/chats", params={"folder": ".."}).status_code == 400
+
+
+def test_compaction_preserves_transcript_export_and_undo(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        client.post("/v1/chats", json={"id": "compact", "title": "Keep me"})
+        messages = [
+            {"role": "user", "content": "Original", "images": ["data:image/png;base64,a"]},
+            {"role": "assistant", "content": "Original answer", "thinking": "Reasoning"},
+            {"role": "user", "content": "Recent"},
+        ]
+        state = {"boundary": 2, "summary": "Preserve original decisions"}
+        response = client.put("/v1/chats/compact", json={"messages": messages, "compaction": state})
+        assert response.status_code == 200
+        assert response.json()["compaction"] == state
+        assert response.json()["messages"][0]["images"] == messages[0]["images"]
+        assert response.json()["messages"][1]["thinking"] == "Reasoning"
+        client.patch(
+            "/v1/chats/compact", json={"messages": [{"role": "assistant", "content": "New answer"}]}
+        )
+        persisted = client.get("/v1/chats/compact").json()
+        assert len(persisted["messages"]) == 4
+        assert persisted["compaction"] == state
+        exported = client.get("/v1/chats/export").json()["chats"][0]
+        assert exported["messages"] == persisted["messages"]
+        assert exported["compaction"] == state
+        exported["id"] = "imported"
+        assert client.post("/v1/chats/import", json={"chats": [exported]}).status_code == 200
+        assert client.get("/v1/chats/imported").json()["compaction"] == state
+        response = client.put("/v1/chats/compact", json={"compaction": None})
+        assert response.status_code == 200
+        assert response.json()["compaction"] is None
+        assert response.json()["messages"] == persisted["messages"]
+
+
+def test_invalid_compaction_cannot_replace_saved_chat(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        client.post("/v1/chats", json={"id": "safe", "title": "Original"})
+        messages = [{"role": "user", "content": "Keep this"}]
+        client.put("/v1/chats/safe", json={"messages": messages})
+        original = client.get("/v1/chats/safe").json()
+        invalid = [
+            [],
+            "summary",
+            {"boundary": True, "summary": "S"},
+            {"boundary": 0, "summary": "S"},
+            {"boundary": 2, "summary": "S"},
+            {"boundary": 1, "summary": " "},
+            {"boundary": 1, "summary": 1},
+            {"boundary": 1.0, "summary": "S"},
+            {"boundary": 1, "summary": "s" * 100_001},
+        ]
+        for state in invalid:
+            response = client.put("/v1/chats/safe", json={"title": "Changed", "compaction": state})
+            assert response.status_code == 400
+            assert client.get("/v1/chats/safe").json() == original
+        assert (
+            client.put(
+                "/v1/chats/safe", json={"messages": [{"role": "user", "images": [2]}]}
+            ).status_code
+            == 400
+        )
+
+
+def test_replacing_messages_invalidates_compaction(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        client.post("/v1/chats", json={"id": "chat"})
+        response = client.put(
+            "/v1/chats/chat",
+            json={
+                "messages": [{"role": "user", "content": "Old"}],
+                "compaction": {"boundary": 1, "summary": "S"},
+            },
+        )
+        assert response.status_code == 200
+        response = client.put("/v1/chats/chat", json={"messages": []})
+        assert response.status_code == 200
+        assert response.json()["compaction"] is None
+
+
+@pytest.mark.parametrize("status", ["stopped", "interrupted", "completed"])
+def test_response_status_survives_store_reload_and_export(tmp_path, monkeypatch, status):
+    from arc_llama.chat_store import ChatStore
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        client.post("/v1/chats", json={"id": "status-chat", "title": "Recovery"}).raise_for_status()
+        message = {
+            "role": "assistant",
+            "content": "partial",
+            "thinking": "retained thinking",
+            "status": status,
+        }
+        response = client.patch("/v1/chats/status-chat", json={"messages": [message]})
+        assert response.status_code == 200
+        stored = ChatStore(tmp_path / "state" / "chats").get("status-chat")
+        assert stored.messages[0].status == status
+        exported = client.get("/v1/chats/export").json()["chats"][0]["messages"][0]
+        assert exported.get("status", "completed") == status
+        assert exported["thinking"] == "retained thinking"
+        assert (
+            client.patch(
+                "/v1/chats/status-chat", json={"messages": [{**message, "status": "broken"}]}
+            ).status_code
+            == 400
+        )

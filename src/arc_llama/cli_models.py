@@ -1,4 +1,5 @@
 """Registration for model catalog and local model file commands."""
+
 from __future__ import annotations
 
 import sys
@@ -16,15 +17,22 @@ from arc_llama.models import parse_hf_spec, scan_models
 
 
 def register_model_commands(
-    cli: click.Group, *, console: Console, load_config: Any, save_or_die: Any,
-    add_local_model: Any, download_from_hf: Any, detect_gpus: Any,
-    do_scan: Any, print_gpu_table: Any, httpx_module: Any,
+    cli: click.Group,
+    *,
+    console: Console,
+    load_config: Any,
+    save_or_die: Any,
+    add_local_model: Any,
+    download_from_hf: Any,
+    detect_gpus: Any,
+    do_scan: Any,
+    print_gpu_table: Any,
+    httpx_module: Any,
 ) -> dict[str, Any]:
     """Register GPU and model catalog commands, returning legacy CLI exports."""
     # ===========================================================================
     # gpus
     # ===========================================================================
-
 
     @cli.command("gpus")
     def gpus_cmd() -> None:
@@ -34,7 +42,6 @@ def register_model_commands(
             console.print("[red]No Intel GPUs detected.[/red]")
             sys.exit(2)
         print_gpu_table(gpus)
-
 
     def _print_gpu_table(gpus) -> None:
         table = Table(title="Intel GPUs")
@@ -56,11 +63,9 @@ def register_model_commands(
             )
         console.print(table)
 
-
     # ===========================================================================
     # list
     # ===========================================================================
-
 
     @cli.command("list")
     @click.pass_context
@@ -68,7 +73,9 @@ def register_model_commands(
         """List registered models and which one is currently loaded."""
         cfg = load_config(ctx.obj["config_path"])
         if not cfg.models:
-            console.print("[yellow]No models registered. Run [bold]arc-llama add ...[/bold].[/yellow]")
+            console.print(
+                "[yellow]No models registered. Run [bold]arc-llama add ...[/bold].[/yellow]"
+            )
             return
 
         loaded: set[str] = set()
@@ -122,11 +129,9 @@ def register_model_commands(
                 f"[dim]Status not available from {status_url}; server may not be running.[/dim]"
             )
 
-
     # ===========================================================================
     # add
     # ===========================================================================
-
 
     @cli.command("add")
     @click.argument("source")
@@ -347,7 +352,6 @@ def register_model_commands(
             f"({ctx_info}{batch_info})"
         )
 
-
     def _slugify_for_name(parent: str, file: str) -> str:
         import re
 
@@ -360,11 +364,9 @@ def register_model_commands(
             base = f"{base}-{m.group(1).lower()}"
         return base
 
-
     # ===========================================================================
     # scan
     # ===========================================================================
-
 
     def _persist_scan_roots(cfg: Config, extras: list[Path]) -> list[str]:
         """Persist explicit scan roots into paths.scan_paths (deduped).
@@ -398,11 +400,9 @@ def register_model_commands(
             added.append(display)
         return added
 
-
     def _do_scan(cfg: Config, extra_paths: list[Path]) -> list:
         result = scan_models(cfg, extra_paths)
         return result.new
-
 
     @cli.command("scan")
     @click.argument("paths", nargs=-1, type=click.Path(exists=True, file_okay=False))
@@ -500,11 +500,9 @@ def register_model_commands(
         else:
             console.print("[dim]--no-persist: config NOT saved.[/dim]")
 
-
     # ===========================================================================
     # remove
     # ===========================================================================
-
 
     @cli.command("remove")
     @click.argument("name")
@@ -520,8 +518,6 @@ def register_model_commands(
             sys.exit(1)
         save_or_die(cfg, cfg_path)
         console.print(f"[green]Removed {name}.[/green]")
-
-
 
     return {
         "gpus_cmd": gpus_cmd,

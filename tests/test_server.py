@@ -451,7 +451,8 @@ def test_streaming_proxy_forwards_raw_sse_chunks_and_closes_upstream(monkeypatch
             body = b"".join(response.iter_bytes())
 
     assert response.status_code == 200
-    assert body == b"data: one\n\ndata: two\n\n"
+    assert body.startswith(b"data: one\n\ndata: two\n\n")
+    assert b"inference_interrupted" in body  # This fixture ends without [DONE].
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["x-upstream"] == "ok"
     assert "transfer-encoding" not in response.headers
@@ -1375,7 +1376,8 @@ def test_inflight_covers_streaming_generation(monkeypatch):
             t.join(timeout=10)
 
     assert result["status"] == 200
-    assert result["body"] == b"data: one\n\n"
+    assert result["body"].startswith(b"data: one\n\n")
+    assert b"inference_interrupted" in result["body"]
     # The decrement lives in the close_upstream BackgroundTask, which runs
     # after the body is fully sent.
     _wait_drained(app.state.router)
@@ -1453,31 +1455,52 @@ def test_client_preserves_application_lifespan_across_requests(monkeypatch):
         assert router.last_activity == 123.0
 
 
-@pytest.mark.parametrize("payload", [[], None, 42, "text", {"model": []}, {"model": 1}, {"stream": "false"}])
+@pytest.mark.parametrize(
+    "payload", [[], None, 42, "text", {"model": []}, {"model": 1}, {"stream": "false"}]
+)
 def test_proxy_rejects_invalid_json_shapes_before_routing(tmp_path, payload):
     cfg = Config(paths=PathsConfig(state_dir=str(tmp_path)))
     cfg.tune.auto = False
     with TestClient(create_app(cfg, plugins=[])) as client:
         response = client.post(
-            "/v1/chat/completions", content=json.dumps(payload),
+            "/v1/chat/completions",
+            content=json.dumps(payload),
             headers={"Content-Type": "application/json"},
         )
         assert response.status_code == 400
 
 
-@pytest.mark.parametrize("path", ["/v1/agent", "/v1/agent/missing/confirm", "/v1/agent/missing/plan"])
+@pytest.mark.parametrize(
+    "path", ["/v1/agent", "/v1/agent/missing/confirm", "/v1/agent/missing/plan"]
+)
 @pytest.mark.parametrize("body", [[], None, "invalid"])
 def test_agent_endpoints_reject_nonobject_json(path, body):
     with TestClient(create_app(Config(), plugins=[]), raise_server_exceptions=False) as client:
-        assert client.post(path, content=json.dumps(body), headers={"Content-Type": "application/json"}).status_code == 400
+        assert (
+            client.post(
+                path, content=json.dumps(body), headers={"Content-Type": "application/json"}
+            ).status_code
+            == 400
+        )
 
 
-@pytest.mark.parametrize("field,value", [
-    ("model", []), ("task", 42), ("task", " "), ("root", []),
-    ("folder", {}), ("profile", 42), ("auto_confirm", "false"),
-    ("plan_mode", 1), ("max_turns", "bad"), ("max_turns", True),
-    ("max_turns", 1.5), ("max_turns", 0),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("model", []),
+        ("task", 42),
+        ("task", " "),
+        ("root", []),
+        ("folder", {}),
+        ("profile", 42),
+        ("auto_confirm", "false"),
+        ("plan_mode", 1),
+        ("max_turns", "bad"),
+        ("max_turns", True),
+        ("max_turns", 1.5),
+        ("max_turns", 0),
+    ],
+)
 def test_agent_endpoint_rejects_invalid_fields(field, value):
     body = {"model": "test", "task": "test", field: value}
     with TestClient(create_app(Config(), plugins=[]), raise_server_exceptions=False) as client:
@@ -1488,7 +1511,10 @@ def test_agent_endpoint_rejects_invalid_fields(field, value):
 @pytest.mark.parametrize("approved", ["false", 1, None])
 def test_agent_approval_requires_boolean(endpoint, approved):
     with TestClient(create_app(Config(), plugins=[]), raise_server_exceptions=False) as client:
-        assert client.post(f"/v1/agent/missing/{endpoint}", json={"approved": approved}).status_code == 400
+        assert (
+            client.post(f"/v1/agent/missing/{endpoint}", json={"approved": approved}).status_code
+            == 400
+        )
 
 
 def test_agent_resets_confirmation_before_each_tool(monkeypatch, tmp_path):
@@ -1498,7 +1524,12 @@ def test_agent_resets_confirmation_before_each_tool(monkeypatch, tmp_path):
 
     async def fake_agent(**kwargs):
         for index, approved in enumerate((True, False)):
-            yield {"type": "confirm_required", "id": str(index), "tool": "write_file", "arguments": {}}
+            yield {
+                "type": "confirm_required",
+                "id": str(index),
+                "tool": "write_file",
+                "arguments": {},
+            }
             event, result = next(iter(app.state.pending_confirmations.values()))
             assert not event.is_set()
             assert result["approved"] is False

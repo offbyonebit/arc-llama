@@ -105,9 +105,7 @@ async def test_vram_guard_refuses_oversized_model(tmp_path, monkeypatch):
     assert FakeServer.starts == []
 
 
-def test_single_resident_vram_guard_ignores_incumbent_that_will_be_evicted(
-    tmp_path, monkeypatch
-):
+def test_single_resident_vram_guard_ignores_incumbent_that_will_be_evicted(tmp_path, monkeypatch):
     from conftest import make_config
 
     import arc_llama.router as router_mod

@@ -1,4 +1,5 @@
 """Registration for host diagnostics and support-bundle commands."""
+
 from __future__ import annotations
 
 import platform
@@ -28,14 +29,17 @@ from arc_llama.platform_checks import (
 
 
 def register_diagnostic_commands(
-    cli: click.Group, *, console: Console, load_config: Any, detect_gpus: Any,
+    cli: click.Group,
+    *,
+    console: Console,
+    load_config: Any,
+    detect_gpus: Any,
     is_windows: Any,
 ) -> dict[str, Any]:
     """Register system diagnostics and support-bundle commands."""
     # ===========================================================================
     # doctor
     # ===========================================================================
-
 
     def _doctor_marker(ok: bool | None, severity: str = "info") -> str:
         if ok is True:
@@ -45,7 +49,6 @@ def register_diagnostic_commands(
         if severity == "fail":
             return "[red]FAIL[/red]"
         return "[yellow]warn[/yellow]"
-
 
     @cli.command()
     @click.pass_context
@@ -99,7 +102,11 @@ def register_diagnostic_commands(
                     f"    - {g.name} @ {g.pci_slot}  ({g.arch.value}, driver={g.driver or '—'}, {vram})"
                 )
                 support = hardware_support(g.device_id, g.arch, Backend.SYCL)
-                support_marker = "[green]validated[/green]" if support.status == "validated" else "[yellow]detected[/yellow]"
+                support_marker = (
+                    "[green]validated[/green]"
+                    if support.status == "validated"
+                    else "[yellow]detected[/yellow]"
+                )
                 console.print(f"        support: {support_marker}  {support.summary}")
                 if g.notes:
                     for n in g.notes:
@@ -128,7 +135,9 @@ def register_diagnostic_commands(
                             "Without it llama.cpp falls back to slow paths on Arc.",
                         )
                     else:
-                        console.print(f"        ReBAR:   {_doctor_marker(None)}  largest BAR {bar_txt}")
+                        console.print(
+                            f"        ReBAR:   {_doctor_marker(None)}  largest BAR {bar_txt}"
+                        )
                         report.add("rebar", None, f"{g.pci_slot} BAR {bar_txt}")
                 # Battlemage wants a recent kernel
                 if g.arch == Arch.BATTLEMAGE and not is_windows():
@@ -199,7 +208,9 @@ def register_diagnostic_commands(
             console.print("\n  user groups:")
             membership = user_in_groups("render", "video")
             for needed, ok in membership.items():
-                console.print(f"    {needed:<14} {_doctor_marker(ok, 'warn' if not ok else 'info')}")
+                console.print(
+                    f"    {needed:<14} {_doctor_marker(ok, 'warn' if not ok else 'info')}"
+                )
                 report.add(
                     f"group_{needed}",
                     ok,
@@ -239,7 +250,9 @@ def register_diagnostic_commands(
             if llama_server.exists():
                 backends = detect_backends(llama_server)
                 primary = detect_llama_server_backend(llama_server)
-                backend_list = ", ".join(sorted(b.value for b in backends)) if backends else "unknown"
+                backend_list = (
+                    ", ".join(sorted(b.value for b in backends)) if backends else "unknown"
+                )
                 console.print(f"    path:        {llama_server}")
                 console.print(f"    backends:    {backend_list}")
                 if primary is None:
@@ -350,7 +363,6 @@ def register_diagnostic_commands(
             # Non-zero so scripts/CI can gate on a healthy Arc host.
             sys.exit(2)
 
-
     @cli.command("support-bundle")
     @click.option(
         "--output",
@@ -387,6 +399,8 @@ def register_diagnostic_commands(
         console.print(f"[green]Wrote support bundle[/green] {bundle}")
         console.print("[dim]Review the archive before sharing it.[/dim]")
 
-
-
-    return {"_doctor_marker": _doctor_marker, "doctor": doctor, "support_bundle_cmd": support_bundle_cmd}
+    return {
+        "_doctor_marker": _doctor_marker,
+        "doctor": doctor,
+        "support_bundle_cmd": support_bundle_cmd,
+    }

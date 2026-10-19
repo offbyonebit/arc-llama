@@ -1,4 +1,5 @@
 """Registration for benchmark, tuning, and speculative decoding commands."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,11 +12,19 @@ import click
 
 
 def register_performance_commands(
-    cli: click.Group, *, console: Any, benchmark_mod: Any, httpx: Any,
-    load_config: Any, server_url_from: Any, print_tune_status_table: Any,
-    emit_recipe_submission: Any, save_or_die: Any,
+    cli: click.Group,
+    *,
+    console: Any,
+    benchmark_mod: Any,
+    httpx: Any,
+    load_config: Any,
+    server_url_from: Any,
+    print_tune_status_table: Any,
+    emit_recipe_submission: Any,
+    save_or_die: Any,
 ) -> dict[str, Any]:
     """Register commands that measure or select model execution recipes."""
+
     @cli.command("benchmark")
     @click.argument("model")
     @click.option(
@@ -90,7 +99,9 @@ def register_performance_commands(
             sys.exit(1)
         url = server_url_from(ctx, server_url)
 
-        ctx_values = [int(x.strip()) for x in sweep_ctx.split(",") if x.strip()] if sweep_ctx else []
+        ctx_values = (
+            [int(x.strip()) for x in sweep_ctx.split(",") if x.strip()] if sweep_ctx else []
+        )
         kv_values = [x.strip() for x in sweep_kv.split(",") if x.strip()] if sweep_kv else []
         if kv_types:
             kv_values = list(kv_types)
@@ -106,7 +117,9 @@ def register_performance_commands(
                 try:
                     depth_values = [int(x) for x in depths.split(",") if x.strip()]
                 except ValueError as exc:
-                    raise click.BadParameter("use comma-separated integers", param_hint="--depths") from exc
+                    raise click.BadParameter(
+                        "use comma-separated integers", param_hint="--depths"
+                    ) from exc
             if not depth_values or min(depth_values) < 0:
                 raise click.BadParameter("depths must be non-negative", param_hint="--depths")
 
@@ -117,7 +130,9 @@ def register_performance_commands(
                 if not runnable:
                     console.print(f"[red]No depth fits in {model}'s context ({ctx_size}).[/red]")
                     return 1
-                rows = await benchmark_mod.benchmark_depths(url, model, runnable, gen_tokens=gen_tokens)
+                rows = await benchmark_mod.benchmark_depths(
+                    url, model, runnable, gen_tokens=gen_tokens
+                )
                 if as_json:
                     click.echo(
                         json.dumps(
@@ -161,7 +176,6 @@ def register_performance_commands(
         except KeyboardInterrupt:
             console.print("[yellow]Benchmark interrupted.[/yellow]")
             sys.exit(130)
-
 
     @cli.command("tune")
     @click.argument("model", required=False)
@@ -245,7 +259,9 @@ def register_performance_commands(
             console.print("[red]Pass either MODEL or --all, not both.[/red]")
             sys.exit(1)
         if not all_models and not model:
-            console.print("[red]Specify a MODEL to tune, or --all for every registered model.[/red]")
+            console.print(
+                "[red]Specify a MODEL to tune, or --all for every registered model.[/red]"
+            )
             sys.exit(1)
 
         url = server_url_from(ctx, server_url)
@@ -349,12 +365,9 @@ def register_performance_commands(
             print_report(report)
         sys.exit(1 if report.error else 0)
 
-
-
     # ===========================================================================
     # speculative
     # ===========================================================================
-
 
     @cli.command("speculative")
     @click.argument("model")
@@ -368,9 +381,14 @@ def register_performance_commands(
         help="Pick a draft automatically; with --verify, measure every fitting draft "
         "and n-gram, then keep the fastest.",
     )
-    @click.option("--draft", "draft_name", default=None, help="Registered model name to use as draft.")
     @click.option(
-        "--ngram", "use_ngram", is_flag=True, help="Use llama.cpp n-gram speculation when supported."
+        "--draft", "draft_name", default=None, help="Registered model name to use as draft."
+    )
+    @click.option(
+        "--ngram",
+        "use_ngram",
+        is_flag=True,
+        help="Use llama.cpp n-gram speculation when supported.",
     )
     @click.option("--draft-tokens", default=4, show_default=True, type=click.IntRange(1, 16))
     @click.option(
@@ -459,12 +477,20 @@ def register_performance_commands(
 
         def draft_proposal(name: str) -> tuple[dict[str, Any], str]:
             return (
-                {"spec_type": "draft-simple", "spec_draft_name": name, "spec_draft_n_max": draft_tokens},
+                {
+                    "spec_type": "draft-simple",
+                    "spec_draft_name": name,
+                    "spec_draft_n_max": draft_tokens,
+                },
                 f"draft {name}/{draft_tokens}",
             )
 
         ngram_proposal: tuple[dict[str, Any], str] = (
-            {"spec_type": "ngram-simple", "spec_draft_name": None, "spec_draft_n_max": draft_tokens},
+            {
+                "spec_type": "ngram-simple",
+                "spec_draft_name": None,
+                "spec_draft_n_max": draft_tokens,
+            },
             f"n-gram/{draft_tokens}",
         )
         if use_ngram:
@@ -476,7 +502,9 @@ def register_performance_commands(
         elif draft_name:
             candidate = next((c for c in candidates if c.name == draft_name and c.fits), None)
             if candidate is None:
-                raise click.ClickException(f"{draft_name!r} is not a fitting draft for {target.name}")
+                raise click.ClickException(
+                    f"{draft_name!r} is not a fitting draft for {target.name}"
+                )
             if not caps.supports_draft_model:
                 raise click.ClickException(
                     "installed llama-server does not advertise --spec-draft-model"
@@ -558,12 +586,18 @@ def register_performance_commands(
                             continue
                         result = await _measure()
                         if result.error:
-                            outcomes.append((description, None, f"benchmark failed: {result.error}"))
+                            outcomes.append(
+                                (description, None, f"benchmark failed: {result.error}")
+                            )
                             continue
                         gain = benchmark_improvement(baseline, result, target="generation")
-                        outcomes.append((description, gain, None if gain is not None else "unscored"))
-                        if gain is not None and gain >= min_speedup and (
-                            best_gain is None or gain > best_gain
+                        outcomes.append(
+                            (description, gain, None if gain is not None else "unscored")
+                        )
+                        if (
+                            gain is not None
+                            and gain >= min_speedup
+                            and (best_gain is None or gain > best_gain)
                         ):
                             winner, best_gain = index, gain
                     if winner is not None and winner != len(proposals) - 1:
@@ -607,8 +641,6 @@ def register_performance_commands(
             f"[green]Saved verified speculation for {target.name}: {description}, "
             f"{gain:.1%} faster generation.[/green]"
         )
-
-
 
     return {
         "benchmark_cmd": benchmark_cmd,

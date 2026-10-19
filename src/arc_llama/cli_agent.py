@@ -1,4 +1,5 @@
 """CLI registration for the experimental coding-agent commands."""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,12 +21,10 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
     # agent
     # ===========================================================================
 
-
     def _state_dir_from_config(cfg: Config) -> Path | None:
         if cfg.paths.state_dir:
             return Path(cfg.paths.state_dir).expanduser()
         return None
-
 
     @asynccontextmanager
     async def _agent_tool_context(cfg: Config, profile: str | None):
@@ -41,7 +40,6 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
         finally:
             await manager.stop()
 
-
     async def _prompt_yes_no(prompt: str) -> bool:
         """Prompt the user for a yes/no answer from an async context."""
         loop = asyncio.get_running_loop()
@@ -53,7 +51,6 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
             if cleaned in ("n", "no"):
                 return False
             console.print("[dim]Please answer y or n.[/dim]")
-
 
     def _render_agent_event(event: dict) -> None:
         t = event.get("type")
@@ -80,7 +77,9 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
                 console.print(f"[green]✓ {name} done[/green]")
             console.print(f"[dim]{content}[/dim]")
         elif t == "confirm_required":
-            console.print(f"[yellow]⚠ Confirmation required for {event.get('tool', 'tool')}[/yellow]")
+            console.print(
+                f"[yellow]⚠ Confirmation required for {event.get('tool', 'tool')}[/yellow]"
+            )
         elif t == "checkpoint":
             console.print(f"[dim]Checkpoint saved: {event.get('id', '')}[/dim]")
         elif t == "error":
@@ -88,11 +87,12 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
         elif t == "done":
             console.print("[green]Agent finished.[/green]")
 
-
     @cli.command("agent")
     @click.argument("task")
     @click.option("--model", "-m", required=True, help="Model id to use.")
-    @click.option("--root", "-r", default=None, help="Project root (default: agent.root from config).")
+    @click.option(
+        "--root", "-r", default=None, help="Project root (default: agent.root from config)."
+    )
     @click.option("--auto-confirm", is_flag=True, help="Do not prompt for tool confirmation.")
     @click.option("--plan-mode", is_flag=True, help="Generate a plan first and ask for approval.")
     @click.option("--max-turns", type=int, default=30, help="Maximum agent turns (default: 30).")
@@ -199,21 +199,24 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
         except KeyboardInterrupt:
             console.print("[yellow]Agent run interrupted.[/yellow]")
 
-
     # ===========================================================================
     # code (interactive agent REPL)
     # ===========================================================================
 
-
     @cli.command("code")
     @click.option("--model", "-m", required=True, help="Model id to use.")
-    @click.option("--root", "-r", default=None, help="Project root (default: agent.root from config).")
+    @click.option(
+        "--root", "-r", default=None, help="Project root (default: agent.root from config)."
+    )
     @click.option("--auto-confirm", is_flag=True, help="Do not prompt for tool confirmation.")
     @click.option(
         "--plan-mode", is_flag=True, help="Generate a plan first and ask for approval each turn."
     )
     @click.option(
-        "--max-turns", type=int, default=30, help="Maximum agent turns per user message (default: 30)."
+        "--max-turns",
+        type=int,
+        default=30,
+        help="Maximum agent turns per user message (default: 30).",
     )
     @click.option("--folder", "-f", default="", help="Folder to save the session transcript chat.")
     @click.option(
@@ -400,7 +403,9 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
                         console.print(f"[red]Unknown command: /{command}[/red]")
                         continue
 
-                    turn_messages: list[ChatMessage] = [ChatMessage(role="user", content=user_input)]
+                    turn_messages: list[ChatMessage] = [
+                        ChatMessage(role="user", content=user_input)
+                    ]
                     async for event in agent.chat(
                         user_input,
                         confirm_callback=confirm_callback,
@@ -427,11 +432,9 @@ def register_agent_commands(cli: click.Group, *, console: Console) -> None:
         except KeyboardInterrupt:
             console.print("\n[yellow]Session interrupted.[/yellow]")
 
-
     # ===========================================================================
     # agent-tui (arcllama)
     # ===========================================================================
-
 
     @cli.command("agent-tui")
     @click.option("--model", "-m", default=None, help="Model id to use (default: first available).")

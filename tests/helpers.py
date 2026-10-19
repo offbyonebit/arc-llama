@@ -1,4 +1,5 @@
 """Small shared test doubles; scenario-specific behavior stays in each test."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

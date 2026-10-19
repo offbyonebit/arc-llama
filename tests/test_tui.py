@@ -1,4 +1,5 @@
 """Authentication regression for the existing terminal UI."""
+
 from __future__ import annotations
 
 import httpx
@@ -25,9 +26,14 @@ async def test_tui_authenticates_before_status_refresh(monkeypatch, explicit):
         return httpx.Response(200, json={"server": {}, "gpus": [], "models": [], "upstreams": []})
 
     original = httpx.AsyncClient
-    monkeypatch.setattr(tui.httpx, "AsyncClient", lambda **kwargs: original(
-        transport=httpx.MockTransport(handler), **kwargs,
-    ))
+    monkeypatch.setattr(
+        tui.httpx,
+        "AsyncClient",
+        lambda **kwargs: original(
+            transport=httpx.MockTransport(handler),
+            **kwargs,
+        ),
+    )
     app = tui.ArcLlamaTUI("http://127.0.0.1:11437")
     async with app.run_test() as pilot:
         await pilot.pause()

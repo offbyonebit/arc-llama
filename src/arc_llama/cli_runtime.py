@@ -1,4 +1,5 @@
 """Registration for local llama.cpp runtime management commands."""
+
 from __future__ import annotations
 
 import json
@@ -21,11 +22,9 @@ def register_runtime_commands(
     # install-runtime
     # ===========================================================================
 
-
     @cli.group("runtime")
     def runtime_group() -> None:
         """Inspect and select installed llama.cpp runtimes."""
-
 
     def _installed_runtimes(cfg: Config) -> list[tuple[str, str, Path, dict[str, Any]]]:
         """Return (tag, backend, binary, marker) for complete local installs."""
@@ -52,7 +51,6 @@ def register_runtime_commands(
             found.append((tag, backend, binary, marker))
         return found
 
-
     @runtime_group.command("list")
     @click.pass_context
     def runtime_list_cmd(ctx: click.Context) -> None:
@@ -72,7 +70,6 @@ def register_runtime_commands(
             table.add_row(tag, backend, "yes" if binary.resolve() == active else "", str(binary))
         console.print(table)
 
-
     @runtime_group.command("use")
     @click.argument("tag")
     @click.option("--backend", type=click.Choice(["vulkan", "sycl"]), default=None)
@@ -89,7 +86,9 @@ def register_runtime_commands(
             raise click.ClickException(f"No installed runtime found for {tag}{suffix}.")
         if len(candidates) > 1:
             choices = ", ".join(item[1] for item in candidates)
-            raise click.ClickException(f"Multiple runtimes found for {tag}: {choices}; pass --backend.")
+            raise click.ClickException(
+                f"Multiple runtimes found for {tag}: {choices}; pass --backend."
+            )
         selected_tag, selected_backend, binary, _marker = candidates[0]
         cfg.paths.llama_server = str(binary)
         for gpu in cfg.gpus:
@@ -97,7 +96,6 @@ def register_runtime_commands(
                 gpu.backend = selected_backend
         save_or_die(cfg, cfg_path)
         console.print(f"[green]Selected[/green] {selected_tag}/{selected_backend} · {binary}")
-
 
     @runtime_group.command("update")
     @click.option(
@@ -142,7 +140,9 @@ def register_runtime_commands(
 
         cfg_path: Path = ctx.obj["config_path"]
         cfg = load_config(cfg_path)
-        console.print(f"[bold]Checking llama.cpp {runtime_version}[/bold] (current: {cfg.paths.llama_server})")
+        console.print(
+            f"[bold]Checking llama.cpp {runtime_version}[/bold] (current: {cfg.paths.llama_server})"
+        )
         try:
             result = update_runtime(
                 cfg,
@@ -162,7 +162,9 @@ def register_runtime_commands(
         if result.canary is not None:
             marker = "[green]passed[/green]" if result.canary.ok else "[red]failed[/red]"
             timing = f" in {result.canary.seconds:.0f}s" if result.canary.seconds else ""
-            console.print(f"  canary:    {marker} on {result.canary.model}{timing}: {result.canary.detail}")
+            console.print(
+                f"  canary:    {marker} on {result.canary.model}{timing}: {result.canary.detail}"
+            )
         if result.status == "rejected":
             console.print("[red]Kept the current runtime.[/red] The candidate stays installed:")
             for problem in result.problems:
@@ -172,9 +174,10 @@ def register_runtime_commands(
             console.print("[green]Candidate passed.[/green] Dry run: config unchanged.")
             console.print(f"Select it with: [bold]arc-llama runtime use {result.tag}[/bold]")
             return
-        console.print(f"[green]Switched to {result.tag}.[/green] Restart arc-llama serve to use it.")
+        console.print(
+            f"[green]Switched to {result.tag}.[/green] Restart arc-llama serve to use it."
+        )
         console.print("Undo with: [bold]arc-llama runtime rollback[/bold]")
-
 
     @runtime_group.command("rollback")
     @click.pass_context
@@ -189,7 +192,6 @@ def register_runtime_commands(
             raise click.ClickException("No earlier runtime to roll back to.")
         console.print(f"[green]Rolled back[/green] {restored[0]} -> {restored[1]}")
         console.print("Restart arc-llama serve to use it.")
-
 
     @cli.command("install-runtime")
     @click.option(
@@ -247,7 +249,9 @@ def register_runtime_commands(
         from arc_llama.runtime import RuntimeInstallError, install_runtime
 
         cfg = load_config(ctx.obj["config_path"])
-        console.print(f"[bold]Fetching {backend} llama-server[/bold] (llama.cpp {runtime_version}) ...")
+        console.print(
+            f"[bold]Fetching {backend} llama-server[/bold] (llama.cpp {runtime_version}) ..."
+        )
 
         progress = Progress(
             TextColumn("[bold blue]Downloading"),
@@ -297,8 +301,6 @@ def register_runtime_commands(
                 "(source setvars.sh). Use --backend vulkan if you don't have oneAPI.[/yellow]"
             )
         console.print("\nNext: [bold]arc-llama serve[/bold]")
-
-
 
     return {
         "runtime_group": runtime_group,

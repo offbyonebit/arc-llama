@@ -1,4 +1,5 @@
 """Tests for host/driver competitive-inference checks."""
+
 from __future__ import annotations
 
 import sys

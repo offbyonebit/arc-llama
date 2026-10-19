@@ -151,9 +151,7 @@ async def test_lease_released_when_owner_task_cancelled(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_exclusive_lease_drains_router_requests_before_stopping_models(
-    tmp_path, monkeypatch
-):
+async def test_exclusive_lease_drains_router_requests_before_stopping_models(tmp_path, monkeypatch):
     rt, mgr = _manager(tmp_path, monkeypatch)
     await rt.ensure_active("qwen")
 
@@ -341,6 +339,7 @@ async def test_pending_exclusive_blocks_new_shared_lease(tmp_path, monkeypatch):
         nonlocal shared_done
         async with mgr.acquire("reader", exclusive=False):
             shared_done = True
+
     t3 = asyncio.create_task(shared_task())
     await asyncio.sleep(0.1)
     assert not shared_done, "shared lease jumped a queued exclusive task"
@@ -460,6 +459,7 @@ async def test_stream_cleanup_can_release_shared_lease_from_another_task(tmp_pat
         assert not task.done()
         task.cancel()
         import pytest
+
         with pytest.raises(asyncio.CancelledError):
             await task
     assert mgr.active_leases == {}

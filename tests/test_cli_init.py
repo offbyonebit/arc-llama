@@ -46,8 +46,12 @@ def test_init_fails_when_llama_server_binary_missing(monkeypatch, tmp_path, cli_
     result = cli_runner.invoke(
         cli,
         [
-            "--config", str(config_file), "init", "--no-scan",
-            "--llama-server", "/nonexistent/llama-server",
+            "--config",
+            str(config_file),
+            "init",
+            "--no-scan",
+            "--llama-server",
+            "/nonexistent/llama-server",
         ],
     )
     assert result.exit_code == 3
@@ -78,9 +82,7 @@ def test_init_writes_config_without_binary_and_hints_install_runtime(
     # renderer expects detected-GPU objects (with vram_gb), so stub it out.
     monkeypatch.setattr("arc_llama.cli._print_gpu_table", lambda gpus: None)
 
-    result = cli_runner.invoke(
-        cli, ["--config", str(config_file), "init", "--no-scan"]
-    )
+    result = cli_runner.invoke(cli, ["--config", str(config_file), "init", "--no-scan"])
 
     assert result.exit_code == 0, result.output
     assert "install-runtime" in result.output
@@ -88,11 +90,11 @@ def test_init_writes_config_without_binary_and_hints_install_runtime(
 
 
 def test_windows_no_gpu_guidance_does_not_claim_detection_is_unsupported(tmp_path, monkeypatch):
-    monkeypatch.setattr('arc_llama.cli._IS_WINDOWS', True)
-    monkeypatch.setattr('arc_llama.cli.detect_gpus', lambda: [])
-    result = CliRunner().invoke(cli, ['-c', str(tmp_path/'config.toml'), 'init', '--no-scan'])
+    monkeypatch.setattr("arc_llama.cli._IS_WINDOWS", True)
+    monkeypatch.setattr("arc_llama.cli.detect_gpus", lambda: [])
+    result = CliRunner().invoke(cli, ["-c", str(tmp_path / "config.toml"), "init", "--no-scan"])
     assert result.exit_code == 2
-    assert 'Device Manager' in ' '.join(result.output.split())
-    assert 'doctor' in result.output
-    assert 'not supported' not in result.output
-    assert not (tmp_path/'config.toml').exists()
+    assert "Device Manager" in " ".join(result.output.split())
+    assert "doctor" in result.output
+    assert "not supported" not in result.output
+    assert not (tmp_path / "config.toml").exists()

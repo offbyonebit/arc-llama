@@ -8,6 +8,7 @@ Subprocesses are launched with `setsid` (so they own a fresh process group we
 can `killpg`) AND `PR_SET_PDEATHSIG=SIGTERM` so the kernel reaps the child if
 the arc-llama parent dies hard — no orphan llama-servers holding VRAM.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,6 +48,7 @@ from arc_llama.policy import apply_launch_policy
 from arc_llama.server_caps import probe_server_caps
 
 log = logging.getLogger("arc_llama.launcher")
+
 
 async def _await_cleanup(future: asyncio.Future[Any]) -> Any:
     """Finish started cleanup before propagating caller cancellation.
@@ -96,7 +98,10 @@ def _load_libc() -> ctypes.CDLL | None:
         # int prctl(int option, unsigned long arg2, ...arg5)
         lib.prctl.argtypes = [
             ctypes.c_int,
-            ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
         ]
         lib.prctl.restype = ctypes.c_int
         _libc = lib
@@ -159,6 +164,7 @@ def _rotate_log(log_path: Path) -> None:
 @dataclass
 class LaunchPlan:
     """Everything needed to invoke llama-server for one model."""
+
     argv: list[str]
     env: dict[str, str]
     cwd: str | None = None
@@ -172,16 +178,18 @@ class LaunchPlan:
 
 # Environment variables that only make sense for the SYCL backend; they can
 # confuse the Vulkan loader or cause unnecessary backend initialization delays.
-_SYCL_ONLY_ENVS: frozenset[str] = frozenset({
-    "ONEAPI_DEVICE_SELECTOR",
-    "ZES_ENABLE_SYSMAN",
-    "SYCL_CACHE_PERSISTENT",
-    "SYCL_CACHE_DIR",
-    "SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS",
-    "SYCL_DEVICE_FILTER",
-    "SYCL_DEVICE_ALLOWLIST",
-    "GGML_SYCL_DISABLE_OPT",
-})
+_SYCL_ONLY_ENVS: frozenset[str] = frozenset(
+    {
+        "ONEAPI_DEVICE_SELECTOR",
+        "ZES_ENABLE_SYSMAN",
+        "SYCL_CACHE_PERSISTENT",
+        "SYCL_CACHE_DIR",
+        "SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS",
+        "SYCL_DEVICE_FILTER",
+        "SYCL_DEVICE_ALLOWLIST",
+        "GGML_SYCL_DISABLE_OPT",
+    }
+)
 
 
 @lru_cache(maxsize=8)
@@ -376,15 +384,16 @@ def build_plan(
             draft_path = Path(recipe.spec_draft_model)
             if not draft_path.exists():
                 log.warning(
-                    "[%s] spec_draft_model %s does not exist; speculative "
-                    "decoding will fail.",
-                    model.name, draft_path,
+                    "[%s] spec_draft_model %s does not exist; speculative decoding will fail.",
+                    model.name,
+                    draft_path,
                 )
             elif not has_mtp_heads(draft_path):
                 log.warning(
                     "[%s] spec_draft_model %s has no MTP heads; draft-mtp will "
                     "likely degenerate or crash.",
-                    model.name, draft_path,
+                    model.name,
+                    draft_path,
                 )
         elif not mtp_present:
             log.warning(
@@ -409,7 +418,9 @@ def build_plan(
     if recipe.flash_attn is not None and not caps.supports_flash_attn:
         log.info(
             "[%s] recipe requests flash_attn=%s but %s has no --flash-attn; omitting",
-            model.name, recipe.flash_attn, cfg.paths.llama_server,
+            model.name,
+            recipe.flash_attn,
+            cfg.paths.llama_server,
         )
         recipe.flash_attn = None
 
@@ -419,7 +430,11 @@ def build_plan(
     if draft_name:
         draft = cfg.find_model(str(draft_name))
         if draft is None or draft.name == model.name:
-            log.warning("[%s] registered speculative draft %r is unavailable; disabling speculation", model.name, draft_name)
+            log.warning(
+                "[%s] registered speculative draft %r is unavailable; disabling speculation",
+                model.name,
+                draft_name,
+            )
             recipe.spec_type = None
             recipe.spec_draft_model = None
         else:
@@ -427,25 +442,42 @@ def build_plan(
             recipe.spec_type = recipe.spec_type or "draft-simple"
 
     if recipe.spec_type and not caps.supports_speculative:
-        log.warning("[%s] %s has no --spec-type; starting target-only", model.name, cfg.paths.llama_server)
+        log.warning(
+            "[%s] %s has no --spec-type; starting target-only", model.name, cfg.paths.llama_server
+        )
         recipe.spec_type = None
         recipe.spec_draft_model = None
-    elif recipe.spec_type is not None and recipe.spec_type.startswith("ngram-") and not caps.supports_ngram:
-        log.warning("[%s] %s has no n-gram speculation; starting target-only", model.name, cfg.paths.llama_server)
+    elif (
+        recipe.spec_type is not None
+        and recipe.spec_type.startswith("ngram-")
+        and not caps.supports_ngram
+    ):
+        log.warning(
+            "[%s] %s has no n-gram speculation; starting target-only",
+            model.name,
+            cfg.paths.llama_server,
+        )
         recipe.spec_type = None
     elif recipe.spec_draft_model and not caps.supports_draft_model:
-        log.warning("[%s] %s has no --spec-draft-model; starting target-only", model.name, cfg.paths.llama_server)
+        log.warning(
+            "[%s] %s has no --spec-draft-model; starting target-only",
+            model.name,
+            cfg.paths.llama_server,
+        )
         recipe.spec_type = None
         recipe.spec_draft_model = None
 
     if recipe.mmproj and not caps.supports_mmproj:
         log.warning(
             "[%s] %s has no --mmproj; starting text-only (image input disabled)",
-            model.name, cfg.paths.llama_server,
+            model.name,
+            cfg.paths.llama_server,
         )
         recipe.mmproj = None
     if recipe.reranking and not caps.supports_reranking:
-        log.warning("[%s] %s has no --reranking; rerank disabled", model.name, cfg.paths.llama_server)
+        log.warning(
+            "[%s] %s has no --reranking; rerank disabled", model.name, cfg.paths.llama_server
+        )
         recipe.reranking = False
     if recipe.tensor_split and not caps.supports_tensor_split:
         log.warning(
@@ -455,9 +487,12 @@ def build_plan(
 
     argv: list[str] = [
         cfg.paths.llama_server,
-        "-m", model.path,
-        "--host", host,
-        "--port", str(model.port),
+        "-m",
+        model.path,
+        "--host",
+        host,
+        "--port",
+        str(model.port),
     ]
     argv.extend(
         recipe.to_argv(
@@ -472,8 +507,11 @@ def build_plan(
         backend_url=backend_url,
         health_url=f"{backend_url}/health",
         gpu_pci_slot=gpu.pci_slot,
-        resident_lock_path=(Path(getattr(cfg.paths, "state_dir", default_state_dir())) / "llama-server.lock"
-                            if cfg.server.single_resident else None),
+        resident_lock_path=(
+            Path(getattr(cfg.paths, "state_dir", default_state_dir())) / "llama-server.lock"
+            if cfg.server.single_resident
+            else None
+        ),
     )
 
 
@@ -542,9 +580,7 @@ class LlamaServer:
             # A new process group lets us terminate the whole subtree cleanly
             # without Unix-specific killpg. The constant is only defined on
             # Windows; the getattr guard keeps tests on Linux valid.
-            popen_kwargs["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-            )
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["preexec_fn"] = _preexec_isolate_and_pdeathsig
         try:
@@ -664,7 +700,9 @@ class LlamaServer:
                     remaining = max(0, deadline - now)
                     log.info(
                         "[%s] still loading... %.0fs elapsed, %.0fs budget remaining",
-                        self.name, timeout - remaining, remaining,
+                        self.name,
+                        timeout - remaining,
+                        remaining,
                     )
                     last_progress = now
                 await asyncio.sleep(HEALTH_POLL_INTERVAL)
@@ -716,9 +754,7 @@ class LlamaServer:
             try:
                 proc.wait(timeout=drain_seconds)
             except subprocess.TimeoutExpired:
-                log.warning(
-                    "[%s] CTRL_BREAK timed out, force-killing process tree", self.name
-                )
+                log.warning("[%s] CTRL_BREAK timed out, force-killing process tree", self.name)
                 try:
                     subprocess.run(
                         ["taskkill", "/F", "/T", "/PID", str(proc.pid)],

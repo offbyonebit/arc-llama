@@ -117,8 +117,10 @@ def _validated_pages(raw_pages: Any) -> list[dict[str, str]]:
             continue
         page_id, label, path = raw.get("id"), raw.get("label"), raw.get("path")
         if not (
-            isinstance(page_id, str) and page_id
-            and isinstance(label, str) and label
+            isinstance(page_id, str)
+            and page_id
+            and isinstance(label, str)
+            and label
             and isinstance(path, str)
         ):
             continue
@@ -268,8 +270,7 @@ def load_plugins(
                 name,
                 status="incompatible",
                 error=(
-                    f"requires plugin API {required}; this arc-llama provides "
-                    f"{PLUGIN_API_VERSION}"
+                    f"requires plugin API {required}; this arc-llama provides {PLUGIN_API_VERSION}"
                 ),
             )
             continue
@@ -341,11 +342,7 @@ class PluginDiscovery:
         return out
 
     def loaded_names(self) -> set[str]:
-        return {
-            rec["name"]
-            for rec in self._records.values()
-            if rec["status"] == "loaded"
-        }
+        return {rec["name"] for rec in self._records.values() if rec["status"] == "loaded"}
 
 
 def register_plugins(app: FastAPI, plugins: list[Any]) -> None:
@@ -370,24 +367,25 @@ def register_plugins(app: FastAPI, plugins: list[Any]) -> None:
 def plugin_info(plugin: Any) -> dict[str, Any]:
     """Read one plugin's optional metadata, defensively.
 
-        Plugins written against the original contract have no ``info`` hook and
-        yield an empty dict; a hook that raises or returns a non-mapping is
-        dropped with a warning rather than affecting anything else. The catalog
-        treats ``version``, ``description``, ``ui``, and ``api`` as known
-        optional keys; anything else JSON-serializable is passed through as is.
-        """
+    Plugins written against the original contract have no ``info`` hook and
+    yield an empty dict; a hook that raises or returns a non-mapping is
+    dropped with a warning rather than affecting anything else. The catalog
+    treats ``version``, ``description``, ``ui``, and ``api`` as known
+    optional keys; anything else JSON-serializable is passed through as is.
+    """
     hook = getattr(plugin, "info", None)
     if hook is None:
         return {}
     try:
         data = hook()
     except Exception:  # noqa: BLE001 - metadata must never break the catalog
-        log.warning(
-            "plugin %s info() failed; ignoring metadata", getattr(plugin, "name", "?")
-        )
+        log.warning("plugin %s info() failed; ignoring metadata", getattr(plugin, "name", "?"))
         return {}
     if not isinstance(data, dict):
-        log.warning("plugin %s info() returned a non-mapping; ignoring metadata", getattr(plugin, "name", "?"))
+        log.warning(
+            "plugin %s info() returned a non-mapping; ignoring metadata",
+            getattr(plugin, "name", "?"),
+        )
         return {}
     result = deepcopy(data)
     if "ui" in result:

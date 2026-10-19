@@ -8,7 +8,11 @@ from arc_llama.server import _ollama_to_openai, _openai_response_as_ollama
 
 def test_ollama_options_translate_to_openai_payload() -> None:
     payload = _ollama_to_openai(
-        {"model": "demo", "stream": False, "options": {"temperature": 0.2, "num_predict": 12, "stop": ["END"]}},
+        {
+            "model": "demo",
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 12, "stop": ["END"]},
+        },
         messages=[{"role": "user", "content": "hi"}],
     )
     assert payload == {
@@ -23,7 +27,18 @@ def test_ollama_options_translate_to_openai_payload() -> None:
 
 def test_openai_chat_response_converts_to_ollama_shape() -> None:
     response = _openai_response_as_ollama(
-        Response(json.dumps({"choices": [{"message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}]}).encode()),
+        Response(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "hello"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            ).encode()
+        ),
         "demo",
         generate=False,
     )
@@ -77,9 +92,14 @@ def test_ollama_generate_forwards_prompt_to_completion_backend(tmp_path, monkeyp
     cfg = Config(paths=PathsConfig(state_dir=str(tmp_path)))
     cfg.tune.auto = False
     with TestClient(server_mod.create_app(cfg, plugins=[])) as client:
-        response = client.post("/api/generate", json={
-            "model": "demo", "prompt": "2 plus 2", "stream": False,
-            "options": {"num_predict": 5},
-        })
+        response = client.post(
+            "/api/generate",
+            json={
+                "model": "demo",
+                "prompt": "2 plus 2",
+                "stream": False,
+                "options": {"num_predict": 5},
+            },
+        )
         assert response.status_code == 200
         assert response.json()["response"] == "4"

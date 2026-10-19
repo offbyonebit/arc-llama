@@ -79,7 +79,8 @@ class ApiKeyStore:
             for key in self._keys.values():
                 if key.id in usage:
                     key.requests, key.last_used_at = max(
-                        usage[key.id], (key.requests, key.last_used_at),
+                        usage[key.id],
+                        (key.requests, key.last_used_at),
                         key=lambda pair: pair[0],
                     )
 

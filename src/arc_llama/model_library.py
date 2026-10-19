@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import shutil
 import stat
@@ -26,7 +27,9 @@ from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
 log = logging.getLogger("arc_llama.model_library")
 
-_QUANT_RE = re.compile(r"(UD-)?(IQ\d[A-Z0-9_]*|Q\d[A-Z0-9_]*|BF16|F16|F32)", re.IGNORECASE)
+_QUANT_RE = re.compile(
+    r"(UD-)?(IQ\d[A-Z0-9_]*|Q\d[A-Z0-9_]*|MXFP4[A-Z0-9_]*|BF16|F16|F32)", re.IGNORECASE
+)
 _REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 # Allowances matching the router's admission estimate.
 _COMPUTE_MB = 768
@@ -75,7 +78,9 @@ class QuantOption:
     fit: str = "unknown"
 
 
-def group_repo_files(files: list[tuple[str, int | None]], vram_mb: int | None) -> tuple[list[QuantOption], bool]:
+def group_repo_files(
+    files: list[tuple[str, int | None]], vram_mb: int | None
+) -> tuple[list[QuantOption], bool]:
     """Turn a repo's ``(path, size)`` list into downloadable options.
 
     Split shards fold into their first shard with the summed size; projectors
@@ -114,9 +119,7 @@ def _api(api: Any = None) -> Any:
 
 def search_repos(query: str, *, limit: int = 20, api: Any = None) -> list[dict[str, Any]]:
     """GGUF repositories matching ``query``, most downloaded first."""
-    results = _api(api).list_models(
-        search=query, filter="gguf", sort="downloads", limit=limit
-    )
+    results = _api(api).list_models(search=query, filter="gguf", sort="downloads", limit=limit)
     out = []
     for item in results:
         modified: Any = getattr(item, "last_modified", None)
@@ -196,12 +199,35 @@ class DownloadManager:
         self._queue: asyncio.Queue[DownloadJob] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
 
-    def submit(self, repo: str, file: str, bytes_total: int | None) -> DownloadJob:
+    def submit(
+        self, repo: str, file: str, bytes_total: int | None, dest_dir: str | None = None
+    ) -> DownloadJob:
         if not _REPO_RE.match(repo) or not file.lower().endswith(".gguf") or ".." in file:
             raise ValueError("invalid repo or file")
-        if any(j.repo == repo and j.file == file and j.status not in ("done", "error") for j in self.jobs.values()):
+        if any(
+            j.repo == repo and j.file == file and j.status not in ("done", "error")
+            for j in self.jobs.values()
+        ):
             raise ValueError("that file is already downloading")
-        target = Path(self.cfg.paths.models_dir).expanduser() / repo.split("/")[-1]
+        root = (
+            resolve_download_dir(dest_dir)
+            if dest_dir
+            else Path(self.cfg.paths.models_dir).expanduser()
+        )
+        target = root / repo.split("/")[-1]
+        if bytes_total:
+            probe = target
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            free = shutil.disk_usage(probe).free
+            # Reserve the full requested size: this folder can contain other
+            # quantizations or stale downloads, not reusable bytes for this job.
+            need = bytes_total
+            if free < need:
+                raise ValueError(
+                    f"Not enough disk space in {target.parent}: need {need / 2**30:.1f} GiB, "
+                    f"{free / 2**30:.1f} GiB free. Point paths.models_dir at a larger disk."
+                )
         job = DownloadJob(
             id=uuid.uuid4().hex[:12],
             repo=repo,
@@ -227,10 +253,25 @@ class DownloadManager:
         baseline = _dir_bytes(target)
         job.status = "downloading"
         spec = HFModelSpec(repo=job.repo, file=job.file, quant=None)
-        task = asyncio.create_task(
-            asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False)
-        )
+        task = None
         try:
+            # Queued jobs must recheck: another job may have used the free space.
+            required_bytes = job.bytes_total
+            if required_bytes:
+
+                def check_space() -> None:
+                    probe = target
+                    while not probe.exists() and probe != probe.parent:
+                        probe = probe.parent
+                    if shutil.disk_usage(probe).free < required_bytes:
+                        raise ValueError(
+                            "Not enough disk space in the download folder. Choose a larger disk and retry."
+                        )
+
+                await asyncio.to_thread(check_space)
+            task = asyncio.create_task(
+                asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False)
+            )
             while not task.done():
                 job.bytes_done = max(0, _dir_bytes(target) - baseline)
                 await asyncio.wait({task}, timeout=1.0)
@@ -253,6 +294,43 @@ class DownloadManager:
                 await self._worker
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+
+
+def resolve_download_dir(raw: str) -> Path:
+    """Validate a user-chosen download folder; raises ValueError with a UI-ready reason."""
+    text = raw.strip()
+    if not text or "\0" in text or len(text) > 4096:
+        raise ValueError("Choose a download folder.")
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise ValueError("Use a full folder path on the server.")
+    if ".." in path.parts:
+        raise ValueError("The download folder cannot contain '..'.")
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"{path} is a file, not a folder.")
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    if not probe.is_dir():
+        raise ValueError(f"{probe} is a file, not a folder.")
+    if not os.access(probe, os.W_OK | os.X_OK):
+        raise ValueError(f"No permission to write to {probe}.")
+    return path
+
+
+def folder_report(raw: str) -> dict[str, Any]:
+    """Free space and writability for a candidate download folder."""
+    path = resolve_download_dir(raw)
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    return {
+        "path": str(path),
+        "exists": path.is_dir(),
+        "free_mb": usage.free // 1_048_576,
+        "total_mb": usage.total // 1_048_576,
+    }
 
 
 # -- disk usage and removal ------------------------------------------------
@@ -318,10 +396,7 @@ def deletable_files(cfg: Config, model: ModelConfig) -> list[Path]:
     for other in cfg.models:
         if other.name != model.name:
             shared.update(p.resolve() for p in model_files(other))
-    return [
-        p for p in model_files(model)
-        if _inside(p, root) and p.resolve() not in shared
-    ]
+    return [p for p in model_files(model) if _inside(p, root) and p.resolve() not in shared]
 
 
 def file_readiness(model: ModelConfig) -> dict[str, Any]:
@@ -344,16 +419,35 @@ def file_readiness(model: ModelConfig) -> dict[str, Any]:
     for path in files:
         try:
             info = path.stat()
-            identities.append((str(path.resolve()), info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+            identities.append(
+                (str(path.resolve()), info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            )
             if not stat.S_ISREG(info.st_mode):
-                return {"status": "not_file", "available": False, "detail": f"Not a regular file: {path}"}
+                return {
+                    "status": "not_file",
+                    "available": False,
+                    "detail": f"Not a regular file: {path}",
+                }
             if info.st_size == 0:
                 return {"status": "empty", "available": False, "detail": f"File is empty: {path}"}
             with path.open("rb") as source:
                 if not source.read(1):
-                    return {"status": "empty", "available": False, "detail": f"File is empty: {path}"}
+                    return {
+                        "status": "empty",
+                        "available": False,
+                        "detail": f"File is empty: {path}",
+                    }
         except FileNotFoundError:
             return {"status": "missing", "available": False, "detail": f"Missing file: {path}"}
         except OSError:
-            return {"status": "inaccessible", "available": False, "detail": f"Cannot read file: {path}"}
-    return {"status": "available", "available": True, "identity": hashlib.sha256(repr(identities).encode()).hexdigest()[:12], "detail": "Files are present and readable; GGUF contents and inference have not been checked."}
+            return {
+                "status": "inaccessible",
+                "available": False,
+                "detail": f"Cannot read file: {path}",
+            }
+    return {
+        "status": "available",
+        "available": True,
+        "identity": hashlib.sha256(repr(identities).encode()).hexdigest()[:12],
+        "detail": "Files are present and readable; GGUF contents and inference have not been checked.",
+    }

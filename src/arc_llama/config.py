@@ -131,7 +131,23 @@ class ServerConfig:
     request wins. The default ``reject_new`` refuses the switch with an
     actionable StartupFailureError and leaves the incumbent serving."""
 
+    inference_first_response_seconds: float = 600.0
+    """Header/first-byte deadline after loading completes. Zero means unlimited."""
+    inference_stream_idle_seconds: float = 120.0
+    """Maximum gap between streamed chunks. Zero means unlimited."""
+
     def __post_init__(self) -> None:
+        for name in ("inference_first_response_seconds", "inference_stream_idle_seconds"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"server.{name} must be a nonnegative finite number (0 disables it)"
+                )
         if self.switch_interrupt_policy not in _SWITCH_INTERRUPT_POLICIES:
             raise ValueError(
                 f"server.switch_interrupt_policy must be one of "

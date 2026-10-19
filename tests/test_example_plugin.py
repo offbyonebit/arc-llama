@@ -25,6 +25,7 @@ async def test_example_plugin_registers_and_runs(monkeypatch) -> None:
     from arc_llama_hello_plugin import create_plugin
 
     import arc_llama.server as server_mod
+
     try:
         from tests.test_server import FakeRouter, FakeUpstreamManager
     except ModuleNotFoundError:  # local pytest runs without repo-root sys.path

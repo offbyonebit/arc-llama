@@ -52,6 +52,7 @@ _ONEDNN = b"libdnnl.so.3 dnnl_sycl_interop "
 
 def _no_ldd(monkeypatch):
     """Force the ldd path to be unavailable, exercising the string fallback."""
+
     def _boom(*a, **k):
         raise OSError("no ldd")
 

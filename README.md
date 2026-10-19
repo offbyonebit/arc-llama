@@ -211,6 +211,92 @@ arc-llama runtime rollback               # undo the last switch
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
 
+### Keeping long chats usable
+
+In the bundled chat, use **Compact chat** or `/compact` (optionally
+`/compact <focus>`) when a conversation grows long. It summarizes older turns
+and keeps the two newest exchanges, or the latest exchange in a short chat.
+The full transcript stays visible, saved, and included in exports. **Undo
+compaction** or `/uncompact` restores full context, including later messages.
+Summaries can omit details, so undo when exact earlier wording matters.
+Compaction runs through the selected model and may take several requests
+for oversized histories. Cancel stops summarizing; a failed summary or save
+leaves the chat unchanged. Token reductions are estimates. Image files stay in
+the transcript, but their contents are not read during text summarization.
+If the recent turns alone exceed the context estimate, use more context or
+start a new chat.
+
+### Context budgets and interrupted answers
+
+The chat meter includes the reply token limit (1024 by default). Change it in
+**Settings → Chat preset → Reply token limit**. For a resident local text model,
+Arc Llama applies its chat template and tokenizer and reads its actual per-slot
+context, including parallel inference limits. An exact over-budget request offers
+compaction or settings changes before generation. The saved transcript stays intact.
+Upstream models, images, unloaded models, and runtimes without counting endpoints
+show an explicitly approximate budget; image token costs depend on the projector.
+Counting never loads a model or sends chat text to an external upstream.
+
+Stopped and interrupted answers retain their partial text and reasoning, with a
+status label that survives reopening and exporting the chat. A disconnected or
+unfinished stream is marked interrupted; it is not presented as a completed answer.
+
+Local streaming requests have separate deadlines after model loading completes:
+
+```toml
+[server]
+inference_first_response_seconds = 600.0  # headers and first streamed bytes
+inference_stream_idle_seconds = 120.0     # gap between subsequent chunks
+```
+
+Set either value to `0` for an intentional unlimited deadline. Long prefills use
+the first-response allowance; active streams can run longer than either deadline.
+A timeout closes the backend request and releases its request/resource counters,
+so a later request can proceed. Connection establishment has a separate 10-second
+limit. Non-streaming requests retain their existing 600-second network timeout.
+
+### Choosing a model download disk
+
+Hugging Face model choices include a **Download folder on this server** field
+and available disk space. Use an absolute path on the machine running Arc Llama;
+leave it blank for `paths.models_dir`. The choice is remembered in this browser,
+and retries keep the original destination. A missing folder is created by the
+download. Permissions and advertised download size are checked before queuing;
+known-size jobs check free space again when they start. This is a preflight check,
+not a disk reservation, and other writes can still exhaust free space.
+
+Models downloaded elsewhere are registered normally. File deletion remains
+restricted to `paths.models_dir`; removing an external model registration leaves
+its files in place.
+
+## Work: local project jobs
+
+Open **Work** to register a project folder, choose a local model, and save project
+instructions and permissions. New jobs use an independent copy of the current
+regular files, including uncommitted edits. Your original project stays unchanged
+until you review and explicitly apply a job's changes. Undo restores the original
+file contents and refuses to overwrite later independent edits.
+
+Jobs run independently of the browser. Progress, tool results, approvals, and
+conversation state are saved after each step. Pause takes effect between steps.
+A server restart pauses interrupted work; uncertain tool operations require your
+review before resume and are never automatically repeated. Commands need a
+separate approval for each exact call. File-edit permission applies only to the
+job copy, and saved project-setting changes apply to future jobs.
+
+Work supports file-only jobs across platforms. Optional commands require Linux,
+Bubblewrap, prlimit, and a working systemd user session. The command sandbox has
+no host-home, network, or GPU access; only its project copy is writable, along
+with a temporary directory. It uses aggregate memory/process limits, a CPU quota,
+and time/output/file-size limits. There is no fallback to an unrestricted shell.
+
+Copies exclude Git metadata, environments, dependencies, build outputs, `.env`
+files, and symbolic links. Limits: 4000 files, 16 MiB per file, 128 MiB per copy,
+20 retained copies, and 30 model turns per job. Project virtual environments and
+MCP/user-skill tools are not exposed in Work yet. Commands use installed OS tools.
+A finished agent run still needs review; a completed job is not a claim that its
+code passed tests. See [Work details](docs/work.md).
+
 ## Tested hardware
 
 The recorded native validation below used the **0.9.0rc2 candidate** and the

@@ -45,6 +45,7 @@ class _Stream:
                 raise httpx.ReadError("upstream died mid-stream")
             self.yielded += 1
             yield f"data: chunk{i}\n\n".encode()
+        yield b"data: [DONE]\n\n"
 
     async def aclose(self):
         self.closed = True
@@ -120,9 +121,8 @@ def test_inflight_returns_to_zero_when_upstream_dies_mid_stream(app):
     _Client.stream_factory = staticmethod(lambda: _Stream(fail_after=1))
     with TestClient(app) as c:
         rt = app.state.router
-        with pytest.raises(httpx.ReadError):
-            with _post(c) as r:
-                b"".join(r.iter_bytes())
+        with _post(c) as r:
+            assert b"inference_interrupted" in b"".join(r.iter_bytes())
         assert rt.inflight == 0, (
             "in-flight counter leaked; auto-tune is now disabled for the process"
         )
@@ -142,9 +142,8 @@ def test_upstream_and_client_are_closed_when_upstream_dies(app):
     strand the connection pool either."""
     _Client.stream_factory = staticmethod(lambda: _Stream(fail_after=1))
     with TestClient(app) as c:
-        with pytest.raises(httpx.ReadError):
-            with _post(c) as r:
-                b"".join(r.iter_bytes())
+        with _post(c) as r:
+            assert b"inference_interrupted" in b"".join(r.iter_bytes())
     assert _Client.instances, "no client was constructed"
     streaming = [i for i in _Client.instances if i.stream is not None]
     assert streaming, "no streaming client was constructed"
@@ -159,9 +158,9 @@ def test_client_is_closed_when_send_fails_before_any_response(app):
     _Client.send_raises = httpx.ConnectError("refused")
     with TestClient(app) as c:
         rt = app.state.router
-        with pytest.raises(httpx.ConnectError):
-            with _post(c) as r:
-                b"".join(r.iter_bytes())
+        with _post(c) as r:
+            assert r.status_code == 502
+            assert "Retry" in r.read().decode()
         assert rt.inflight == 0
     assert _Client.instances, "no client was constructed"
     assert all(i.closed for i in _Client.instances), "client leaked when send() failed"
@@ -213,9 +212,8 @@ def test_many_failed_streams_do_not_accumulate(app):
     with TestClient(app) as c:
         rt = app.state.router
         for _ in range(5):
-            with pytest.raises(httpx.ReadError):
-                with _post(c) as r:
-                    b"".join(r.iter_bytes())
+            with _post(c) as r:
+                assert b"inference_interrupted" in b"".join(r.iter_bytes())
         assert rt.inflight == 0
 
 
@@ -246,9 +244,8 @@ def test_autotune_still_runs_after_a_failed_stream(app, monkeypatch):
     _Client.stream_factory = staticmethod(lambda: _Stream(fail_after=1))
     with TestClient(app) as c:
         rt = app.state.router
-        with pytest.raises(httpx.ReadError):
-            with _post(c) as r:
-                b"".join(r.iter_bytes())
+        with _post(c) as r:
+            assert b"inference_interrupted" in b"".join(r.iter_bytes())
         # This is the exact condition autotune._tick() gates every sweep on.
         assert not rt.inflight > 0, "autotune._tick() would return early forever"
 
@@ -263,7 +260,146 @@ def test_per_model_count_settles_after_streams(app):
         assert rt.model_inflight == {}
 
         _Client.stream_factory = staticmethod(lambda: _Stream(fail_after=1))
-        with pytest.raises(httpx.ReadError):
-            with _post(c) as r:
-                b"".join(r.iter_bytes())
+        with _post(c) as r:
+            assert b"inference_interrupted" in b"".join(r.iter_bytes())
         assert rt.model_inflight == {}, "failed stream leaked the per-model count"
+
+
+def _assert_settled(app):
+    assert app.state.router.inflight == 0
+    assert app.state.router.model_inflight == {}
+    assert app.state.resources.active_leases == {}
+    assert all(c.closed for c in _Client.instances)
+
+
+def test_header_deadline_returns_504_and_next_request_works(app, monkeypatch):
+    import asyncio
+
+    async def stalled_send(self, request, stream=False):
+        await asyncio.Event().wait()
+
+    app.state.cfg.server.inference_first_response_seconds = 0.05
+    original = _Client.send
+    monkeypatch.setattr(_Client, "send", stalled_send)
+    with TestClient(app) as c:
+        with _post(c) as r:
+            assert r.status_code == 504
+        _assert_settled(app)
+        monkeypatch.setattr(_Client, "send", original)
+        with _post(c) as r:
+            assert r.status_code == 200
+        _assert_settled(app)
+
+
+@pytest.mark.parametrize("emit_first", [False, True])
+def test_first_byte_and_idle_deadlines_close_stream_and_release_lease(app, emit_first):
+    import asyncio
+
+    class Stalled(_Stream):
+        async def aiter_raw(self):
+            if emit_first:
+                yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            await asyncio.Event().wait()
+
+    app.state.cfg.server.inference_first_response_seconds = 0.08
+    app.state.cfg.server.inference_stream_idle_seconds = 0.05
+    _Client.stream_factory = staticmethod(Stalled)
+    with TestClient(app) as c:
+        with _post(c) as r:
+            body = b"".join(r.iter_bytes())
+            assert b"inference_interrupted" in body
+            assert b"[DONE]" not in body
+            assert (b"partial" in body) is emit_first
+        _assert_settled(app)
+        assert all(i.stream.closed for i in _Client.instances if i.stream)
+        _Client.stream_factory = staticmethod(lambda: _Stream())
+        with _post(c) as r:
+            assert r.status_code == 200
+        _assert_settled(app)
+
+
+@pytest.mark.parametrize("idle", [0, 0.1])
+def test_slow_prefill_and_active_stream_are_not_total_time_limited(app, idle):
+    import asyncio
+
+    class Slow(_Stream):
+        async def aiter_raw(self):
+            await asyncio.sleep(0.12)  # Longer than the idle limit; this is prefill.
+            for _ in range(5):
+                yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                await asyncio.sleep(0.04)
+            yield b"data: [DONE]\n\n"
+
+    app.state.cfg.server.inference_first_response_seconds = 0.5
+    app.state.cfg.server.inference_stream_idle_seconds = idle
+    _Client.stream_factory = staticmethod(Slow)
+    with TestClient(app) as c:
+        with _post(c) as r:
+            body = b"".join(r.iter_bytes())
+            assert b"inference_interrupted" not in body
+            assert b"[DONE]" in body
+        _assert_settled(app)
+
+
+def test_eof_without_done_is_an_interruption_for_api_clients(app):
+    class EOF(_Stream):
+        async def aiter_raw(self):
+            yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+
+    _Client.stream_factory = staticmethod(EOF)
+    with TestClient(app) as c:
+        with _post(c) as response:
+            body = b"".join(response.iter_bytes())
+        assert b"inference_interrupted" in body
+        _assert_settled(app)
+
+
+async def test_done_text_in_generated_content_does_not_truncate_stream():
+    from arc_llama.server import _iter_sse_body
+
+    class Literal:
+        async def aiter_raw(self):
+            yield b'data: {"choices":[{"delta":{"content":"the literal data: [DONE]"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"more text"}}]}\n\n'
+            yield b"data: [DO"
+            yield b"NE]\r\n\r\n"
+            raise AssertionError("must stop after the actual terminator")
+
+    result = b"".join([part async for part in _iter_sse_body(Literal(), require_done=True)])
+    assert b"more text" in result
+    assert result.endswith(b"data: [DONE]\r\n\r\n")
+
+
+async def test_disconnect_while_sending_headers_still_finalizes(app):
+    import json
+
+    from starlette.requests import ClientDisconnect, Request
+
+    from arc_llama.server import _proxy_post
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": [],
+        "asgi": {"spec_version": "2.4"},
+        "app": app,
+    }
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": json.dumps({"model": "qwen", "stream": True}).encode(),
+            "more_body": False,
+        }
+
+    async def disconnected(message):
+        assert message["type"] == "http.response.start"
+        raise OSError("client disconnected before headers")
+
+    async with app.router.lifespan_context(app):
+        response = await _proxy_post(Request(scope, receive), "/v1/chat/completions")
+        with pytest.raises(ClientDisconnect):
+            await response(scope, receive, disconnected)
+        _assert_settled(app)
+        assert all(i.stream.closed for i in _Client.instances if i.stream)

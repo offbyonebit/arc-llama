@@ -4,6 +4,7 @@ All fakes: no GPU, no llama-server, no systemd. The sweep tests drive the
 real tune_model with a faked edit/benchmark backend, so they exercise the
 actual pruning and measurement-depth code paths rather than helpers alone.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -148,16 +149,21 @@ def test_unanswered_style_keeps_tune_target(tmp_path: Path) -> None:
 
 def test_priority_weights_balanced_score() -> None:
     r = BenchmarkResult(
-        model="m", ctx=8192, cache_type_k="q8_0", cache_type_v="q8_0",
-        prompt_tokens=1024, gen_tokens=128,
-        prompt_eval_tok_s=1000.0, generation_tok_s=40.0,
+        model="m",
+        ctx=8192,
+        cache_type_k="q8_0",
+        cache_type_v="q8_0",
+        prompt_tokens=1024,
+        gen_tokens=128,
+        prompt_eval_tok_s=1000.0,
+        generation_tok_s=40.0,
     )
     balanced = score_result(r, "balanced")
     first_token = score_result(r, "balanced", "first_token")
     throughput = score_result(r, "balanced", "throughput")
     assert balanced == pytest.approx((1000.0 * 40.0) ** 0.5)
-    assert first_token == pytest.approx(1000.0 ** 0.75 * 40.0 ** 0.25)
-    assert throughput == pytest.approx(1000.0 ** 0.25 * 40.0 ** 0.75)
+    assert first_token == pytest.approx(1000.0**0.75 * 40.0**0.25)
+    assert throughput == pytest.approx(1000.0**0.25 * 40.0**0.75)
     # Prompt-heavy result ranks higher under a first-token priority.
     assert first_token > balanced > throughput
 
@@ -172,12 +178,18 @@ def test_fingerprint_changes_when_profile_changes(tmp_path: Path) -> None:
     gpu = cfg.find_gpu("0000:03:00.0")
     model = cfg.models[0]
     fp1 = compute_fingerprint(
-        model, cfg.paths.llama_server, gpu, "0.6.0",
+        model,
+        cfg.paths.llama_server,
+        gpu,
+        "0.6.0",
         workload.fingerprint_key(cfg.workload),
     )
     cfg.workload.context_length = "very_long"
     fp2 = compute_fingerprint(
-        model, cfg.paths.llama_server, gpu, "0.6.0",
+        model,
+        cfg.paths.llama_server,
+        gpu,
+        "0.6.0",
         workload.fingerprint_key(cfg.workload),
     )
     assert fp1 != fp2
@@ -190,7 +202,10 @@ def test_tuned_model_becomes_untuned_when_profile_changes(tmp_path: Path) -> Non
     model = cfg.models[0]
     model.tune_state = "tuned"
     model.tune_fingerprint = compute_fingerprint(
-        model, cfg.paths.llama_server, gpu, "0.6.0",
+        model,
+        cfg.paths.llama_server,
+        gpu,
+        "0.6.0",
         workload.fingerprint_key(cfg.workload),
     )
 
@@ -379,10 +394,16 @@ def test_init_workload_flags_persist_profile(
     result = CliRunner().invoke(
         cli,
         [
-            "--config", str(config_file), "init", "--no-scan",
-            "--workload-context", "long",
-            "--workload-style", "agentic",
-            "--workload-priority", "throughput",
+            "--config",
+            str(config_file),
+            "init",
+            "--no-scan",
+            "--workload-context",
+            "long",
+            "--workload-style",
+            "agentic",
+            "--workload-priority",
+            "throughput",
         ],
     )
 

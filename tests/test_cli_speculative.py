@@ -94,7 +94,6 @@ def test_speculative_auto_rolls_back_when_draft_is_slower(tmp_path, monkeypatch)
         restored.append(dict(edits))
         return None
 
-
     monkeypatch.setattr("arc_llama.cli.benchmark_mod.benchmark_model", benchmark)
     monkeypatch.setattr("arc_llama.tune._apply_edits", apply)
     monkeypatch.setattr("arc_llama.tune._restore_final_state", restore)

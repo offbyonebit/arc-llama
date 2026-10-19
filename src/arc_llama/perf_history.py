@@ -148,7 +148,8 @@ class PerfHistory:
                     )
         return sorted(
             (
-                p for p in points
+                p
+                for p in points
                 if p["t"] >= cutoff
                 and (model is None or p["model"] == model)
                 and (metric is None or p["metric"] == metric)

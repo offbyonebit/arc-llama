@@ -9,8 +9,16 @@ from arc_llama.failures import StartupFailureError
 from arc_llama.launcher import LaunchPlan, LlamaServer
 
 
-def _owner(tmp_path, monkeypatch, *, gpu="0000:06:00.0", name="llama-server",
-           allocation="21987752 KiB", region="system", resident="0 KiB"):
+def _owner(
+    tmp_path,
+    monkeypatch,
+    *,
+    gpu="0000:06:00.0",
+    name="llama-server",
+    allocation="21987752 KiB",
+    region="system",
+    resident="0 KiB",
+):
     monkeypatch.setattr(gpu_ownership.sys, "platform", "linux")
     monkeypatch.setattr(gpu_ownership, "_PROC_ROOT", tmp_path)
     proc = tmp_path / "1504"
@@ -31,7 +39,9 @@ def test_allocated_buffers_block_even_when_nonresident(tmp_path, monkeypatch, re
         gpu_ownership.check_gpu_ownership("06:00.0")
     assert caught.value.category == "gpu_unavailable"
     assert caught.value.details == {
-        "gpu": "06:00.0", "pid": 1504, "service": "qwen3.8-27b-server.service",
+        "gpu": "06:00.0",
+        "pid": 1504,
+        "service": "qwen3.8-27b-server.service",
         "reason": "external_model_owner",
     }
     assert "qwen3.8-27b-server.service" in caught.value.message
@@ -43,10 +53,16 @@ def test_bare_byte_allocation_blocks(tmp_path, monkeypatch):
         gpu_ownership.check_gpu_ownership("0000:06:00.0")
 
 
-@pytest.mark.parametrize("changes", [
-    {"gpu": "0000:07:00.0"}, {"name": "Xorg"},
-    {"allocation": "0 KiB"}, {"allocation": "0"}, {"allocation": "malformed KiB"},
-])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"gpu": "0000:07:00.0"},
+        {"name": "Xorg"},
+        {"allocation": "0 KiB"},
+        {"allocation": "0"},
+        {"allocation": "malformed KiB"},
+    ],
+)
 def test_unrelated_or_empty_clients_do_not_block(tmp_path, monkeypatch, changes):
     _owner(tmp_path, monkeypatch, **changes)
     gpu_ownership.check_gpu_ownership("0000:06:00.0")
@@ -75,8 +91,12 @@ def test_launch_conflict_releases_unspawned_resources(tmp_path, monkeypatch):
     _owner(tmp_path / "proc", monkeypatch)
     popen = Mock()
     monkeypatch.setattr(launcher.subprocess, "Popen", popen)
-    plan = LaunchPlan(argv=["unused"], env={}, gpu_pci_slot="0000:06:00.0",
-                      resident_lock_path=tmp_path / "state" / "resident.lock")
+    plan = LaunchPlan(
+        argv=["unused"],
+        env={},
+        gpu_pci_slot="0000:06:00.0",
+        resident_lock_path=tmp_path / "state" / "resident.lock",
+    )
     srv = LlamaServer(plan, "target")
     with pytest.raises(StartupFailureError, match="Another llama-server"):
         srv.start(log_dir=tmp_path / "logs")
@@ -102,9 +122,14 @@ async def test_conflict_preserves_healthy_resident(tmp_path, monkeypatch):
     assert FakeServer.starts == ["qwen"] and not FakeServer.stops
 
 
-@pytest.mark.parametrize("total,available,reserve", [
-    (32768, 12000, 12288), (8192, 1000, 3276), (2048, 500, 819),
-])
+@pytest.mark.parametrize(
+    "total,available,reserve",
+    [
+        (32768, 12000, 12288),
+        (8192, 1000, 3276),
+        (2048, 500, 819),
+    ],
+)
 def test_host_memory_reserve_scales_with_ram(tmp_path, monkeypatch, total, available, reserve):
     monkeypatch.setattr(gpu_ownership.sys, "platform", "linux")
     monkeypatch.setattr(gpu_ownership, "_PROC_ROOT", tmp_path)
@@ -112,7 +137,8 @@ def test_host_memory_reserve_scales_with_ram(tmp_path, monkeypatch, total, avail
         f"MemTotal: {total * 1024} kB\nMemAvailable: {available * 1024} kB\n"
     )
     assert gpu_ownership.host_memory_pressure() == {
-        "available_host_mb": available, "reserved_host_mb": reserve,
+        "available_host_mb": available,
+        "reserved_host_mb": reserve,
     }
     (tmp_path / "meminfo").write_text(
         f"MemTotal: {total * 1024} kB\nMemAvailable: {reserve * 1024} kB\n"

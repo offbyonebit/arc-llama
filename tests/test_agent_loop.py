@@ -1,4 +1,5 @@
 """Tests for the agent loop."""
+
 from __future__ import annotations
 
 import json
@@ -46,14 +47,18 @@ async def collect_events(task: str, responses: list[dict], tmp_root: Path, **kwa
 
 @pytest.mark.asyncio
 async def test_agent_returns_direct_answer(tmp_root: Path) -> None:
-    responses = [{
-        "choices": [{
-            "message": {
-                "role": "assistant",
-                "content": "Hello!",
-            }
-        }]
-    }]
+    responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello!",
+                    }
+                }
+            ]
+        }
+    ]
     events = await collect_events("say hi", responses, tmp_root)
 
     assert events[0]["type"] == "status"
@@ -65,28 +70,34 @@ async def test_agent_returns_direct_answer(tmp_root: Path) -> None:
 async def test_agent_reads_file_and_reports_result(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "read_file",
-                            "arguments": json.dumps({"path": "hello.txt"}),
-                        },
-                    }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps({"path": "hello.txt"}),
+                                },
+                            }
+                        ],
+                    }
                 }
-            }]
+            ]
         },
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "The file says world.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "The file says world.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     events = await collect_events("read hello.txt", responses, tmp_root)
@@ -105,32 +116,40 @@ async def test_agent_reads_file_and_reports_result(tmp_root: Path) -> None:
 async def test_write_requires_confirmation(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write_file",
-                            "arguments": json.dumps({"path": "x.txt", "content": "x"}),
-                        },
-                    }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": json.dumps({"path": "x.txt", "content": "x"}),
+                                },
+                            }
+                        ],
+                    }
                 }
-            }]
+            ]
         },
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "I won't write the file without approval.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "I won't write the file without approval.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     callback = AsyncMock(return_value=False)
-    events = await collect_events("write a file", responses, tmp_root, auto_confirm=False, confirm_callback=callback)
+    events = await collect_events(
+        "write a file", responses, tmp_root, auto_confirm=False, confirm_callback=callback
+    )
 
     assert any(e["type"] == "confirm_required" and e["tool"] == "write_file" for e in events)
     callback.assert_awaited_once()
@@ -146,28 +165,34 @@ async def test_write_requires_confirmation(tmp_root: Path) -> None:
 async def test_auto_confirm_allows_write(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write_file",
-                            "arguments": json.dumps({"path": "x.txt", "content": "x"}),
-                        },
-                    }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": json.dumps({"path": "x.txt", "content": "x"}),
+                                },
+                            }
+                        ],
+                    }
                 }
-            }]
+            ]
         },
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Done.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Done.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     events = await collect_events("write a file", responses, tmp_root, auto_confirm=True)
@@ -184,32 +209,40 @@ async def test_auto_confirm_allows_write(tmp_root: Path) -> None:
 async def test_manual_confirmation_allows_write(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write_file",
-                            "arguments": json.dumps({"path": "y.txt", "content": "y"}),
-                        },
-                    }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": json.dumps({"path": "y.txt", "content": "y"}),
+                                },
+                            }
+                        ],
+                    }
                 }
-            }]
+            ]
         },
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Done.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Done.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     callback = AsyncMock(return_value=True)
-    events = await collect_events("write a file", responses, tmp_root, auto_confirm=False, confirm_callback=callback)
+    events = await collect_events(
+        "write a file", responses, tmp_root, auto_confirm=False, confirm_callback=callback
+    )
 
     assert any(e["type"] == "confirm_required" and e["tool"] == "write_file" for e in events)
     callback.assert_awaited_once()
@@ -224,29 +257,35 @@ async def test_agent_reads_pdf_and_reports_text(tmp_root: Path) -> None:
     (tmp_root / "doc.pdf").write_bytes(b"%PDF-fake")
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "read_pdf",
-                            "arguments": json.dumps({"path": "doc.pdf"}),
-                        },
-                    }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_pdf",
+                                    "arguments": json.dumps({"path": "doc.pdf"}),
+                                },
+                            }
+                        ],
+                    }
                 }
-            }]
+            ]
         },
         {"filename": "doc.pdf", "text": "PDF extracted text"},
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "The PDF says extracted text.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "The PDF says extracted text.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     events = await collect_events("read the pdf", responses, tmp_root)
@@ -263,23 +302,29 @@ async def test_agent_reads_pdf_and_reports_text(tmp_root: Path) -> None:
 async def test_plan_mode_auto_confirm(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Plan: read file then write result.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Plan: read file then write result.",
+                    }
                 }
-            }]
+            ]
         },
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Done.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Done.",
+                    }
                 }
-            }]
+            ]
         },
     ]
-    events = await collect_events("do a thing", responses, tmp_root, plan_mode=True, auto_confirm=True)
+    events = await collect_events(
+        "do a thing", responses, tmp_root, plan_mode=True, auto_confirm=True
+    )
 
     plan_event = next(e for e in events if e["type"] == "plan")
     assert "Plan:" in plan_event["content"]
@@ -291,20 +336,24 @@ async def test_plan_mode_auto_confirm(tmp_root: Path) -> None:
 async def test_plan_mode_manual_approval(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Plan: read file then write result.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Plan: read file then write result.",
+                    }
                 }
-            }]
+            ]
         },
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Done.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Done.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     plan_callback = AsyncMock(return_value=True)
@@ -323,12 +372,14 @@ async def test_plan_mode_manual_approval(tmp_root: Path) -> None:
 async def test_plan_mode_manual_deny(tmp_root: Path) -> None:
     responses = [
         {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Plan: read file then write result.",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Plan: read file then write result.",
+                    }
                 }
-            }]
+            ]
         },
     ]
     plan_callback = AsyncMock(return_value=False)

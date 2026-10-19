@@ -33,7 +33,13 @@ def test_dashboard_components_load_before_coordinator_and_start_explicitly() -> 
     plugins = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
     integration = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
-    assert html.index("dashboard/library.js") < html.index("dashboard/measurements.js") < html.index("dashboard/plugins.js") < html.index("dashboard/integration.js") < html.index("/app.js")
+    assert (
+        html.index("dashboard/library.js")
+        < html.index("dashboard/measurements.js")
+        < html.index("dashboard/plugins.js")
+        < html.index("dashboard/integration.js")
+        < html.index("/app.js")
+    )
     assert "createLibraryController" in library and "createMeasurementsController" in measurements
     assert "createPluginsController" in plugins and "createIntegrationController" in integration
     assert "window.ArcDashboard.createLibraryController" in app
@@ -253,7 +259,21 @@ EM_DASH = "—"
 
 @pytest.mark.parametrize(
     "filename",
-    ["index.html", "app.js", "dashboard/library.js", "dashboard/measurements.js", "chat.html", "chat.js", "chat/history.js", "chat/attachments.js", "chat/settings.js", "chat/rendering.js", "style.css", "chat.css"],
+    [
+        "index.html",
+        "app.js",
+        "dashboard/library.js",
+        "dashboard/measurements.js",
+        "chat.html",
+        "chat.js",
+        "chat/history.js",
+        "chat/compaction.js",
+        "chat/attachments.js",
+        "chat/settings.js",
+        "chat/rendering.js",
+        "style.css",
+        "chat.css",
+    ],
 )
 def test_no_em_dashes_in_user_visible_ui_text(filename: str):
     content = (STATIC / filename).read_text(encoding="utf-8")
@@ -320,7 +340,13 @@ def test_marked_renderer_handles_safe_and_hostile_markdown():
 def test_chat_loads_safety_policy_before_renderer():
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
     assert html.index("markdown_safety.js") < html.index("chat/rendering.js")
-    assert html.index("chat/rendering.js") < html.index("chat/attachments.js") < html.index("chat/settings.js") < html.index("chat/history.js") < html.index("chat.js")
+    assert (
+        html.index("chat/rendering.js")
+        < html.index("chat/attachments.js")
+        < html.index("chat/settings.js")
+        < html.index("chat/history.js")
+        < html.index("chat.js")
+    )
 
 
 def test_chat_components_load_before_coordinator_and_start_explicitly():
@@ -331,11 +357,25 @@ def test_chat_components_load_before_coordinator_and_start_explicitly():
     settings = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
     rendering = (STATIC / "chat" / "rendering.js").read_text(encoding="utf-8")
 
-    assert html.index("chat/rendering.js") < html.index("chat/attachments.js") < html.index("chat/settings.js") < html.index("chat/history.js") < html.index("/chat.js")
-    for module, factory in ((history, "createHistory"), (attachments, "createAttachments"), (settings, "createSettings"), (rendering, "createRendering")):
+    assert (
+        html.index("chat/rendering.js")
+        < html.index("chat/attachments.js")
+        < html.index("chat/settings.js")
+        < html.index("chat/history.js")
+        < html.index("/chat.js")
+    )
+    for module, factory in (
+        (history, "createHistory"),
+        (attachments, "createAttachments"),
+        (settings, "createSettings"),
+        (rendering, "createRendering"),
+    ):
         assert f"ArcChat.{factory} = function" in module
         assert "function start()" in module
-    assert all(f"{name}Component.start()" in chat for name in ("history", "attachments", "settings", "rendering"))
+    assert all(
+        f"{name}Component.start()" in chat
+        for name in ("history", "attachments", "settings", "rendering")
+    )
     assert "function runSend()" in chat
     assert "activeAbort.abort()" in chat
 
@@ -501,7 +541,7 @@ def test_plugins_panel_empty_state_mentions_entry_point_discovery():
 
 def test_plugin_fetch_failure_is_isolated():
     js = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
-    block = js[js.index("async function poll") : js.index("function bind()") ]
+    block = js[js.index("async function poll") : js.index("function bind()")]
 
     # The whole request/render path is wrapped so a failing plugins fetch
     # can never break the model panels it shares the page with.
@@ -619,9 +659,7 @@ def test_vision_generation_keeps_plugin_route_and_loader_pacing():
     # The generation call still goes to the action's declared plugin route
     # with only the prompt (server keeps the GPU lease contract).
     body = js[
-        js.index("async function sendComposerAction") : js.index(
-            "async function loadPluginActions"
-        )
+        js.index("async function sendComposerAction") : js.index("async function loadPluginActions")
     ]
     assert "fetch(action.route" in body
     assert "JSON.stringify(payload)" in body
@@ -723,7 +761,7 @@ def test_vision_composer_flow_under_stubbed_dom():
       }};
 
       globalThis.window = globalThis;
-      for (const component of ["rendering.js", "attachments.js", "settings.js", "history.js"]) {{
+      for (const component of ["rendering.js", "attachments.js", "settings.js", "history.js", "compaction.js"]) {{
         const path = {json.dumps(str(STATIC / "chat"))} + "/" + component;
         (0, eval)(fs.readFileSync(path, "utf8"));
       }}

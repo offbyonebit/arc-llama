@@ -1,4 +1,5 @@
 """CLI registration for community tune-recipe commands."""
+
 from __future__ import annotations
 
 import asyncio
@@ -25,11 +26,9 @@ def register_recipe_commands(
     # recipes (community registry)
     # ===========================================================================
 
-
     @cli.group("recipes")
     def recipes_group() -> None:
         """Community tune-recipe registry (lookup, update, validate)."""
-
 
     @recipes_group.command("lookup")
     @click.argument("model")
@@ -76,7 +75,6 @@ def register_recipe_commands(
                 f"{entry.generation_tok_s or '?'} gen tok/s"
             )
         console.print(f"  recipe: [dim]{json.dumps(entry.edits, sort_keys=True)}[/dim]")
-
 
     @recipes_group.command("apply")
     @click.argument("model")
@@ -262,7 +260,6 @@ def register_recipe_commands(
                 f"[green]Applied shared recipe to {model}; local A/B score improved {gain:.1%}.[/green]"
             )
 
-
     @recipes_group.command("update")
     @click.option(
         "--url",
@@ -296,7 +293,9 @@ def register_recipe_commands(
                 for chunk in resp.iter_bytes():
                     payload.extend(chunk)
                     if len(payload) > MAX_REGISTRY_BYTES:
-                        raise RegistryValidationError("downloaded registry exceeds the 16 MiB limit")
+                        raise RegistryValidationError(
+                            "downloaded registry exceeds the 16 MiB limit"
+                        )
             doc = parse_registry_bytes(bytes(payload))
             write_registry_atomic(doc, dest)
         except (OSError, ValueError, _httpx.HTTPError, RegistryValidationError) as e:
@@ -304,7 +303,6 @@ def register_recipe_commands(
             sys.exit(1)
         n = len(doc["recipes"])
         console.print(f"[green]Saved {n} recipe(s) to {dest}[/green]")
-
 
     @recipes_group.command("validate")
     @click.argument("path", type=click.Path(exists=True, path_type=Path))

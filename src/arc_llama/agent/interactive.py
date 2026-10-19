@@ -4,6 +4,7 @@ Unlike ``run_agent``, which executes a single task to completion, this module
 maintains a conversation across user inputs so the agent behaves like Claude
 Code or similar coding assistants.
 """
+
 from __future__ import annotations
 
 import json
@@ -97,7 +98,10 @@ class InteractiveAgent:
         refer to earlier turns.
         """
         if self.plan_mode and not self.auto_confirm and plan_callback is None:
-            yield {"type": "error", "message": "plan_mode requires a plan_callback or auto_confirm=True"}
+            yield {
+                "type": "error",
+                "message": "plan_mode requires a plan_callback or auto_confirm=True",
+            }
             return
 
         client = await self._get_client()
@@ -117,7 +121,9 @@ class InteractiveAgent:
                 )
                 plan_response.raise_for_status()
                 plan_data = plan_response.json()
-                plan_content = plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                plan_content = (
+                    plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
@@ -150,7 +156,10 @@ class InteractiveAgent:
             )
 
         self.conversation.append({"role": "user", "content": user_text})
-        yield {"type": "status", "message": f"Running agent for model '{self.model}' in {self.root}"}
+        yield {
+            "type": "status",
+            "message": f"Running agent for model '{self.model}' in {self.root}",
+        }
 
         for turn in range(self.max_turns):
             yield {"type": "status", "message": f"Turn {turn + 1}/{self.max_turns}"}
@@ -233,12 +242,14 @@ class InteractiveAgent:
                 }
 
                 result_text = format_tool_result(name, arguments, result.content, result.error)
-                self.conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", call_id),
-                    "name": name,
-                    "content": result_text,
-                })
+                self.conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", call_id),
+                        "name": name,
+                        "content": result_text,
+                    }
+                )
 
         yield {
             "type": "error",

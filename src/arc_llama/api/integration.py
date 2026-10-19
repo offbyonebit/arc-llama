@@ -8,9 +8,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Request
 
 
-def register_integration_route(
-    app: FastAPI, *, require_admin: Callable[..., Any]
-) -> None:
+def register_integration_route(app: FastAPI, *, require_admin: Callable[..., Any]) -> None:
     """Register the copy-only frontend integration discovery endpoint."""
 
     @app.get("/admin/integration")

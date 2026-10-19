@@ -93,9 +93,7 @@ async def test_remote_clients_need_a_key_once_one_exists(monkeypatch, tmp_path) 
             assert bad.status_code == 401
             ok = await remote.get("/v1/models", headers={"Authorization": f"Bearer {plaintext}"})
             assert ok.status_code == 200
-            admin = await remote.get(
-                "/v1/models", headers={"Authorization": "Bearer admin-tok"}
-            )
+            admin = await remote.get("/v1/models", headers={"Authorization": "Bearer admin-tok"})
             assert admin.status_code == 200
             # Loopback, health and the UI stay open.
             assert (await local.get("/v1/models")).status_code == 200

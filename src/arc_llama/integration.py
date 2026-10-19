@@ -88,18 +88,16 @@ def integration_payload(cfg: Config, ollama: dict[str, Any] | None = None) -> di
     )
     body_windows = body.replace('"', '""')
     curl_example = (
-        f'curl -s {base_url}/chat/completions '
-        f'-H "Content-Type: application/json" -d \'{body}\''
+        f"curl -s {base_url}/chat/completions -H \"Content-Type: application/json\" -d '{body}'"
     )
     curl_example_windows = (
-        f'curl -s {base_url}/chat/completions '
+        f"curl -s {base_url}/chat/completions "
         f'-H "Content-Type: application/json" -d "{body_windows}"'
     )
 
     upstreams = [{"name": u.name, "url": u.url} for u in cfg.upstreams]
     already_registered = any(
-        u.name == DEFAULT_OLLAMA_NAME or u.url.rstrip("/") == ollama_url
-        for u in cfg.upstreams
+        u.name == DEFAULT_OLLAMA_NAME or u.url.rstrip("/") == ollama_url for u in cfg.upstreams
     )
     lan_note = (
         f"arc-llama listens on all interfaces. From another machine, replace {host} "

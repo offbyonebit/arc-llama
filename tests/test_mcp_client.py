@@ -1,4 +1,5 @@
 """Tests for MCP client manager."""
+
 from __future__ import annotations
 
 import pytest

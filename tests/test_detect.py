@@ -1,4 +1,5 @@
 """Tests for arc_llama.detect — GPU discovery without real hardware."""
+
 from __future__ import annotations
 
 import re
@@ -68,9 +69,7 @@ def make_class_entry():
 @pytest.fixture
 def make_pci_slot():
     def _make(device_id, slot="0000:03:00.0", source="cfgmgr32"):
-        m = re.match(
-            r"0000:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-9a-fA-F])", slot
-        )
+        m = re.match(r"0000:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-9a-fA-F])", slot)
         if not m:
             raise ValueError(f"bad slot {slot}")
         bus, dev, func = (int(x, 16) for x in m.groups())
@@ -114,10 +113,7 @@ class TestParseClinfo:
 
 class TestParsePnpDeviceId:
     def test_parses_dev_id(self):
-        assert (
-            _parse_pnp_device_id(r"PCI\VEN_8086&DEV_E20B&SUBSYS_12345678&REV_01")
-            == 0xE20B
-        )
+        assert _parse_pnp_device_id(r"PCI\VEN_8086&DEV_E20B&SUBSYS_12345678&REV_01") == 0xE20B
 
     def test_lowercase_hex(self):
         assert _parse_pnp_device_id(r"pci\ven_8086&dev_e20b") == 0xE20B
@@ -130,10 +126,7 @@ class TestParsePnpDeviceId:
 
 class TestParseSyclLs:
     def test_with_explicit_index(self):
-        text = (
-            "[level_zero:gpu:0] Intel Arc B580\n"
-            "[level_zero:gpu:1] Intel Arc B580"
-        )
+        text = "[level_zero:gpu:0] Intel Arc B580\n[level_zero:gpu:1] Intel Arc B580"
         assert _parse_sycl_ls_level_zero(text) == [
             (0, "Intel Arc B580"),
             (1, "Intel Arc B580"),
@@ -154,9 +147,7 @@ class TestParseSyclLs:
 class TestScanPci:
     def test_finds_battlemage(self, make_sysfs_gpu, tmp_path, monkeypatch):
         fake_sys = tmp_path / "sys" / "bus" / "pci" / "devices"
-        make_sysfs_gpu(
-            slot="0000:03:00.0", device_id=0xE211, vram_bytes=24 * 1024 * 1024 * 1024
-        )
+        make_sysfs_gpu(slot="0000:03:00.0", device_id=0xE211, vram_bytes=24 * 1024 * 1024 * 1024)
         _patch_pci_root(monkeypatch, fake_sys)
 
         gpus = _scan_pci()
@@ -219,9 +210,7 @@ class TestScanWindows:
         assert g.vram_mb == 12 * 1024
         assert any("HardwareInformation.qwMemorySize" in n for n in g.notes)
 
-    def test_vram_from_reg_binary(
-        self, monkeypatch, make_class_entry, make_pci_slot
-    ):
+    def test_vram_from_reg_binary(self, monkeypatch, make_class_entry, make_pci_slot):
         import arc_llama.detect as dmod
 
         vram_bytes = 24 * 1024**3
@@ -249,9 +238,7 @@ class TestScanWindows:
         assert gpus[0].vram_mb == 24 * 1024
         assert any("HardwareInformation.qwMemorySize" in n for n in gpus[0].notes)
 
-    def test_vram_fallback_to_known_table(
-        self, monkeypatch, make_class_entry, make_pci_slot
-    ):
+    def test_vram_fallback_to_known_table(self, monkeypatch, make_class_entry, make_pci_slot):
         import arc_llama.detect as dmod
 
         monkeypatch.setattr(
@@ -271,9 +258,7 @@ class TestScanWindows:
         assert gpus[0].vram_mb == 12288
         assert any("device-ID fallback table" in n for n in gpus[0].notes)
 
-    def test_undiscoverable_vram_note(
-        self, monkeypatch, make_class_entry, make_pci_slot
-    ):
+    def test_undiscoverable_vram_note(self, monkeypatch, make_class_entry, make_pci_slot):
         import arc_llama.detect as dmod
 
         monkeypatch.setattr(
@@ -331,11 +316,7 @@ class TestScanWindows:
         monkeypatch.setattr(
             dmod,
             "_enum_pci_locations",
-            lambda: [
-                make_pci_slot(
-                    0xE20B, "0000:05:00.0", source="LocationInformation"
-                )
-            ],
+            lambda: [make_pci_slot(0xE20B, "0000:05:00.0", source="LocationInformation")],
         )
 
         gpus = _scan_windows()
@@ -435,10 +416,15 @@ class TestScanWindows:
 class TestEnrichWithClinfo:
     def test_enrich_vram_from_clinfo(self):
         gpu = DetectedGPU(
-            pci_slot="0000:03:00.0", device_id=0xE211,
-            arch=Arch.BATTLEMAGE, name="Arc Pro B60",
-            driver="xe", vram_mb=None, drm_card="card1",
-            drm_render="renderD128", sysfs_path="/sys/...",
+            pci_slot="0000:03:00.0",
+            device_id=0xE211,
+            arch=Arch.BATTLEMAGE,
+            name="Arc Pro B60",
+            driver="xe",
+            vram_mb=None,
+            drm_card="card1",
+            drm_render="renderD128",
+            sysfs_path="/sys/...",
         )
         _enrich_with_clinfo([gpu])
         # clinfo probably not installed in CI, so this is a no-op.
@@ -449,9 +435,7 @@ class TestEnrichWithClinfo:
 class TestLspciIntelGpus:
     def test_returns_empty_when_missing(self, monkeypatch):
         def _fake_run(*a, **k):
-            return subprocess.CompletedProcess(
-                args=a, returncode=1, stdout="", stderr=""
-            )
+            return subprocess.CompletedProcess(args=a, returncode=1, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         assert lspci_intel_gpus() == ""
@@ -467,9 +451,7 @@ class TestLspciIntelGpus:
 """
 
         def _fake_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=fake_out, stderr=""
-            )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=fake_out, stderr="")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         result = lspci_intel_gpus()

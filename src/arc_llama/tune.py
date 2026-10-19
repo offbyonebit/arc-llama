@@ -20,6 +20,7 @@ build that requires it) simply records an error and loses the stage — the
 tuner never leaves the model in a broken config: the winning (or original)
 recipe is re-applied at the end.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -60,6 +61,7 @@ _UBATCH_LADDER = [256, 512, 1024, 2048]
 @dataclass
 class TuneStep:
     """One measured candidate configuration."""
+
     label: str
     edits: dict[str, Any]
     result: BenchmarkResult | None = None
@@ -124,7 +126,7 @@ def score_result(
         "first_token": (0.75, 0.25),
         "throughput": (0.25, 0.75),
     }.get(priority or "", (0.5, 0.5))
-    return (pp ** w_pp) * (gen ** w_gen)
+    return (pp**w_pp) * (gen**w_gen)
 
 
 def _ubatch_candidates(current: int | None, vram_mb: int | None) -> list[int]:
@@ -165,23 +167,25 @@ def build_stages(
     else:
         kv_options = ["f16", "q8_0"] if safe_kv_q8 else ["f16"]
     if kv_options:
-        stages.append([
-            TuneStep(label=f"kv={v}", edits={"cache_type_k": v, "cache_type_v": v})
-            for v in kv_options
-        ])
+        stages.append(
+            [
+                TuneStep(label=f"kv={v}", edits={"cache_type_k": v, "cache_type_v": v})
+                for v in kv_options
+            ]
+        )
 
     # ubatch is free to sweep even for draft-mtp models: the earlier forced
     # -ub 8 for MTP was folklore; B60 measurements run MTP fine at 1024.
-    stages.append([
-        TuneStep(label=f"ubatch={u}", edits={"ubatch_size": u, "batch_size": max(2048, u)})
-        for u in _ubatch_candidates(recipe.get("ubatch_size"), vram_mb)
-    ])
+    stages.append(
+        [
+            TuneStep(label=f"ubatch={u}", edits={"ubatch_size": u, "batch_size": max(2048, u)})
+            for u in _ubatch_candidates(recipe.get("ubatch_size"), vram_mb)
+        ]
+    )
 
     if fa_supported:
         fa_options = list(FLASH_ATTN_VALUES) if fa_takes_value else ["on", "off"]
-        stages.append([
-            TuneStep(label=f"fa={v}", edits={"flash_attn": v}) for v in fa_options
-        ])
+        stages.append([TuneStep(label=f"fa={v}", edits={"flash_attn": v}) for v in fa_options])
 
     return stages
 
@@ -191,6 +195,7 @@ def _state_key(state: dict[str, Any]) -> tuple:
         if isinstance(v, list):
             return tuple(v)
         return v
+
     return tuple(sorted((k, str(_norm(v))) for k, v in state.items()))
 
 
@@ -324,6 +329,7 @@ type that *won* — KV and offload draw from the same VRAM budget."""
 @dataclass
 class _OffloadInfo:
     """What the offload stage needs to know about one MoE model."""
+
     n_layers: int
     vram_mb: int
 
@@ -390,7 +396,10 @@ def _prune_ubatch_stage(
         u = int(step.edits.get("ubatch_size", 512))
         buffer_mb = PERF_COMPUTE_BUFFER_MB if u > 512 else _VRAM_COMPUTE_BUFFER_MB
         est = _estimate_model_vram_mb(
-            model, ctx=ctx, kv_type=kv_type, n_cpu_moe=n_cpu_moe,
+            model,
+            ctx=ctx,
+            kv_type=kv_type,
+            n_cpu_moe=n_cpu_moe,
             override_tensor=override_tensor,
             compute_buffer_mb=buffer_mb,
         )
@@ -473,10 +482,7 @@ async def tune_model(
         # kv_fits_at_ctx reads GGUF metadata (sync file I/O); keep it off the
         # event loop for the same reason as the caps probe above.
         def _fitting_kv_types() -> list[str]:
-            return [
-                kv for kv in ("f16", "q8_0")
-                if workload.kv_fits_at_ctx(model, gpu, kv, wl_ctx)
-            ]
+            return [kv for kv in ("f16", "q8_0") if workload.kv_fits_at_ctx(model, gpu, kv, wl_ctx)]
 
         fitting = await asyncio.to_thread(_fitting_kv_types)
         if not fitting:
@@ -487,7 +493,10 @@ async def tune_model(
             log.warning(
                 "tune %s: no KV type is estimated to fit ctx=%d in %s MiB; "
                 "restricting the sweep to the current KV type %s",
-                model_name, wl_ctx, gpu.vram_mb if gpu else 0, current_kv,
+                model_name,
+                wl_ctx,
+                gpu.vram_mb if gpu else 0,
+                current_kv,
             )
             fitting = [current_kv]
         kv_candidates = fitting
@@ -532,8 +541,10 @@ async def tune_model(
     # can be caught before it is ever passed to llama-server.
     ot_info: _OverrideTensorInfo | None = None
     if offload_info is not None:
-        table = weight_tensor_table(model.path) if tiny_placeholder else await asyncio.to_thread(
-            weight_tensor_table, model.path
+        table = (
+            weight_tensor_table(model.path)
+            if tiny_placeholder
+            else await asyncio.to_thread(weight_tensor_table, model.path)
         )
         if table:
             ot_info = _OverrideTensorInfo(
@@ -578,7 +589,9 @@ async def tune_model(
             )
         else:
             n0 = await asyncio.to_thread(
-                min_moe_offload_layers, model, seed_vram,
+                min_moe_offload_layers,
+                model,
+                seed_vram,
                 ctx=int(base_state.get("ctx", 8192)),
                 kv_type=KVCacheType(str(base_state.get("cache_type_k", "f16"))),
             )
@@ -586,16 +599,16 @@ async def tune_model(
                 log.info(
                     "tune %s: recipe offload (%d) is below the estimated minimum "
                     "(%d layer(s)); starting the sweep from the minimum",
-                    model_name, current_offload, n0,
+                    model_name,
+                    current_offload,
+                    n0,
                 )
                 best_edits["n_cpu_moe"] = n0
 
     measured: dict[tuple, tuple[BenchmarkResult, float | None]] = {}
 
     headers = (
-        {"Authorization": f"Bearer {cfg.server.admin_token}"}
-        if cfg.server.admin_token
-        else {}
+        {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
     )
 
     async def measure(
@@ -615,8 +628,13 @@ async def tune_model(
         err = await _apply_edits(client, model_name, state)
         if err:
             res = BenchmarkResult(
-                model=model_name, ctx=0, cache_type_k="?", cache_type_v="?",
-                prompt_tokens=pt, gen_tokens=gen_tokens, error=err,
+                model=model_name,
+                ctx=0,
+                cache_type_k="?",
+                cache_type_v="?",
+                prompt_tokens=pt,
+                gen_tokens=gen_tokens,
+                error=err,
             )
             return res, None, None
         if should_abort and should_abort():
@@ -627,16 +645,23 @@ async def tune_model(
             # its load=True would evict the user's just-started model.
             report.aborted = True
             res = BenchmarkResult(
-                model=model_name, ctx=0, cache_type_k="?", cache_type_v="?",
-                prompt_tokens=pt, gen_tokens=gen_tokens,
+                model=model_name,
+                ctx=0,
+                cache_type_k="?",
+                cache_type_v="?",
+                prompt_tokens=pt,
+                gen_tokens=gen_tokens,
                 error="aborted before measurement",
             )
             return res, None, "aborted before measurement"
         try:
             res = await benchmark_model(
-                server_url, model_name,
-                prompt_tokens=pt, gen_tokens=gen_tokens,
-                load=True, cfg=cfg,
+                server_url,
+                model_name,
+                prompt_tokens=pt,
+                gen_tokens=gen_tokens,
+                load=True,
+                cfg=cfg,
             )
         except asyncio.CancelledError:
             raise
@@ -646,7 +671,10 @@ async def tune_model(
             # sweep. Record the failure and let the tuner move on.
             log.warning(
                 "tune %s: measurement failed for %s at %d tokens: %s",
-                model_name, _state_key(state), pt, exc,
+                model_name,
+                _state_key(state),
+                pt,
+                exc,
             )
             res = BenchmarkResult(
                 model=model_name,
@@ -661,9 +689,7 @@ async def tune_model(
         measured[key] = (res, sc)
         return res, sc, None
 
-    async with httpx.AsyncClient(
-        base_url=server_url, timeout=600.0, headers=headers
-    ) as client:
+    async with httpx.AsyncClient(base_url=server_url, timeout=600.0, headers=headers) as client:
         # Baseline = the recipe as it stands today (base_state is exactly the
         # current effective config, just spelled explicitly — plus the
         # minimum-feasible-offload seed when one was needed to load at all).
@@ -704,24 +730,35 @@ async def tune_model(
             )
             eff_ctx = wl_ctx if wl_ctx is not None else int(base_state.get("ctx", 8192))
             n_min = await asyncio.to_thread(
-                min_moe_offload_layers, model, offload_info.vram_mb,
-                ctx=eff_ctx, kv_type=kv_winner,
+                min_moe_offload_layers,
+                model,
+                offload_info.vram_mb,
+                ctx=eff_ctx,
+                kv_type=kv_winner,
             )
             if n_min is None:
-                report.steps.append(TuneStep(
-                    label="n_cpu_moe", edits={},
-                    skipped_reason="expert tensor bytes unknown; offload cannot be measured",
-                ))
+                report.steps.append(
+                    TuneStep(
+                        label="n_cpu_moe",
+                        edits={},
+                        skipped_reason="expert tensor bytes unknown; offload cannot be measured",
+                    )
+                )
                 return False
             if n_min == 0:
                 log.info(
                     "tune %s: fits with zero offload at ctx=%d kv=%s; offload stage skipped",
-                    model_name, eff_ctx, kv_winner.value,
+                    model_name,
+                    eff_ctx,
+                    kv_winner.value,
                 )
-                report.steps.append(TuneStep(
-                    label="n_cpu_moe=0", edits={},
-                    skipped_reason="fits without offload under the winning KV type; stage skipped",
-                ))
+                report.steps.append(
+                    TuneStep(
+                        label="n_cpu_moe=0",
+                        edits={},
+                        skipped_reason="fits without offload under the winning KV type; stage skipped",
+                    )
+                )
                 return False
             if stage_index > 0 and on_stage is not None:
                 on_stage(f"n_cpu_moe~{n_min}", stage_index, total)
@@ -750,7 +787,8 @@ async def tune_model(
                     log.warning(
                         "tune %s: no offload level up to %d layers loads; "
                         "leaving the recipe offload unchanged",
-                        model_name, escalations[-1] if escalations else n_min,
+                        model_name,
+                        escalations[-1] if escalations else n_min,
                     )
                     return True
             else:
@@ -834,10 +872,13 @@ async def tune_model(
             ok, err = validate_override_patterns(ot_info.table, candidates)
             if not ok:
                 log.warning("tune %s: override_tensor patterns rejected: %s", model_name, err)
-                report.steps.append(TuneStep(
-                    label="-ot rejected", edits={},
-                    skipped_reason=f"generated -ot patterns invalid: {err}",
-                ))
+                report.steps.append(
+                    TuneStep(
+                        label="-ot rejected",
+                        edits={},
+                        skipped_reason=f"generated -ot patterns invalid: {err}",
+                    )
+                )
                 return False
             # A candidate only wins if it actually fits:
             # its freed bytes must make _estimate_model_vram_mb <= vram_mb.
@@ -850,8 +891,11 @@ async def tune_model(
             for c in candidates:
                 saved_mb = override_tensor_saved_bytes(ot_info.table, [c]) // (1_048_576)
                 est = _estimate_model_vram_mb(
-                    model, ctx=eff_ctx, kv_type=kv_winner,
-                    override_tensor=[c], compute_buffer_mb=_VRAM_COMPUTE_BUFFER_MB,
+                    model,
+                    ctx=eff_ctx,
+                    kv_type=kv_winner,
+                    override_tensor=[c],
+                    compute_buffer_mb=_VRAM_COMPUTE_BUFFER_MB,
                 )
                 # Estimator must think it fits; also require it frees at least
                 # as many bytes as the n_cpu_moe winner freed, otherwise it
@@ -861,7 +905,8 @@ async def tune_model(
             if not viable:
                 log.info(
                     "tune %s: no generated -ot pattern estimated to fit; keeping n_cpu_moe=%d",
-                    model_name, n_moe_winner,
+                    model_name,
+                    n_moe_winner,
                 )
                 return False
             ot_winner: TuneStep | None = None
@@ -870,14 +915,19 @@ async def tune_model(
                     report.aborted = True
                     return True
                 st = await _try_override_tensor([pat])
-                if st.score is not None and (ot_winner is None or st.score > (ot_winner.score or 0)):
+                if st.score is not None and (
+                    ot_winner is None or st.score > (ot_winner.score or 0)
+                ):
                     ot_winner = st
             if ot_winner is not None and (ot_winner.score or 0) > moe_winner_score:
                 chosen = ot_winner.edits["override_tensor"]
                 log.info(
                     "tune %s: override_tensor %s beats n_cpu_moe=%d (score %.1f > %.1f); using -ot",
-                    model_name, chosen, n_moe_winner,
-                    ot_winner.score or 0, moe_winner_score,
+                    model_name,
+                    chosen,
+                    n_moe_winner,
+                    ot_winner.score or 0,
+                    moe_winner_score,
                 )
                 best_edits.pop("n_cpu_moe", None)
                 best_edits["override_tensor"] = chosen
@@ -887,7 +937,8 @@ async def tune_model(
                 return True
             log.info(
                 "tune %s: override_tensor did not beat n_cpu_moe=%d; keeping simpler flag",
-                model_name, n_moe_winner,
+                model_name,
+                n_moe_winner,
             )
             return False
 
@@ -901,19 +952,14 @@ async def tune_model(
                     client, {**base_state, **best_edits}
                 )
             report.steps.append(baseline_step)
-            if (
-                baseline_step.score is None
-                and not report.aborted
-                and offload_info is not None
-            ):
+            if baseline_step.score is None and not report.aborted and offload_info is not None:
                 # MoE model whose recipe does not load even from the seeded
                 # minimum (the estimator was optimistic). Run the offload
                 # search now, ahead of KV, to find a level that loads; the
                 # post-KV offload stage still recomputes against the KV
                 # winner afterwards.
                 log.warning(
-                    "tune %s: baseline failed (%s); searching for a loadable "
-                    "offload level first",
+                    "tune %s: baseline failed (%s); searching for a loadable offload level first",
                     model_name,
                     baseline_step.result.error if baseline_step.result else "unknown",
                 )
@@ -926,9 +972,10 @@ async def tune_model(
                         baseline_step.result, baseline_step.score = res, sc
             report.baseline = baseline_step.result
             if baseline_step.score is None:
-                report.error = (
-                    "baseline measurement failed"
-                    + (f": {baseline_step.result.error}" if baseline_step.result and baseline_step.result.error else "")
+                report.error = "baseline measurement failed" + (
+                    f": {baseline_step.result.error}"
+                    if baseline_step.result and baseline_step.result.error
+                    else ""
                 )
                 # Fall through to finally so the original recipe is restored.
                 return report
@@ -970,18 +1017,21 @@ async def tune_model(
                     eff_ot = best_edits.get("override_tensor") or base_state.get("override_tensor")
                     if (eff_offload > 0 or eff_ot) and gpu is not None and gpu.vram_mb:
                         kv_winner = KVCacheType(
-                            str(best_edits.get(
-                                "cache_type_k", base_state.get("cache_type_k", "f16")
-                            ))
+                            str(
+                                best_edits.get(
+                                    "cache_type_k", base_state.get("cache_type_k", "f16")
+                                )
+                            )
                         )
-                        eff_ctx = (
-                            wl_ctx if wl_ctx is not None
-                            else int(base_state.get("ctx", 8192))
-                        )
+                        eff_ctx = wl_ctx if wl_ctx is not None else int(base_state.get("ctx", 8192))
                         await asyncio.to_thread(
-                            _prune_ubatch_stage, stage,
-                            model=model, vram_mb=gpu.vram_mb, ctx=eff_ctx,
-                            kv_type=kv_winner, n_cpu_moe=eff_offload,
+                            _prune_ubatch_stage,
+                            stage,
+                            model=model,
+                            vram_mb=gpu.vram_mb,
+                            ctx=eff_ctx,
+                            kv_type=kv_winner,
+                            n_cpu_moe=eff_offload,
                             override_tensor=eff_ot,
                         )
                 stage_index += 1
@@ -995,18 +1045,14 @@ async def tune_model(
                 stage_depth = (
                     deep_tokens
                     if deep_tokens is not None
-                    and workload.stage_is_depth_sensitive(
-                        {k for step in stage for k in step.edits}
-                    )
+                    and workload.stage_is_depth_sensitive({k for step in stage for k in step.edits})
                     else None
                 )
                 # Anchor: (re)measure the current best state at this stage's
                 # depth — almost always a cache hit — so a candidate only wins
                 # by beating the incumbent measured at the same depth.
                 anchor_state = {**base_state, **best_edits}
-                _, anchor_score, _ = await measure(
-                    client, anchor_state, depth_tokens=stage_depth
-                )
+                _, anchor_score, _ = await measure(client, anchor_state, depth_tokens=stage_depth)
                 bar = anchor_score if anchor_score is not None else 0.0
                 stage_winner: TuneStep | None = None
                 for step in stage:
@@ -1107,6 +1153,7 @@ async def tune_all(
 # Console output
 # ------------------------------------------------------------------
 
+
 def print_report(report: TuneReport) -> None:
     from rich.console import Console
     from rich.table import Table
@@ -1160,7 +1207,9 @@ def print_report(report: TuneReport) -> None:
     if report.applied:
         console.print("[green]Applied to the model's recipe and persisted.[/green]")
     else:
-        console.print("[yellow]Dry run — original recipe restored. Re-run without --dry-run to keep it.[/yellow]")
+        console.print(
+            "[yellow]Dry run — original recipe restored. Re-run without --dry-run to keep it.[/yellow]"
+        )
 
 
 def print_multi_summary(reports: list[TuneReport]) -> None:

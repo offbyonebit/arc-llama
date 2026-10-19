@@ -244,6 +244,7 @@ async function startStaticServer(staticRoot = STATIC) {
       let pathname = decodeURIComponent(url.pathname);
       if (pathname === "/") pathname = "/index.html";
       if (pathname === "/chat") pathname = "/chat.html";
+      if (pathname === "/work") pathname = "/work.html";
       const target = normalize(join(staticRoot, pathname));
       if (!target.startsWith(staticRoot + "/") && !target.startsWith(staticRoot + "\\")) {
         res.writeHead(403).end("forbidden");

@@ -293,3 +293,7 @@ footer.error .status-dot { background: var(--red); }
 .library-compatibility { margin-top: 10px; }
 .library-compatibility-evidence { margin-top: 6px; font-size: 12px; overflow-wrap: anywhere; }
 .library-compatibility-evidence summary { cursor: pointer; color: var(--text-muted); }
+.library-folder { display: grid; gap: 4px; margin: 0 0 12px; }
+.library-folder label { font-size: 12px; font-weight: 600; }
+.library-folder-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; font-family: ui-monospace, monospace; font-size: 12px; }
+.library-folder .plugin-meta { margin: 0; }

@@ -145,7 +145,9 @@ def _check_port(host: str, port: int) -> None:
 
 
 def preflight_launch(
-    model: ModelConfig, gpu: GPUConfig, plan: LaunchPlan,
+    model: ModelConfig,
+    gpu: GPUConfig,
+    plan: LaunchPlan,
     managed_pids: set[int] | None = None,
 ) -> None:
     """Reject predictable launch failures without spawning a subprocess."""

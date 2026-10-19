@@ -676,7 +676,9 @@ class DepthResult:
         return asdict(self)
 
 
-def usable_depths(depths: list[int], ctx: int | None, gen_tokens: int) -> tuple[list[int], list[int]]:
+def usable_depths(
+    depths: list[int], ctx: int | None, gen_tokens: int
+) -> tuple[list[int], list[int]]:
     """Split requested depths into (runnable, skipped) for a model's context.
 
     A depth is runnable when the prefill plus the generated tokens plus a
@@ -763,9 +765,7 @@ def print_depth_table(model: str, results: list[DepthResult], skipped: list[int]
         if r.error:
             table.add_row(f"{r.depth:,}", "-", "-", f"[red]{r.error}[/red]")
             continue
-        ratio = (
-            f"{r.generation_tok_s / base * 100:.0f}%" if base and r.generation_tok_s else "-"
-        )
+        ratio = f"{r.generation_tok_s / base * 100:.0f}%" if base and r.generation_tok_s else "-"
         table.add_row(
             f"{r.measured_depth or r.depth:,}",
             _fmt_speed(r.prompt_eval_tok_s),

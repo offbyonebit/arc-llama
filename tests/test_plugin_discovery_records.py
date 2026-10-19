@@ -60,7 +60,9 @@ def test_load_plugins_retains_failure_records():
     plugins = load_plugins(
         [
             _FakeEntryPoint("broken-import", ImportError("missing dep")),
-            _FakeEntryPoint("bad-factory", lambda: (_ for _ in ()).throw(RuntimeError("no constructor"))),
+            _FakeEntryPoint(
+                "bad-factory", lambda: (_ for _ in ()).throw(RuntimeError("no constructor"))
+            ),
         ],
         discovery=discovery,
     )
@@ -152,9 +154,7 @@ async def test_admin_plugins_includes_discovery_records(monkeypatch):
         return [GoodPlugin()]
 
     monkeypatch.setattr(server_mod, "Router", FakeRouter, raising=False)
-    monkeypatch.setattr(
-        server_mod, "UpstreamManager", FakeUpstreamManager, raising=False
-    )
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager, raising=False)
     monkeypatch.setattr(server_mod, "load_plugins", fake_load_plugins)
     app = server_mod.create_app(Config(), plugins=None)
     async with app.router.lifespan_context(app):

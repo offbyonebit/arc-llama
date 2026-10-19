@@ -1,4 +1,5 @@
 """Smoke tests for the arcllama agent TUI."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -3,6 +3,7 @@
 Used by ``arc-llama doctor``. Detection is best-effort and never requires
 root. Unknown results return None so the UI can say "could not determine".
 """
+
 from __future__ import annotations
 
 import os
@@ -25,6 +26,7 @@ _REBAR_ON_MIN = 1024 * 1024 * 1024
 @dataclass
 class CheckResult:
     """One doctor line item."""
+
     name: str
     ok: bool | None  # True pass, False fail, None unknown/skip
     detail: str
@@ -127,7 +129,11 @@ def user_in_groups(*needed: str) -> dict[str, bool]:
         return {g: False for g in needed}
     try:
         out = subprocess.run(
-            ["id", "-nG"], capture_output=True, text=True, timeout=2, check=False,
+            ["id", "-nG"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
         )
         groups = set(out.stdout.split())
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -216,7 +222,11 @@ def level_zero_loader_present() -> tuple[bool, str]:
     if ldconfig:
         try:
             out = subprocess.run(
-                [ldconfig, "-p"], capture_output=True, text=True, timeout=5, check=False,
+                [ldconfig, "-p"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
             )
             for name in names:
                 if name in out.stdout:
@@ -262,10 +272,12 @@ def oneapi_setvars_path() -> Path | None:
         # CMPLR_ROOT points at e.g. .../oneapi/compiler/2026.1; setvars.sh is two
         # levels above, at the oneapi root.
         candidates.append(Path(cmplr_root).parent.parent / "setvars.sh")
-    candidates.extend([
-        Path("/opt/intel/oneapi/setvars.sh"),
-        Path("/usr/local/intel/oneapi/setvars.sh"),
-    ])
+    candidates.extend(
+        [
+            Path("/opt/intel/oneapi/setvars.sh"),
+            Path("/usr/local/intel/oneapi/setvars.sh"),
+        ]
+    )
     for p in candidates:
         if p.exists():
             return p
@@ -334,7 +346,11 @@ def oneapi_runtime_env_needed() -> bool:
     if ldconfig:
         try:
             out = subprocess.run(
-                [ldconfig, "-p"], capture_output=True, text=True, timeout=5, check=False,
+                [ldconfig, "-p"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
             )
             for name in names:
                 if name in out.stdout:
@@ -415,10 +431,7 @@ def source_setvars(setvars_path: Path | str) -> dict[str, str]:
 
     # Use bash to source the script and dump the environment. setvars.sh is
     # a bash script, so this is the most reliable way to capture its effects.
-    script = (
-        f"source '{setvars_path}' > /dev/null 2>&1; "
-        "env -0 | sort -z"
-    )
+    script = f"source '{setvars_path}' > /dev/null 2>&1; env -0 | sort -z"
     try:
         out = subprocess.run(
             ["bash", "-c", script],

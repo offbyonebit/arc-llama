@@ -1,4 +1,5 @@
 """Fit previews must not reuse another recipe's memory estimate."""
+
 from arc_llama.config import ModelConfig
 from arc_llama.router import estimate_model_vram_with_cache
 
@@ -6,7 +7,9 @@ from arc_llama.router import estimate_model_vram_with_cache
 def test_recipe_and_kv_class_invalidate_fit_cache(tmp_path):
     path = tmp_path / "model.gguf"
     path.write_bytes(b"fixture")
-    model = ModelConfig(name="model", path=str(path), port=18080, gpu_pci_slot="test", recipe={"ctx": 1024})
+    model = ModelConfig(
+        name="model", path=str(path), port=18080, gpu_pci_slot="test", recipe={"ctx": 1024}
+    )
     cache = {}
     calls = []
 
@@ -27,8 +30,14 @@ def test_recipe_and_kv_class_invalidate_fit_cache(tmp_path):
 def test_two_registrations_of_same_file_keep_distinct_fit_estimates(tmp_path):
     path = tmp_path / "model.gguf"
     path.write_bytes(b"fixture")
-    first = ModelConfig(name="short", path=str(path), port=18080, gpu_pci_slot="test", recipe={"ctx": 1024})
-    second = ModelConfig(name="long", path=str(path), port=18080, gpu_pci_slot="test", recipe={"ctx": 32768})
+    first = ModelConfig(
+        name="short", path=str(path), port=18080, gpu_pci_slot="test", recipe={"ctx": 1024}
+    )
+    second = ModelConfig(
+        name="long", path=str(path), port=18080, gpu_pci_slot="test", recipe={"ctx": 32768}
+    )
     cache = {}
     assert estimate_model_vram_with_cache(first, cache, estimator=lambda m: m.recipe["ctx"]) == 1024
-    assert estimate_model_vram_with_cache(second, cache, estimator=lambda m: m.recipe["ctx"]) == 32768
+    assert (
+        estimate_model_vram_with_cache(second, cache, estimator=lambda m: m.recipe["ctx"]) == 32768
+    )

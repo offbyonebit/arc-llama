@@ -263,8 +263,7 @@ def update_runtime(
         model = pick_canary_model(cfg, canary_model)
         if model is None:
             result.problems.append(
-                "no registered model is available for the canary; register one or "
-                "pass --no-canary"
+                "no registered model is available for the canary; register one or pass --no-canary"
             )
             return result
         runner = canary_runner or run_canary

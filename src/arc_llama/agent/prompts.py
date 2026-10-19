@@ -1,4 +1,5 @@
 """System prompts and formatting for the arc-llama coding agent."""
+
 from __future__ import annotations
 
 # Keep the system message minimal. Some local models (notably Qwen3-Coder through
@@ -39,7 +40,7 @@ USER_INSTRUCTIONS = (
     "\n"
     "You can also reference the user's saved chat history with the list_chats, "
     "read_chat, and search_chats functions. Use these when the user refers to something "
-    "they discussed earlier or asks \"what did I do on ...\". User-installed skills "
+    'they discussed earlier or asks "what did I do on ...". User-installed skills '
     "may add additional functions; use them when they are relevant to the task.\n"
     "\n"
     "Task: "

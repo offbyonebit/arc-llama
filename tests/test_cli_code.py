@@ -1,4 +1,5 @@
 """Tests for the `arc-llama code` CLI command."""
+
 from __future__ import annotations
 
 import importlib

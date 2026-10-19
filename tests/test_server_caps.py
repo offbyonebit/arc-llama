@@ -1,4 +1,5 @@
 """Tests for arc_llama.server_caps — llama-server --help sniffing."""
+
 from __future__ import annotations
 
 import os
@@ -84,11 +85,10 @@ class TestParseHelp:
 
 class TestFormatSpeculationCapability:
     def test_supported_lists_modes(self):
-        caps = ServerCaps(probed=True, supports_speculative=True,
-                          supports_draft_model=True, supports_ngram=False)
-        assert format_speculation_capability(caps) == (
-            "available (draft-model: yes, n-gram: no)"
+        caps = ServerCaps(
+            probed=True, supports_speculative=True, supports_draft_model=True, supports_ngram=False
         )
+        assert format_speculation_capability(caps) == ("available (draft-model: yes, n-gram: no)")
 
     def test_unsupported_explains_required_flag(self):
         caps = ServerCaps(probed=True)
@@ -132,9 +132,7 @@ class TestProbe:
     def test_nonzero_help_exit_gives_optimistic_defaults(self, tmp_path):
         script = tmp_path / "llama-server"
         script.write_text(
-            "#!/bin/sh\n"
-            "echo 'terminate called after throwing a SYCL exception' >&2\n"
-            "exit 134\n"
+            "#!/bin/sh\necho 'terminate called after throwing a SYCL exception' >&2\nexit 134\n"
         )
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
 

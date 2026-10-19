@@ -1,4 +1,5 @@
 """Tests for the agent checkpoint store."""
+
 from __future__ import annotations
 
 from pathlib import Path
