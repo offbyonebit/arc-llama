@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -43,9 +44,26 @@ from starlette.types import Receive, Scope, Send
 
 from arc_llama import __version__
 from arc_llama.agent import run_agent
+from arc_llama.agent.changes import ChangeTracker
 from arc_llama.agent.checkpoints import CheckpointStore
+from arc_llama.agent.harness import (
+    HARNESSES,
+    OpenCodeError,
+    clean_history,
+    compose_prompt,
+    experimental_enabled,
+    filter_commands,
+    find_binary,
+    find_hermes_binary,
+    list_capabilities,
+    list_commands,
+    run_hermes,
+    run_opencode,
+)
 from arc_llama.agent.mcp_client import MCPClientManager
+from arc_llama.agent.profiles import PROFILE_ID, ProfileStore
 from arc_llama.agent.repo_map import SemanticIndex
+from arc_llama.agent.sessions import SessionStore
 from arc_llama.api.context_budget import register_context_budget_route
 from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
@@ -283,6 +301,10 @@ def create_app(
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
         app.state.pending_plan_approvals = pending_plan_approvals
+        app.state.work_runs = {}
+        app.state.work_profiles = ProfileStore((state_dir / "work-profiles.json") if state_dir else Path(".arc_llama_work_profiles.json"))
+        app.state.work_sessions = SessionStore((state_dir / "work-sessions") if state_dir else Path(".arc_llama_work_sessions"))
+        app.state.work_undo_dir = (state_dir / "work-undo") if state_dir else Path(".arc_llama_work_undo")
         if state_dir:
             app.state.chat_store = ChatStore(state_dir / "chats")
             app.state.checkpoint_store = CheckpointStore(state_dir / "checkpoints")
@@ -676,7 +698,10 @@ def create_app(
                 "plan_mode": false,
                 "max_turns": 30,
                 "root": "/optional/project/root",  // defaults to agent.root in config
-                "profile": "optional-profile-name" // must match the server's active profile
+                "profile": "optional-profile-name", // must match the server's active profile
+                "harness": "builtin" | "opencode" | "hermes",  // experimental; default "builtin"
+                "local_only": true,                 // opencode only: never reach cloud providers
+                "track_changes": false              // emit a final "changes" event and allow undo
             }
 
         Returns a text/event-stream of JSON objects:
@@ -705,12 +730,49 @@ def create_app(
         for key in ("root", "folder", "profile"):
             if body.get(key) is not None and not isinstance(body[key], str):
                 raise HTTPException(status_code=400, detail=f"{key} must be a string")
-        for key in ("auto_confirm", "plan_mode"):
+        for key in ("auto_confirm", "plan_mode", "track_changes"):
             if key in body and not isinstance(body[key], bool):
                 raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
         max_turns = body.get("max_turns", 30)
         if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
             raise HTTPException(status_code=400, detail="max_turns must be a positive integer")
+
+        history = clean_history(body.get("history"))
+        if history is None:
+            raise HTTPException(status_code=400, detail="history must be a list of {role, content} messages")
+        harness = body.get("harness", "builtin")
+        if harness not in HARNESSES:
+            raise HTTPException(status_code=400, detail=f"harness must be one of {list(HARNESSES)}")
+        local_only = body.get("local_only", True)
+        if not isinstance(local_only, bool):
+            raise HTTPException(status_code=400, detail="local_only must be a boolean")
+        if harness == "hermes" and (body.get("auto_confirm", False) or not local_only):
+            raise HTTPException(status_code=400, detail="Hermes uses native approvals and requires local inference; auto-approve is unavailable")
+        tool_profile: dict[str, Any] | None = None
+        profile_id = body.get("tool_profile_id")
+        if profile_id is not None:
+            if harness != "opencode":
+                raise HTTPException(status_code=400, detail="Tool profiles need the OpenCode harness")
+            tool_profile = request.app.state.work_profiles.get(profile_id) if isinstance(profile_id, str) else None
+            if tool_profile is None:
+                raise HTTPException(status_code=400, detail="That tool profile no longer exists")
+        harness_command = body.get("command")
+        command_arguments = body.get("arguments", "")
+        if harness_command is not None:
+            if harness != "opencode":
+                raise HTTPException(status_code=400, detail="Slash commands need the OpenCode harness")
+            if not isinstance(harness_command, str) or not re.fullmatch(r"[\w.:-]{1,100}", harness_command):
+                raise HTTPException(status_code=400, detail="command must be a command name")
+            if not isinstance(command_arguments, str) or len(command_arguments) > 20000:
+                raise HTTPException(status_code=400, detail="arguments must be a string")
+        if harness != "builtin":
+            if not experimental_enabled():
+                raise HTTPException(
+                    status_code=403,
+                    detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.",
+                )
+            # A harness can read the project and run tools; keep it behind the admin token when one is set.
+            await _require_admin(request)
 
         auto_confirm = bool(body.get("auto_confirm", False))
         if auto_confirm:
@@ -718,7 +780,22 @@ def create_app(
         plan_mode = bool(body.get("plan_mode", False))
         folder = body.get("folder") or ""
         root_path = body.get("root") or cfg.agent.root
-        root = Path(root_path).expanduser().resolve()
+        root = Path(root_path).expanduser()
+        if body.get("root") and not root.is_absolute():
+            root = Path.home() / root      # a typed relative path means "inside the home folder", not the server's cwd
+        root = root.resolve()
+        if (harness != "builtin" or body.get("track_changes", False)) and not root.is_dir():
+            near = root
+            while near != near.parent and not near.is_dir():
+                near = near.parent
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": f"Project folder not found on the server: {root}",
+                    "closest": str(near) if near.is_dir() else None,
+                },
+            )
+        prompt = compose_prompt(task, history, str(root))
         requested_profile = body.get("profile")
         active_profile = cfg.agent.profile
         if requested_profile is not None and requested_profile != active_profile:
@@ -765,11 +842,37 @@ def create_app(
             await plan_event.wait()
             return plan_result["approved"]
 
+        tracker: ChangeTracker | None = None
+        if body.get("track_changes", False):
+            tracker = ChangeTracker(root, request.app.state.work_undo_dir / run_id)
+
         async def event_stream() -> AsyncIterator[str]:
             transcript: list[ChatMessage] = [ChatMessage(role="user", content=task)]
-            try:
-                async for event in run_agent(
-                    task=task,
+            kept = False
+            if tracker is not None:
+                await asyncio.to_thread(tracker.begin)
+            if harness == "opencode":
+                runner = run_opencode(
+                    task=prompt,
+                    model=model,
+                    base_url=base_url,
+                    root=root,
+                    auto_confirm=auto_confirm,
+                    confirm_callback=confirm_callback,
+                    local_only=local_only,
+                    command=harness_command,
+                    arguments=command_arguments,
+                    tool_profile=tool_profile,
+                )
+            elif harness == "hermes":
+                runner = run_hermes(
+                    task=prompt, model=model, base_url=base_url, root=root,
+                    auto_confirm=auto_confirm, confirm_callback=confirm_callback,
+                    local_only=local_only,
+                )
+            else:
+                runner = run_agent(
+                    task=prompt,
                     model=model,
                     base_url=base_url,
                     root=root,
@@ -780,9 +883,13 @@ def create_app(
                     run_id=run_id,
                     checkpoint_store=checkpoint_store,
                     max_turns=max_turns,
+                    report_context=True,
                     chat_store=chat_store,
                     extra={"semantic_index": semantic_index},
-                ):
+                )
+            streamed_message: ChatMessage | None = None
+            try:
+                async for event in runner:
                     if event.get("type") == "confirm_required":
                         # Each destructive tool needs its own approval. Reset
                         # before publishing the event so a fast reply is not lost.
@@ -795,13 +902,39 @@ def create_app(
                         event = {**event, "run_id": run_id}
                     yield f"data: {json.dumps(event)}\n\n"
 
-                    if event.get("type") == "assistant" and event.get("content"):
+                    if event.get("type") == "assistant_delta" and event.get("content"):
+                        if streamed_message is None:
+                            streamed_message = ChatMessage(role="assistant", content="")
+                            transcript.append(streamed_message)
+                        streamed_message.content += event["content"]
+                    elif event.get("type") == "assistant" and event.get("content"):
+                        streamed_message = None
                         transcript.append(ChatMessage(role="assistant", content=event["content"]))
+                    elif event.get("type") == "tool_call":
+                        streamed_message = None
                     elif event.get("type") == "tool_result":
+                        streamed_message = None
                         label = event.get("name", "tool")
                         content = event.get("content", "")
                         transcript.append(ChatMessage(role="tool", content=f"{label}:\n{content}"))
+                if tracker is not None:
+                    summary = await asyncio.to_thread(tracker.finish)
+                    if summary["files"]:
+                        runs = request.app.state.work_runs
+                        runs[run_id] = tracker
+                        kept = True
+                        for old in list(runs)[:-8]:        # keep only the most recent runs undoable
+                            runs.pop(old).discard()
+                    yield f"data: {json.dumps({'type': 'changes', 'run_id': run_id, **summary})}\n\n"
             finally:
+                # A browser disconnect must close the adapter before discarding
+                # its change tracker, rather than leaving a harness running.
+                with anyio.CancelScope(shield=True):
+                    close_runner = getattr(runner, "aclose", None)
+                    if close_runner is not None:
+                        await close_runner()
+                if tracker is not None and not kept:
+                    tracker.discard()
                 pending.pop(run_id, None)
                 pending_plans.pop(run_id, None)
                 if agent_chat_id is not None:
@@ -819,6 +952,149 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+
+    @app.get("/v1/agent/commands")
+    async def agent_commands(
+        request: Request, harness: str = "opencode", root: str = "", model: str = "arc-llama", profile_id: str = "",
+        _auth: None = Depends(_require_admin),
+    ) -> dict[str, Any]:
+        """Slash commands the chosen harness offers for a project folder (empty for the built-in agent)."""
+        if harness not in HARNESSES:
+            raise HTTPException(status_code=400, detail=f"harness must be one of {list(HARNESSES)}")
+        if harness in ("builtin", "hermes"):
+            return {"commands": []}
+        if not experimental_enabled():
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        folder = Path(root).expanduser() if root else Path.home()
+        if not folder.is_absolute():
+            folder = Path.home() / folder
+        folder = folder.resolve()
+        if not folder.is_dir():
+            raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
+        try:
+            profile = request.app.state.work_profiles.get(profile_id) if profile_id else None
+            return {"commands": filter_commands(await list_commands(folder, model), profile)}
+        except OpenCodeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/v1/agent/capabilities")
+    async def agent_capabilities(root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        """What a tool profile can switch on or off for a project: MCP servers, skills and web tools."""
+        if not experimental_enabled():
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        folder = Path(root).expanduser() if root else Path.home()
+        if not folder.is_absolute():
+            folder = Path.home() / folder
+        folder = folder.resolve()
+        if not folder.is_dir():
+            raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
+        try:
+            return await list_capabilities(folder)
+        except OpenCodeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/v1/agent/profiles")
+    async def agent_profiles(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        return {"profiles": await asyncio.to_thread(request.app.state.work_profiles.list)}
+
+    @app.put("/v1/agent/profiles/{profile_id}")
+    async def agent_profile_put(profile_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            data = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Body must be JSON") from exc
+        try:
+            return await asyncio.to_thread(request.app.state.work_profiles.save, profile_id, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/v1/agent/profiles/{profile_id}")
+    async def agent_profile_delete(profile_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if not PROFILE_ID.fullmatch(profile_id):
+            raise HTTPException(status_code=400, detail="invalid profile id")
+        return {"deleted": await asyncio.to_thread(request.app.state.work_profiles.delete, profile_id)}
+
+    @app.get("/v1/agent/sessions")
+    async def agent_sessions(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        """Saved Work sessions, newest first."""
+        return {"sessions": await asyncio.to_thread(request.app.state.work_sessions.list)}
+
+    @app.get("/v1/agent/sessions/{session_id}")
+    async def agent_session_get(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            record = await asyncio.to_thread(request.app.state.work_sessions.get, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="No such session")
+        return record
+
+    @app.put("/v1/agent/sessions/{session_id}")
+    async def agent_session_put(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            data = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Body must be JSON") from exc
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        try:
+            return await asyncio.to_thread(request.app.state.work_sessions.save, session_id, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400 if "invalid" in str(exc) else 413, detail=str(exc)) from exc
+
+    @app.delete("/v1/agent/sessions/{session_id}")
+    async def agent_session_delete(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            removed = await asyncio.to_thread(request.app.state.work_sessions.delete, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": removed}
+
+    @app.get("/v1/agent/info")
+    async def agent_info(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        """What the Work view can offer on this server."""
+        experimental = experimental_enabled()
+        return {
+            "experimental": experimental,
+            "root": str(Path(cfg.agent.root).expanduser().resolve()),
+            "home": str(Path.home()),
+            # Present only on servers whose adapter keeps destructive commands asking under auto-approve.
+            "auto_approve": True,
+            "harnesses": [
+                {"id": "builtin", "label": "Built-in", "available": True},
+                {"id": "opencode", "label": "OpenCode", "available": find_binary() is not None},
+                {"id": "hermes", "label": "Hermes", "available": find_hermes_binary() is not None,
+                 "auto_approve": False,
+                 "approval_note": "Hermes asks before file edits and commands flagged by its own checks. Auto-approve is unavailable."},
+            ],
+        }
+
+    @app.get("/v1/agent/{run_id}/changes/{path:path}")
+    async def agent_change_diff(
+        run_id: str, path: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        tracker: ChangeTracker | None = request.app.state.work_runs.get(run_id)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Run has no recorded changes")
+        diff = await asyncio.to_thread(tracker.diff_text, path)
+        if diff is None:
+            raise HTTPException(status_code=404, detail="No text diff available for that file")
+        return {"path": path, "diff": diff}
+
+    @app.post("/v1/agent/{run_id}/undo")
+    async def agent_undo(
+        run_id: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        """Undo the file changes recorded for a run. Files edited since are left alone."""
+        runs = request.app.state.work_runs
+        tracker: ChangeTracker | None = runs.get(run_id)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Run has no recorded changes")
+        result = await asyncio.to_thread(tracker.undo)
+        if result["restored"] or not tracker.undoable:
+            runs.pop(run_id, None)
+            tracker.discard()
+        return result
 
     @app.post("/v1/agent/{run_id}/confirm")
     async def confirm_agent_run(
@@ -1797,6 +2073,10 @@ def create_app(
 
     @app.get("/work")
     async def work_page() -> Response:
+        return FileResponse(static_dir / "chat.html")
+
+    @app.get("/workbench")
+    async def workbench_page() -> Response:
         return FileResponse(static_dir / "work.html")
 
     @app.get("/chat")

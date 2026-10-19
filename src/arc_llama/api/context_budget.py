@@ -108,6 +108,28 @@ def register_context_budget_route(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
         if not isinstance(body, dict) or not isinstance(body.get("model"), str):
             raise HTTPException(status_code=400, detail="model must be a string")
+        work_scope = None
+        if "work" in body:
+            from arc_llama.agent.harness import HARNESSES, clean_history, compose_prompt
+            from arc_llama.agent.prompts import SYSTEM_PROMPT, USER_INSTRUCTIONS
+            from arc_llama.agent.tools import TOOLS
+
+            work = body["work"]
+            if (not isinstance(work, dict) or not isinstance(work.get("task", ""), str)
+                    or not isinstance(work.get("root", ""), str)
+                    or work.get("harness") not in HARNESSES):
+                raise HTTPException(status_code=400, detail="Invalid Work budget request")
+            history = clean_history(work.get("history"))
+            if history is None:
+                raise HTTPException(status_code=400, detail="Invalid Work history")
+            prompt = compose_prompt(work.get("task", ""), history, work.get("root") or None)
+            body = {**body, "messages": [{"role": "user", "content": prompt}]}
+            work_scope = "request_only"
+            if work["harness"] == "builtin":
+                body["messages"] = [{"role": "system", "content": SYSTEM_PROMPT},
+                                    {"role": "user", "content": USER_INSTRUCTIONS + prompt}]
+                body["tools"] = TOOLS.definitions
+                work_scope = "full_prompt"
         messages = body.get("messages")
         if not isinstance(messages, list) or any(
             not isinstance(m, dict)
@@ -165,6 +187,7 @@ def register_context_budget_route(app: FastAPI) -> None:
                 )
         total = tokens + reply
         return {
+            "scope": work_scope,
             "prompt_tokens": tokens,
             "reserved_tokens": reply,
             "total_tokens": total,

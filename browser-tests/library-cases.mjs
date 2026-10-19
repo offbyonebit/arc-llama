@@ -14,6 +14,7 @@ export async function testRuntimeCompatibilityGuidance({ page, origin }) {
   });
   await page.goto(origin);
   if (calls.length) throw new Error("compatibility check ran automatically");
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "model");
   await page.click("#library-search button[type=submit]");
   await page.getByRole("button", { name: "Compare versions" }).click();
@@ -26,6 +27,7 @@ export async function testRuntimeCompatibilityGuidance({ page, origin }) {
   await option.getByText("What was checked", { exact: true }).click();
   if (!(await option.innerText()).includes("inference remain unverified")) throw new Error("evidence limits were hidden");
   outcome = "recognized";
+  await page.locator('.paper-rail a[aria-label="Models"]').click();
   await page.locator("#readiness-card").getByRole("button", { name: "Check runtime compatibility" }).click();
   await page.waitForFunction(() => document.querySelector("#readiness-card .library-compatibility")?.textContent.includes("Architecture recognized"));
   if (calls[1].name !== ADMIN_STATUS.models[0].name) throw new Error("local check used the wrong registration");
@@ -51,6 +53,7 @@ export async function testLibraryPublisherAvatars({ page, origin }) {
     ] }),
   }));
   await page.goto(origin);
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "model");
   await page.click("#library-search button[type=submit]");
   await page.waitForFunction(() => document.querySelector(".library-publisher-avatar img")?.naturalWidth > 0);
@@ -100,6 +103,7 @@ export async function testLibrarySearchAndDownload({ page, origin }) {
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs }) });
   });
   await page.goto(origin);
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "qwen3");
   await page.click("#library-search button[type=submit]");
   await page.waitForSelector(".library-repo h3");
@@ -123,6 +127,7 @@ export async function testLibrarySearchAndDownload({ page, origin }) {
   await page.getByRole("button", { name: "Review model qwen3-q4_k_m" }).waitFor();
   await page.getByRole("button", { name: "Review model gemma-q8" }).waitFor();
 
+  await page.locator('.paper-rail a[aria-label="Models"]').click();
   const qwenCard = page.locator(".model-card", { has: page.locator("h3", { hasText: "Qwen 3 Q4" }) });
   const details = qwenCard.locator("details");
   await details.locator("summary").click();
@@ -155,6 +160,7 @@ export async function testModelChoiceExplanations({ page, origin }) {
     { file: "large-BF16.gguf", quant: "BF16", size_mb: 10000, shards: 1, fit: "too_big" },
   ] }) }));
   await page.goto(origin);
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "choices");
   await page.locator("#library-search button").click();
   await page.getByRole("button", { name: "Compare versions" }).click();
@@ -197,7 +203,9 @@ export async function testDownloadRecovery({ page, origin }) {
   });
   await page.goto(origin);
   await page.waitForSelector("#library-jobs .library-technical");
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "keep my search");
+  await page.locator('.paper-rail a[aria-label="Models"]').click();
   await page.locator(".model-card").nth(1).click();
   const originalSelection = await page.evaluate(() => selectedModel);
   if (!(await page.locator("#library-jobs .library-technical").isVisible()) || await page.locator("#library-jobs script").count()) throw new Error("unsafe download diagnostic rendering");
@@ -240,9 +248,12 @@ export async function testMissingFileRecovery({ page, origin }) {
   });
   await page.goto(origin);
   await page.waitForSelector("#readiness-card .toolbar");
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "my replacement query");
+  await page.locator('.paper-rail a[aria-label="Models"]').click();
   await page.getByRole("button", { name: "Find replacement", exact: true }).click();
   if (!(await page.locator("#library-title").isVisible()) || (await page.locator("#library-query").inputValue()) !== "my replacement query") throw new Error("replacement action did not preserve search");
+  await page.locator('.paper-rail a[aria-label="Models"]').click();
   await page.getByRole("button", { name: "Scan again", exact: true }).click();
   await page.waitForFunction(() => document.querySelector("#chat-primary")?.getAttribute("href") === "/chat?model=gemma");
   if (scans !== 1 || (await page.evaluate(() => selectedModel)) !== "gemma") throw new Error("file recovery changed selection or repeated scanning");
@@ -258,6 +269,7 @@ export async function testCompatibilityAbandonedChecks({ page, origin }) {
   await page.route("**/admin/library/search**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ results: [{ repo: "test/Model-GGUF" }] }) }));
   await page.route("**/admin/library/repo**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ options: [{ file: "model-Q4.gguf", quant: "Q4", size_mb: 1024, fit: "fits" }] }) }));
   await page.goto(origin);
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "model");
   await page.click("#library-search button[type=submit]");
   await page.getByRole("button", { name: "Compare versions" }).click();

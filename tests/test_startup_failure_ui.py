@@ -94,9 +94,8 @@ def test_chat_js_shows_honest_loading_stage():
     # The named loading stage appears in the chat log while the model loads.
     assert "Starting model, this can take a while on first load" in js
     assert "load-wait-card" in js
-    # The loading chip is removed on both load outcomes: never a stuck
-    # "waiting" message after success or a settled failure.
-    assert js.count("loadingCard") >= 3
+    # Browser cases verify success keeps the same response entry, and failure
+    # removes it without leaving a stuck loading message.
 
 
 def test_chat_failure_css_exists():

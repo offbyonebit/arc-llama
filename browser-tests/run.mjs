@@ -1,7 +1,9 @@
+import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
 import { installApiMocks, recordSessionTokenCalls, startStaticServer } from "./harness.mjs";
 import {
+  testChatSingleReplyLifecycle,
   testChatSelection,
   testChatHistoryComponents,
   testChatSend,
@@ -18,6 +20,29 @@ import {
   testTextAttachmentExtensionFallback,
   testImagesNeedVisionModel,
 } from "./chat-cases.mjs";
+import {
+  testWorkHermesHarness,
+  testWorkHermesUnavailable,
+  testWorkViewHiddenUnlessExperimental,
+  testWorkResumeAndVisibleContext,
+  testWorkLiveActivityAndFullPrompt,
+  testChatLiveActivity,
+  testWorkContextIgnoresStaleBudgets,
+  testWorkModeApprovalAndUndo,
+  testWorkModeDeniedAndStopped,
+  testWorkModeServerRejectsMissingFolder,
+  testWorkModeEndedWithoutResultIsAnError,
+  testWorkModeOffersClosestFolder,
+  testWorkModeAutoApprove,
+  testWorkModeAutoApproveHiddenOnOldServer,
+  testWorkModeKeepsTheConversation,
+  testWorkModeOutsideFolderIsSaidPlainly,
+  testWorkModeCompactReplacesEarlierTurns,
+  testWorkSlashMenuListsHarnessCommands,
+  testWorkSlashCommandRunsInTheHarness,
+  testWorkSessionsAreSavedAndReopened,
+  testWorkToolProfilesLimitWhatARunCanUse,
+} from "./work-cases.mjs";
 import {
   testDashboardMeasurements,
   testDashboardFitAndEmptyMeasurements,
@@ -56,9 +81,23 @@ import {
 import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudgetAndReplyLimit,
   testBudgetDiscardsStaleResponses, testDownloadFolderAndRetry } from "./release-cases.mjs";
 
-import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./work-cases.mjs";
+import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./workbench-cases.mjs";
 
 const TESTS = [
+  ["work-hermes-harness", testWorkHermesHarness],
+  ["work-hermes-unavailable", testWorkHermesUnavailable],
+  ["work-live-activity-full-prompt", testWorkLiveActivityAndFullPrompt],
+  ["chat-single-reply-lifecycle", testChatSingleReplyLifecycle],
+  ["chat-live-activity", testChatLiveActivity],
+  ["work-resume-visible-context", testWorkResumeAndVisibleContext],
+  ["work-context-stale-budgets", testWorkContextIgnoresStaleBudgets],
+  ["paper-picker-list-visibility", testPaperPickerListVisibility],
+  ["paper-discover-navigation", testPaperDiscoverNavigation],
+  ["paper-shell-model-picker", testPaperShellAndModelPicker],
+  ["paper-mobile-sheets", testPaperMobileSheets],
+  ["paper-claims-context", testPaperRealClaimsAndContext],
+  ["paper-model-load-stop", testPaperModelLoadStop],
+  ["paper-work-model-picker", testPaperWorkModelPicker],
   ["work-attempt-settings-and-results", testWorkAttemptSettingsAndResults],
   ["work-projects-jobs-and-review", testWorkProjectsJobsAndReview],
   ["work-manual-token-loads-models", testWorkManualTokenLoadsModels],
@@ -110,6 +149,21 @@ const TESTS = [
   ["preset-shapes-request", testPresetShapesRequest],
   ["text-attachment-extension-fallback", testTextAttachmentExtensionFallback],
   ["images-need-vision-model", testImagesNeedVisionModel],
+  ["work-hidden-unless-experimental", testWorkViewHiddenUnlessExperimental],
+  ["work-approval-and-undo", testWorkModeApprovalAndUndo],
+  ["work-denied-and-stopped", testWorkModeDeniedAndStopped],
+  ["work-server-rejects-missing-folder", testWorkModeServerRejectsMissingFolder],
+  ["work-ended-without-result", testWorkModeEndedWithoutResultIsAnError],
+  ["work-auto-approve", testWorkModeAutoApprove],
+  ["work-auto-approve-hidden-on-old-server", testWorkModeAutoApproveHiddenOnOldServer],
+  ["work-keeps-the-conversation", testWorkModeKeepsTheConversation],
+  ["work-outside-folder-is-said-plainly", testWorkModeOutsideFolderIsSaidPlainly],
+  ["work-offers-closest-folder", testWorkModeOffersClosestFolder],
+  ["work-compact-replaces-earlier-turns", testWorkModeCompactReplacesEarlierTurns],
+  ["work-slash-menu-lists-harness-commands", testWorkSlashMenuListsHarnessCommands],
+  ["work-slash-command-runs-in-the-harness", testWorkSlashCommandRunsInTheHarness],
+  ["work-sessions-saved-and-reopened", testWorkSessionsAreSavedAndReopened],
+  ["work-tool-profiles-limit-a-run", testWorkToolProfilesLimitWhatARunCanUse],
 ];
 
 // ---------------------------------------------------------------------------

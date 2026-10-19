@@ -51,7 +51,8 @@ def work_app(tmp_path, monkeypatch):
 def test_work_api_requires_admin_and_applies_only_reviewed_changes(work_app):
     cfg, source = work_app
     with TestClient(server_mod.create_app(cfg, plugins=[])) as client:
-        assert client.get("/work").status_code == 200
+        assert client.get("/workbench").status_code == 200
+        assert 'id="work-view"' in client.get("/work").text
         assert client.get("/work.js").status_code == 200
         assert client.get("/admin/work").status_code == 401
         assert (

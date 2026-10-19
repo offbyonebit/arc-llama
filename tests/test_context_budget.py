@@ -165,3 +165,39 @@ def test_budget_input_is_bounded(budget_app):
         assert (
             client.post("/v1/chat/budget", content=b"x" * (2 * 1024 * 1024 + 1)).status_code == 413
         )
+
+
+def test_work_budget_counts_the_built_in_agent_prompt_and_tools(budget_app):
+    from arc_llama.agent.harness import compose_prompt
+    from arc_llama.agent.prompts import SYSTEM_PROMPT, USER_INSTRUCTIONS
+    from arc_llama.agent.tools import TOOLS
+    app, calls, _ = budget_app
+    history = [{"role": "assistant", "content": "Previous work"}]
+    with TestClient(app) as client:
+        body = _body(work={"task": "Continue", "history": history, "root": "/project", "harness": "builtin"})
+        result = client.post("/v1/chat/budget", json=body).json()
+        assert result["scope"] == "full_prompt"
+        assert result["exact"] is True
+        formatted = next(data for path, data in calls if path == "/apply-template")
+        assert formatted["messages"] == [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": USER_INSTRUCTIONS + compose_prompt("Continue", history, "/project")}]
+        assert formatted["tools"] == TOOLS.definitions
+
+
+@pytest.mark.parametrize("harness", ["opencode", "hermes"])
+def test_external_harness_preflight_labels_its_incomplete_scope(budget_app, harness):
+    app, calls, _ = budget_app
+    with TestClient(app) as client:
+        result = client.post("/v1/chat/budget", json=_body(work={"task": "Continue", "history": [], "root": "/project", "harness": harness})).json()
+        assert result["scope"] == "request_only"
+        formatted = next(data for path, data in calls if path == "/apply-template")
+        assert "/project" in formatted["messages"][0]["content"]
+        assert "tools" not in formatted
+
+
+@pytest.mark.parametrize("work", [None, {"harness":"cloud"}, {"harness":"builtin", "task":42}, {"harness":"builtin", "history":[{}]}])
+def test_work_budget_rejects_bad_shapes(budget_app, work):
+    app, _, _ = budget_app
+    with TestClient(app) as client:
+        assert client.post("/v1/chat/budget", json=_body(work=work)).status_code == 400

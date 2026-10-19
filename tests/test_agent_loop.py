@@ -391,3 +391,20 @@ async def test_plan_mode_manual_deny(tmp_root: Path) -> None:
     plan_callback.assert_awaited_once()
     assert not any(e["type"] == "tool_call" for e in events)
     assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_agent_reports_actual_latest_context_usage(tmp_root: Path) -> None:
+    response = {"choices": [{"message": {"role": "assistant", "content": "Done"}}],
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 37}}
+    events = await collect_events("say hi", [response], tmp_root)
+    assert [event for event in events if event["type"] == "usage"] == [
+        {"type": "usage", "prompt_tokens": 1200, "completion_tokens": 37}]
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_invent_usage_when_runtime_omits_it(tmp_root: Path) -> None:
+    response = {"choices": [{"message": {"role": "assistant", "content": "Done"}}],
+                "usage": {"prompt_tokens": -1, "completion_tokens": 37}}
+    events = await collect_events("say hi", [response], tmp_root)
+    assert not any(event["type"] == "usage" for event in events)

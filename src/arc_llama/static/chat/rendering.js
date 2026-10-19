@@ -63,12 +63,6 @@
       roleLabel.textContent = role === "user" ? "You" : role === "system" ? "System" : "Assistant";
       div.appendChild(roleLabel);
       if (role === "assistant") {
-        const indicator = document.createElement("span");
-        indicator.id = "streaming-indicator";
-        indicator.textContent = "●";
-        indicator.style.color = "var(--accent-bright)";
-        indicator.style.opacity = "0";
-        roleLabel.appendChild(indicator);
         const thinkingBlock = document.createElement("div");
         thinkingBlock.className = "thinking-block";
         thinkingBlock.style.display = "none";

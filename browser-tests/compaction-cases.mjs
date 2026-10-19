@@ -1,3 +1,4 @@
+import { openContext } from "./harness.mjs";
 import assert from "node:assert/strict";
 import { ASSISTANT_REPLY, openChat, MODELS, ADMIN_STATUS } from "./harness.mjs";
 
@@ -51,6 +52,7 @@ async function fixture(page, origin, { messages, ctx = 8192, respond, failSave =
 }
 
 async function compact(page) {
+  await openContext(page);
   await page.click("#compact-button");
   await page.waitForFunction(() => !document.querySelector("#compact-undo").hidden);
 }
@@ -75,6 +77,7 @@ export async function testCompactionRoundTrip({ page, origin }) {
   assert.equal(f.chat().compaction.boundary, 4);
   assert.deepEqual(f.chat().messages, f.initial);
   assert.equal(await page.locator(".message.user").count(), 4, "full transcript remains visible");
+  await openContext(page);
   assert.match(await page.locator("#compact-status").innerText(), /tokens.*full transcript kept/);
   await send(page, "Continue the measurements");
   const body = f.requests.find(r => r.body.stream).body;
@@ -83,6 +86,7 @@ export async function testCompactionRoundTrip({ page, origin }) {
   assert.equal(body.messages.at(-1).content, "Continue the measurements");
   assert.equal(f.chat().messages.length, 10);
   assert.equal(f.chat().compaction.boundary, 4);
+  await openContext(page);
   await page.click("#compact-undo");
   await page.waitForFunction(() => document.querySelector("#compact-undo").hidden);
   assert.equal(f.chat().compaction, null);
@@ -118,7 +122,8 @@ export async function testCompactionFailures({ page, origin }) {
     return route.fulfill(json(body));
   } });
   for (mode of ["empty", "http", "truncated"]) {
-    await page.click("#compact-button");
+    await openContext(page);
+  await page.click("#compact-button");
     await page.waitForFunction(n => document.querySelectorAll(".message.error").length >= n, f.requests.length);
     await page.waitForFunction(() => !document.querySelector("#compact-button").disabled);
     assert.equal(f.saves.length, 0);
@@ -129,6 +134,7 @@ export async function testCompactionFailures({ page, origin }) {
 
 export async function testCompactionSaveFailure({ page, origin }) {
   const f = await fixture(page, origin, { failSave: true });
+  await openContext(page);
   await page.click("#compact-button");
   await page.waitForFunction(() => document.querySelector(".message.error .content")?.textContent.includes("Disk is full"));
   assert.equal(f.chat().compaction, null);
@@ -145,6 +151,7 @@ export async function testCompactionCancelAndGuards({ page, origin }) {
     await waiting;
     await route.fulfill(json(summary("Delayed summary"))).catch(() => {});
   } });
+  await openContext(page);
   await page.click("#compact-button");
   await page.waitForFunction(() => document.querySelector("#compact-status").textContent.includes("Summarizing"));
   assert.equal(await page.locator("#model-select").isDisabled(), true);
@@ -155,6 +162,7 @@ export async function testCompactionCancelAndGuards({ page, origin }) {
   await page.fill("#message-input", "/compact another focus");
   await page.press("#message-input", "Enter");
   await page.waitForFunction(() => document.querySelectorAll(".message.error").length === 2);
+  await openContext(page);
   await page.click("#compact-cancel");
   release();
   await page.waitForFunction(() => document.querySelector("#compact-cancel").hidden);
@@ -206,6 +214,7 @@ export async function testCompactionRecentTooLarge({ page, origin }) {
     { role: "user", content: "Recent huge request ".repeat(250) },
     { role: "assistant", content: "Answer" },
   ], ctx: 4096 });
+  await openContext(page);
   await page.click("#compact-button");
   await page.waitForFunction(() => document.querySelector(".message.error .content")?.textContent.includes("Recent turns still exceed"));
   assert.equal(f.saves.length, 0);
@@ -231,6 +240,7 @@ export async function testCompactionUndoFailureAndEdit({ page, origin }) {
   assert.equal(f.chat().messages.length, 8);
   assert.equal(await page.inputValue("#message-input"), "New turn after compaction");
   fail = true;
+  await openContext(page);
   await page.click("#compact-undo");
   await page.waitForFunction(() => document.querySelector(".message.error .content")?.textContent.includes("Undo failed"));
   assert.equal(f.chat().compaction.boundary, 4);
@@ -245,6 +255,7 @@ export async function testCompactionUndoFailureAndEdit({ page, origin }) {
 
 export async function testCompactionRequiresPersistenceAck({ page, origin }) {
   const f = await fixture(page, origin, { legacyServer: true });
+  await openContext(page);
   await page.click("#compact-button");
   await page.waitForFunction(() => document.querySelector(".message.error .content")?.textContent.includes("Restart Arc Llama"));
   assert.equal(await page.locator("#compact-undo").isVisible(), false);

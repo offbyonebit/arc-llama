@@ -1,3 +1,4 @@
+import { choosePaperModel, openContext } from "./harness.mjs";
 import assert from "node:assert/strict";
 import { openChat, ASSISTANT_REPLY } from "./harness.mjs";
 
@@ -96,6 +97,7 @@ export async function testExactBudgetAndReplyLimit({ page, origin }) {
   await page.getByRole("button", { name: "Retry message", exact: true }).click();
   await page.locator(".message.assistant .turn-action").waitFor();
   assert.equal(generations.length, 1);
+  await openContext(page);
   assert.match(await page.locator("#ctx-label-left").innerText(), /512/);
   assert.equal(generations[0].max_tokens, 128);
   assert.equal(generations[0].messages[0].role, "system");
@@ -114,10 +116,11 @@ export async function testBudgetDiscardsStaleResponses({ page, origin }) {
   await openChat(page, origin);
   await page.fill("#message-input", "first");
   await page.waitForTimeout(450);
-  await page.selectOption("#model-select", "gemma");
+  await choosePaperModel(page, "gemma");
   await page.fill("#message-input", "second");
   await page.waitForFunction(() => document.querySelector("#ctx-label-left").textContent.includes("2,222"));
   await page.waitForTimeout(1000);
+  await openContext(page);
   assert.match(await page.locator("#ctx-label-left").innerText(), /2,222/);
 }
 
@@ -139,6 +142,7 @@ export async function testDownloadFolderAndRetry({ page, origin }) {
     return route.fulfill(json(jobs[0]));
   });
   await page.goto(origin);
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "model");
   await page.locator("#library-search button[type=submit]").click();
   await page.getByRole("button", { name: "Compare versions" }).click();
@@ -153,6 +157,7 @@ export async function testDownloadFolderAndRetry({ page, origin }) {
   assert.equal(downloads[0].dest_dir, "D:/");
   assert.equal(downloads[1].dest_dir, "D:/");
   await page.reload();
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.fill("#library-query", "model");
   await page.locator("#library-search button[type=submit]").click();
   await page.getByRole("button", { name: "Compare versions" }).click();

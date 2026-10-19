@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,16 +7,23 @@
 <link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
 
 <link rel="stylesheet" href="/chat.css?v=ui-0.27" />
+<link rel="stylesheet" href="/chat/work.css?v=paper-3" />
 <script src="/vendor/marked-12.0.2.min.js"></script>
 <script src="/vendor/highlight-11.9.0.min.js"></script>
 <link rel="stylesheet" href="/vendor/github-dark-11.9.0.min.css" />
+<link rel="stylesheet" href="/paper-tokens.css?v=paper-3" />
+<link rel="stylesheet" href="/paper.css?v=paper-6" />
 </head>
 <body>
 <header>
   <div class="brand">
     <img class="brand-logo" src="/assets/arc-llama-logo.png?v=ui-0.15" data-light-src="/assets/arc-llama-logo.png?v=ui-0.15" data-dark-src="/assets/arc-llama-logo-dark.png?v=ui-0.15" alt="Arc Llama logo" width="42" height="42" />
     <h1>arc-llama</h1>
-    <span class="tagline">Chat</span>
+    <span class="tagline" id="page-tagline">Chat</span>
+    <div id="mode-switch" class="mode-switch" role="tablist" aria-label="Mode" hidden>
+      <button id="mode-chat" type="button" role="tab" aria-selected="true">Chat</button>
+      <button id="mode-work" type="button" role="tab" aria-selected="false">Work <span class="exp">Experimental</span></button>
+    </div>
   </div>
   <div class="meta">
     <button id="history-toggle" class="icon-button" type="button" aria-label="Chat history" title="Chat history">
@@ -25,7 +32,7 @@
       </svg>
     </button>
     <button id="theme-toggle" class="ghost theme-toggle" type="button" aria-label="Switch to light theme">Light theme</button>
-    <nav class="app-nav" aria-label="Primary navigation"><a class="nav-link" href="/">Models</a><a class="nav-link active" href="/chat" aria-current="page">Chat</a><a class="nav-link" href="/work">Work</a><a class="nav-link" href="/#system">System</a></nav>
+    <nav class="app-nav" aria-label="Primary navigation"><a class="nav-link" href="/">Models</a><a class="nav-link" href="/#discover">Discover</a><a class="nav-link active" href="/chat" aria-current="page">Chat</a><a class="nav-link" href="/work">Work</a><a class="nav-link" href="/#system">System</a></nav>
     <button id="settings-toggle" class="icon-button" type="button" aria-label="Model settings" title="Model settings">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
         <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
@@ -60,6 +67,53 @@
     <div class="hint">Select a model and send a message to begin chatting with arc-llama.</div>
   </div>
 </main>
+
+<section id="work-view" aria-label="Work">
+  <div class="work-scroll">
+    <div class="work-col">
+      <div id="work-intro">
+        <h1>What should I work on?</h1>
+        <p>Describe a task. Arc Llama works in your project folder with the local model you choose.</p>
+        <div id="work-recent" class="work-recent" hidden>
+          <h2>Recent</h2>
+          <div id="work-recent-list"></div>
+        </div>
+      </div>
+      <div id="work-problem" class="work-error" role="alert" hidden></div>
+      <div id="work-run" hidden></div>
+    </div>
+  </div>
+  <div id="work-activity" class="live-activity" hidden><span class="live-activity-dot" aria-hidden="true"></span><span id="work-activity-label" role="status" aria-live="polite"></span><span id="work-activity-time" aria-hidden="true"></span></div>
+  <div class="work-composer">
+    <div id="work-commands" class="work-commands" role="listbox" aria-label="Commands" hidden></div>
+    <div class="work-composer-box">
+      <textarea id="work-task" rows="1" placeholder="Describe what to do, or type / for commands" aria-label="Task"></textarea>
+      <div class="work-chips">
+        <label class="work-chip" title="Project folder"><span aria-hidden="true">▤</span><input id="work-root" type="text" spellcheck="false" placeholder="Project folder, e.g. ~/projects/app" aria-label="Project folder" /></label>
+        <label class="work-chip" title="Model"><select id="work-model" aria-label="Model"></select></label>
+        <label class="work-chip" title="Agent"><select id="work-harness" aria-label="Agent"></select></label>
+        <label class="work-chip" id="work-profile-chip" title="Which of your agent's tools this task may use" hidden><select id="work-profile" aria-label="Tools"></select></label>
+        <button id="work-auto" class="work-chip toggle" type="button" aria-pressed="false" hidden>Ask before changes</button>
+        <span class="work-chip lock" title="The model runs on this computer. Tools from the selected agent (web search, GitHub, and so on) can still reach the internet.">Local model</span>
+        <button id="work-new" class="work-link" type="button">New task</button>
+        <button id="work-send" type="button" aria-label="Start" title="Start"></button>
+      </div>
+    </div>
+    <div id="work-manager" class="work-manager" role="dialog" aria-modal="true" aria-labelledby="work-manager-title" hidden>
+      <div class="work-manager-sheet">
+        <div class="work-manager-head"><h2 id="work-manager-title">Tool profiles</h2><button type="button" id="work-manager-done" class="work-link">Done</button></div>
+        <p class="work-note">A profile picks which of your agent's tools a workflow may use. Anything not ticked is switched off for that task, which also keeps the model's context short.</p>
+        <div id="work-manager-body"></div>
+      </div>
+    </div>
+    <div class="work-context" id="work-context" aria-label="Work context">
+      <div class="work-context-top"><span id="work-context-label">Context size unavailable</span><button id="work-compact" type="button" class="work-link" disabled>Compact session</button></div>
+      <div id="work-context-track" class="work-context-track" role="progressbar" aria-label="Work context usage" aria-valuemin="0" aria-valuemax="100" hidden><span id="work-context-fill"></span></div>
+      <p id="work-context-note">Conversation estimates exclude the agent’s instructions and tools.</p>
+    </div>
+    <div class="work-hint" id="work-hint" aria-live="polite">Enter to start, Shift+Enter for a new line</div>
+  </div>
+</section>
 
 <div class="ctx-meter" id="ctx-meter">
   <div class="ctx-bar-track"><div class="ctx-bar-fill" id="ctx-bar-fill"></div></div>
@@ -126,11 +180,13 @@
 </div>
 
     <script src="/markdown_safety.js?v=ui-0.14"></script>
-    <script src="/chat/rendering.js?v=ui-0.25"></script>
+    <script src="/chat/rendering.js?v=ui-0.26"></script>
     <script src="/chat/attachments.js?v=ui-0.25"></script>
     <script src="/chat/settings.js?v=ui-0.27"></script>
     <script src="/chat/history.js?v=ui-0.27"></script>
     <script src="/chat/compaction.js?v=ui-0.27"></script>
-    <script src="/chat.js?v=ui-0.27"></script>
+    <script src="/chat/work.js?v=paper-5"></script>
+    <script src="/paper.js?v=paper-5"></script>
+    <script src="/chat.js?v=paper-4"></script>
 </body>
 </html>

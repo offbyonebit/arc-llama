@@ -7,7 +7,7 @@ function applyTheme(theme) {
   if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
   if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
 }
-applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "light"));
 // Side panels open beneath the header so its history/settings buttons stay reachable.
 (() => {
   const header = $("header");
@@ -447,6 +447,14 @@ const {
   vramFitText,
 } = settingsComponent;
 
+const workComponent = window.ArcChat.createWork({
+  getModelState: id => models.find(m => m.id === id)?.state,
+  getContextLimit: id => { const model = models.find(m => m.id === id); return model?.usableCtx || model?.ctx || null; },
+  request: (...args) => fetch(...args),
+  renderMarkdown,
+  storage: { getItem: (...args) => localStorage.getItem(...args), setItem: (...args) => localStorage.setItem(...args) },
+});
+
 const historyComponent = window.ArcChat.createHistory({
   allowChatChange,
   refreshBudget,
@@ -672,7 +680,19 @@ function renderModelPicker() {
   openSettingsFromLink();
 }
 
+let paperJobsAt = 0;
+let paperJobsRequest = null;
+function refreshPaperJobs() {
+  if (document.hidden || paperJobsRequest || Date.now() - paperJobsAt < 10000) return;
+  paperJobsAt = Date.now();
+  paperJobsRequest = fetch("/admin/library/jobs", { headers: authHeaders() })
+    .then(async response => window.ArcPaper?.jobs(response.ok ? (await response.json()).jobs : null))
+    .catch(() => window.ArcPaper?.jobs(null))
+    .finally(() => { paperJobsRequest = null; });
+}
+
 async function fetchStatus() {
+  refreshPaperJobs();
   try {
     const r = await fetch("/admin/status", { headers: authHeaders() });
     if (!r.ok) return;
@@ -692,6 +712,7 @@ async function fetchStatus() {
       const s = modelMap.get(m.id);
       if (s) {
         m.loaded        = s.loaded;
+        m.state         = s.state;
         m.ctx           = s.ctx           ?? m.ctx;
         m.cache_type_k  = s.cache_type_k  ?? m.cache_type_k;
         m.cache_type_v  = s.cache_type_v  ?? m.cache_type_v;
@@ -701,6 +722,7 @@ async function fetchStatus() {
       return m;
     });
     updatePickerStatus();
+    window.dispatchEvent(new Event("arc-paper-models"));
     if (settingsPanel.classList.contains("open")) renderSettingsPanel();
   } catch (e) {
     // silent: the chat endpoint will surface real errors
@@ -723,7 +745,19 @@ function updatePickerStatus() {
   }
 }
 
+function syncPaperModels() {
+  if (!window.ArcPaper) return;
+  const work = document.body.classList.contains("work-mode");
+  const active = work ? $("#work-model").value || selectedModel : selectedModel;
+  window.ArcPaper?.syncModels(models.map(m => m.id === loadingModel ? { ...m, state: "loading" } : m), active, id => {
+    if (work) { $("#work-model").value = id; $("#work-model").dispatchEvent(new Event("change")); }
+    else { modelSelect.value = id; modelSelect.dispatchEvent(new Event("change")); }
+    syncPaperModels();
+  }, work ? false : chatBusy() || !!loadingModel);
+}
+
 function updateStatus(state) {
+  syncPaperModels();
   modelStatus.className = "model-status " + state;
   statusText.textContent = state;
 }
@@ -938,6 +972,7 @@ function displayBudget(budget) {
   const model = models.find(m => m.id === selectedModel);
   const ctx = budget.context_tokens || model?.usableCtx || model?.ctx;
   const total = budget.total_tokens;
+  window.ArcPaper?.budget({ ...budget, context_tokens: ctx });
   if (ctx) updateCtxMeter(total, ctx);
   ctxMeter.classList.add("visible");
   ctxLabelL.textContent = `${budget.exact ? "" : "~"}${total.toLocaleString()} / ${ctx ? ctx.toLocaleString() : "?"} tokens (${budget.reserved_tokens.toLocaleString()} reply)`;
@@ -1161,26 +1196,29 @@ async function runSend() {
   sendButton.disabled = true;
   inputWrap.classList.add("generating");
 
-  // Honest waiting stage: if the model is not loaded yet, say so in the log
-  // instead of leaving an empty assistant bubble for tens of seconds of
-  // cold start. The card is removed as soon as the load resolves one way
-  // or another.
+  // One response entry owns every phase, including a cold model load.
   const needsLoad = (() => {
     const m = models.find(m => m.id === selectedModel);
     return !(m && (m.loaded || (m.owned_by && m.owned_by.startsWith("upstream:"))));
   })();
-  let loadingCard = null;
+  const assistantMsg = createMessage("assistant");
+  lastAssistantDiv = assistantMsg.div;
+  const live = document.createElement("div"); live.className = "live-activity"; live.dataset.phase = needsLoad ? "loading" : "generating";
+  const liveDot = document.createElement("span"); liveDot.className = "live-activity-dot"; liveDot.setAttribute("aria-hidden", "true");
+  const liveLabel = document.createElement("span"); liveLabel.setAttribute("role", "status"); liveLabel.setAttribute("aria-live", "polite"); liveLabel.textContent = needsLoad ? "Starting model" : "Generating";
+  const liveTime = document.createElement("span"); liveTime.setAttribute("aria-hidden", "true");
+  live.append(liveDot, liveLabel, liveTime); assistantMsg.div.querySelector(".role").appendChild(live);
+  const liveStarted = Date.now(); const liveTimer = setInterval(() => { liveTime.textContent = `${Math.floor((Date.now() - liveStarted) / 1000)} s`; }, 1000);
+  const discardPending = () => { clearInterval(liveTimer); assistantMsg.div.remove(); lastAssistantDiv = null; };
   if (needsLoad) {
-    loadingCard = createMessage("system", "Starting model, this can take a while on first load…");
-    loadingCard.div.classList.add("load-wait-card");
+    assistantMsg.div.classList.add("load-wait-card");
+    live.title = "Starting model, this can take a while on first load…";
   }
-  const streamingDot = $("#streaming-indicator");
-  if (streamingDot) streamingDot.style.opacity = "1";
 
   try {
     await ensureModelLoaded();
   } catch (e) {
-    if (loadingCard) loadingCard.div.remove();
+    discardPending();
     if (e.structured) {
       showStartupFailure(e.structured, { onRetry: retryTurn, retryLabel: "Retry load" });
     } else {
@@ -1189,17 +1227,17 @@ async function runSend() {
     finishGeneration();
     return;
   }
-  if (loadingCard) loadingCard.div.remove();
+  assistantMsg.div.classList.remove("load-wait-card");
+  live.dataset.phase = "generating"; liveLabel.textContent = "Generating"; live.removeAttribute("title");
   clearTimeout(budgetTimer);
   const budget = await countBudget(effectiveConversation());
   if (budget?.exact && budget.over_budget) {
+    discardPending();
     finishGeneration();
     offerBudgetChoices(budget, retryTurn);
     return false;
   }
 
-  const assistantMsg = createMessage("assistant");
-  lastAssistantDiv = assistantMsg.div;
   conversation.push({ role: "assistant", content: "", thinking: "" });
   const convoIndex = conversation.length - 1;
   const controller = new AbortController();
@@ -1257,11 +1295,15 @@ async function runSend() {
         }
         const chunkText = processSseLine(line);
         if (chunkText != null) {
+          let reasoning = false;
+          try { reasoning = !!JSON.parse(line.slice(5)).choices?.[0]?.delta?.reasoning_content; } catch (_) {}
           if (streamStartTime === null) streamStartTime = Date.now();
           streamTokenCount += Math.max(1, Math.round(chunkText.length / 4));
           streamRaw += chunkText;
           const parsed = parseThinking(streamRaw);
           if (!parsed.hasPartialTag) {
+            const phase = reasoning || (parsed.thinking && !parsed.content.trim()) ? "thinking" : "answering";
+            live.dataset.phase = phase; liveLabel.textContent = phase === "thinking" ? "Thinking" : "Writing answer";
             const newContent = parsed.content.slice(lastDisplayedContent.length);
             lastDisplayedContent = parsed.content;
             currentThinking = parsed.thinking;
@@ -1328,6 +1370,7 @@ async function runSend() {
       else showError("Generation failed: " + e.message);
     }
   } finally {
+    clearInterval(liveTimer); live.remove();
     controller.abort();
     if (activeAbort === controller) activeAbort = null;
     lastUsage = null;
@@ -1376,8 +1419,6 @@ function finishGeneration() {
   setStopMode(false);
   sendButton.disabled = false;
   inputWrap.classList.remove("generating");
-  const indicator = $("#streaming-indicator");
-  if (indicator) indicator.style.opacity = "0";
   // Collapse any thinking blocks that are open and hide empty ones
   const openThinking = document.querySelectorAll(".thinking-toggle.open");
   for (const t of openThinking) {
@@ -1582,6 +1623,7 @@ function validateCompactionBoundary() {
 }
 
 function refreshCompactionControls() {
+  syncPaperModels();
   const button = $("#compact-button");
   if (!button) return;
   button.disabled = chatBusy() || !selectedModel || !compactor.boundary(conversation);
@@ -1798,6 +1840,9 @@ function restoreDraft() {
   attachmentsComponent.start();
   settingsComponent.start();
   historyComponent.start();
+  workComponent.start();
+  window.addEventListener("arc-paper-work-mode", syncPaperModels);
+  $("#work-model").addEventListener("change", syncPaperModels);
   await loadPluginActions();
   await fetchModels();
   await fetchStatus();

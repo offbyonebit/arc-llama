@@ -41,6 +41,7 @@ async def run_agent(
     run_id: str | None = None,
     checkpoint_store: CheckpointStore | None = None,
     max_turns: int = 30,
+    report_context: bool = False,
     timeout: float = 600.0,
     chat_store: ChatStore | None = None,
     extra: dict[str, Any] | None = None,
@@ -51,6 +52,7 @@ async def run_agent(
         {"type": "status", "message": str}
         {"type": "plan", "content": str}
         {"type": "assistant", "content": str}
+        {"type": "usage", "prompt_tokens": int, "completion_tokens": int}
         {"type": "tool_call", "id": str, "name": str, "arguments": dict}
         {"type": "tool_result", "id": str, "name": str, "content": str, "error": bool}
         {"type": "confirm_required", "id": str, "tool": str, "arguments": dict}
@@ -149,6 +151,16 @@ async def run_agent(
         for turn in range(max_turns):
             yield {"type": "status", "message": f"Turn {turn + 1}/{max_turns}"}
 
+            yield {"type": "activity", "phase": "generating"}
+            if report_context:
+                try:
+                    counted = await client.post("/v1/chat/budget", json={"model": model, "messages": conversation, "tools": TOOLS.definitions, "max_tokens": 1}, timeout=4.0)
+                    counted.raise_for_status()
+                    budget = counted.json()
+                    if type(budget.get("prompt_tokens")) is int and budget["prompt_tokens"] >= 0:
+                        yield {"type": "context", "prompt_tokens": budget["prompt_tokens"], "context_tokens": budget.get("context_tokens"), "exact": budget.get("exact") is True, "source": "agent_request"}
+                except (httpx.HTTPError, ValueError, TypeError):
+                    pass
             try:
                 response = await client.post(
                     "/v1/chat/completions",
@@ -167,6 +179,14 @@ async def run_agent(
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM: {e}"}
                 return
+
+            usage = data.get("usage") or {}
+            prompt_tokens = usage.get("prompt_tokens")
+            completion_tokens = usage.get("completion_tokens")
+            if (type(prompt_tokens) is int and prompt_tokens >= 0
+                    and type(completion_tokens) is int and completion_tokens >= 0):
+                yield {"type": "usage", "prompt_tokens": prompt_tokens,
+                       "completion_tokens": completion_tokens}
 
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
