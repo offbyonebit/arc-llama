@@ -19,12 +19,49 @@ something useful before lunch.
 **[Click through the screenshot tour →](docs/showcase/01-models.md)** ·
 [All screenshots and swipeable gallery](docs/showcase/README.md)
 
-*Actual app captures of the interface included in 0.9.1.2.*
+*These captures show the 0.9.1.2 interface. This branch includes the redesigned
+Paper interface described below; the tour has not been refreshed yet.*
 
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
 > **Version 0.9.1.2 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1.2).
+
+## In development: 0.9.2
+
+This branch contains **0.9.2.dev0**, including the new Paper interface and
+experimental Work agents. These additions are not included in the published
+0.9.1.2 package. To try this branch:
+
+```bash
+git clone --branch release/0.9.2-work-mode https://github.com/offbyonebit/arc-llama.git
+cd arc-llama
+pip install -e .
+ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve
+```
+
+Use an existing Arc Llama configuration, or follow the setup steps below first.
+The environment variable enables Work; Chat, Models, Discover, and System remain
+available without it.
+
+- **Redesigned web UI:** a shared icon sidebar for Chat, Work, Models, Discover,
+  and System, with light/dark themes and mobile navigation. Discover has its own
+  destination, and model details show download, memory-fit, and runtime state.
+- **Clearer chat controls:** a model picker with multiple visible rows, scroll
+  cues, and keyboard navigation; a single response entry from loading through
+  streaming; and live generation activity.
+- **Return to earlier conversations:** open **History** in Chat or **Sessions**
+  in Work to reopen saved conversations and continue with a follow-up.
+- **Visible context usage:** token counts, context limits, and compaction controls
+  in Chat and Work. Estimates are marked; Work updates its count from actual
+  model requests, including agent instructions and tools.
+- **Choose your Work agent:** the built-in agent, OpenCode, or Hermes Agent,
+  using a selected local model. Work shows streamed replies, thinking/tool
+  activity, approvals, file changes, and Undo when available. OpenCode also
+  supports tool profiles and its native slash commands.
+
+See [Work below](#work-local-project-conversations) for setup and the differences
+between harnesses, or [Work harness details](docs/work-harnesses.md).
 
 ## What's new in 0.9.1.2
 
@@ -104,9 +141,11 @@ multi-GPU tensor split.
 - **Plugin extension point** for adding routes and lifecycle integrations
   without modifying the inference core. Plugins are isolated at startup and
   are optional; see `examples/hello-plugin` for a minimal example.
-- **A web UI** at `http://127.0.0.1:11437/` , ships with the install. Model
-  picker, load/stop buttons, **inline ctx + KV-quant editing**, GPU + VRAM
-  panel. Pure HTML/JS, no build step.
+- **A web UI** at `http://127.0.0.1:11437/`, included with the install.
+  Chat, model management, Hugging Face discovery, and system status share one
+  interface, with experimental Work agents on this branch. Model controls
+  include load/stop, **inline ctx + KV-quant editing**, and GPU/VRAM information.
+  Pure HTML/JS, no build step.
 - **A terminal UI** (`arc-llama tui`) using Textual , same load/stop/edit
   controls, no browser needed. Optional install: `pip install 'arc-llama[tui]'`.
 - **Background autotune.** Drop in a GGUF, use it once, and `arc-llama serve`
@@ -269,13 +308,77 @@ Models downloaded elsewhere are registered normally. File deletion remains
 restricted to `paths.models_dir`; removing an external model registration leaves
 its files in place.
 
-## Work: local project jobs
+## Work: local project conversations
 
-Open **Work** to register a project folder, choose a local model, and save project
-instructions and permissions. New jobs use an independent copy of the current
-regular files, including uncommitted edits. Your original project stays unchanged
-until you review and explicitly apply a job's changes. Undo restores the original
-file contents and refuses to overwrite later independent edits.
+Enable experimental Work when starting the server:
+
+```bash
+ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve
+```
+
+For a service installation, set the variable in the service environment and
+restart the service. Open **Work** in the sidebar (or `/work`), choose a model
+and a project folder on the server, select an **Agent**, and send a task.
+Follow-ups retain earlier conversation context. The activity display shows
+startup, thinking, writing, tool execution, and pending approvals as reported
+by the agent. Use **Stop** to cancel the active task.
+
+### Supported agents
+
+Work integrates each harness through an adapter; support is specific to the
+agents below. External agents must be installed separately and available to
+the process running Arc Llama.
+
+| Agent | Integration | Available controls |
+| --- | --- | --- |
+| Built-in | Included with Arc Llama | File/command tools, approvals, and optional auto-approve |
+| OpenCode | Installed `opencode` executable | Streamed replies, approvals, tool profiles, and native slash commands |
+| Hermes Agent | Installed `hermes` with ACP support | Streamed replies and thought activity, file-edit and flagged-command approvals; no auto-approve |
+
+Arc Llama finds OpenCode on PATH, or through `ARC_LLAMA_OPENCODE_BIN`. OpenCode
+uses its existing project/user tool setup. Named tool profiles let you choose
+which MCP servers, skills, web tools, and other tools a task can use.
+Type `/` in the composer to see available commands, including Work's `/compact`.
+
+For Hermes, `hermes acp --check` should succeed. Arc Llama discovers the binary
+on PATH, or you can set `ARC_LLAMA_HERMES_BIN`. Each task uses an isolated
+Hermes home; global Hermes credentials, MCP configuration, skills, and memory
+are not imported. Primary and auxiliary model requests use Arc Llama's selected
+local model, with cloud fallback disabled. Hermes uses its native approval
+policy: file edits and flagged commands ask, while routine commands can run
+under that policy. OpenCode profiles and native slash commands are unavailable
+for Hermes. See [Work harness details](docs/work-harnesses.md).
+
+### Resume, context, and file changes
+
+Open **Sessions** in Work to reopen a saved conversation with its project,
+model, agent selection, and earlier tasks, then send a follow-up. This restores
+the conversation; it does not restart an interrupted process. Chat has a
+separate **History** control for saved chats.
+
+The Work context meter shows token usage against the model's context limit and
+flags partial or approximate counts. Before an external agent's first request,
+its instructions and tools are not yet counted. Once inference starts, the
+meter counts the full model request; exactness depends on the local runtime's
+counting support. Use **Compact session** or `/compact <focus>` after a task
+finishes to summarize earlier context. The full session stays saved, but a
+summary can omit details.
+
+Conversational Work operates in the selected project folder. Review the file
+changes after a task and use **Undo** while the run's backup is available.
+Undo refuses to overwrite later independent edits and may be unavailable for
+large projects or files. Reopened sessions retain change history, but cannot
+restore the original run's Undo backup. This mode is not an OS command sandbox;
+connected tools may access external services according to the harness setup.
+
+### Copy-based project jobs
+
+The earlier project-job interface remains at `/workbench`. Register a project
+folder, choose a local model, and save project instructions and permissions.
+New jobs use an independent copy of the current regular files, including
+uncommitted edits. Your original project stays unchanged until you review and
+explicitly apply a job's changes. Undo restores the original file contents and
+refuses to overwrite later independent edits.
 
 Jobs run independently of the browser. Progress, tool results, approvals, and
 conversation state are saved after each step. Pause takes effect between steps.
@@ -293,9 +396,9 @@ and time/output/file-size limits. There is no fallback to an unrestricted shell.
 Copies exclude Git metadata, environments, dependencies, build outputs, `.env`
 files, and symbolic links. Limits: 4000 files, 16 MiB per file, 128 MiB per copy,
 20 retained copies, and 30 model turns per job. Project virtual environments and
-MCP/user-skill tools are not exposed in Work yet. Commands use installed OS tools.
-A finished agent run still needs review; a completed job is not a claim that its
-code passed tests. See [Work details](docs/work.md).
+MCP/user-skill tools are not exposed in these copy-based jobs. Commands use
+installed OS tools. A finished agent run still needs review; a completed job is
+not a claim that its code passed tests. See [Work details](docs/work.md).
 
 ## Tested hardware
 
@@ -531,8 +634,8 @@ url  = "http://127.0.0.1:11434"
 
 > [!NOTE]
 > The optional agent/coding-assistant mode is experimental. Enable it by setting
-> `ARC_LLAMA_EXPERIMENTAL_AGENT=1` before running `arc-llama agent`, `code`,
-> or `agent-tui`.
+> `ARC_LLAMA_EXPERIMENTAL_AGENT=1` before running `arc-llama serve` for web Work,
+> or before running `arc-llama agent`, `code`, or `agent-tui`.
 
 `kv_class` controls the KV-cache size estimate that `arc-llama add` uses to
 pick a context length. Currently:
@@ -600,14 +703,16 @@ SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch (see
 Two front-ends are bundled and both talk to the same admin endpoints
 (`/admin/status`, `/admin/load/{name}`, `/admin/stop/{name}`, `/admin/stop-all`):
 
-- **Web UI** at `http://<host>:<port>/` (default `127.0.0.1:11437`). Single
-  static page polled every 5 s. Status, GPUs, model list, per-model
-  Load/Stop buttons, "Stop all" panic button. No build step, no JS deps.
+- **Web UI** at `http://<host>:<port>/` (default `127.0.0.1:11437`). The Paper
+  sidebar links Chat (`/chat`), experimental Work (`/work`), Models (`/`),
+  Discover (`/#discover`), and System (`/#system`). Includes saved conversations,
+  context meters, model Load/Stop controls, GPU status, and a "Stop all" button.
+  Static HTML/CSS/JavaScript with bundled assets and no build step.
 - **Terminal UI** via `arc-llama tui` , Textual-based. Bindings: `r` refresh,
   `l` load selected model, `s` stop selected, `S` stop all, `q` quit. Run it
   alongside `arc-llama serve` (or against a remote one with `--server`).
 
-Both use brightness/dim for status (loaded vs idle) , no red/green palettes.
+The web UI supports light and dark themes and adapts to desktop and mobile.
 
 ## Connect a frontend
 
