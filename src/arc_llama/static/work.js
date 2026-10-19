@@ -2,7 +2,7 @@
 (() => {
   const $ = selector => document.querySelector(selector);
   let token = sessionStorage.getItem("arc-work-token") || "";
-  let workspaces = [], jobs = [], selected = null, projectId = "", editing = null, job = null, cursor = 0, busy = false, reviewedRevision = null;
+  let workspaces = [], jobs = [], selected = null, projectId = "", editing = null, job = null, cursor = 0, busy = false, reviewedRevision = null, autoOpened = false;
   const stateLabel = value => value.replaceAll("_", " ");
   function error(message) { $("#work-error").textContent = message; $("#work-error").hidden = !message; }
   async function request(path, body, method = body ? "POST" : "GET") {
@@ -50,7 +50,7 @@
     list.replaceChildren();
     for (const value of jobs.filter(j => !projectId || j.workspace.id === projectId)) {
       const button = document.createElement("button");
-      button.type = "button"; button.className = "work-job"; button.dataset.jobId = value.id;
+      button.type = "button"; button.className = "work-job"; button.dataset.jobId = value.id; button.dataset.state = value.state;
       button.setAttribute("aria-current", String(value.id === selected));
       const name = document.createElement("strong"); name.textContent = value.task.slice(0, 100);
       const status = document.createElement("span"); status.textContent = `${stateLabel(value.state)}${value.pause_requested && value.state === "running" ? " (pausing)" : ""}`;
@@ -59,6 +59,7 @@
       list.append(button);
     }
     if (!list.childElementCount) list.textContent = "No jobs yet.";
+    $("#composer").hidden = !!selected; $("#job-view").hidden = !selected;
   }
   function actionButton(label, action) {
     const button = document.createElement("button"); button.type = "button"; button.textContent = label;
@@ -77,6 +78,7 @@
     job = value;
     $("#job-title").textContent = value.task;
     $("#job-state").textContent = `${stateLabel(value.state)}: ${value.message}`;
+    $("#job-state").dataset.state = value.state;
     $("#job-copy").textContent = `Project copy: ${value.project_copy}`;
     $("#job-actions").replaceChildren();
     const active = ["queued", "running", "waiting_approval", "preparing", "verifying", "settling"].includes(value.state);
@@ -141,10 +143,15 @@
     }
     $("#allow-commands").disabled = !data.commands_available;
     $("#sandbox-note").textContent = data.commands_available ? "Commands need a working Linux sandbox. They have no network, GPU, or host home access." : "OS command isolation is unavailable here. File-only jobs are supported.";
-    if (!workspaces.length) $("#project-editor").open = true;
+    if (!workspaces.length && !autoOpened) { autoOpened = true; $("#project-editor").open = true; }
     renderJobs(); await loadJob();
   }
   $("#verify-work").addEventListener("change", attemptSettings);
+  $("#new-task").addEventListener("click", () => { selected = null; job = null; cursor = 0; renderJobs(); $("#task").focus(); });
+  const closeProject = () => { $("#project-editor").open = false; };
+  $("#close-project").addEventListener("click", closeProject);
+  $("#project-editor").addEventListener("click", event => { if (event.target === event.currentTarget) closeProject(); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeProject(); });
   $("#workspace-picker").addEventListener("change", event => selectProject(event.target.value));
   $("#new-workspace").addEventListener("click", () => { projectForm(); $("#project-editor").open = true; $("#workspace-name").focus(); });
   $("#workspace-form").addEventListener("submit", event => { event.preventDefault(); act(async () => {
