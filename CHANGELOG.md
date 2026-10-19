@@ -7,6 +7,49 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Added
+
+- Work tab with project-scoped instructions and permissions, a persistent serial
+  job queue, activity history, pause/resume, restart recovery, and exact per-command
+  approvals. Job execution continues independently of its browser connection.
+- Work acceptance criteria, code checks and model review, up to two repair
+  passes per attempt, and one to five sequential attempts on fresh copies with
+  an admission budget and reviewed selection of the best result.
+- Independent project copies with diff review, revision-checked apply, conflict-aware
+  undo, and discard. Original project files are not changed by agent tools.
+- Optional Linux command sandbox using Bubblewrap and a systemd user scope with
+  bounded resources, no host home/network/GPU, and no unrestricted-shell fallback.
+
+- Reversible chat compaction: a Compact chat button and `/compact [focus]`
+  summarize older turns while keeping the newest exchanges and full saved
+  transcript. Undo compaction or `/uncompact` restores full context, including
+  subsequent messages. Oversized histories use bounded summary requests.
+
+- Resident-model context budgets using the runtime's tokenizer, chat template,
+  and actual per-slot context. Chat reserves a configurable reply limit and
+  offers compaction or settings changes before an exact over-budget request.
+  Unsupported runtimes, unloaded/upstream models, and images remain explicitly
+  approximate; counting does not load models or contact external upstreams.
+- Per-browser model download destinations, folder permission/free-space checks,
+  destination-preserving retries, and queued-job space rechecks.
+- Scheduled and release-triggered smoke validation of the published wheel with
+  checksum-pinned CPU runtime/model assets, real JSON/SSE inference, and installed
+  frontend asset checks.
+
+### Fixed
+
+- Accept bare JSON arrays of Work acceptance criteria from local models instead
+  of silently dropping their checks.
+- Keep Work command approval identifiers distinct across attempts and prevent
+  source actions in the UI while verification is running. Journal attempt-copy
+  replacements for restart recovery and retain pause requests during planning.
+- Keep partial text and reasoning after generation errors, abrupt stream endings,
+  or Stop. Persist completed/stopped/interrupted status through chat reload and export.
+- Bound stalled local streams with separate configurable first-response and idle
+  deadlines. Return a useful HTTP/SSE failure and settle connections, request
+  counts, and resource leases before subsequent work.
+- Explain UD-prefixed and MXFP4 quantizations in the model picker.
+
 ## [0.9.1.2] - 2026-10-10
 
 ### Added
