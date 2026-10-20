@@ -83,6 +83,8 @@ class LaunchRecipe:
     Measured on Arc Pro B60 / Qwen3.6-27B-MTP (2026-07): n_max 1–4 give
     similar gen (~19–20 tok/s); n_max 5–6 regress gen to ~13–15. Prefer ≤4.
     """
+    spec_draft_p_min: float | None = None
+    """Confidence cutoff; an explicit value overrides legacy extra_flags."""
     spec_draft_model: str | None = None
     """Path to a sidecar speculative-draft GGUF (--spec-draft-model).
 
@@ -216,7 +218,14 @@ class LaunchRecipe:
             argv += ["--tensor-split", ",".join(_fmt_ratio(v) for v in self.tensor_split)]
             if self.split_mode in SPLIT_MODES:
                 argv += ["--split-mode", self.split_mode]
-        argv += list(self.extra_flags)
+        extra = list(self.extra_flags)
+        if self.spec_draft_p_min is not None:
+            from arc_llama.speculation import confidence_value, without_confidence_flags
+
+            value = confidence_value(self.spec_draft_p_min)
+            extra = without_confidence_flags(extra)
+            argv += ["--spec-draft-p-min", str(value)]
+        argv += extra
         return argv
 
 
@@ -513,6 +522,8 @@ def recipe_to_dict(recipe: LaunchRecipe) -> dict:
         d["spec_draft_ngl"] = recipe.spec_draft_ngl
     if recipe.spec_draft_n_max is not None:
         d["spec_draft_n_max"] = recipe.spec_draft_n_max
+    if recipe.spec_draft_p_min is not None:
+        d["spec_draft_p_min"] = recipe.spec_draft_p_min
     if recipe.n_cpu_moe is not None:
         d["n_cpu_moe"] = recipe.n_cpu_moe
     if recipe.override_tensor:

@@ -1707,7 +1707,8 @@ def create_app(
 
         Body is a partial recipe dict — only provided fields change. Recognised
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
-        `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `ubatch_size`,
+        `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `spec_draft_p_min`,
+        `spec_draft_model`, `spec_draft_ngl`, `ubatch_size`,
         `batch_size`, `flash_attn` (null clears),
         `n_cpu_moe` (null or 0 clears), `override_tensor` (list of regex
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
@@ -1832,6 +1833,41 @@ def create_app(
                     raise HTTPException(status_code=400, detail="spec_draft_n_max must be 1..16")
                 recipe["spec_draft_n_max"] = draft_n
             changed.append("spec_draft_n_max")
+        if "spec_draft_p_min" in body:
+            from arc_llama.speculation import confidence_value
+
+            v = body["spec_draft_p_min"]
+            if v is None:
+                recipe.pop("spec_draft_p_min", None)
+            else:
+                try:
+                    recipe["spec_draft_p_min"] = confidence_value(v)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e)) from e
+            changed.append("spec_draft_p_min")
+        if "spec_draft_model" in body:
+            v = body["spec_draft_model"]
+            if v is None:
+                recipe.pop("spec_draft_model", None)
+            elif isinstance(v, str) and Path(v).suffix.lower() == ".gguf" and Path(v).is_file():
+                recipe["spec_draft_model"] = v
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="spec_draft_model must be an existing .gguf path or null",
+                )
+            changed.append("spec_draft_model")
+        if "spec_draft_ngl" in body:
+            v = body["spec_draft_ngl"]
+            if v is None:
+                recipe.pop("spec_draft_ngl", None)
+            elif isinstance(v, int) and not isinstance(v, bool) and -1 <= v <= 999:
+                recipe["spec_draft_ngl"] = v
+            else:
+                raise HTTPException(
+                    status_code=400, detail="spec_draft_ngl must be -1..999 or null"
+                )
+            changed.append("spec_draft_ngl")
         if "speculation_result" in body:
             v = body["speculation_result"]
             if v is None or v == "":

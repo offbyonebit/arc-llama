@@ -264,6 +264,8 @@ async def _complete(
     ignore_eos: bool = False,
     cache_prompt: bool = True,
     is_chat: bool = True,
+    temperature: float | None = None,
+    seed: int | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Send one non-streamed completion. Returns (wall_seconds, response_json).
 
@@ -287,6 +289,10 @@ async def _complete(
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if temperature is not None:
+        body["temperature"] = temperature
+    if seed is not None:
+        body["seed"] = seed
     if is_chat:
         body["messages"] = [{"role": "user", "content": prompt}]
     else:

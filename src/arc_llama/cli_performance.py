@@ -390,6 +390,17 @@ def register_performance_commands(
         is_flag=True,
         help="Use llama.cpp n-gram speculation when supported.",
     )
+    @click.option(
+        "--tune-mtp", is_flag=True, help="Sweep MTP length/confidence and confirm a winner."
+    )
+    @click.option("--repeats", default=5, show_default=True, type=click.IntRange(5, 25))
+    @click.option("--gen-tokens", default=128, show_default=True, type=click.IntRange(16, 4096))
+    @click.option(
+        "--prompt-file",
+        type=click.Path(exists=True, dir_okay=False, path_type=Path),
+        help="Local benchmark prompt for --tune-mtp (default: Python coding task).",
+    )
+    @click.option("--json", "as_json", is_flag=True, help="Emit the MTP tuning report as JSON.")
     @click.option("--draft-tokens", default=4, show_default=True, type=click.IntRange(1, 16))
     @click.option(
         "--verify/--no-verify",
@@ -399,9 +410,8 @@ def register_performance_commands(
     @click.option(
         "--min-speedup",
         type=click.FloatRange(min=0.0),
-        default=0.02,
-        show_default=True,
-        help="Minimum generation-speed improvement required by --verify.",
+        default=None,
+        help="Minimum improvement (default: 0.02; --tune-mtp: 0.05, minimum 0.05).",
     )
     @click.pass_context
     def speculative_cmd(
@@ -415,7 +425,12 @@ def register_performance_commands(
         use_ngram: bool,
         draft_tokens: int,
         verify: bool,
-        min_speedup: float,
+        min_speedup: float | None,
+        tune_mtp: bool,
+        repeats: int,
+        gen_tokens: int,
+        prompt_file: Path | None,
+        as_json: bool,
     ) -> None:
         """Configure native llama.cpp speculation and prove the speedup locally."""
         from arc_llama.recipe_share import benchmark_improvement
@@ -429,6 +444,62 @@ def register_performance_commands(
         if target is None:
             raise click.ClickException(f"unknown model {model!r}")
         caps = probe_server_caps(cfg.paths.llama_server)
+        if tune_mtp:
+            from dataclasses import asdict
+
+            from arc_llama.mtp_tuning import DEFAULT_PROMPT, validate_mtp
+            from arc_llama.mtp_tuning import tune_mtp as run_mtp
+
+            if any((turn_off, auto_select, draft_name, use_ngram, show_status)) or not verify:
+                raise click.ClickException(
+                    "--tune-mtp cannot be combined with other selection modes"
+                )
+            threshold = 0.05 if min_speedup is None else min_speedup
+            if threshold < 0.05:
+                raise click.ClickException("MTP tuning requires --min-speedup >= 0.05")
+            try:
+                validate_mtp(target, caps)
+                prompt = prompt_file.read_text() if prompt_file else DEFAULT_PROMPT
+                if not prompt.strip():
+                    raise ValueError("Benchmark prompt must not be empty")
+                if dry_run:
+                    console.print(
+                        "MTP plan: original and target-only; lengths 1–4 at current "
+                        "confidence; then confidence 0, 0.5, 0.75, 0.9 at fastest length; "
+                        "fresh original/target-only/winner confirmation."
+                    )
+                    console.print(
+                        f"{repeats} repeats, {gen_tokens} generated tokens per request; "
+                        f"require {threshold:.0%} improvement in decode and request "
+                        "throughput. No settings changed."
+                    )
+                    return
+                report = asyncio.run(
+                    run_mtp(
+                        cfg,
+                        target,
+                        caps,
+                        server_url=server_url_from(ctx, None),
+                        config_path=cfg_path,
+                        repeats=repeats,
+                        gen_tokens=gen_tokens,
+                        min_speedup=threshold,
+                        prompt=prompt,
+                        progress=None
+                        if as_json
+                        else lambda message: console.print(message, markup=False),
+                    )
+                )
+            except (ValueError, RuntimeError, OSError, httpx.HTTPError) as exc:
+                raise click.ClickException(str(exc)) from exc
+            except KeyboardInterrupt:
+                raise click.ClickException("MTP tuning interrupted; rollback attempted") from None
+            if as_json:
+                click.echo(json.dumps(asdict(report), indent=2))
+            else:
+                console.print(report.reason, markup=False)
+            return
+        min_speedup = 0.02 if min_speedup is None else min_speedup
         candidates = discover_drafts(cfg, target)
         recipe = target.recipe
 

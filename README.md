@@ -869,3 +869,52 @@ If you'd like to support development, you can [sponsor me on GitHub](https://git
 ## License
 
 MIT , see [LICENSE](LICENSE).
+
+
+### Tune MTP speculation on your hardware
+
+This improvement was inspired by [DeepSeek's DeepInfer](https://github.com/deepseek-ai/DeepInfer)
+and its confidence-scheduled speculative decoding. Arc Llama applies that tuning
+principle through llama.cpp's native MTP controls. Credit for the inspiration
+belongs to the DeepSeek team. Any credited performance gain must be supported
+by local measurements on the stated hardware and workload.
+
+For a registered model with embedded MTP heads or a configured MTP sidecar:
+
+```bash
+arc-llama speculative MODEL --tune-mtp --dry-run
+arc-llama speculative MODEL --tune-mtp
+# Use a representative local prompt; save measurements as JSON:
+arc-llama speculative MODEL --tune-mtp --prompt-file task.txt --json > mtp-results.json
+```
+
+Run this while the GPU is idle. This opt-in sweep uses the running Arc Llama
+server and may take several minutes, restarting the model between recipes.
+It tests draft lengths 1–4, then confidence thresholds at the fastest length.
+Each recipe gets five uncached repeated requests after warmup, using greedy
+sampling and seed 42 to hold the generated workload constant; output hashes
+must match before a speedup is accepted. The report
+includes median decode speed, complete request time, prompt processing time
+(when supplied), and token-weighted draft acceptance (unknown when omitted by
+the engine). The default prompt is a Python coding task; use `--prompt-file`
+to measure your workload. Prompt processing time is not a streamed TTFT measurement.
+
+A winner must improve both decode and request throughput by at least 5% against
+the original recipe and target-only inference, then pass fresh confirmation.
+Target-only may win when speculation costs more than it saves. Otherwise the
+original settings are restored, including confidence flags and sidecar settings.
+Trials temporarily persist recipes, as with ordinary tuning; interruption and
+errors trigger rollback. Do not edit recipes or run another tuner during a sweep.
+This does not run in background autotuning and does not guarantee a speedup on
+other prompts. `--repeats` increases sampling; `--gen-tokens` changes response length.
+Use `--min-speedup` to raise the threshold above 0.05.
+
+
+Local validation on 2026-10-20 (Arc Pro B60, Qwen3.8-27B UD-Q4_K_XL): the
+sweep exercised real MTP, confidence thresholds, acceptance telemetry and
+rollback. Some candidates measured faster, but an exploratory winner failed
+fresh confirmation. A subsequent greedy, fixed-seed run produced different
+output hashes even across identical requests on this SYCL runtime, so the
+strict comparison guard rejected the candidates. The original draft length 3
+and effective confidence 0.75 were restored. No additional verified speedup
+is claimed for this validation; DeepSeek is credited for the tuning approach.

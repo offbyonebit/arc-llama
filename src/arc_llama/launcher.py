@@ -415,6 +415,9 @@ def build_plan(
     )
 
     caps = probe_server_caps(cfg.paths.llama_server)
+    if recipe.spec_draft_p_min is not None and caps.probed and not caps.supports_draft_confidence:
+        log.warning("[%s] runtime has no confidence flag; omitting typed confidence", model.name)
+        recipe.spec_draft_p_min = None
     if recipe.flash_attn is not None and not caps.supports_flash_attn:
         log.info(
             "[%s] recipe requests flash_attn=%s but %s has no --flash-attn; omitting",

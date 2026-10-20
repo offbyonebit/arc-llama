@@ -41,6 +41,8 @@ class ServerCaps:
     """Whether this binary exposes llama.cpp's ``--spec-type`` interface."""
     supports_draft_model: bool = False
     supports_ngram: bool = False
+    supports_mtp: bool = False
+    supports_draft_confidence: bool = False
     supports_load_mode: bool = False
     """Whether this binary takes ``--load-mode`` (newer builds).
 
@@ -89,6 +91,8 @@ def _parse_help(help_text: str) -> ServerCaps:
         "probed": True,
         "supports_speculative": "--spec-type" in help_text,
         "supports_draft_model": "--spec-draft-model" in help_text,
+        "supports_mtp": "draft-mtp" in help_text and "--spec-type" in help_text,
+        "supports_draft_confidence": "--spec-draft-p-min" in help_text,
         "supports_ngram": "ngram" in help_text.lower() and "--spec-type" in help_text,
         "supports_load_mode": "--load-mode" in help_text,
         "supports_mmproj": "--mmproj" in help_text,

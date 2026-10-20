@@ -6,9 +6,11 @@ unrelated tokenizers are compatible: a bad draft is worse than no draft.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from arc_llama.config import Config, ModelConfig
 from arc_llama.gguf_meta import kv_bytes_per_token_f16, tokenizer_fingerprint
@@ -93,3 +95,50 @@ def discover_drafts(cfg: Config, target: ModelConfig) -> list[DraftCandidate]:
             )
         )
     return sorted(result, key=lambda c: c.estimated_mb)
+
+
+_CONFIDENCE_FLAGS = {"--spec-draft-p-min", "--draft-p-min"}
+
+
+def confidence_value(value: object) -> float:
+    """Validate config/API confidence without accepting booleans or nonfinite floats."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError("spec_draft_p_min must be a finite number in [0, 1]")
+    result = float(value)
+    if not math.isfinite(result) or not 0 <= result <= 1:
+        raise ValueError("spec_draft_p_min must be a finite number in [0, 1]")
+    return result
+
+
+def without_confidence_flags(flags: list[str]) -> list[str]:
+    """Remove both spellings and --flag=value forms, preserving every other atom."""
+    result = []
+    i = 0
+    while i < len(flags):
+        key = flags[i].split("=", 1)[0]
+        if key in _CONFIDENCE_FLAGS:
+            if "=" not in flags[i]:
+                if i + 1 >= len(flags) or flags[i + 1].startswith("--"):
+                    raise ValueError(f"missing value for {flags[i]}")
+                i += 1
+        else:
+            result.append(flags[i])
+        i += 1
+    return result
+
+
+def effective_confidence(recipe: dict[str, Any]) -> float:
+    """Use explicit confidence first; otherwise the last legacy flag wins."""
+    if recipe.get("spec_draft_p_min") is not None:
+        return confidence_value(recipe["spec_draft_p_min"])
+    flags = list(recipe.get("extra_flags", []))
+    without_confidence_flags(flags)  # validate missing values
+    value = 0.0
+    for i, flag in enumerate(flags):
+        key, sep, atom = flag.partition("=")
+        if key in _CONFIDENCE_FLAGS:
+            try:
+                value = confidence_value(float(atom if sep else flags[i + 1]))
+            except (ValueError, IndexError) as e:
+                raise ValueError(f"invalid value for {key}") from e
+    return value
