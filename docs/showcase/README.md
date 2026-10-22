@@ -1,40 +1,45 @@
 # A quick look at Arc Llama
 
-A six-screen walkthrough of the interface included in Arc Llama 0.9.1.2.
-These are actual app captures on an Intel Arc Pro B60, using an isolated example
-configuration and a real local LFM2.5 conversation. No personal history is included.
+A nine-screen tour of the current Work development UI: Models, Discover,
+Compatibility, Model review, Chat, System, Work, Change review, and Runtime settings.
+The captures include pending local UI work and are not a guarantee that every
+pictured control is available in the branch tip or published 0.9.1.2 package.
 
-**[Start the click-through tour →](01-models.md)**
+**[Start the click-through tour →](01-models.md)** · [Open the interactive gallery](index.html)
 
 | [Models](01-models.md) | [Discover](02-discover.md) | [Compatibility](03-compatibility.md) |
 | --- | --- | --- |
-| [![Start with a clear next step.](images/01-models.png)](01-models.md) | [![Find your next model.](images/02-discover.png)](02-discover.md) | [![Check the runtime before the download.](images/03-compatibility.png)](03-compatibility.md) |
+| [![Your models, at a glance](images/01-models.png)](01-models.md) | [![Find your next model](images/02-discover.png)](02-discover.md) | [![Know what you are downloading](images/03-compatibility.png)](03-compatibility.md) |
 
-| [Review](04-review.md) | [Chat](05-chat.md) | [System](06-system.md) |
+| [Model review](04-review.md) | [Chat](05-chat.md) | [System](06-system.md) |
 | --- | --- | --- |
-| [![Review before you run.](images/04-review.png)](04-review.md) | [![Make it a conversation.](images/05-chat.png)](05-chat.md) | [![Keep your setup in view.](images/06-system.png)](06-system.md) |
+| [![Review before you load](images/04-review.png)](04-review.md) | [![A focused place to think](images/05-chat.png)](05-chat.md) | [![Keep your setup in view](images/06-system.png)](06-system.md) |
 
-## Swipeable gallery
+| [Work](07-work.md) | [Change review](08-work-review.md) | [Runtime settings](09-settings.md) |
+| --- | --- | --- |
+| [![From a task to project work](images/07-work.png)](07-work.md) | [![Review what changed](images/08-work-review.png)](08-work-review.md) | [![Tune each model independently](images/09-settings.png)](09-settings.md) |
 
-[index.html](index.html) is the same tour with thumbnails, arrows, keyboard controls,
-and mobile swipe navigation. Open it locally with the adjacent `images/` folder,
-or serve this folder as a static site. GitHub's file view does not execute HTML.
-The gallery needs no framework, installation, external fonts, or API connection.
-With JavaScript disabled, all six screenshots remain visible.
+## Interactive gallery
 
-The repository README links to Markdown slides so visitors can click through on
-GitHub without hosting anything. Publishing a swipeable version with GitHub Pages
-is a separate deployment step; no deployment is configured by this change.
+[index.html](index.html) displays the nine annotated slides with a full-size viewer,
+keyboard navigation, and a toggle for the original, unannotated capture. Open it
+locally with the adjacent `images/` and `originals/` directories, or serve the
+folder as a static site. GitHub's file view does not execute HTML; the Markdown
+slides above work directly on GitHub. No hosting or GitHub Pages deployment is
+configured by this update.
 
 ## Capture notes
 
-- Captured from the app on 2026-10-10. Publisher names, search results, and the
-  compatibility rejection came from real Hugging Face responses.
-- The DeepSeek V4.1 example demonstrates an architecture rejection independently
-  of its memory-fit warning. Recognition alone does not verify encoding or inference.
-- The LFM2.5 chat was generated locally. Its System measurements describe this
-  short example, not a performance comparison or supported-hardware guarantee.
-- The example used a temporary configuration, state directory, and router port.
-  All screenshot-generation processes were stopped after capture.
-- Regenerate the screenshots when visible features change. Keep account tokens,
-  personal conversations, and private file paths out of published images.
+- Captured on 2026-10-22 from an isolated static snapshot of the development UI.
+- API responses, model inventory, publisher statistics, Chat messages, Work task
+  results, and example paths are synthetic. Personal history and credentials
+  were not accessed or included.
+- No local inference, agent execution, model loading/stopping, or GPU benchmarking
+  was performed. The System view intentionally has no performance measurements.
+- The image model added the presentation frames and numbered callouts. Original
+  captures are supplied for exact UI and text reference.
+- Per-model runtime controls shown in the final slide reflect pending local work.
+- Images and PNG metadata were checked for personal identifiers and credentials.
+  Paths such as `/projects/launch-notes` and `/models/gemma.gguf` are examples.
+- Refresh these captures when the visible interface changes. Keep example-data
+  labels and avoid exposing personal paths, tokens, or conversation contents.

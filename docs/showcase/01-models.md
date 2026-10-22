@@ -1,13 +1,11 @@
-[← Overview](README.md) · **1 / 6** · [Next →](02-discover.md)
+[← Overview](README.md) · **1 / 9** · [Next →](02-discover.md)
 
-# Start with a clear next step.
+# Your models, at a glance
 
-One home for finding models, reviewing your setup, and opening chat.
+Use the navigation rail to move between Chat, Work, Models, Discover, and System. The model list summarizes available files and memory estimates; the inspector keeps the selected model’s state and details alongside it.
 
-[![Start with a clear next step.](images/01-models.png)](images/01-models.png)
+[![Your models, at a glance](images/01-models.png)](images/01-models.png)
 
-The Models screen gives the next action and keeps local models close to Hugging Face discovery.
-
-Arc Llama 0.9.1.2 interface. [Open the full-size screenshot](images/01-models.png).
+Development UI preview captured on 2026-10-22 with synthetic data. [Annotated slide](images/01-models.png) · [Original capture](originals/01-models.png).
 
 [← Overview](README.md) · [All screenshots](README.md) · [Next →](02-discover.md)

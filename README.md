@@ -14,13 +14,14 @@ something useful before lunch.
 
 ## See it in action
 
-[![Arc Llama interface tour: models, Hugging Face discovery, runtime checks, chat, and system status](docs/showcase/cover.png)](docs/showcase/01-models.md)
+[![Arc Llama development interface tour: models, discovery, runtime checks, chat, system status, and Work](docs/showcase/cover.png)](docs/showcase/01-models.md)
 
 **[Click through the screenshot tour →](docs/showcase/01-models.md)** ·
-[All screenshots and swipeable gallery](docs/showcase/README.md)
+[All screenshots and interactive gallery](docs/showcase/README.md)
 
-*These captures show the 0.9.1.2 interface. This branch includes the redesigned
-Paper interface described below; the tour has not been refreshed yet.*
+*Updated 2026-10-22: nine annotated views of the Work development UI, including
+pending local UI work. Captures use synthetic example data; no local inference
+was run. See the tour notes for scope and the original captures.*
 
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
