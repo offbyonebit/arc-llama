@@ -225,3 +225,11 @@ async def test_restart_during_verification_never_claims_verified(manager, monkey
         assert saved["verification"]["verdict"] == "unverified"
     finally:
         await restarted.shutdown()
+
+
+@pytest.mark.parametrize("value", ["/etc/passwd", r"\etc\passwd", r"C:outside.txt", r"C:\outside.txt", r"\\server\share\file"])
+def test_windows_rooted_criteria_cannot_escape_the_project(monkeypatch, value):
+    from pathlib import PureWindowsPath
+
+    monkeypatch.setattr(verify, "Path", PureWindowsPath)
+    assert verify.normalise([{"type": "exists", "path": value}]) == []

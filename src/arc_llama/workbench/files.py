@@ -43,7 +43,7 @@ def safe_path(root: Path, relative: str) -> Path:
     if root.is_symlink():
         raise ValueError("Project root was replaced by a symbolic link")
     path = Path(relative)
-    if path.is_absolute() or not path.parts or any(p == ".." or excluded(p) for p in path.parts):
+    if path.anchor or not path.parts or any(p == ".." or excluded(p) for p in path.parts):
         raise ValueError("Use a relative project file path outside excluded folders.")
     target = root / path
     probe = root

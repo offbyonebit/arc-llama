@@ -1,0 +1,28 @@
+HTTP 200
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"Hello"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"!"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" It"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"'s"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" nice"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" to"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" meet"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" you"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" too"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"!"}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":"stop","index":0,"delta":{}}],"created":1792695313,"id":"chatcmpl-4XnGr83kmJQPz2UXcKQlrclBevnd0p4o","model":"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf","system_fingerprint":"b11823-5c19a5a75","object":"chat.completion.chunk","timings":{"cache_n":0,"prompt_n":35,"prompt_ms":48.248,"prompt_per_token_ms":1.3785142857142856,"prompt_per_second":725.4186702039464,"predicted_n":11,"predicted_ms":44.335,"predicted_per_token_ms":4.4335,"predicted_per_second":225.5554302469832}}
+
+data: [DONE]
+
+EXIT_CODE=0

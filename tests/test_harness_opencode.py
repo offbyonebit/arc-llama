@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from helpers import python_executable
 
 from arc_llama.agent.harness import opencode as oc
 from arc_llama.agent.harness.opencode import (
@@ -20,6 +21,16 @@ from arc_llama.agent.harness.opencode import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FAKE = FIXTURES / "fake_opencode.py"
+
+
+@pytest.fixture(autouse=True)
+def _native_fake(tmp_path, monkeypatch):
+    script = FIXTURES / "fake_opencode.py"
+    binary = python_executable(
+        tmp_path / "fake-opencode",
+        f"import runpy; runpy.run_path({str(script)!r}, run_name='__main__')\n",
+    )
+    monkeypatch.setattr(f"{__name__}.FAKE", Path(binary))
 
 
 def _events() -> list[dict]:

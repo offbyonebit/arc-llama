@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from helpers import ConfigRouter as FakeRouter
+from helpers import python_executable
 
 import arc_llama.server as server_mod
 from arc_llama.agent.harness import opencode as oc
@@ -194,7 +195,10 @@ async def test_probe_tools_reports_what_the_harness_sends_the_model(tmp_path, mo
     monkeypatch.setenv("FAKE_OPENCODE_LOG", str(tmp_path / "log.jsonl"))
 
     async def stop(self):
-        return None
+        import asyncio
+
+        if self.proc is not None:
+            await asyncio.wait_for(self.proc.wait(), 5)
 
     def terminate_now(self):
         import contextlib
@@ -205,7 +209,11 @@ async def test_probe_tools_reports_what_the_harness_sends_the_model(tmp_path, mo
 
     monkeypatch.setattr(oc._Server, "stop", stop)
     monkeypatch.setattr(oc._Server, "terminate_now", terminate_now)
-    fake = str(Path(__file__).parent / "fixtures" / "fake_opencode.py")
+    script = Path(__file__).parent / "fixtures" / "fake_opencode.py"
+    fake = python_executable(
+        tmp_path / "fake-opencode",
+        f"import runpy; runpy.run_path({str(script)!r}, run_name='__main__')\n",
+    )
     names = await probe_tools(tmp_path, build_config("http://x", "m"), binary=fake, timeout=20)
     assert names == ["bash", "github_create_pr", "quota_status"]
     log = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]

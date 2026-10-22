@@ -1,0 +1,8 @@
+{
+  "asset": "llama-b11823-bin-win-vulkan-x64.zip",
+  "backend": "vulkan",
+  "schema": 1,
+  "sha256": "5f75e297498e1036a70f42f02b40bfdd0fe2bda0749985f7a59dabc624b88ab0",
+  "size": 36875569,
+  "tag": "b11823"
+}

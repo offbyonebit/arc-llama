@@ -4,7 +4,7 @@ import asyncio
 import time
 
 import pytest
-from helpers import FakeServer
+from helpers import FakeServer, sparse_file
 
 import arc_llama.router as router_mod
 from arc_llama.config import ModelConfig
@@ -445,8 +445,7 @@ async def test_vram_guard_skips_when_offload_bytes_unknown(tmp_path, monkeypatch
     monkeypatch.setattr("arc_llama.gguf_meta.scan_weight_tensors", lambda _p: None)
     model_path = tmp_path / "models" / "Qwen3-7B-Q4_K_M.gguf"
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    with model_path.open("wb") as f:
-        f.truncate(26 * 1024**3)  # sparse: st_size without the disk usage
+    sparse_file(model_path, 26 * 1024**3)
     rt = Router(cfg)
 
     model, srv = await rt.ensure_active("qwen")
@@ -517,3 +516,33 @@ def test_min_moe_offload_layers_zero_and_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr("arc_llama.router.scan_weight_tensors", lambda _p: None)
     assert min_moe_offload_layers(model, 24576) is None
     assert min_moe_offload_layers(model, None) is None
+
+
+def test_model_size_fixture_is_sparse_on_both_platforms(tmp_path):
+    import os
+    import stat
+
+    path = tmp_path / "synthetic-model.gguf"
+    size = 26 * 1024**3
+    sparse_file(path, size)
+    info = path.stat()
+    assert info.st_size == size
+    with path.open("rb") as stream:
+        stream.seek(size - 1)
+        assert stream.read(1) == b"\0"
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        assert info.st_file_attributes & stat.FILE_ATTRIBUTE_SPARSE_FILE
+        allocated = ctypes.WinDLL("kernel32", use_last_error=True).GetCompressedFileSizeW
+        allocated.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        allocated.restype = wintypes.DWORD
+        high = wintypes.DWORD()
+        ctypes.set_last_error(0)
+        low = allocated(str(path), ctypes.byref(high))
+        if low == 0xFFFFFFFF and ctypes.get_last_error():
+            raise ctypes.WinError(ctypes.get_last_error())
+        assert (high.value << 32) | low < 1024**2
+    else:
+        assert info.st_blocks * 512 < 1024**2

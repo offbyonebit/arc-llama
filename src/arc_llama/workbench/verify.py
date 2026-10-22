@@ -58,7 +58,7 @@ def _relative(value: Any) -> str | None:
     if not isinstance(value, str) or not value.strip() or len(value) > 500:
         return None
     path = Path(value.strip())
-    if path.is_absolute() or ".." in path.parts or any(files.excluded(p) for p in path.parts):
+    if path.anchor or ".." in path.parts or any(files.excluded(p) for p in path.parts):
         return None
     return path.as_posix()
 

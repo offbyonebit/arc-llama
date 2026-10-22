@@ -123,7 +123,12 @@ def test_diff_text_and_binary_handling(project, tmp_path):
 def test_symlinks_are_not_followed(project, tmp_path):
     outside = tmp_path / "outside.txt"
     outside.write_text("secret\n")
-    (project / "link.txt").symlink_to(outside)
+    try:
+        (project / "link.txt").symlink_to(outside)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks the privilege to create symlinks")
+        raise
     t = _tracker(project, tmp_path)
     outside.write_text("changed\n")
     assert t.finish()["files"] == []

@@ -1,0 +1,11 @@
+{
+  "model": "qwen05",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with one short greeting."
+    }
+  ],
+  "max_tokens": 32,
+  "stream": false
+}

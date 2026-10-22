@@ -1,0 +1,18 @@
+[
+  {
+    "ProcessId": 10648,
+    "CommandLine": "\"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\venv\\Scripts\\python.exe\"  \"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\venv\\Scripts\\pytest.exe\" tests -q"
+  },
+  {
+    "ProcessId": 34008,
+    "CommandLine": "\"C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python312\\python.exe\" \"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\venv\\Scripts\\pytest.exe\" tests -q"
+  },
+  {
+    "ProcessId": 29644,
+    "CommandLine": "\"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\venv\\Scripts\\python.exe\"  \"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\venv\\Scripts\\arc-llama.exe\" run Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M --name qwen05"
+  },
+  {
+    "ProcessId": 22356,
+    "CommandLine": "\"C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python312\\python.exe\" \"C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\venv\\Scripts\\arc-llama.exe\" run Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M --name qwen05"
+  }
+]

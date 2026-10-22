@@ -1,0 +1,111 @@
+arc-llama doctor
+
+  platform:      Windows 11
+  Kernel/driver checks are not available on Windows.
+
+  detected 5 Intel GPU(s):
+    - Arc Pro B60 @ unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00  
+(battlemage, driver=32.0.101.8735, 23.8 GB)
+        support: validated  Arc Pro B60 sycl path tested
+        note: VRAM 23 GB from HardwareInformation.qwMemorySize.
+        note: PCI location could not be determined; using a synthetic slot.
+        note: Multiple Intel GPUs detected. sycl_index_hint follows PCI slot 
+order, but the real Level Zero ordinal is the order shown by `sycl-ls`. 
+Override `sycl_index` per GPU in the config if the wrong device is selected.
+        AOT:      build with -DGGML_SYCL_DEVICE_ARCH=bmg-g21 (ocloc -device 
+bmg-g21) to skip the ~20s JIT cold start
+    - Arc B-series (unrecognised ID 0xE2F0) @ 
+unknown:VEN_8086&DEV_E2F0&SUBSYS_00008086&REV_00  (battlemage, driver=—, VRAM 
+unknown)
+        support: detected  battlemage detected; this exact SKU/backend needs 
+confirmation
+        note: VRAM size not discoverable from registry or device-ID table.
+        note: Intel GPU driver version not found in registry — the driver may 
+not be installed.
+        note: PCI location could not be determined; using a synthetic slot.
+        note: Multiple Intel GPUs detected. sycl_index_hint follows PCI slot 
+order, but the real Level Zero ordinal is the order shown by `sycl-ls`. 
+Override `sycl_index` per GPU in the config if the wrong device is selected.
+        AOT:      build with -DGGML_SYCL_DEVICE_ARCH=bmg-g21 (ocloc -device 
+bmg-g21) to skip the ~20s JIT cold start
+    - Arc B-series (unrecognised ID 0xE2F1) @ 
+unknown:VEN_8086&DEV_E2F1&SUBSYS_00008086&REV_00  (battlemage, driver=—, VRAM 
+unknown)
+        support: detected  battlemage detected; this exact SKU/backend needs 
+confirmation
+        note: VRAM size not discoverable from registry or device-ID table.
+        note: Intel GPU driver version not found in registry — the driver may 
+not be installed.
+        note: PCI location could not be determined; using a synthetic slot.
+        note: Multiple Intel GPUs detected. sycl_index_hint follows PCI slot 
+order, but the real Level Zero ordinal is the order shown by `sycl-ls`. 
+Override `sycl_index` per GPU in the config if the wrong device is selected.
+        AOT:      build with -DGGML_SYCL_DEVICE_ARCH=bmg-g21 (ocloc -device 
+bmg-g21) to skip the ~20s JIT cold start
+    - Arc B-series (unrecognised ID 0xE2F7) @ 
+unknown:VEN_8086&DEV_E2F7&SUBSYS_60231849&REV_00  (battlemage, driver=—, VRAM 
+unknown)
+        support: detected  battlemage detected; this exact SKU/backend needs 
+confirmation
+        note: VRAM size not discoverable from registry or device-ID table.
+        note: Intel GPU driver version not found in registry — the driver may 
+not be installed.
+        note: PCI location could not be determined; using a synthetic slot.
+        note: Multiple Intel GPUs detected. sycl_index_hint follows PCI slot 
+order, but the real Level Zero ordinal is the order shown by `sycl-ls`. 
+Override `sycl_index` per GPU in the config if the wrong device is selected.
+        AOT:      build with -DGGML_SYCL_DEVICE_ARCH=bmg-g21 (ocloc -device 
+bmg-g21) to skip the ~20s JIT cold start
+    - Arc B-series (unrecognised ID 0xE2FF) @ 
+unknown:VEN_8086&DEV_E2FF&SUBSYS_00000000&REV_01  (battlemage, driver=—, VRAM 
+unknown)
+        support: detected  battlemage detected; this exact SKU/backend needs 
+confirmation
+        note: VRAM size not discoverable from registry or device-ID table.
+        note: Intel GPU driver version not found in registry — the driver may 
+not be installed.
+        note: PCI location could not be determined; using a synthetic slot.
+        note: Multiple Intel GPUs detected. sycl_index_hint follows PCI slot 
+order, but the real Level Zero ordinal is the order shown by `sycl-ls`. 
+Override `sycl_index` per GPU in the config if the wrong device is selected.
+        AOT:      build with -DGGML_SYCL_DEVICE_ARCH=bmg-g21 (ocloc -device 
+bmg-g21) to skip the ~20s JIT cold start
+
+  external tools:
+    clinfo         — missing —
+    sycl-ls        — missing —
+    vulkaninfo     C:\WINDOWS\system32\vulkaninfo.EXE
+    intel_gpu_top  — missing —
+    nvtop          — missing —
+    lspci          — missing —
+
+  Level Zero:
+    loader:      ok  C:\WINDOWS\system32\ze_loader.dll
+
+  user groups:
+    Group checks are not available on Windows.
+
+  oneAPI:
+    setvars:     warn  not found — install Intel oneAPI Base Toolkit if 
+building llama.cpp from source
+
+  llama-server binary:
+    no config loaded
+
+  config:
+    missing at 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml — run 
+arc-llama init.
+
+  plugins (API 1.0):
+    none installed
+
+  competitive-inference gates
+    warn  oneapi_setvars: setvars not found
+        → Install Intel oneAPI Base Toolkit to build a SYCL llama-server.
+    warn  config: missing at 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml
+        → Run arc-llama init.
+EXIT_CODE=0

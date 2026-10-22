@@ -57,22 +57,25 @@ class ApiKeyStore:
         self._keys: dict[str, ApiKey] = {}
         self._dirty = False
         self._last_flush = time.monotonic()
-        self._mtime_ns: int | None = None
+        self._file_version: tuple[int, int, int, int] | None = None
         self._load()
 
     @classmethod
     def for_state_dir(cls, state_dir: str | Path) -> ApiKeyStore:
         return cls(Path(state_dir).expanduser() / FILE_NAME)
 
-    def _file_mtime(self) -> int | None:
+    def _file_stamp(self) -> tuple[int, int, int, int] | None:
         try:
-            return self.path.stat().st_mtime_ns
+            stat = self.path.stat()
+            # Atomic replacements can share an mtime on coarse filesystems.
+            # Include identity and size so a revoked key cannot remain cached.
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
         except OSError:
             return None
 
     def _refresh_locked(self) -> None:
         """Pick up keys created or revoked by another process (the CLI)."""
-        if self._file_mtime() != self._mtime_ns:
+        if self._file_stamp() != self._file_version:
             usage = {k.id: (k.requests, k.last_used_at) for k in self._keys.values()}
             self._keys = {}
             self._load()
@@ -85,7 +88,7 @@ class ApiKeyStore:
                     )
 
     def _load(self) -> None:
-        self._mtime_ns = self._file_mtime()
+        self._file_version = self._file_stamp()
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -120,7 +123,7 @@ class ApiKeyStore:
             json.dump(data, handle, indent=2)
             handle.write("\n")
         os.replace(tmp, self.path)
-        self._mtime_ns = self._file_mtime()
+        self._file_version = self._file_stamp()
         self._dirty = False
         self._last_flush = time.monotonic()
 

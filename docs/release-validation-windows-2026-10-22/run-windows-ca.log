@@ -1,0 +1,184 @@
+  Backend selected: Vulkan (portable fallback; a runtime will be installed if 
+needed).
+2/4 Installing verified vulkan llama-server ...
+2026-10-22 13:50:56,832 INFO httpx: HTTP Request: GET https://api.github.com/repos/ggml-org/llama.cpp/releases/latest "HTTP/1.1 200 OK"
+2026-10-22 13:50:57,484 INFO httpx: HTTP Request: GET https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30 "HTTP/1.1 200 OK"
+2026-10-22 13:50:57,874 INFO httpx: HTTP Request: GET https://github.com/ggml-org/llama.cpp/releases/download/b11823/llama-b11823-bin-win-vulkan-x64.zip "HTTP/1.1 302 Found"
+2026-10-22 13:50:58,147 INFO httpx: HTTP Request: GET https://release-assets.githubusercontent.com/github-production-release-asset/612354784/10cb59b7-c01d-4e82-a004-a496638bd3d1?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-22T19%3A29%3A39Z&rscd=attachment%3B+filename%3Dllama-b11823-bin-win-vulkan-x64.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-22T18%3A29%3A16Z&ske=2026-10-22T19%3A29%3A39Z&sks=b&skv=2018-11-09&sig=XNR2dpVO8vOCqFh6og2RkOtRa%2BYckCgXczwxq5NxBXQ%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc5MjY5Njg1MywibmJmIjoxNzkyNjk1MDUzLCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.H_Qok7mRvGhGMlJrl40r652MAeevOb6MWnOFhH67igE&response-content-disposition=attachment%3B%20filename%3Dllama-b11823-bin-win-vulkan-x64.zip&response-content-type=application%2Foctet-stream "HTTP/1.1 200 OK"
+---------------------------------------- 36.9/36.9 MB 100%
+  verified llama.cpp b11823 · 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823
+-vulkan\llama-server.exe
+3/4 Downloading Qwen/Qwen2.5-0.5B-Instruct-GGUF → 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-
+Instruct-GGUF
+2026-10-22 13:51:00,871 INFO httpx2: HTTP Request: GET https://huggingface.co/api/agent-harnesses "HTTP/1.1 200 OK"
+2026-10-22 13:51:01,007 INFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-10-22 13:51:01,139 INFO httpx2: HTTP Request: HEAD https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf "HTTP/1.1 302 Found"
+2026-10-22 13:51:01,297 INFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/xet-read-token/9217f5db79a29953eb74d5343926648285ec7e67 "HTTP/1.1 200 OK"
+  registered qwen05 · qwen2.5-0.5b-instruct-q4_k_m.gguf
+4/4 Launch plan
+Model          qwen05 (0.5 GiB)                     
+GPU            Arc Pro B60                          
+Recipe         ctx 32,768 · KV q8_0 · backend vulkan
+Estimated fit  comfortable · 1,685/24,382 MiB       
+
+Arc inference is ready · model qwen05
+  OpenAI base URL  http://127.0.0.1:11437/v1
+  Web UI           http://127.0.0.1:11437/
+  Press Ctrl+C to stop. The first request loads the selected model.
+
+Auto-tune: on -- 1 model(s) eligible; sweep starts after 120s idle. Use 
+--no-auto-tune to disable.
+Admin authentication is enabled via config file 
+(C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-ar
+c\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml). Admin 
+endpoints require 'Authorization: Bearer <token>'.
+arc-llama serve — applied Arc profiles:
+  GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00: battlemage (vulkan) · 
+24382 MB
+  model qwen05: ctx=32768 · KV q8_0 · port 18080
+INFO:     Started server process [32608]
+INFO:     Waiting for application startup.
+2026-10-22 13:51:23,076 INFO arc_llama.autotune: autotune: started background loop
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:11437 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61062 - "GET /v1/models HTTP/1.1" 200 OK
+2026-10-22 13:51:58,452 INFO arc_llama.router: loading model qwen05 on GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00 ...
+2026-10-22 13:51:58,453 INFO arc_llama.launcher: [qwen05] starting: C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823-vulkan\llama-server.exe -m C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-Instruct-GGUF\qwen2.5-0.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 18080 -ngl 999 -c 32768 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 -ub 1024 -b 2048 --flash-attn on
+2026-10-22 13:51:59,151 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"
+2026-10-22 13:52:00,667 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"
+2026-10-22 13:52:02,182 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"
+2026-10-22 13:52:03,696 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 200 OK"
+2026-10-22 13:52:03,699 INFO arc_llama.launcher: [qwen05] ready after 5.2s
+INFO:     127.0.0.1:55814 - "GET /assets/arc-llama-logo.png?v=ui-0.15 HTTP/1.1" 200 OK
+2026-10-22 13:52:06,205 INFO httpx: HTTP Request: POST http://127.0.0.1:18080/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61095 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59618 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59618 - "GET /style.css?v=ui-0.29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59618 - "GET /paper.css?v=paper-6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /paper-tokens.css?v=paper-3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63368 - "GET /dashboard/library.js?v=ui-0.29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54381 - "GET /dashboard/measurements.js?v=ui-0.25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54381 - "GET /dashboard/plugins.js?v=ui-0.21 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63368 - "GET /dashboard/integration.js?v=ui-0.21 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59618 - "GET /app.js?v=paper-5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /paper.js?v=paper-5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55479 - "GET /assets/arc-llama-logo.png?v=ui-0.15 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /assets/arc-llama-logo.png?v=paper-1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55479 - "GET /admin/session-token HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /assets/fonts/geist.ttf HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /admin/plugins HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55479 - "GET /admin/ui/layout HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64595 - "GET /assets/fonts/geist-mono.ttf HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55479 - "GET /admin/metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59618 - "GET /admin/metrics/history?metric=generation_tok_s&days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59618 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64941 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /admin/metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60268 - "GET /admin/metrics/history?metric=generation_tok_s&days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60268 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60268 - "GET /chat?model=qwen05 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60268 - "GET /chat.css?v=ui-0.27 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /chat/work.css?v=paper-6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60268 - "GET /vendor/marked-12.0.2.min.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /vendor/highlight-11.9.0.min.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63405 - "GET /vendor/github-dark-11.9.0.min.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57165 - "GET /assets/arc-llama-tools.png?v=ui-0.20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55534 - "GET /markdown_safety.js?v=ui-0.14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55534 - "GET /chat/rendering.js?v=ui-0.26 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /chat/attachments.js?v=ui-0.25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57165 - "GET /chat/work.js?v=paper-10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63405 - "GET /chat/compaction.js?v=ui-0.27 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60268 - "GET /chat.js?v=paper-5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /chat/settings.js?v=ui-0.28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55534 - "GET /chat/history.js?v=ui-0.27 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57165 - "GET /admin/session-token HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57165 - "GET /v1/agent/info HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55534 - "GET /admin/ui/layout HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55534 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55534 - "GET /v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57165 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /v1/chats/folders HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /v1/chats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "POST /v1/chat/budget HTTP/1.1" 400 Bad Request
+INFO:     127.0.0.1:60464 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "POST /v1/chats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "PATCH /v1/chats/c2fd0f6c-7c3d-44c4-b633-2c502d96d115 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "POST /admin/load/qwen05 HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:60464 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60464 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62439 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65256 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56151 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52083 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49621 - "POST /v1/chat/completions HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:52083 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58618 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     Shutting down

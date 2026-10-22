@@ -1,0 +1,11 @@
+2026-10-22 13:49:57,980 WARNING arc_llama.config: No admin_token was configured -- generated an in-memory one for this run only (no config file exists at C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml, so nothing was saved). Admin endpoints and auto_confirm agent runs require an 'Authorization: Bearer <token>' header, and the token changes on every restart until one is persisted. Set ARC_LLAMA_ADMIN_TOKEN or create a config to pin it.
+1/4 Detecting Intel Arc hardware ...
+  ready Arc Pro B60 · config 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml
+  Backend selected: Vulkan (portable fallback; a runtime will be installed if 
+needed).
+2/4 Installing verified vulkan llama-server ...
+
+Error: Runtime installation failed: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)
+EXIT_CODE=1

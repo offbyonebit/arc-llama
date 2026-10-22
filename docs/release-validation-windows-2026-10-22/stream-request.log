@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+HTTP 503
+{"error":{"category":"runtime_missing","message":"llama-server runtime not found: C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe. Install a compatible runtime or update this model's llama_server override or paths.llama_server.","action":"Install a compatible runtime or update this model's llama_server override or paths.llama_server.","diagnostics_id":"runtime_missing-433b6f5e97fd"}}
+  File "<string>", line 1, in <module>
+  File "C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\venv\Lib\site-packages\httpx\_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '503 Service Unavailable' for url 'http://127.0.0.1:11437/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+EXIT_CODE=1

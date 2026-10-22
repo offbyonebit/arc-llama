@@ -1,0 +1,23 @@
+                                  Intel GPUs                                   
+┌──────────────┬────────────┬─────────────┬──────────────┬──────────┬─────────┐
+│ PCI slot     │ Arch       │ Name        │ Driver       │ DRM card │ VRAM    │
+├──────────────┼────────────┼─────────────┼──────────────┼──────────┼─────────┤
+│ unknown:VEN… │ battlemage │ Arc Pro B60 │ 32.0.101.87… │ —        │ 23.8 GB │
+│ unknown:VEN… │ battlemage │ Arc         │ —            │ —        │ ?       │
+│              │            │ B-series    │              │          │         │
+│              │            │ (unrecogni… │              │          │         │
+│              │            │ ID 0xE2F0)  │              │          │         │
+│ unknown:VEN… │ battlemage │ Arc         │ —            │ —        │ ?       │
+│              │            │ B-series    │              │          │         │
+│              │            │ (unrecogni… │              │          │         │
+│              │            │ ID 0xE2F1)  │              │          │         │
+│ unknown:VEN… │ battlemage │ Arc         │ —            │ —        │ ?       │
+│              │            │ B-series    │              │          │         │
+│              │            │ (unrecogni… │              │          │         │
+│              │            │ ID 0xE2F7)  │              │          │         │
+│ unknown:VEN… │ battlemage │ Arc         │ —            │ —        │ ?       │
+│              │            │ B-series    │              │          │         │
+│              │            │ (unrecogni… │              │          │         │
+│              │            │ ID 0xE2FF)  │              │          │         │
+└──────────────┴────────────┴─────────────┴──────────────┴──────────┴─────────┘
+EXIT_CODE=0

@@ -104,7 +104,9 @@ async def test_work_isolation_review_apply_undo_and_conflicts(work, monkeypatch)
     with pytest.raises(ValueError, match="independently"):
         await manager.action(job["id"], "undo", {})
     assert (source / "new.txt").exists()
-    (source / "hello.txt").write_text("changed\n")
+    # Undo preflight compares exact bytes. write_text would translate LF to
+    # CRLF on Windows, unlike the agent's binary writes.
+    (source / "hello.txt").write_bytes(b"changed\n")
     await manager.action(job["id"], "undo", {})
     assert (source / "hello.txt").read_text() == "original\n"
     assert not (source / "new.txt").exists()

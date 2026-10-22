@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+from helpers import python_executable
 
 from arc_llama.agent.harness import hermes as adapter
 
@@ -26,10 +26,7 @@ def stop_fake_without_host_signals(monkeypatch):
 
 @pytest.fixture
 def binary(tmp_path):
-    target = tmp_path / "hermes-test"
-    target.write_text(f"#!{sys.executable}\n" + FAKE.read_text())
-    target.chmod(0o755)
-    return str(target)
+    return python_executable(tmp_path / "hermes-test", FAKE.read_text(encoding="utf-8"))
 
 
 async def run(tmp_path, binary, scenario="success", approved=False):

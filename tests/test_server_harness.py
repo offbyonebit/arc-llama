@@ -174,6 +174,7 @@ def test_missing_folder_suggests_the_closest_existing_one_and_relative_means_hom
     home = tmp_path / "home"
     (home / "projects").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     with TestClient(_app(tmp_path, monkeypatch)) as client:
         r = client.post("/v1/agent", json={**BODY, "root": str(home / "projects" / "typo" / "deeper"), "track_changes": True})
         assert r.status_code == 400

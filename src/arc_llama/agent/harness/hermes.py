@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import signal
+import sys
 import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -279,7 +280,7 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(proc.wait(), 0.75)
     with contextlib.suppress(ProcessLookupError):
-        if os.name == "posix":
+        if sys.platform != "win32" and os.name == "posix":
             os.killpg(proc.pid, signal.SIGTERM)
         elif proc.returncode is None:
             proc.terminate()
@@ -289,7 +290,7 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), 3)
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
-            if os.name == "posix":
+            if sys.platform != "win32" and os.name == "posix":
                 os.killpg(proc.pid, signal.SIGKILL)
             else:
                 proc.kill()

@@ -14,6 +14,8 @@ import os
 import platform
 import re
 import shutil
+import ssl
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -32,6 +34,7 @@ log = logging.getLogger("arc_llama.runtime")
 
 LLAMA_CPP_REPO = "ggml-org/llama.cpp"
 GITHUB_API = "https://api.github.com"
+_IS_WINDOWS = sys.platform == "win32"
 
 
 class RuntimeInstallError(RuntimeError):
@@ -316,6 +319,17 @@ def _auth_headers() -> dict[str, str]:
     return {}
 
 
+def _runtime_ssl_context() -> ssl.SSLContext | bool:
+    """Use Windows trust roots unless the caller explicitly selected a CA bundle.
+
+    httpx's default certifi bundle omits managed Windows ROOT/CA certificates.
+    Keep its existing defaults on other platforms and its SSL_CERT_* handling.
+    """
+    if _IS_WINDOWS and not any(os.environ.get(k) for k in ("SSL_CERT_FILE", "SSL_CERT_DIR")):
+        return ssl.create_default_context()
+    return True
+
+
 def install_runtime(
     *,
     backend: str = "vulkan",
@@ -365,7 +379,10 @@ def install_runtime(
 
     own_client = client is None
     if own_client:
-        client = httpx.Client(follow_redirects=True, timeout=300.0, headers=_auth_headers())
+        client = httpx.Client(
+            follow_redirects=True, timeout=300.0, headers=_auth_headers(),
+            verify=_runtime_ssl_context(),
+        )
     assert client is not None
     try:
         release = resolve_release(client, version)

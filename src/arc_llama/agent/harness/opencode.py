@@ -279,6 +279,8 @@ class _Server:
         self.url = ""
 
     async def start(self) -> str:
+        if not self.root.is_dir():
+            raise OpenCodeError(f"The project folder does not exist: {self.root}")
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 self.binary, "serve", "--hostname", "127.0.0.1", "--port", "0",
@@ -685,6 +687,8 @@ async def probe_tools(root: Path | str, config: dict[str, Any], *, binary: str |
         raise OpenCodeError(f"Could not read OpenCode's tools: {exc}") from exc
     finally:
         listener.shutdown()
+        listener.server_close()
+        thread.join()
         server.terminate_now()
         with contextlib.suppress(BaseException):
             await asyncio.shield(server.stop())

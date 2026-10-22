@@ -135,6 +135,11 @@ def main() -> int:
     home.mkdir(exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("XDG_", "ARC_LLAMA_"))}
     env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env["APPDATA"] = str(home / "AppData" / "Roaming")
+    env["LOCALAPPDATA"] = str(home / "AppData" / "Local")
+    if os.name == "nt":
+        env.setdefault("UV_NATIVE_TLS", "true")
 
     def run(python: Path | str, *argv: str) -> None:
         subprocess.run([str(python), "-I", str(probe), *argv], check=True, env=env, cwd=work)
@@ -149,8 +154,8 @@ def main() -> int:
         venv = work / f"venv-{version}"
         python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not python.exists():
-            subprocess.run(["uv", "venv", "-q", str(venv)], check=True)
-            subprocess.run(["uv", "pip", "install", "-q", "--python", str(python), f"arc-llama=={version}"], check=True)
+            subprocess.run(["uv", "venv", "-q", str(venv)], check=True, env=env)
+            subprocess.run(["uv", "pip", "install", "-q", "--python", str(python), f"arc-llama=={version}"], check=True, env=env)
 
         run(python, "write", str(out / f"{version}.toml"))
         run(python, "load", str(out / f"{version}.toml"), str(out / f"{version}-self.json"))

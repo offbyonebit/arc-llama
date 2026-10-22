@@ -157,7 +157,7 @@ class TestBuildPlan:
         model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")
         gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
         plan = build_plan(cfg, model, gpu)
-        assert plan.argv[0] == "/bin/llama-server"
+        assert Path(plan.argv[0]) == Path("/bin/llama-server")
         assert "-m" in plan.argv
         assert "/m.gguf" in plan.argv
         assert "--port" in plan.argv

@@ -4,14 +4,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
-from helpers import FakeServer
+from helpers import FakeServer, python_executable
 
 from arc_llama import model_compatibility as compatibility
 from arc_llama.autotune import compute_fingerprint
@@ -25,13 +24,11 @@ from arc_llama.server_caps import probe_server_caps
 
 
 def executable(path: Path, help_text: str = "--flash-attn on off auto") -> str:
-    path.write_text(
-        f"#!{sys.executable}\nimport os, sys, json\n"
+    return python_executable(
+        path, "import os, sys, json\n"
         f"if '--help' in sys.argv: print({help_text!r})\n"
         "else: print(json.dumps({'argv': sys.argv[1:], 'env': os.environ.get('ARC_TEST_ONLY')}))\n"
     )
-    path.chmod(0o755)
-    return str(path)
 
 
 @pytest.fixture
@@ -76,6 +73,7 @@ def test_config_roundtrip_old_defaults_and_model_path(runtime_cfg, tmp_path):
     model.llama_server = "private-server"
     model.env = {"PATH": str(tmp_path), "LD_LIBRARY_PATH": "/private/lib", "EMPTY": ""}
     binary = executable(tmp_path / "private-server")
+    model.llama_server = Path(binary).name
     path = cfg.save(tmp_path / "config.toml")
     loaded = load_config(path)
     assert loaded.model_llama_server(loaded.models[0]) == binary
@@ -95,9 +93,9 @@ def test_invalid_runtime_config_is_rejected(binary, env):
 
 
 def test_probe_environment_and_cache_are_model_specific(tmp_path):
-    binary = tmp_path / "env-server"
-    binary.write_text(f"#!{sys.executable}\nimport os\nprint(os.environ.get('HELP', 'usage'))\n")
-    binary.chmod(0o755)
+    binary = python_executable(
+        tmp_path / "env-server", "import os\nprint(os.environ.get('HELP', 'usage'))\n"
+    )
     first = probe_server_caps(str(binary), env={"HELP": "usage"})
     second = probe_server_caps(str(binary), env={"HELP": "--flash-attn on off auto"})
     assert first.probed and not first.supports_flash_attn

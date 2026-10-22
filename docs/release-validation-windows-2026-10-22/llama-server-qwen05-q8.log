@@ -1,0 +1,17 @@
+0.00.299.082 I srv  llama_server: initializing ...
+0.00.299.091 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.299.431 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.312.223 I srv    load_model: loading model 'C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-Instruct-GGUF\qwen2.5-0.5b-instruct-q8_0.gguf'
+0.00.694.705 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.01.239.973 I cmn          init: llama threadpool init, n_threads = 6
+0.01.447.427 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 32768, kv_unified = 'false'
+0.01.452.543 I srv  llama_server: model loaded
+0.01.452.552 I srv  llama_server: listening on http://127.0.0.1:18081
+0.02.421.384 I slot get_availabl: id  0 | task -1 | selected slot by LRU, n_tokens = 0, t_last = -1
+0.02.421.442 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.02.508.137 I slot print_timing: id  0 | task 0 | prompt eval time =      46.78 ms /    33 tokens (    1.42 ms per token,   705.41 tokens per second)
+0.02.508.144 I slot print_timing: id  0 | task 0 |        eval time =      39.88 ms /    10 tokens (    4.43 ms per token,   225.65 tokens per second)
+0.02.508.145 I slot print_timing: id  0 | task 0 |       total time =      86.66 ms /    43 tokens
+0.02.508.146 I slot print_timing: id  0 | task 0 |    graphs reused =          9
+0.02.508.147 I slot print_timing: id  0 | task 0 |   graph reallocs =          0    /     0        (same size) / (changed size)
+0.02.508.170 I slot      release: id  0 | task 0 | stop processing: n_tokens = 42, truncated = 0
