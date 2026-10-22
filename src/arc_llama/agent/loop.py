@@ -17,6 +17,7 @@ import httpx
 
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.prompts import (
+    DOCUMENT_INSTRUCTIONS,
     PLANNING_INSTRUCTIONS,
     SYSTEM_PROMPT,
     USER_INSTRUCTIONS,
@@ -24,6 +25,7 @@ from arc_llama.agent.prompts import (
 )
 from arc_llama.agent.tools import TOOLS, ToolContext, ToolResult
 from arc_llama.chat_store import ChatStore
+from arc_llama.stream_metrics import generation_rate
 
 log = logging.getLogger("arc_llama.agent.loop")
 
@@ -45,6 +47,7 @@ async def run_agent(
     timeout: float = 600.0,
     chat_store: ChatStore | None = None,
     extra: dict[str, Any] | None = None,
+    work_type: str = "code",
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the agent loop and yield SSE-shaped events.
 
@@ -53,6 +56,7 @@ async def run_agent(
         {"type": "plan", "content": str}
         {"type": "assistant", "content": str}
         {"type": "usage", "prompt_tokens": int, "completion_tokens": int}
+        {"type": "performance", "generation_tok_s": float}
         {"type": "tool_call", "id": str, "name": str, "arguments": dict}
         {"type": "tool_result", "id": str, "name": str, "content": str, "error": bool}
         {"type": "confirm_required", "id": str, "tool": str, "arguments": dict}
@@ -69,6 +73,14 @@ async def run_agent(
             auto_confirm is False.
     """
     root = root.resolve()
+    if work_type == "documents":
+        from arc_llama.agent.documents import documents_registry
+
+        tools = documents_registry()
+        instructions = DOCUMENT_INSTRUCTIONS
+    else:
+        tools = TOOLS
+        instructions = USER_INSTRUCTIONS
     if plan_mode and not auto_confirm and plan_callback is None:
         yield {
             "type": "error",
@@ -78,7 +90,7 @@ async def run_agent(
 
     conversation: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{USER_INSTRUCTIONS}{task}"},
+        {"role": "user", "content": f"{instructions}{task}"},
     ]
 
     yield {"type": "status", "message": f"Starting agent for model '{model}' in {root}"}
@@ -154,7 +166,7 @@ async def run_agent(
             yield {"type": "activity", "phase": "generating"}
             if report_context:
                 try:
-                    counted = await client.post("/v1/chat/budget", json={"model": model, "messages": conversation, "tools": TOOLS.definitions, "max_tokens": 1}, timeout=4.0)
+                    counted = await client.post("/v1/chat/budget", json={"model": model, "messages": conversation, "tools": tools.definitions, "max_tokens": 1}, timeout=4.0)
                     counted.raise_for_status()
                     budget = counted.json()
                     if type(budget.get("prompt_tokens")) is int and budget["prompt_tokens"] >= 0:
@@ -167,7 +179,7 @@ async def run_agent(
                     json={
                         "model": model,
                         "messages": conversation,
-                        "tools": TOOLS.definitions,
+                        "tools": tools.definitions,
                         "tool_choice": "auto",
                     },
                 )
@@ -179,6 +191,10 @@ async def run_agent(
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM: {e}"}
                 return
+
+            rate = generation_rate(data)
+            if rate is not None:
+                yield {"type": "performance", "generation_tok_s": rate}
 
             usage = data.get("usage") or {}
             prompt_tokens = usage.get("prompt_tokens")
@@ -215,7 +231,7 @@ async def run_agent(
 
                 yield {"type": "tool_call", "id": call_id, "name": name, "arguments": arguments}
 
-                if TOOLS.requires_confirmation(name) and not auto_confirm:
+                if tools.requires_confirmation(name) and not auto_confirm:
                     yield {
                         "type": "confirm_required",
                         "id": call_id,
@@ -247,9 +263,9 @@ async def run_agent(
                             error=True,
                         )
                     else:
-                        result = await TOOLS.execute(name, arguments, ctx)
+                        result = await tools.execute(name, arguments, ctx)
                 else:
-                    result = await TOOLS.execute(name, arguments, ctx)
+                    result = await tools.execute(name, arguments, ctx)
 
                 if result.checkpoint_id:
                     yield {
@@ -275,6 +291,15 @@ async def run_agent(
                         "content": result_text,
                     }
                 )
+                if result.images:
+                    # Tool messages carry text only, so a page picture goes in as the next user turn.
+                    conversation.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": f"Image from {name}:"}]
+                            + [{"type": "image_url", "image_url": {"url": url}} for url in result.images],
+                        }
+                    )
 
         yield {
             "type": "error",

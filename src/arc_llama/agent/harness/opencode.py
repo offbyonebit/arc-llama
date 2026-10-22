@@ -359,6 +359,7 @@ async def run_opencode(
     command: str | None = None,
     arguments: str = "",
     tool_profile: dict[str, Any] | None = None,
+    session_title: str | None = None,
     **_ignored: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive OpenCode for one task, yielding ``run_agent``-shaped events.
@@ -423,9 +424,10 @@ async def run_opencode(
                     await queue.put(None)
 
             pump = asyncio.create_task(pump_events())
-            created = await client.post("/session", json={"title": task.strip().split("\n")[0][:80] or "arc-llama"})
+            created = await client.post("/session", json={"title": (session_title or task).strip().split("\n")[0][:80] or "arc-llama"})
             created.raise_for_status()
             session_id = created.json()["id"]
+            yield {"type": "harness_session", "session_id": "oc-" + session_id}
             translator = OpenCodeTranslator(session_id)
 
             handled: set[str] = set()      # permission ids already put to the user (events and polling can both report one)
@@ -719,14 +721,18 @@ async def list_tools(root: Path | str, model: str = "arc-llama", *, binary: str 
 async def list_capabilities(root: Path | str, model: str = "arc-llama", *, binary: str | None = None) -> dict[str, Any]:
     """What a profile can switch on or off for a project: MCP servers, skills and the web tools."""
     commands = await list_commands(root, model, binary=binary)
+    warnings: list[str] = []
     try:
         tools = [t for t in await list_tools(root, model, binary=binary) if t["id"] not in HIDDEN_TOOLS]
     except OpenCodeError as exc:
         log.warning("Could not list tools for profiles: %s", exc)
+        warnings.append(str(exc))
         tools = []
     return {
         "mcp": mcp_server_names(Path(root).resolve()),
         "skills": [{"name": c["name"], "description": c["description"]} for c in commands if c["source"] == "skill"],
         "web": list(WEB_TOOLS),
         "tools": tools,
+        "tools_complete": not warnings,
+        "warnings": warnings,
     }

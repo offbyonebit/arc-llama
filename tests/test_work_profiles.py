@@ -17,6 +17,27 @@ from arc_llama.config import Config, ServerConfig
 SERVERS = ["searxng", "github", "memory"]
 
 
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.asyncio
+async def test_capability_discovery_marks_partial_catalogs(tmp_path, monkeypatch, failed):
+    async def commands(*_a, **_k):
+        return [{"name": "pdf", "description": "PDF", "source": "skill"}]
+
+    async def tools(*_a, **_k):
+        if failed:
+            raise oc.OpenCodeError("synthetic discovery failure")
+        return [{"id": "read", "group": "builtin"}, {"id": "question", "group": "builtin"}]
+
+    monkeypatch.setattr(oc, "list_commands", commands)
+    monkeypatch.setattr(oc, "list_tools", tools)
+    monkeypatch.setattr(oc, "mcp_server_names", lambda _root: ["demo"])
+    result = await oc.list_capabilities(tmp_path)
+    assert result["tools_complete"] is not failed
+    assert result["warnings"] == (["synthetic discovery failure"] if failed else [])
+    assert result["tools"] == ([] if failed else [{"id": "read", "group": "builtin"}])
+    assert result["skills"] == [{"name": "pdf", "description": "PDF"}]
+
+
 def test_clean_profile_validates_and_dedupes():
     ok = clean_profile({"name": "  Research ", "mcp": ["searxng", "searxng"], "skills": ["pdf"], "web": True})
     assert ok == {"name": "Research", "description": "", "mcp": ["searxng"], "skills": ["pdf"], "tools_off": [], "web": True}

@@ -181,7 +181,7 @@ def _name_tokens(name: str) -> set[str]:
     return {t for t in re.split(r"[^0-9a-z]+", name.lower()) if t}
 
 
-def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0) -> list[tuple[int, str]]:
+def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0, env: dict[str, str] | None = None) -> list[tuple[int, str]]:
     """Return [(vulkan_index, device_name)] as reported by ``--list-devices``.
 
     Returns an empty list if the binary cannot be run or prints nothing we
@@ -193,6 +193,7 @@ def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0) -> li
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return []

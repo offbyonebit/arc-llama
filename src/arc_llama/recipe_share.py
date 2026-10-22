@@ -142,7 +142,7 @@ def _clean_provenance(raw: Any) -> dict[str, Any]:
     return out
 
 
-def llama_server_build_identity(binary_path: str | Path) -> dict[str, str]:
+def llama_server_build_identity(binary_path: str | Path, *, env: dict[str, str] | None = None) -> dict[str, str]:
     """Inspect *binary_path* for the local llama-server build identity.
 
     Returns only safe, shareable provenance fields. If the binary is missing,
@@ -172,6 +172,7 @@ def llama_server_build_identity(binary_path: str | Path) -> dict[str, str]:
             text=True,
             timeout=10,
             check=False,
+            env={**os.environ, **env} if env is not None else None,
         )
         text = (proc.stdout or "") + "\n" + (proc.stderr or "")
         for line in text.splitlines():

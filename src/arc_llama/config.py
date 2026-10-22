@@ -293,6 +293,19 @@ class GPUConfig:
     """
 
 
+def validate_model_runtime(llama_server: Any, env: Any) -> None:
+    """Validate explicit executable/environment settings before any mutation."""
+    if not isinstance(llama_server, str) or "\0" in llama_server or len(llama_server) > 4096:
+        raise ValueError("llama_server must be an executable path or an empty string")
+    if not isinstance(env, dict) or len(env) > 256:
+        raise ValueError("env must be an object with at most 256 string variables")
+    for key, value in env.items():
+        if not isinstance(key, str) or not key or "=" in key or "\0" in key:
+            raise ValueError("env names must be nonempty strings without '=' or NUL")
+        if not isinstance(value, str) or "\0" in value or len(value) > 65536:
+            raise ValueError("env values must be strings without NUL, at most 65536 characters")
+
+
 @dataclass
 class ModelConfig:
     name: str  # short id, also URL-safe (e.g. "qwen3.6-27b")
@@ -308,6 +321,14 @@ class ModelConfig:
     tuned_at: float | None = None
     tune_fingerprint: str = ""
     tune_error: str = ""
+
+    llama_server: str = ""
+    """Model-only executable override; empty inherits paths.llama_server."""
+    env: dict[str, str] = field(default_factory=dict)
+    """Applied after automatic GPU defaults, only to this model's subprocesses."""
+
+    def __post_init__(self) -> None:
+        validate_model_runtime(self.llama_server, self.env)
 
     def launch_recipe(self) -> LaunchRecipe:
         r = self.recipe or {}
@@ -361,6 +382,9 @@ class Config:
     upstreams: list[UpstreamConfig] = field(default_factory=list)
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     profiles: list[ProfileConfig] = field(default_factory=list)
+    # Keys from the file that this version does not know (written by a newer
+    # arc-llama); kept so saving does not drop them. See _unknown_keys.
+    unknown_keys: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     # ------------------------------------------------------------------
     # Lookup helpers
@@ -439,6 +463,15 @@ class Config:
                 return m
         return None
 
+    def model_llama_server(self, model: ModelConfig) -> str:
+        """Resolve the selected executable using this model's PATH, without executing it."""
+        import shutil
+
+        command = str(Path(model.llama_server or self.paths.llama_server).expanduser())
+        if Path(command).is_absolute() or Path(command).parent != Path("."):
+            return command
+        return shutil.which(command, path=model.env.get("PATH", os.environ.get("PATH", ""))) or command
+
     def find_gpu(self, pci_slot: str) -> GPUConfig | None:
         for g in self.gpus:
             if g.pci_slot == pci_slot:
@@ -463,7 +496,7 @@ class Config:
             "mcp_servers": [asdict(s) for s in self.mcp_servers],
             "profiles": [asdict(p) for p in self.profiles],
         }
-        return _strip_none(d)
+        return _restore_unknown_keys(_strip_none(d), self.unknown_keys)
 
     def save(self, path: Path | None = None) -> Path:
         """Persist the config, atomically.
@@ -587,9 +620,88 @@ def _filter_fields(cls: type, raw: dict[str, Any]) -> dict[str, Any]:
             filtered[k] = v
         else:
             logging.getLogger("arc_llama.config").warning(
-                "Ignoring unknown config key %r in %s", k, cls.__name__
+                "Unknown config key %r in %s (written by a newer arc-llama?); "
+                "this version does not use it but keeps it when saving",
+                k,
+                cls.__name__,
             )
     return filtered
+
+
+# List sections and the field that identifies an entry across a load/save cycle.
+_ENTRY_KEYS = {
+    "gpus": "pci_slot",
+    "models": "name",
+    "upstreams": "name",
+    "mcp_servers": "name",
+    "profiles": "name",
+}
+_SECTION_CLASSES: dict[str, type] = {}  # filled after the dataclasses below exist
+
+
+def _unknown_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    """Collect keys this version does not understand, so ``save`` can write them back.
+
+    Rolling back to an older arc-llama used to cost settings: the older version
+    ignored keys added later and dropped them the next time it saved. Keeping
+    them here means a newer config survives being edited by this version, and a
+    later upgrade finds its settings intact. List entries are matched by their
+    identifying field, so a removed or renamed entry takes its extras with it.
+    """
+    known_top = {f.name for f in fields(Config)}
+    kept: dict[str, Any] = {"top": {k: v for k, v in raw.items() if k not in known_top}}
+    for section in ("server", "paths", "tune", "workload", "agent"):
+        values = raw.get(section)
+        if isinstance(values, dict):
+            known = {f.name for f in fields(_SECTION_CLASSES[section])}
+            extra = {k: v for k, v in values.items() if k not in known}
+            if extra:
+                kept[section] = extra
+    for section, key in _ENTRY_KEYS.items():
+        known = {f.name for f in fields(_SECTION_CLASSES[section])}
+        by_id: dict[str, dict[str, Any]] = {}
+        for entry in raw.get(section) or []:
+            if not isinstance(entry, dict) or not entry.get(key):
+                continue
+            extra = {k: v for k, v in entry.items() if k not in known}
+            if extra:
+                by_id[str(entry[key])] = extra
+        if by_id:
+            kept[section] = by_id
+    if not kept["top"]:
+        del kept["top"]
+    return kept
+
+
+def _restore_unknown_keys(d: dict[str, Any], kept: dict[str, Any]) -> dict[str, Any]:
+    """Merge preserved unknown keys into a TOML dict; current values always win."""
+    for k, v in kept.get("top", {}).items():
+        d.setdefault(k, v)
+    for section in ("server", "paths", "tune", "workload", "agent"):
+        for k, v in kept.get(section, {}).items():
+            d.setdefault(section, {}).setdefault(k, v)
+    for section, key in _ENTRY_KEYS.items():
+        extras = kept.get(section)
+        if not extras:
+            continue
+        for entry in d.get(section, []):
+            for k, v in extras.get(str(entry.get(key, "")), {}).items():
+                entry.setdefault(k, v)
+    return d
+
+
+_SECTION_CLASSES.update(
+    server=ServerConfig,
+    paths=PathsConfig,
+    tune=TuneConfig,
+    workload=WorkloadConfig,
+    agent=AgentConfig,
+    gpus=GPUConfig,
+    models=ModelConfig,
+    upstreams=UpstreamConfig,
+    mcp_servers=MCPServerConfig,
+    profiles=ProfileConfig,
+)
 
 
 def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
@@ -752,6 +864,7 @@ def load_config(path: Path | None = None) -> Config:
         raw = _toml_load(f)
     raw = migrate_config(raw)
     validate_config(raw)
+    unknown = _unknown_keys(raw)
     top = _filter_fields(Config, raw)
     cfg = Config(
         version=int(top.get("version", CONFIG_VERSION)),
@@ -772,6 +885,7 @@ def load_config(path: Path | None = None) -> Config:
         profiles=[
             ProfileConfig(**_filter_fields(ProfileConfig, p)) for p in top.get("profiles", [])
         ],
+        unknown_keys=unknown,
     )
     _resolve_admin_token(cfg, path, persist=True)
     return cfg

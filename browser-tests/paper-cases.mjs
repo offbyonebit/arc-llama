@@ -92,6 +92,7 @@ export async function testPaperDiscoverNavigation({page,origin}) {
   const models=rail(page).getByRole('link',{name:'Models',exact:true});
   await discover.click();
   assert.equal(new URL(page.url()).hash,'#discover');
+  await page.waitForSelector('.paper-rail a[aria-label="Discover"][aria-current="page"]');
   assert.equal(await discover.getAttribute('aria-current'),'page');
   assert.equal(await page.title(),'Discover: arc-llama');
   assert.equal(await page.locator('.paper-header-title').innerText(),'Discover');
@@ -105,12 +106,15 @@ export async function testPaperDiscoverNavigation({page,origin}) {
   assert.equal(await page.locator('#model-list').isVisible(),true);
   assert.equal(await page.locator('#library-title').isVisible(),false);
   await page.goBack();
+  await page.waitForSelector('.paper-rail a[aria-label="Discover"][aria-current="page"]');
   assert.equal(await discover.getAttribute('aria-current'),'page');
   assert.equal(await search.inputValue(),'qwen');
   await page.goForward();
+  await page.waitForSelector('.paper-rail a[aria-label="Models"][aria-current="page"]');
   assert.equal(await models.getAttribute('aria-current'),'page');
   for(const hash of ['#discover','#library-title']) {
     await page.goto(`${origin}/${hash}`);
+    await page.waitForSelector('.paper-rail a[aria-label="Discover"][aria-current="page"]');
     assert.equal(await discover.getAttribute('aria-current'),'page');
     assert.equal(await page.locator('#library-title').isVisible(),true);
     assert.equal(await page.locator('#system-readiness').isVisible(),false);
@@ -119,6 +123,7 @@ export async function testPaperDiscoverNavigation({page,origin}) {
     await page.goto(`${origin}${path}`);
     assert.equal(await discover.getAttribute('href'),'/#discover');
     await discover.click();
+    await page.waitForSelector('.paper-rail a[aria-label="Discover"][aria-current="page"]');
     assert.equal(await discover.getAttribute('aria-current'),'page');
   }
   await page.setViewportSize({width:320,height:740});

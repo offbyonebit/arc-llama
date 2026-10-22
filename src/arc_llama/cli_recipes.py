@@ -155,7 +155,7 @@ def register_recipe_commands(
                 f"the required {min_confidence:.0%}"
             )
 
-        local = llama_server_build_identity(cfg.paths.llama_server)
+        local = llama_server_build_identity(cfg.model_llama_server(m), env=m.env) if m.env else llama_server_build_identity(cfg.model_llama_server(m))
         provenance_ok = provenance_matches_local(
             entry.provenance,
             llama_server_version=local.get("llama_server_version"),

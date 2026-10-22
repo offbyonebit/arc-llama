@@ -359,9 +359,9 @@ export async function testWorkSlashMenuListsHarnessCommands({ page, origin }) {
 
   await page.click("#work-task");
   await page.keyboard.type("/");
-  await page.waitForFunction(() => document.querySelectorAll("#work-commands .work-command").length === 3);
+  await page.waitForFunction(() => document.querySelectorAll("#work-commands .work-command").length === 4);
   const names = await page.locator("#work-commands .work-command b").allInnerTexts();
-  if (names.join(",") !== "/compact,/review,/pdf") throw new Error("menu shows " + names);
+  if (names.join(",") !== "/compact,/review,/sessions,/pdf") throw new Error("menu shows " + names);
   if (!asked.length || !asked[0].includes("harness=opencode") || !asked[0].includes("%2Fwork%2Fdemo")) throw new Error("commands were not requested for this agent and folder: " + asked);
 
   await page.keyboard.type("rev");
@@ -511,7 +511,7 @@ export async function testWorkToolProfilesLimitWhatARunCanUse({ page, origin }) 
   const saved = [...profiles.values()][0];
   if (JSON.stringify([saved.mcp, saved.skills, saved.web]) !== JSON.stringify([["searxng"], ["pdf"], true])) throw new Error("saved the wrong tools: " + JSON.stringify(saved));
   if (JSON.stringify([...saved.tools_off].sort()) !== JSON.stringify(["apply_patch", "bash", "edit", "quota_status", "write"])) throw new Error("tools_off is wrong: " + JSON.stringify(saved.tools_off));
-  await page.click("#work-manager-done");
+  await page.waitForSelector("#work-manager[hidden]", { state: "attached" });
 
   // The run is limited to that profile, and the turn says so.
   await page.fill("#work-task", "Find recent papers");
@@ -718,4 +718,251 @@ export async function testWorkHermesUnavailable({page,origin}) {
   await page.route('**/v1/agent/info',route=>route.fulfill(json({...INFO,harnesses:[...INFO.harnesses,{id:'hermes',label:'Hermes',available:false,auto_approve:false}]})));
   await openChat(page,origin);await page.waitForSelector('#work-harness option[value="hermes"]',{state:'attached'});
   if(!(await page.locator('#work-harness option[value="hermes"]').evaluate(node=>node.disabled)))throw new Error('missing Hermes was offered as runnable');
+}
+
+export async function testWorkNativeHarnessHistory({ page, origin }) {
+  await installAgentStream(page);
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  const original = { id: "oc-ses_fixture", title: "Synthetic OpenCode conversation", folder: "/work/synthetic",
+    harness: "opencode", origin: "opencode", native: true, model: "", updated: 1, tasks: 1,
+    runs: [{ task: "Remember the synthetic fixture", answer: ["I remember the synthetic fixture."], steps: [],
+      harness: "opencode", model: "", folder: "/work/synthetic", folderName: "synthetic", status: "done", imported: true,
+      startedAt: 1000, endedAt: 2000 }] };
+  let saved = null, deleted = 0;
+  await page.route("**/v1/agent/sessions**", route => {
+    const request = route.request();
+    const id = new URL(request.url()).pathname.split("/sessions/")[1];
+    if (request.method() === "DELETE") { deleted++; saved = null; return route.fulfill(json({ deleted: true })); }
+    if (request.method() === "PUT") { saved = { ...request.postDataJSON(), id, updated: 2 }; return route.fulfill(json(saved)); }
+    return route.fulfill(json(id ? (saved || original) : { sessions: [saved || original], warnings: ["Synthetic history source unavailable"] }));
+  });
+  await openChat(page, origin);
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  // A local command opens history without starting inference, even with no project folder.
+  await page.fill("#work-root", "");
+  await page.fill("#work-task", "/sessions");
+  await page.press("#work-task", "Enter");
+  await page.waitForSelector(".work-recent-item");
+  if (await page.evaluate(() => !!window.__agentBody)) throw new Error("/sessions started inference");
+  if (!(await page.locator(".work-recent-item").innerText()).includes("OpenCode · Harness history")) throw new Error("native source is not labeled");
+  if (await page.locator(".work-recent-remove").count()) throw new Error("native history offers Delete");
+  if (!(await page.locator("#work-sessions-warning").innerText()).includes("Synthetic history")) throw new Error("history warning missing");
+  await page.locator(".work-recent-item").click();
+  await page.waitForSelector(".work-say");
+  if (!(await page.locator("#work-run").innerText()).includes("I remember the synthetic fixture.")) throw new Error("transcript missing");
+  if ((await page.inputValue("#work-root")) !== "/work/synthetic") throw new Error("project folder missing");
+  if (!(await page.locator("#work-hint").innerText()).includes("Work copy")) throw new Error("import behavior is not explained");
+  await page.fill("#work-task", "Continue the synthetic task");
+  await page.press("#work-task", "Enter");
+  await page.waitForFunction(() => !!window.__agentBody);
+  const body = await page.evaluate(() => window.__agentBody);
+  if (body.history.length !== 2 || body.history[0].content !== original.runs[0].task || body.history[1].content !== original.runs[0].answer[0]) throw new Error("native text history not passed to follow-up");
+  if (body.harness !== "opencode" || body.root !== "/work/synthetic" || body.local_only !== true) throw new Error("follow-up settings wrong");
+  await page.evaluate(() => { window.__push({ type: "done" }); window.__end(); });
+  await page.waitForFunction(() => document.querySelectorAll(".work-eyebrow")[1]?.textContent.includes("finished"));
+  await page.waitForTimeout(150);
+  if (!saved || saved.runs.length !== 2 || saved.origin !== "opencode") throw new Error("Work copy lost history/provenance");
+  await page.click("#work-new");
+  await page.locator("#paper-sessions-toggle").click();
+  await page.waitForSelector(".work-recent-remove");
+  await page.locator(".work-recent-remove").click();
+  await page.waitForFunction(() => !document.querySelector(".work-recent-remove"));
+  if (deleted !== 1 || !(await page.locator(".work-recent-item").innerText()).includes("Harness history")) throw new Error("deleting Work copy removed native original");
+}
+
+export async function testWorkGenerationSpeedCounter({ page, origin }) {
+  await installAgentStream(page);
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  let saved = null;
+  await page.route("**/v1/agent/sessions**", route => {
+    const request = route.request(), id = new URL(request.url()).pathname.split("/sessions/")[1];
+    if (request.method() === "PUT") saved = { ...request.postDataJSON(), id, updated: Date.now() / 1000 };
+    return route.fulfill(json(id ? saved : { sessions: saved ? [saved] : [] }));
+  });
+  await openChat(page, origin);
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  const speed = page.locator("#work-speed");
+  if ((await speed.innerText()) !== "N/A tok/s") throw new Error("speed invented before inference");
+  await page.fill("#work-root", "/work/synthetic");
+  await page.fill("#work-task", "Synthetic speed counter task");
+  await page.press("#work-task", "Enter");
+  await page.waitForFunction(() => !!window.__push);
+  await page.evaluate(() => window.__push({ type: "usage", prompt_tokens: 1000, completion_tokens: 100 }));
+  if ((await speed.innerText()) !== "N/A tok/s") throw new Error("speed estimated from usage without timing");
+  await page.evaluate(() => window.__push({ type: "performance", generation_tok_s: 42.56 }));
+  await page.waitForFunction(() => document.querySelector("#work-speed").textContent === "42.6 tok/s");
+  await page.evaluate(() => {
+    window.__push({ type: "tool_call", id: "synthetic-tool", name: "read_file", arguments: { path: "fixture.txt" } });
+    for (const value of [0, -4, "200", null]) window.__push({ type: "performance", generation_tok_s: value });
+  });
+  await page.waitForTimeout(1100);
+  if ((await speed.innerText()) !== "42.6 tok/s") throw new Error("tool time or invalid samples changed measured speed");
+  if (!(await speed.getAttribute("title")).includes("excludes loading")) throw new Error("speed scope not explained");
+  await page.evaluate(() => {
+    window.__push({ type: "performance", generation_tok_s: 35.25 });
+    window.__push({ type: "assistant", content: "Synthetic finished answer" });
+    window.__push({ type: "done" }); window.__end();
+  });
+  await page.waitForFunction(() => document.querySelector("#work-speed").textContent === "35.3 tok/s");
+  await page.locator("#work-activity").waitFor({ state: "hidden" });
+  if (!(await page.locator(".work-eyebrow").innerText()).includes("35.3 tok/s")) throw new Error("completed task lost speed");
+  await page.waitForTimeout(100);
+  if (saved?.runs[0]?.generationTokS !== 35.25) throw new Error("speed was not saved with the conversation");
+  await page.click("#work-new");
+  if ((await speed.innerText()) !== "N/A tok/s") throw new Error("new conversation inherited old speed");
+  await page.locator("#paper-sessions-toggle").click();
+  await page.locator(".work-recent-item").click();
+  await page.waitForFunction(() => document.querySelector("#work-speed").textContent === "35.3 tok/s");
+  await page.fill("#work-task", "Synthetic second request");
+  await page.press("#work-task", "Enter");
+  await page.waitForFunction(() => window.__agentBody?.task === "Synthetic second request");
+  if ((await speed.innerText()) !== "N/A tok/s") throw new Error("new task displayed old task speed");
+  await page.evaluate(() => { window.__push({ type: "done" }); window.__end(); });
+}
+
+
+export async function testWorkProfilesRecoverFromDiscoveryFailure({ page, origin }) {
+  const profile = { id: "saved-profile", name: "Safe tools", description: "Keep restrictions", mcp: ["offline-server"], skills: ["offline-skill"], tools_off: ["offline_tool", "bash"], web: false };
+  let saved, requests = 0, deleteRequests = 0;
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  await page.route("**/v1/agent/profiles**", route => {
+    if (route.request().method() === "PUT") {
+      saved = route.request().postDataJSON();
+      return route.fulfill(json({ ...saved, id: profile.id }));
+    }
+    if (route.request().method() === "DELETE") { deleteRequests++; return route.fulfill({ ...json({ detail: "Synthetic delete failure" }), status: 503 }); }
+    return route.fulfill(json({ profiles: [profile] }));
+  });
+  await page.route("**/v1/agent/capabilities*", route => {
+    requests++;
+    if (requests === 1) return route.abort("failed");
+    if (requests === 2) return route.fulfill(json({ mcp: [], skills: [], tools: [], tools_complete: false, warnings: ["Synthetic incomplete catalog"] }));
+    return route.fulfill(json({ mcp: [], skills: [], tools: [{ id: "read", group: "builtin" }, { id: "bash", group: "builtin" }], tools_complete: true }));
+  });
+  await openChat(page, origin);
+  await page.locator('#mode-switch:not([hidden])').waitFor({ state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.waitForSelector('#work-profile option[value="saved-profile"]', { state: "attached" });
+  await page.selectOption("#work-profile", "saved-profile");
+  await page.selectOption("#work-profile", "__manage");
+  await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
+  if (await page.locator("#work-manager input").count()) throw new Error("failed discovery exposed an editable catalog");
+  await page.getByRole("button", { name: "Use selected profile", exact: true }).click();
+  if (await page.inputValue("#work-profile") !== profile.id) throw new Error("saved profile unavailable after failure");
+  await page.selectOption("#work-profile", "__manage");
+  await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
+  if (await page.locator("#work-manager input").count()) throw new Error("partial discovery exposed an editable catalog");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.getByRole("textbox", { name: "Profile name", exact: true }).waitFor();
+  if (await page.locator('#work-manager label.tick', { hasText: 'bash' }).locator('input').isChecked()) throw new Error("discovery removed the bash restriction");
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.locator('#work-manager [role="alert"]').filter({ hasText: "Synthetic delete failure" }).waitFor();
+  if (deleteRequests !== 1 || await page.inputValue("#work-profile") !== profile.id) throw new Error("failed delete changed selection");
+  await page.getByRole("button", { name: "Save and use", exact: true }).click();
+  await page.waitForSelector("#work-manager[hidden]", { state: "attached" });
+  if (saved.description !== profile.description || JSON.stringify(saved.tools_off) !== JSON.stringify(profile.tools_off) || JSON.stringify(saved.mcp) !== JSON.stringify(profile.mcp) || JSON.stringify(saved.skills) !== JSON.stringify(profile.skills)) throw new Error("saving lost unavailable tool restrictions: " + JSON.stringify(saved));
+}
+
+export async function testWorkProfilesIgnoreClosedDiscovery({ page, origin }) {
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  await page.route("**/v1/agent/profiles", route => route.fulfill(json({ profiles: [] })));
+  await page.addInitScript(() => {
+    const real = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      if (String(input).includes("/v1/agent/capabilities")) {
+        if (!window.__oldDiscovery) return new Promise(resolve => { window.__oldDiscovery = () => resolve(new Response(JSON.stringify({ mcp: ["stale-server"], skills: [], tools: [] }), { status: 200 })); });
+        return Promise.resolve(new Response(JSON.stringify({ mcp: ["current-server"], skills: [], tools: [] }), { status: 200 }));
+      }
+      return real(input, init);
+    };
+  });
+  await openChat(page, origin);
+  await page.locator('#mode-switch:not([hidden])').waitFor({ state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.selectOption("#work-profile", "__manage");
+  await page.waitForFunction(() => !!window.__oldDiscovery);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.fill("#work-root", "/work/new-folder");
+  await page.selectOption("#work-profile", "__manage");
+  await page.getByRole("textbox", { name: "Profile name", exact: true }).waitFor();
+  await page.evaluate(() => window.__oldDiscovery());
+  await page.waitForTimeout(50);
+  if (!(await page.locator("#work-manager-body").innerText()).includes("current-server") || (await page.locator("#work-manager-body").innerText()).includes("stale-server")) throw new Error("closed discovery replaced the current folder catalog");
+}
+
+
+export async function testWorkSessionDuplicatesAreExpandable({ page, origin }) {
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  const repeated = Array.from({length: 6}, (_, i) => ({ id: `oc-ses_duplicate${i}`, title: "Synthetic repeated title", folder: "/work/one", harness: "opencode", native: true, updated: 100+i, tasks: 1 }));
+  const otherFolder = { ...repeated[0], id: "oc-ses_otherfolder", folder: "/work/two" };
+  let opened;
+  await page.route("**/v1/agent/sessions**", route => {
+    const id = new URL(route.request().url()).pathname.split("/sessions/")[1];
+    if (id) { opened = id; return route.fulfill(json({ ...repeated.find(s => s.id === id), runs: [] })); }
+    // An exact duplicate ID must also render only once, even if a source repeats it.
+    return route.fulfill(json({ sessions: [...repeated, repeated[5], otherFolder] }));
+  });
+  await openChat(page, origin);
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.getByRole("button", { name: "Work sessions", exact: true }).click();
+  await page.waitForSelector('.work-session-duplicates summary');
+  const visible = page.locator('.work-recent-item:visible');
+  if (await visible.count() !== 2) throw new Error("repeated titles were not grouped or distinct folders were collapsed");
+  if (await page.locator('.work-recent-row[data-session-id="oc-ses_duplicate5"]').count() !== 1) throw new Error("duplicate ID rendered twice");
+  const group = page.locator('.work-session-group');
+  if (!(await group.locator('.work-recent-row').first().getAttribute('data-session-id')).endsWith('5')) throw new Error("group did not prefer latest session");
+  await group.locator('summary').click();
+  if (await visible.count() !== 7) throw new Error("older sessions were lost");
+  await page.locator('[data-session-id="oc-ses_duplicate0"] .work-recent-item').click();
+  await page.locator('.paper-work-review').waitFor({ state: "hidden" });
+  if (opened !== "oc-ses_duplicate0") throw new Error("older session opened the wrong ID");
+}
+
+export async function testWorkRunCarriesItsStableConversationId({ page, origin }) {
+  await installAgentStream(page);
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  let savedId;
+  await page.route("**/v1/agent/sessions**", route => {
+    const id = new URL(route.request().url()).pathname.split("/sessions/")[1];
+    if (route.request().method() === "PUT") savedId = id;
+    return route.fulfill(json(id ? { id } : { sessions: [] }));
+  });
+  await openChat(page, origin);
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.fill('#work-root', '/work/synthetic');
+  await page.fill('#work-task', 'Synthetic first task');
+  const firstSave = page.waitForResponse(r => r.request().method() === "PUT" && r.url().includes("/v1/agent/sessions/"));
+  await page.press('#work-task', 'Enter');
+  await page.waitForFunction(() => !!window.__agentBody);
+  const first = (await page.evaluate(() => window.__agentBody)).work_session_id;
+  await firstSave;
+  if (!first || first !== savedId) throw new Error("run did not carry its saved Work ID");
+  await page.evaluate(() => { window.__push({type:'done'}); window.__end(); window.__agentBody = null; });
+  await page.waitForFunction(() => document.querySelector('.work-eyebrow')?.textContent.includes('finished'));
+  await page.fill('#work-task', 'Synthetic follow-up');
+  await page.press('#work-task', 'Enter');
+  await page.waitForFunction(() => !!window.__agentBody);
+  if ((await page.evaluate(() => window.__agentBody)).work_session_id !== first) throw new Error("follow-up changed Work identity");
+}
+
+
+export async function testWorkLinkedHarnessSessionsStayAccessible({ page, origin }) {
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  const original = { id: "oc-ses_linked", title: "Synthetic task title", harness: "opencode", native: true, updated: 10, folder: "/work/synthetic", tasks: 1 };
+  const work = { id: "work-synthetic", title: "Synthetic Work conversation", harness: "opencode", updated: 11, folder: "/work/synthetic", tasks: 2, harness_history: [original] };
+  let opened;
+  await page.route("**/v1/agent/sessions**", route => {
+    const id = new URL(route.request().url()).pathname.split("/sessions/")[1];
+    if (id) { opened = id; return route.fulfill(json({ ...original, runs: [] })); }
+    return route.fulfill(json({ sessions: [work] }));
+  });
+  await openChat(page, origin);
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.getByRole('button', { name: 'Work sessions', exact: true }).click();
+  await page.locator('.work-session-linked summary').waitFor();
+  if (await page.locator('.work-recent-item:visible').count() !== 1) throw new Error('linked originals duplicated top-level Work entry');
+  await page.locator('.work-session-linked summary').click();
+  await page.locator('[data-session-id="oc-ses_linked"] .work-recent-item').click();
+  await page.locator('.paper-work-review').waitFor({ state: 'hidden' });
+  if (opened !== original.id) throw new Error('original harness session no longer accessible');
 }

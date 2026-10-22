@@ -11,7 +11,8 @@ import contextlib
 import json
 import secrets
 import socket
-from collections.abc import Iterator
+import time
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import anyio
@@ -20,6 +21,10 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import StreamingResponse
 from uvicorn.protocols.http.h11_impl import H11Protocol
+
+from arc_llama.stream_metrics import StreamMetricsObserver, generation_rate
+
+MAX_METRICS_JSON_BYTES = 1024 * 1024
 
 
 class _HTTPProtocol(H11Protocol):
@@ -56,6 +61,11 @@ class InferenceObserver:
                     raise ValueError("object required")
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail="Invalid inference request") from exc
+            if body.get("stream") is True:
+                # llama-server can expose measured decode timing with each streamed token.
+                # Respect an explicit override; older runtimes may report timing only at the end.
+                body.setdefault("timings_per_token", True)
+                raw = json.dumps(body).encode()
             client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10.0), trust_env=False)
             try:
                 self.emit({"type": "activity", "phase": "generating"})
@@ -81,10 +91,39 @@ class InferenceObserver:
                     await client.aclose()
                 raise
 
-            async def stream():
+            async def stream() -> AsyncIterator[bytes]:
+                # Observe the model's timings without changing bytes seen by the harness.
+                # SSE chunks are not tokens: batching, reasoning, and tool arguments vary.
+                metrics = StreamMetricsObserver()
+                is_sse = "text/event-stream" in response.headers.get("content-type", "")
+                can_measure = response.status_code < 400 and response.headers.get("content-encoding", "identity") == "identity"
+                json_body = bytearray()
+                json_overflow = False
+                reported_rate: float | None = None
+                last_reported_at = 0.0
                 try:
                     async for chunk in response.aiter_raw():
+                        if can_measure and is_sse:
+                            now = time.monotonic()
+                            metrics.feed(chunk, now)
+                            rate = metrics.generation_tok_s
+                            if rate is not None and rate != reported_rate and (reported_rate is None or now - last_reported_at >= 0.25):
+                                self.emit({"type": "performance", "generation_tok_s": rate})
+                                reported_rate, last_reported_at = rate, now
+                        elif can_measure and not json_overflow:
+                            if len(json_body) + len(chunk) <= MAX_METRICS_JSON_BYTES:
+                                json_body.extend(chunk)
+                            else:
+                                json_body.clear()
+                                json_overflow = True
                         yield chunk
+                    if can_measure and is_sse and metrics.generation_tok_s is not None and metrics.generation_tok_s != reported_rate:
+                        self.emit({"type": "performance", "generation_tok_s": metrics.generation_tok_s})
+                    if can_measure and not is_sse and not json_overflow:
+                        with contextlib.suppress(ValueError, UnicodeError, RecursionError):
+                            rate = generation_rate(json.loads(json_body))
+                            if rate is not None:
+                                self.emit({"type": "performance", "generation_tok_s": rate})
                 finally:
                     with anyio.CancelScope(shield=True):
                         await response.aclose()

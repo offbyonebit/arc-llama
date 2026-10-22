@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
 
 <link rel="stylesheet" href="/chat.css?v=ui-0.27" />
-<link rel="stylesheet" href="/chat/work.css?v=paper-3" />
+<link rel="stylesheet" href="/chat/work.css?v=paper-6" />
 <script src="/vendor/marked-12.0.2.min.js"></script>
 <script src="/vendor/highlight-11.9.0.min.js"></script>
 <link rel="stylesheet" href="/vendor/github-dark-11.9.0.min.css" />
@@ -92,6 +92,7 @@
         <label class="work-chip" title="Project folder"><span aria-hidden="true">▤</span><input id="work-root" type="text" spellcheck="false" placeholder="Project folder, e.g. ~/projects/app" aria-label="Project folder" /></label>
         <label class="work-chip" title="Model"><select id="work-model" aria-label="Model"></select></label>
         <label class="work-chip" title="Agent"><select id="work-harness" aria-label="Agent"></select></label>
+        <label class="work-chip" title="What kind of work" id="work-type-label" hidden><select id="work-type" aria-label="Work type"></select></label>
         <label class="work-chip" id="work-profile-chip" title="Which of your agent's tools this task may use" hidden><select id="work-profile" aria-label="Tools"></select></label>
         <button id="work-auto" class="work-chip toggle" type="button" aria-pressed="false" hidden>Ask before changes</button>
         <span class="work-chip lock" title="The model runs on this computer. Tools from the selected agent (web search, GitHub, and so on) can still reach the internet.">Local model</span>
@@ -101,13 +102,13 @@
     </div>
     <div id="work-manager" class="work-manager" role="dialog" aria-modal="true" aria-labelledby="work-manager-title" hidden>
       <div class="work-manager-sheet">
-        <div class="work-manager-head"><h2 id="work-manager-title">Tool profiles</h2><button type="button" id="work-manager-done" class="work-link">Done</button></div>
-        <p class="work-note">A profile picks which of your agent's tools a workflow may use. Anything not ticked is switched off for that task, which also keeps the model's context short.</p>
+        <div class="work-manager-head"><h2 id="work-manager-title">Tool profiles</h2><button type="button" id="work-manager-done" class="work-link">Close</button></div>
+        <p class="work-note">Choose which tools this task can use. Fewer tools keep the model’s context shorter.</p>
         <div id="work-manager-body"></div>
       </div>
     </div>
     <div class="work-context" id="work-context" aria-label="Work context">
-      <div class="work-context-top"><span id="work-context-label">Context size unavailable</span><button id="work-compact" type="button" class="work-link" disabled>Compact session</button></div>
+      <div class="work-context-top"><span id="work-context-label">Context size unavailable</span><span id="work-speed" class="work-speed" aria-label="Generation speed" title="Waiting for backend generation timing">N/A tok/s</span><button id="work-compact" type="button" class="work-link" disabled>Compact session</button></div>
       <div id="work-context-track" class="work-context-track" role="progressbar" aria-label="Work context usage" aria-valuemin="0" aria-valuemax="100" hidden><span id="work-context-fill"></span></div>
       <p id="work-context-note">Conversation estimates exclude the agent’s instructions and tools.</p>
     </div>
@@ -182,11 +183,11 @@
     <script src="/markdown_safety.js?v=ui-0.14"></script>
     <script src="/chat/rendering.js?v=ui-0.26"></script>
     <script src="/chat/attachments.js?v=ui-0.25"></script>
-    <script src="/chat/settings.js?v=ui-0.27"></script>
+    <script src="/chat/settings.js?v=ui-0.28"></script>
     <script src="/chat/history.js?v=ui-0.27"></script>
     <script src="/chat/compaction.js?v=ui-0.27"></script>
-    <script src="/chat/work.js?v=paper-5"></script>
+    <script src="/chat/work.js?v=paper-10"></script>
     <script src="/paper.js?v=paper-5"></script>
-    <script src="/chat.js?v=paper-4"></script>
+    <script src="/chat.js?v=paper-5"></script>
 </body>
 </html>

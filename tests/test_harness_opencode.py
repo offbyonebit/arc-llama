@@ -296,3 +296,11 @@ def test_translator_reports_thinking_and_answering_without_reasoning_text():
     assert tr.feed(delta) == [{"type":"activity", "phase":"thinking"}]
     text = {"type":"message.part.updated", "properties":{"sessionID":"s", "part":{"id":"a", "messageID":"m", "type":"text", "text":"Public answer", "time":{"end":2}}}}
     assert tr.feed(text) == [{"type":"activity", "phase":"answering"}, {"type":"assistant", "content":"Public answer"}]
+
+
+async def test_generated_session_reports_id_and_uses_task_title(tmp_path, monkeypatch):
+    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True, session_title="Synthetic user title")
+    created = next(e for e in log if e.get("path", "").split("?")[0] == "/session")
+    assert created["body"]["title"] == "Synthetic user title"
+    linked = next(e for e in events if e["type"] == "harness_session")
+    assert linked["session_id"].startswith("oc-ses_")

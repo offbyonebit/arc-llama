@@ -1,4 +1,5 @@
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
 import { installApiMocks, recordSessionTokenCalls, startStaticServer } from "./harness.mjs";
@@ -21,6 +22,11 @@ import {
   testImagesNeedVisionModel,
 } from "./chat-cases.mjs";
 import {
+  testWorkGenerationSpeedCounter,
+  testWorkNativeHarnessHistory,
+  testWorkSessionDuplicatesAreExpandable,
+  testWorkRunCarriesItsStableConversationId,
+  testWorkLinkedHarnessSessionsStayAccessible,
   testWorkHermesHarness,
   testWorkHermesUnavailable,
   testWorkViewHiddenUnlessExperimental,
@@ -42,6 +48,8 @@ import {
   testWorkSlashCommandRunsInTheHarness,
   testWorkSessionsAreSavedAndReopened,
   testWorkToolProfilesLimitWhatARunCanUse,
+  testWorkProfilesRecoverFromDiscoveryFailure,
+  testWorkProfilesIgnoreClosedDiscovery,
 } from "./work-cases.mjs";
 import {
   testDashboardMeasurements,
@@ -131,6 +139,8 @@ const TESTS = [
   ["refresh-preserves-edits", testRefreshPreservesEdits],
   ["keyboard-navigation", testKeyboardNavigation],
   ["settings-survive-status-poll", testSettingsSurviveStatusPoll],
+  ["per-model-runtime-settings", testPerModelRuntimeSettings],
+  ["per-model-runtime-unrelated-edits", testRuntimeOverridesSurviveUnrelatedEdits],
   ["retry-original-turn-once", testRetrySendsOriginalTurnOnce],
   ["dashboard-measurements", testDashboardMeasurements],
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
@@ -163,7 +173,14 @@ const TESTS = [
   ["work-slash-menu-lists-harness-commands", testWorkSlashMenuListsHarnessCommands],
   ["work-slash-command-runs-in-the-harness", testWorkSlashCommandRunsInTheHarness],
   ["work-sessions-saved-and-reopened", testWorkSessionsAreSavedAndReopened],
+  ["work-native-harness-history", testWorkNativeHarnessHistory],
+  ["work-session-duplicates", testWorkSessionDuplicatesAreExpandable],
+  ["work-stable-conversation-id", testWorkRunCarriesItsStableConversationId],
+  ["work-linked-harness-history", testWorkLinkedHarnessSessionsStayAccessible],
+  ["work-generation-speed-counter", testWorkGenerationSpeedCounter],
   ["work-tool-profiles-limit-a-run", testWorkToolProfilesLimitWhatARunCanUse],
+  ["work-profiles-discovery-recovery", testWorkProfilesRecoverFromDiscoveryFailure],
+  ["work-profiles-stale-discovery", testWorkProfilesIgnoreClosedDiscovery],
 ];
 
 // ---------------------------------------------------------------------------

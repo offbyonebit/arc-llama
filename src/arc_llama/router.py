@@ -1048,12 +1048,27 @@ class Router:
             # this model through the fast path.
             self._stopping.discard(name)
 
-    async def stop_one(self, name: str) -> bool:
-        """Stop a single model's llama-server. Returns True if it was running."""
+    def _refuse_if_busy(self, names: list[str]) -> None:
+        busy = {n: self.model_inflight.get(n, 0) for n in names if self.model_inflight.get(n, 0) > 0}
+        if busy:
+            listed = ", ".join(f"{n} ({c})" for n, c in busy.items())
+            raise StartupFailureError(
+                "model_busy",
+                f"Still serving requests: {listed}.",
+                "Wait for them to finish, or stop with force=true (the server still gets a graceful SIGTERM first).",
+                details={"inflight": busy},
+            )
+
+    async def stop_one(self, name: str, *, force: bool = False) -> bool:
+        """Stop a single model's llama-server. Returns True if it was running.
+
+        Refuses with ``model_busy`` while the model is serving requests, unless ``force``."""
         async with self._lock:
             srv = self._servers.get(name)
             if srv is None:
                 return False
+            if not force and srv.is_running:
+                self._refuse_if_busy([name])
             if not srv.is_running:
                 if getattr(srv, "process", None) is not None:
                     await srv.astop()
@@ -1063,9 +1078,13 @@ class Router:
             self._emit("model_stopped", model=name, reason="stopped")
             return True
 
-    async def stop_all(self) -> int:
-        """Stop every running llama-server. Returns the count stopped."""
+    async def stop_all(self, *, force: bool = False) -> int:
+        """Stop every running llama-server. Returns the count stopped.
+
+        Refuses with ``model_busy`` (stopping nothing) while any model is serving, unless ``force``."""
         async with self._lock:
+            if not force:
+                self._refuse_if_busy([n for n, s in self._servers.items() if s.is_running])
             stopped = 0
             failure = None
             for name, srv in self._servers.items():

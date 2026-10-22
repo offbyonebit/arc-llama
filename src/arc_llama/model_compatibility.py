@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from arc_llama.compatibility_io import probe_output, remote_header, remote_metadata
-from arc_llama.config import Config
+from arc_llama.config import Config, ModelConfig
 
 _MAX_HEADER = 262_144
 _ARCH = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -82,9 +82,9 @@ def header_architecture(data: bytes) -> str | None:
     return None
 
 
-def runtime_identity(command: str) -> tuple[str, str] | None:
+def runtime_identity(command: str, *, env: dict[str, str] | None = None) -> tuple[str, str] | None:
     """Invalidate recognition when the executable or adjacent libraries change."""
-    resolved = shutil.which(command) or command
+    resolved = shutil.which(command, path=env.get("PATH", "") if env is not None else None) or command
     try:
         binary = Path(resolved).expanduser().resolve()
         if not binary.is_file():
@@ -98,13 +98,18 @@ def runtime_identity(command: str) -> tuple[str, str] | None:
             records.append(
                 (str(path), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
             )
-        digest = hashlib.sha256(repr(records).encode()).hexdigest()
+        digest = hashlib.sha256((repr(records) + (repr(sorted(env.items())) if env else "")).encode()).hexdigest()
         return str(binary), digest
     except (OSError, RuntimeError, ValueError):
         return None
 
 
-async def probe_architecture(binary: str, fingerprint: str, architecture: str) -> str:
+def model_runtime_identity(cfg: Config, model: ModelConfig | None = None) -> tuple[str, str] | None:
+    command = cfg.model_llama_server(model) if model else cfg.paths.llama_server
+    return runtime_identity(command, env=model.env) if model and model.env else runtime_identity(command)
+
+
+async def probe_architecture(binary: str, fingerprint: str, architecture: str, *, env: dict[str, str] | None = None) -> str:
     """Cache only definitive architecture-specific evidence; failures are retryable."""
     if not _ARCH.fullmatch(architecture):
         return "unknown"
@@ -112,7 +117,7 @@ async def probe_architecture(binary: str, fingerprint: str, architecture: str) -
     with _PROBE_LOCK:
         if cache_key in _PROBE_CACHE:
             return _PROBE_CACHE[cache_key]
-    returncode, output = await probe_output(binary, architecture)
+    returncode, output = await probe_output(binary, architecture, env=env) if env is not None else await probe_output(binary, architecture)
     if returncode == 0:
         return "unknown"
     if re.search(
@@ -186,9 +191,12 @@ class CompatibilityChecks:
 async def assess_compatibility(cfg: Config, body: dict[str, Any]) -> dict[str, Any]:
     """Explicit read-only assessment for one remote option or registered model."""
     answer = unknown_assessment()
-    gpu = next((g for g in cfg.gpus if g.enabled), None)
+    model = cfg.find_model(body["name"]) if "name" in body else None
+    if "name" in body and model is None:
+        raise ValueError("Unknown registered model")
+    gpu = cfg.find_gpu(model.gpu_pci_slot) if model else next((g for g in cfg.gpus if g.enabled), None)
     answer["backend"] = gpu.backend if gpu else None
-    identity = await asyncio.to_thread(runtime_identity, cfg.paths.llama_server)
+    identity = await asyncio.to_thread(model_runtime_identity, cfg, model)
     if identity is None:
         return {
             **answer,
@@ -238,8 +246,16 @@ async def assess_compatibility(cfg: Config, body: dict[str, Any]) -> dict[str, A
             }
         answer["architecture"] = architecture
         phase = "runtime probe"
-        outcome = await probe_architecture(binary, fingerprint, architecture)
-        if await asyncio.to_thread(runtime_identity, cfg.paths.llama_server) != identity:
+        if model and model.env:
+            import os
+
+            from arc_llama.launcher import build_model_env
+
+            env = build_model_env(cfg, model, gpu) if gpu else {**os.environ, **model.env}
+            outcome = await probe_architecture(binary, fingerprint, architecture, env=env)
+        else:
+            outcome = await probe_architecture(binary, fingerprint, architecture)
+        if await asyncio.to_thread(model_runtime_identity, cfg, model) != identity:
             return {
                 **answer,
                 "detail": "The runtime changed during this check.",

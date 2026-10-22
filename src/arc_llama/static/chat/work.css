@@ -173,3 +173,11 @@ body.work-mode #chat-log, body.work-mode .ctx-meter, body.work-mode .input-area,
 .work-tool-list { max-height: 220px; overflow-y: auto; padding: 4px 0 0 4px; }
 .work-tool-list label.tick { font-size: 13px; margin: 4px 0; }
 .work-count { margin-top: 16px !important; }
+
+.work-speed { white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.work-discovery { margin-top: 18px; }
+.work-discovery details { margin-top: 12px; font-size: 13px; overflow-wrap: anywhere; }
+
+.work-session-duplicates { margin: 2px 0 12px 12px; border-left: 1px solid var(--border); padding-left: 10px; }
+.work-session-duplicates summary { color: var(--fg-dim); cursor: pointer; font-size: 12px; padding: 6px 0; }

@@ -92,6 +92,8 @@ def required_capabilities(cfg: Config) -> dict[str, list[str]]:
         needs.setdefault(cap, []).append(model.name)
 
     for model in cfg.models:
+        if model.llama_server:
+            continue
         recipe = model.recipe or {}
         if recipe.get("mmproj"):
             need("supports_mmproj", model)
@@ -142,6 +144,8 @@ def pick_canary_model(cfg: Config, name: str | None = None) -> ModelConfig | Non
         return cfg.find_model(name)
     present = []
     for model in cfg.models:
+        if model.llama_server:
+            continue
         try:
             present.append((Path(model.path).stat().st_size, model.name, model))
         except OSError:
@@ -169,6 +173,7 @@ async def run_canary(
     trial_cfg = copy.deepcopy(cfg)
     trial_cfg.paths.llama_server = str(binary)
     trial_model = copy.deepcopy(model)
+    trial_model.llama_server = str(binary)
     trial_model.port = _free_port()
     # A short context keeps the canary quick and small in VRAM.
     trial_model.recipe = {**(trial_model.recipe or {}), "ctx": 2048, "parallel": 1}

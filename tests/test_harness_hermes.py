@@ -64,6 +64,7 @@ async def test_hermes_streams_reasoning_and_text_and_cleans_up(tmp_path, binary)
     assert {"type": "activity", "phase": "thinking"} in events
     assert not any(e["type"] == "error" for e in events)
     assert events[-1] == {"type": "done"}
+    assert {"type": "harness_session", "session_id": "hermes-session-1"} in events
     observed = json.loads((tmp_path / "observed.json").read_text())
     assert not Path(observed["home"]).exists()
     assert not Path(f"/proc/{observed['pid']}").exists()

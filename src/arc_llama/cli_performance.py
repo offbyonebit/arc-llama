@@ -301,7 +301,7 @@ def register_performance_commands(
 
                                 fp = compute_fingerprint(
                                     m,
-                                    cfg.paths.llama_server,
+                                    cfg.model_llama_server(m),
                                     gpu,
                                     __version__,
                                     workload.fingerprint_key(cfg.workload),
@@ -345,7 +345,7 @@ def register_performance_commands(
 
                 fp = compute_fingerprint(
                     m,
-                    cfg.paths.llama_server,
+                    cfg.model_llama_server(m),
                     gpu,
                     __version__,
                     workload.fingerprint_key(cfg.workload),
@@ -433,8 +433,9 @@ def register_performance_commands(
         as_json: bool,
     ) -> None:
         """Configure native llama.cpp speculation and prove the speedup locally."""
+        from arc_llama.launcher import probe_model_caps
         from arc_llama.recipe_share import benchmark_improvement
-        from arc_llama.server_caps import format_speculation_capability, probe_server_caps
+        from arc_llama.server_caps import format_speculation_capability
         from arc_llama.speculation import discover_drafts
         from arc_llama.tune import _apply_edits, _restore_final_state
 
@@ -443,7 +444,7 @@ def register_performance_commands(
         target = cfg.find_model(model)
         if target is None:
             raise click.ClickException(f"unknown model {model!r}")
-        caps = probe_server_caps(cfg.paths.llama_server)
+        caps = probe_model_caps(cfg, target)
         if tune_mtp:
             from dataclasses import asdict
 
@@ -505,7 +506,7 @@ def register_performance_commands(
 
         if show_status or dry_run or not any((turn_off, auto_select, draft_name, use_ngram)):
             console.print(f"[bold]{target.name}[/bold]")
-            console.print(f"  llama-server: {cfg.paths.llama_server}")
+            console.print(f"  llama-server: {cfg.model_llama_server(target)}")
             console.print(
                 f"  llama-server speculation: {format_speculation_capability(caps)} "
                 f"(probed={'yes' if caps.probed else 'no'})"

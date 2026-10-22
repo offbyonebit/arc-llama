@@ -19,6 +19,7 @@ treated like any other failed probe.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,7 +84,7 @@ DEFAULT_CAPS = ServerCaps(
     supports_tensor_split=True,
 )
 
-_cache: dict[tuple[str, float], ServerCaps] = {}
+_cache: dict[tuple[str, float, tuple[tuple[str, str], ...]], ServerCaps] = {}
 
 
 def _parse_help(help_text: str) -> ServerCaps:
@@ -111,8 +112,10 @@ def _parse_help(help_text: str) -> ServerCaps:
     return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
 
 
-def probe_server_caps(llama_server: str) -> ServerCaps:
+def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -> ServerCaps:
     """Return the capabilities of the given llama-server binary, cached."""
+    llama_server = shutil.which(llama_server, path=env.get("PATH", "") if env is not None else None) or str(Path(llama_server).expanduser())
+    env_key = tuple(sorted(env.items())) if env is not None else ()
     try:
         mtime = Path(llama_server).stat().st_mtime
     except OSError:
@@ -121,7 +124,7 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
         # inside asyncio.to_thread can leave the executor task stuck on some
         # Python/platform combinations.  Cache the optimistic fallback under
         # mtime 0, matching the old failed-probe semantics.
-        key = (llama_server, 0.0)
+        key = (llama_server, 0.0, env_key)
         hit = _cache.get(key)
         if hit is not None:
             return hit
@@ -130,7 +133,7 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
             "could not probe %s (file does not exist); assuming modern flag syntax", llama_server
         )
         return DEFAULT_CAPS
-    key = (llama_server, mtime)
+    key = (llama_server, mtime, env_key)
     hit = _cache.get(key)
     if hit is not None:
         return hit
@@ -140,6 +143,7 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
             capture_output=True,
             text=True,
             timeout=_HELP_TIMEOUT_S,
+            env=env,
         )
         if proc.returncode == 0:
             caps = _parse_help(proc.stdout + proc.stderr)

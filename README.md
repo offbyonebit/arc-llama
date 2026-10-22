@@ -414,6 +414,10 @@ every driver, model, or later release.
 | Lunar Lake | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
 | Arc Pro B60 | Windows | Vulkan / SYCL | Native Windows validation [requested](https://github.com/offbyonebit/arc-llama/issues/69) |
 
+Alchemist and Lunar Lake are detected and use the same runtimes, so they are
+expected to work, but they stay outside the [compatibility
+contract](docs/compatibility.md) until a native result is recorded.
+
 Have one of these devices? [Submit a hardware validation report](https://github.com/offbyonebit/arc-llama/issues/new?template=hardware-validation.yml)
 with your environment, configuration, and observed results. Reports can include
 checks you have not run; mark them as “not run” so the remaining coverage is clear.
@@ -580,6 +584,9 @@ routed directly to the upstream endpoint — no local llama-server is started.
 The model list is cached for 30 seconds and refreshed on demand.
 
 ## Configuration reference
+
+Models can select a [dedicated runtime and environment](docs/per-model-runtimes.md)
+from Model settings, TOML, or `arc-llama model-runtime`.
 
 On Linux the config lives at `$XDG_CONFIG_HOME/arc-llama/config.toml` (usually
 `~/.config/arc-llama/config.toml`). On Windows it lives at
@@ -841,7 +848,8 @@ for the initial single-GPU 1.0 release.
 
 See the [compatibility contract](docs/compatibility.md), [GPU setup
 guide](docs/gpu-setup.md), [remote-access and
-security guidance](docs/security.md), and [release-candidate
+security guidance](docs/security.md), [upgrading and rolling
+back](docs/upgrading.md), and [release-candidate
 checklist](docs/release-checklist.md) for the concrete promises and validation
 matrix. The detailed implementation sequence and release gates are in the
 [1.0 release plan](docs/1.0-plan.md).

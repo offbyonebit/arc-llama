@@ -458,14 +458,14 @@ async def tune_model(
     gpu = cfg.find_gpu(model.gpu_pci_slot)
 
     from arc_llama.arch import Arch, profile_for
-    from arc_llama.server_caps import probe_server_caps
+    from arc_llama.launcher import probe_model_caps
 
     profile = profile_for(Arch(gpu.arch) if gpu and gpu.arch else Arch.UNKNOWN)
     # probe_server_caps shells out to `llama-server --help` (subprocess.run,
     # up to a 10 s timeout on a cold cache). Running it inline here blocks the
     # event loop at sweep start — which is exactly when /admin/tune/status was
     # observed stalling — so push it to a thread.
-    caps = await asyncio.to_thread(probe_server_caps, cfg.paths.llama_server)
+    caps = await asyncio.to_thread(probe_model_caps, cfg, model)
 
     original = dict(model.recipe or {})
 

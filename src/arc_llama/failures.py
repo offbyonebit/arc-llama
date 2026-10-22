@@ -21,6 +21,7 @@ _HTTP_STATUS = {
     "startup_timeout": 504,
     "process_exited": 503,
     "switch_busy": 409,
+    "model_busy": 409,
 }
 
 _SECRET_KEY = re.compile(

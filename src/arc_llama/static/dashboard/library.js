@@ -40,19 +40,25 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb} MiB`;
   }
 
+  const compatibilityIdentity = (target) => {
+    const snapshot = getSnapshot();
+    const model = target?.name && snapshot?.models?.find(item => item.name === target.name);
+    return model && Object.hasOwn(model, "runtime_compatibility_identity") ? model.runtime_compatibility_identity : snapshot?.runtime_compatibility_identity;
+  };
   let localCompatibility = null;
   const compatibilityHosts = new Map();
   function invalidateCompatibility() {
-    const identity = getSnapshot()?.runtime_compatibility_identity;
     for (const [host, state] of compatibilityHosts) {
       if (!host.isConnected) { state.cancel(); compatibilityHosts.delete(host); continue; }
+      const identity = compatibilityIdentity(state.target);
       if (state.identity !== identity) { state.reset(); state.identity = identity; }
     }
   }
   function compatibilityControl(target) {
     const snapshot = getSnapshot();
+    const identity = compatibilityIdentity(target);
     const model = target.name && snapshot?.models?.find(item => item.name === target.name);
-    const localKey = target.name ? JSON.stringify([target.name, snapshot?.runtime_compatibility_identity, model?.path, model?.file_readiness, model?.gpu_pci_slot]) : null;
+    const localKey = target.name ? JSON.stringify([target.name, identity, model?.path, model?.file_readiness, model?.gpu_pci_slot]) : null;
     if (localKey && localCompatibility?.key === localKey) return localCompatibility.host;
     const host = doc.createElement("div");
     host.className = "library-compatibility";
@@ -77,9 +83,9 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       message.className = "plugin-meta";
       message.textContent = "Runtime changed. Check compatibility again.";
     };
-    compatibilityHosts.set(host, { identity: snapshot?.runtime_compatibility_identity, reset, cancel });
+    compatibilityHosts.set(host, { target, identity, reset, cancel });
     const check = makeButton("Check runtime compatibility", "secondary", async () => {
-      const checkedIdentity = getSnapshot()?.runtime_compatibility_identity;
+      const checkedIdentity = compatibilityIdentity(target);
       const attempt = ++revision;
       const controller = new AbortController();
       activeCheck = controller;
@@ -95,7 +101,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         const result = await response.json().catch(() => ({}));
         if (attempt !== revision) return;
         if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
-        if (checkedIdentity !== getSnapshot()?.runtime_compatibility_identity) throw new Error("Runtime changed. Check again.");
+        if (checkedIdentity !== compatibilityIdentity(target)) throw new Error("Runtime changed. Check again.");
         message.textContent = `${result.label}: ${result.detail} ${result.action}`;
         message.className = `plugin-meta${result.status === "incompatible" ? " library-error" : ""}`;
         explanation.textContent = [result.scope, result.source, result.runtime && `Runtime: ${result.runtime} (${result.runtime_fingerprint || "unknown identity"})`, result.backend && `Configured backend: ${result.backend}`, result.architecture && `Architecture: ${result.architecture}`, result.revision && `Model revision: ${result.revision}`].filter(Boolean).join(" · ");

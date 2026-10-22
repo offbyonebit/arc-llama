@@ -164,6 +164,7 @@ function createDetails(model, gpu) {
     ["KV cache", `${model.cache_type_k || "default"} / ${model.cache_type_v || "default"}`],
     ["Port", model.port || "Not set"],
     ["Model path", model.path || "Not set"],
+    ["Runtime", model.effective_llama_server || "Global default"],
   ];
   const list = document.createElement("dl");
   for (const [term, value] of rows) {

@@ -60,10 +60,15 @@ from arc_llama.agent.harness import (
     run_hermes,
     run_opencode,
 )
+from arc_llama.agent.harness_history import (
+    NativeHistoryError,
+    get_native_session,
+    list_native_sessions,
+)
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.profiles import PROFILE_ID, ProfileStore
 from arc_llama.agent.repo_map import SemanticIndex
-from arc_llama.agent.sessions import SessionStore
+from arc_llama.agent.sessions import SESSION_ID, SessionStore
 from arc_llama.api.context_budget import register_context_budget_route
 from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
@@ -737,6 +742,9 @@ def create_app(
         if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
             raise HTTPException(status_code=400, detail="max_turns must be a positive integer")
 
+        work_session_id = body.get("work_session_id")
+        if work_session_id is not None and (not isinstance(work_session_id, str) or not SESSION_ID.fullmatch(work_session_id)):
+            raise HTTPException(status_code=400, detail="invalid work_session_id")
         history = clean_history(body.get("history"))
         if history is None:
             raise HTTPException(status_code=400, detail="history must be a list of {role, content} messages")
@@ -748,6 +756,30 @@ def create_app(
             raise HTTPException(status_code=400, detail="local_only must be a boolean")
         if harness == "hermes" and (body.get("auto_confirm", False) or not local_only):
             raise HTTPException(status_code=400, detail="Hermes uses native approvals and requires local inference; auto-approve is unavailable")
+        work_type = body.get("work_type", "code")
+        if work_type not in WORK_TYPES:
+            raise HTTPException(status_code=400, detail=f"work_type must be one of {list(WORK_TYPES)}")
+        if work_type == "documents":
+            if harness != "builtin":
+                raise HTTPException(status_code=400, detail="Documents work uses the built-in agent")
+            doc_model = cfg.find_model(model)
+            has_vision = doc_model is not None and "vision" in model_capabilities(doc_model)
+            if doc_model is None:
+                try:
+                    upstream = await request.app.state.upstream_mgr.models()
+                except Exception:
+                    upstream = []
+                has_vision = any(
+                    u.id == model and "vision" in (u.metadata.get("capabilities") or []) for u in upstream
+                )
+            if not has_vision:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Documents work needs a model that can read images, and {model!r} cannot. "
+                        "Choose a vision model (one with a vision projector)."
+                    ),
+                )
         tool_profile: dict[str, Any] | None = None
         profile_id = body.get("tool_profile_id")
         if profile_id is not None:
@@ -863,6 +895,7 @@ def create_app(
                     command=harness_command,
                     arguments=command_arguments,
                     tool_profile=tool_profile,
+                    session_title=task,
                 )
             elif harness == "hermes":
                 runner = run_hermes(
@@ -886,10 +919,16 @@ def create_app(
                     report_context=True,
                     chat_store=chat_store,
                     extra={"semantic_index": semantic_index},
+                    work_type=work_type,
                 )
             streamed_message: ChatMessage | None = None
             try:
                 async for event in runner:
+                    if event.get("type") == "harness_session" and work_session_id:
+                        try:
+                            await asyncio.to_thread(request.app.state.work_sessions.link_harness_session, work_session_id, event.get("session_id"))
+                        except (OSError, ValueError):
+                            log.warning("Could not link generated harness session to its Work conversation")
                     if event.get("type") == "confirm_required":
                         # Each destructive tool needs its own approval. Reset
                         # before publishing the event so a fast reply is not lost.
@@ -1016,8 +1055,21 @@ def create_app(
 
     @app.get("/v1/agent/sessions")
     async def agent_sessions(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
-        """Saved Work sessions, newest first."""
-        return {"sessions": await asyncio.to_thread(request.app.state.work_sessions.list)}
+        """Saved Work conversations and native harness history, newest first."""
+        sessions = await asyncio.to_thread(request.app.state.work_sessions.list)
+        warnings: list[str] = []
+        if experimental_enabled():
+            native, warnings = await asyncio.to_thread(list_native_sessions)
+            saved_ids = {item["id"] for item in sessions}
+            represented_ids = set(saved_ids)
+            by_id = {item["id"]: item for item in native}
+            for item in sessions:
+                linked = [by_id[sid] for sid in item.get("harness_sessions", []) if sid in by_id and sid not in represented_ids]
+                if linked:
+                    item["harness_history"] = sorted(linked, key=lambda entry: entry["updated"], reverse=True)
+                    represented_ids.update(entry["id"] for entry in linked)
+            sessions.extend(item for item in native if item["id"] not in represented_ids)
+        return {"sessions": sorted(sessions, key=lambda item: item["updated"], reverse=True), "warnings": warnings}
 
     @app.get("/v1/agent/sessions/{session_id}")
     async def agent_session_get(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
@@ -1025,6 +1077,11 @@ def create_app(
             record = await asyncio.to_thread(request.app.state.work_sessions.get, session_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if record is None and experimental_enabled():
+            try:
+                record = await asyncio.to_thread(get_native_session, session_id)
+            except NativeHistoryError as exc:
+                raise HTTPException(status_code=413 if "too large" in str(exc) or "too many" in str(exc) else 503, detail=str(exc)) from exc
         if record is None:
             raise HTTPException(status_code=404, detail="No such session")
         return record
@@ -1060,6 +1117,14 @@ def create_app(
             "home": str(Path.home()),
             # Present only on servers whose adapter keeps destructive commands asking under auto-approve.
             "auto_approve": True,
+            "work_types": [
+                {"id": "code", "label": "Code", "needs_vision": False},
+                {"id": "documents", "label": "Documents", "needs_vision": True},
+            ],
+            "vision_models": sorted(
+                {m.name for m in request.app.state.router.all_models() if "vision" in model_capabilities(m)}
+                | {u.id for u in await _upstream_models(request) if "vision" in (u.metadata.get("capabilities") or [])}
+            ),
             "harnesses": [
                 {"id": "builtin", "label": "Built-in", "available": True},
                 {"id": "opencode", "label": "OpenCode", "available": find_binary() is not None},
@@ -1374,10 +1439,16 @@ def create_app(
         if vram_cache is None:
             vram_cache = {}
             request.app.state.vram_estimate_cache = vram_cache
+        from arc_llama.model_compatibility import model_runtime_identity
         from arc_llama.model_library import file_readiness
 
+        identities: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[str, str] | None] = {}
         models = []
         for m in rt.all_models():
+            runtime_key = (c.model_llama_server(m), tuple(sorted(m.env.items())))
+            if runtime_key not in identities:
+                identities[runtime_key] = await asyncio.to_thread(model_runtime_identity, c, m)
+            identity = identities[runtime_key]
             srv = rt._servers.get(m.name)
             r = m.recipe or {}
             running = bool(srv and srv.is_running)
@@ -1402,6 +1473,10 @@ def create_app(
                     "name": m.name,
                     "display_name": m.display_name,
                     "path": m.path,
+                    "llama_server": m.llama_server,
+                    "effective_llama_server": runtime_key[0],
+                    "env": dict(m.env),
+                    "runtime_compatibility_identity": identity[1][:12] if identity else None,
                     "model_file_mb": model_file_mb,
                     "file_readiness": files,
                     "gpu_pci_slot": m.gpu_pci_slot,
@@ -1581,7 +1656,9 @@ def create_app(
         return {"name": model.name, "loaded": bool(srv.is_running and srv.ready)}
 
     @app.post("/admin/stop/{name}")
-    async def admin_stop(name: str, request: Request, _auth: None = Depends(_require_admin)) -> Any:
+    async def admin_stop(
+        name: str, request: Request, force: bool = False, _auth: None = Depends(_require_admin)
+    ) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -1591,7 +1668,7 @@ def create_app(
         if name not in {m.name for m in rt.all_models()}:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
         try:
-            was_running = await rt.stop_one(name)
+            was_running = await rt.stop_one(name, force=force)
         except StartupFailureError as exc:
             return JSONResponse(
                 status_code=exc.http_status, content=exc.to_dict(include_details=True)
@@ -1599,10 +1676,12 @@ def create_app(
         return {"name": name, "was_running": was_running, "loaded": False}
 
     @app.post("/admin/stop-all")
-    async def admin_stop_all(request: Request, _auth: None = Depends(_require_admin)) -> Any:
+    async def admin_stop_all(
+        request: Request, force: bool = False, _auth: None = Depends(_require_admin)
+    ) -> Any:
         rt: Router = request.app.state.router
         try:
-            stopped = await rt.stop_all()
+            stopped = await rt.stop_all(force=force)
         except StartupFailureError as exc:
             return JSONResponse(
                 status_code=exc.http_status, content=exc.to_dict(include_details=True)
@@ -1709,7 +1788,8 @@ def create_app(
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
         `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `spec_draft_p_min`,
         `spec_draft_model`, `spec_draft_ngl`, `ubatch_size`,
-        `batch_size`, `flash_attn` (null clears),
+        `batch_size`, `flash_attn` (null clears), `llama_server` (empty inherits
+        the global executable), `env` (model-only string variables; empty clears),
         `n_cpu_moe` (null or 0 clears), `override_tensor` (list of regex
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
         cleared and vice versa: the two flags are alternative means to the
@@ -1717,7 +1797,7 @@ def create_app(
         If the model is currently loaded, the server is stopped first; callers
         decide whether to reload it afterwards via /admin/load.
         """
-        from arc_llama.config import default_config_path
+        from arc_llama.config import default_config_path, validate_model_runtime
         from arc_llama.gguf_meta import validate_override_patterns, weight_tensor_table
         from arc_llama.recipes import FLASH_ATTN_VALUES, KVCacheType
 
@@ -1751,6 +1831,16 @@ def create_app(
         }
         recipe = dict(model.recipe or {})
         changed: list[str] = []
+        runtime_binary = body.get("llama_server", model.llama_server)
+        runtime_env = body.get("env", model.env)
+        try:
+            validate_model_runtime(runtime_binary, runtime_env)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if "llama_server" in body:
+            changed.append("llama_server")
+        if "env" in body:
+            changed.append("env")
         if "ctx" in body:
             try:
                 ctx = int(body["ctx"])
@@ -2032,7 +2122,9 @@ def create_app(
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe = model.recipe
+        previous_runtime = model.llama_server, model.env
         model.recipe = recipe
+        model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
             c.save(config_path or default_config_path())
         except OSError as e:
@@ -2044,6 +2136,7 @@ def create_app(
             # and fail loudly instead: a rejected edit is recoverable, an edit
             # that silently un-applies later is not.
             model.recipe = previous_recipe
+            model.llama_server, model.env = previous_runtime
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(
                 status_code=500,
@@ -2054,6 +2147,8 @@ def create_app(
             "name": name,
             "changed": changed,
             "recipe": recipe,
+            "llama_server": model.llama_server,
+            "env": model.env,
             "kv_class": model.kv_class,
             "stopped_running_instance": was_running,
             "rebuilt": rebuilt,
@@ -2265,13 +2360,24 @@ def request_has_images(body: dict[str, Any]) -> bool:
     return False
 
 
+WORK_TYPES = ("code", "documents")
+
+
+async def _upstream_models(request: Request) -> list[Any]:
+    try:
+        return list(await request.app.state.upstream_mgr.models())
+    except Exception:
+        return []
+
+
 def model_capabilities(model: Any) -> list[str]:
     """Capability tags advertised in /v1/models and used for validation."""
     recipe = getattr(model, "recipe", None) or {}
     if recipe.get("reranking"):
         return ["rerank"]
     caps = ["chat", "completion", "embedding"]
-    if recipe.get("mmproj"):
+    flags = [str(f) for f in recipe.get("extra_flags") or []]
+    if recipe.get("mmproj") or any(f in ("--mmproj", "-mm") or f.startswith("--mmproj=") for f in flags):
         caps.append("vision")
     return caps
 

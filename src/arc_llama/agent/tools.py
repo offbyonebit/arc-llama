@@ -71,6 +71,8 @@ class ToolResult:
     content: str
     error: bool = False
     checkpoint_id: str | None = None
+    # data: URLs the model should look at (page renders). Only vision models can use them.
+    images: tuple[str, ...] = ()
 
 
 @dataclass
@@ -146,6 +148,16 @@ class ToolRegistry:
     def list_tools(self) -> list[str]:
         """Return the names of all registered tools."""
         return sorted(self._tools.keys())
+
+    def select(
+        self, include: frozenset[str] | None = None, exclude: frozenset[str] = frozenset()
+    ) -> ToolRegistry:
+        """A copy limited to ``include`` (when given) and without ``exclude``."""
+        picked = ToolRegistry()
+        for name, tool in self._tools.items():
+            if (include is None or name in include) and name not in exclude:
+                picked.register(tool)
+        return picked
 
     @property
     def definitions(self) -> list[dict[str, Any]]:

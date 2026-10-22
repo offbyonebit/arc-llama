@@ -231,12 +231,17 @@
       try { history.replaceState(null, "", work ? "/work" : "/chat"); } catch (_) {}
     }
 
+    // "code" unless the user picked Documents; Documents only works with vision models and the built-in agent.
+    const workType = () => { const t = $("#work-type"); return t && !$("#work-type-label").hidden ? t.value : "code"; };
+
     function syncModels() {
       const source = $("#model-select");
       const target = $("#work-model");
       if (!source || !target) return;
       const keep = target.value || recall(MODEL_KEY) || source.value;
-      const usable = Array.from(source.options).filter((o) => o.value && !o.disabled);
+      const documents = workType() === "documents";
+      const visionIds = new Set((info && info.vision_models) || []);
+      const usable = Array.from(source.options).filter((o) => o.value && !o.disabled && (!documents || visionIds.has(o.value)));
       target.replaceChildren(...usable.map((o) => el("option", { value: o.value }, o.textContent)));
       target.value = usable.some((o) => o.value === keep) ? keep : (usable[0] ? usable[0].value : "");
       preferLoadedModel();
@@ -312,6 +317,8 @@
       renderAutoChip();
       notice("");
     }
+
+    const measuredSpeed = (value) => Number.isFinite(value) && value > 0 ? `${value.toFixed(1)} tok/s` : "";
 
     // ---- rendering
     function stepRow(step) {
@@ -427,6 +434,15 @@
       $("#work-send").classList.toggle("stop", busy);
       $("#work-send").setAttribute("aria-label", busy ? "Stop" : "Start");
       $("#work-send").title = busy ? "Stop" : "Start";
+      const speed = $("#work-speed");
+      if (speed) {
+        const measured = measuredSpeed(run?.generationTokS);
+        const label = measured || "N/A tok/s";
+        if (speed.textContent !== label) speed.textContent = label;
+        speed.title = measured
+          ? `Latest measured model call${run?.model ? ` (${run.model})` : ""}; excludes loading, prompt processing, tools, and approvals. Updates when the backend reports generation timing.`
+          : "Waiting for backend generation timing. No speed is estimated from response text or total task duration.";
+      }
       const activity = $("#work-activity");
       if (activity) {
         const waiting = busy && run.pending && !run.pending.answered;
@@ -451,9 +467,11 @@
       const eyebrow = r.status === "running" ? `${r.folderName}${mode} · working for ${elapsedText(Date.now() - r.startedAt)}`
         : r.status === "stopped" ? `${r.folderName}${mode} · stopped`
         : r.status === "error" ? `${r.folderName}${mode} · stopped by an error`
+        : r.imported ? `${r.folderName} · imported conversation`
         : `${r.folderName}${mode} · finished in ${elapsedText((r.endedAt || Date.now()) - r.startedAt)}`;
       const heading = splitTask(r.task);
-      turn.append(el("div", { class: "work-eyebrow" }, eyebrow), el("h1", { class: "work-title" }, heading.title));
+      const speed = measuredSpeed(r.generationTokS);
+      turn.append(el("div", { class: "work-eyebrow" }, eyebrow + (speed ? ` · ${speed}` : "")), el("h1", { class: "work-title" }, heading.title));
       if (heading.rest) turn.append(el("p", { class: "work-sub" }, heading.rest));
 
       // Steps: always shown while a turn is live or waiting on you; folded away once it is history.
@@ -628,6 +646,7 @@
     // ---- tool profiles: which of the harness's MCP servers, skills and web tools a task may use
     const PROFILE_KEY = "arc-llama-work-profile";
     let profiles = [], profileId = recall(PROFILE_KEY) || "", caps = null, capsKey = "", editingProfile = null;
+    let capsLoading = false, capsError = "", managerAbort = null, managerEpoch = 0;
     const currentProfile = () => profiles.find((p) => p.id === profileId) || null;
     const profileFor = () => ($("#work-harness").value === "opencode" ? currentProfile() : null);
     function renderProfiles() {
@@ -647,37 +666,64 @@
     function chooseProfile(id) {
       profileId = id; store(PROFILE_KEY, id || null); commandsKey = ""; updateHarnessControls(); refreshWorkContext();
     }
-    async function loadCaps() {
+    async function refreshManagerCaps() {
+      managerAbort?.abort();
+      const mine = ++managerEpoch, abort = new AbortController();
+      managerAbort = abort;
       const folder = normalizeFolder($("#work-root").value, info && info.home);
-      if (caps && capsKey === folder) return caps;
-      const r = await ctx.request(`/v1/agent/capabilities?root=${encodeURIComponent(folder)}`);
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-      caps = data; capsKey = folder;
-      return caps;
+      capsError = "";
+      capsLoading = !(caps && capsKey === folder);
+      drawManager();
+      if (!capsLoading) return;
+      let timedOut = false;
+      const deadline = setTimeout(() => { timedOut = true; abort.abort(); }, 120000);
+      try {
+        const r = await ctx.request(`/v1/agent/capabilities?root=${encodeURIComponent(folder)}`, { signal: abort.signal });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+        if (data.tools_complete === false) throw new Error((data.warnings || []).join("; ") || "Tool discovery was incomplete.");
+        if (mine !== managerEpoch || abort.signal.aborted) return;
+        caps = data; capsKey = folder;
+      } catch (e) {
+        if (mine !== managerEpoch) return;
+        capsError = timedOut ? "Tool discovery timed out." : e.message;
+      } finally {
+        clearTimeout(deadline);
+        if (mine === managerEpoch) { capsLoading = false; drawManager(); }
+      }
     }
     function tickRow(label, checked, hint) {
       const box = el("input", { type: "checkbox" });
       box.checked = checked;
       return { box, row: el("label", { class: "tick" }, box, el("span", {}, label, hint ? el("small", {}, hint) : null)) };
     }
-    async function openManager(startNew) {
+    function openManager(startNew) {
       $("#work-manager").hidden = false;
-      const body = $("#work-manager-body");
-      body.replaceChildren(el("p", { class: "work-note" }, "Looking at what your agent offers in this folder…"));
-      try { await loadCaps(); } catch (e) { body.replaceChildren(el("p", { class: "work-manager-error" }, `Could not read your agent's tools: ${e.message}`)); return; }
-      editingProfile = startNew ? { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), name: "", mcp: [], skills: [], web: false, isNew: true } : (currentProfile() ? { ...currentProfile() } : null);
-      drawManager();
+      editingProfile = startNew ? newProfile() : (currentProfile() ? { ...currentProfile() } : null);
+      refreshManagerCaps();
     }
+    function newProfile() { return { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), name: "", mcp: [], skills: [], web: false, isNew: true }; }
     function drawManager() {
       const body = $("#work-manager-body");
       const list = el("div", { class: "work-profile-list" }, ...profiles.map((p) => {
         const row = el("button", { type: "button", class: "work-profile-row", "aria-current": String(!!editingProfile && editingProfile.id === p.id) }, el("b", {}, p.name), el("span", {}, `${p.mcp.length} server${p.mcp.length === 1 ? "" : "s"} · ${p.skills.length} skill${p.skills.length === 1 ? "" : "s"}${p.web ? " · web" : ""}`));
         row.addEventListener("click", () => { editingProfile = { ...p }; drawManager(); });
         return row;
-      }), el("button", { type: "button", class: "work-link", onclick: () => { editingProfile = { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), name: "", mcp: [], skills: [], web: false, isNew: true }; drawManager(); } }, "New profile"));
+      }), el("button", { type: "button", class: "work-link", onclick: () => { editingProfile = newProfile(); drawManager(); } }, "New profile"));
       body.replaceChildren(list);
+      if (editingProfile && !editingProfile.isNew) {
+        body.append(el("button", { type: "button", class: "work-btn", onclick: () => { chooseProfile(editingProfile.id); closeManager(); } }, "Use selected profile"));
+      }
+      if (capsLoading) { body.append(el("p", { class: "work-note work-discovery", role: "status" }, "Finding tools for this folder… Saved profiles are ready to use.")); return; }
+      if (capsError) {
+        body.append(el("div", { class: "work-discovery" },
+          el("p", { class: "work-manager-error", role: "alert" }, "Tools unavailable. Your saved profiles are unchanged."),
+          el("button", { type: "button", class: "work-btn", onclick: refreshManagerCaps }, "Retry"),
+          el("details", {}, el("summary", {}, "Details"), el("p", { class: "work-note" }, capsError))));
+        return;
+      }
       if (!editingProfile) return;
+      const draft = editingProfile, epoch = managerEpoch;
       const name = el("input", { type: "text", maxlength: "60", placeholder: "e.g. Research, Writing, Code review", "aria-label": "Profile name" });
       name.value = editingProfile.name;
       const off = new Set(editingProfile.tools_off || []);
@@ -712,31 +758,47 @@
         const total = toolBoxes.length ? allTools.filter((t) => !["invalid", "question", "skill"].includes(t.id)).length : 0;
         let allowed = 0;
         for (const t of toolBoxes) if (t.box.checked && (t.group === "builtin" || t.group === "plugin" || serverOn.get(t.group))) allowed += t.ids.length;
-        counter.textContent = total ? `This profile gives the model ${allowed} of ${total} tools. Fewer tools means a shorter prompt and better aim for smaller models.` : "";
+        counter.textContent = total ? `${allowed} of ${total} tools enabled` : "";
       }
       const skills = (caps.skills || []).map((x) => ({ n: x.name, ...tickRow(x.name, editingProfile.skills.includes(x.name), (x.description || "").slice(0, 110)) }));
       const web = tickRow("Web search and fetch", !!editingProfile.web, "Lets the agent look things up on the internet.");
       const error = el("p", { class: "work-manager-error", role: "alert", hidden: true });
-      const save = el("button", { type: "button", class: "work-btn primary" }, "Save profile");
+      const save = el("button", { type: "button", class: "work-btn primary" }, "Save and use");
       save.addEventListener("click", async () => {
+        if (!name.value.trim()) { name.focus(); error.textContent = "Enter a profile name."; error.hidden = false; return; }
+        const knownTools = new Set(toolBoxes.flatMap((t) => t.ids));
         const payload = {
-          name: name.value, mcp: servers.filter((x) => x.box.checked).map((x) => x.n), skills: skills.filter((x) => x.box.checked).map((x) => x.n), web: web.box.checked,
-          tools_off: toolBoxes.filter((t) => !t.box.checked).flatMap((t) => t.ids),
+          name: name.value.trim(), description: draft.description || "",
+          mcp: [...draft.mcp.filter((n) => !servers.some((x) => x.n === n)), ...servers.filter((x) => x.box.checked).map((x) => x.n)],
+          skills: [...draft.skills.filter((n) => !skills.some((x) => x.n === n)), ...skills.filter((x) => x.box.checked).map((x) => x.n)],
+          web: web.box.checked,
+          tools_off: [...off].filter((id) => !knownTools.has(id)).concat(toolBoxes.filter((t) => !t.box.checked).flatMap((t) => t.ids)),
         };
+        save.disabled = true; error.hidden = true;
         try {
-          const r = await ctx.request(`/v1/agent/profiles/${encodeURIComponent(editingProfile.id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          const r = await ctx.request(`/v1/agent/profiles/${encodeURIComponent(draft.id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
           const data = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-          await loadProfiles(); chooseProfile(data.id); editingProfile = data; drawManager();
+          profiles = profiles.filter((p) => p.id !== data.id).concat(data).sort((a, b) => a.name.localeCompare(b.name));
+          renderProfiles();
+          if (epoch === managerEpoch && editingProfile === draft) { chooseProfile(data.id); closeManager(); }
         } catch (e) { error.textContent = e.message; error.hidden = false; }
+        finally { save.disabled = false; }
       });
       const actions = el("div", { class: "work-actions" }, save);
       if (!editingProfile.isNew) {
         const remove = el("button", { type: "button", class: "work-link" }, "Delete");
         remove.addEventListener("click", async () => {
-          try { await ctx.request(`/v1/agent/profiles/${encodeURIComponent(editingProfile.id)}`, { method: "DELETE" }); } catch (_) {}
-          if (profileId === editingProfile.id) chooseProfile("");
-          editingProfile = null; await loadProfiles(); drawManager();
+          remove.disabled = true; save.disabled = true; error.hidden = true;
+          try {
+            const r = await ctx.request(`/v1/agent/profiles/${encodeURIComponent(draft.id)}`, { method: "DELETE" });
+            if (!r.ok) { const data = await r.json().catch(() => ({})); throw new Error(data.detail || `HTTP ${r.status}`); }
+            profiles = profiles.filter((p) => p.id !== draft.id);
+            if (profileId === draft.id) chooseProfile("");
+            renderProfiles();
+            if (epoch === managerEpoch && editingProfile === draft) { editingProfile = null; drawManager(); }
+          } catch (e) { error.textContent = e.message; error.hidden = false; }
+          finally { remove.disabled = false; save.disabled = false; }
         });
         actions.append(remove);
       }
@@ -750,17 +812,17 @@
         counter, error, actions);
       recount();
     }
-    function closeManager() { $("#work-manager").hidden = true; editingProfile = null; }
+    function closeManager() { managerEpoch++; managerAbort?.abort(); $("#work-manager").hidden = true; editingProfile = null; }
 
     // ---- saved sessions: every conversation is kept on the server so it can be reopened later
-    let sessionId = null, saving = Promise.resolve();
+    let sessionId = null, sessionOrigin = "", saving = Promise.resolve();
     const newSessionId = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
     function sessionPayload() {
       const plain = JSON.parse(JSON.stringify(runs, (key, value) => (key === "pending" || key === "undoing" ? undefined : value)));
       for (const r of plain) if (r.status === "running") { r.status = "stopped"; r.error = r.error || "This task was interrupted when the page closed."; }
       const first = runs[0] ? splitTask(runs[0].task).title : "Untitled";
       const last = runs[runs.length - 1] || {};
-      return { title: first, folder: last.folder || "", model: last.model || "", harness: last.harness || "", compacted, profileId, runs: plain };
+      return { title: first, folder: last.folder || "", model: last.model || "", harness: last.harness || "", origin: sessionOrigin, compacted, profileId, runs: plain };
     }
     function persist() {
       if (!sessionId || !runs.length) return;
@@ -771,27 +833,68 @@
       const d = Math.max(0, Date.now() / 1000 - seconds);
       return d < 90 ? "just now" : d < 5400 ? `${Math.round(d / 60)} min ago` : d < 129600 ? `${Math.round(d / 3600)} h ago` : `${Math.round(d / 86400)} days ago`;
     };
+    let recentEpoch = 0;
+    function sessionGroups(sessions) {
+      const unique = new Map();
+      for (const item of sessions) {
+        if (!item || typeof item.id !== "string") continue;
+        const old = unique.get(item.id);
+        // A saved Work copy is the canonical continuation of the native ID.
+        if (!old || (old.native && !item.native) || (!!old.native === !!item.native && item.updated > old.updated)) unique.set(item.id, item);
+      }
+      const groups = new Map();
+      for (const item of [...unique.values()].sort((a, b) => b.updated - a.updated)) {
+        const key = JSON.stringify([item.title || "Untitled", item.folder || "", item.harness || ""]);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(item);
+      }
+      return [...groups.values()];
+    }
     async function loadRecent() {
       const box = $("#work-recent");
       if (!box) return;
-      let sessions = [];
+      const mine = ++recentEpoch;
+      let sessions = [], warnings = [];
       try {
         const r = await ctx.request("/v1/agent/sessions");
-        if (r.ok) sessions = (await r.json()).sessions || [];
-      } catch (_) { /* no history is fine */ }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        sessions = data.sessions || [];
+        warnings = data.warnings || [];
+      } catch (_) { warnings = ["Could not load sessions. Try opening Sessions again."]; }
+      if (mine !== recentEpoch) return;
+      const groups = sessionGroups(sessions);
+      let warning = $("#work-sessions-warning");
+      if (!warning) { warning = el("p", { id: "work-sessions-warning", class: "work-note", role: "status" }); box.prepend(warning); }
+      warning.textContent = warnings.join(" ");
+      warning.hidden = !warnings.length;
       window.ArcPaper?.workSessions?.(sessions.length);
-      box.hidden = !sessions.length;
-      $("#work-recent-list").replaceChildren(...sessions.map((item) => {
+      box.hidden = !sessions.length && !warnings.length;
+      function sessionRow(item, expanded = false, includeRelated = true) {
         const open = el("button", { type: "button", class: "work-recent-item" },
           el("b", {}, item.title),
-          el("span", {}, `${baseName(item.folder) || "project"} · ${item.tasks} task${item.tasks === 1 ? "" : "s"} · ${ago(item.updated)}`));
+          el("span", {}, `${item.harness === "opencode" ? "OpenCode · " : item.harness === "hermes" ? "Hermes · " : ""}${item.native ? "Harness history · " : item.origin ? "Work copy · " : ""}${baseName(item.folder) || "project"} · ${item.tasks} task${item.tasks === 1 ? "" : "s"} · ${expanded ? new Date(item.updated * 1000).toLocaleString() : ago(item.updated)}`));
         open.addEventListener("click", () => openSession(item.id));
         const remove = el("button", { type: "button", class: "work-recent-remove", "aria-label": `Delete ${item.title}`, title: "Delete" }, "×");
         remove.addEventListener("click", async () => {
           try { await ctx.request(`/v1/agent/sessions/${encodeURIComponent(item.id)}`, { method: "DELETE" }); } catch (_) {}
           loadRecent();
         });
-        return el("div", { class: "work-recent-row" }, open, remove);
+        const row = el("div", { class: "work-recent-row", "data-session-id": item.id }, open, item.native ? null : remove);
+        const related = includeRelated ? item.harness_history || [] : [];
+        if (!related.length) return row;
+        return el("div", { class: "work-linked-session" }, row,
+          el("details", { class: "work-session-duplicates work-session-linked" },
+            el("summary", {}, `${related.length} original harness session${related.length === 1 ? "" : "s"}`),
+            ...related.map((entry) => sessionRow(entry, true, false))));
+      }
+      $("#work-recent-list").replaceChildren(...groups.map((group) => {
+        const row = sessionRow(group[0]);
+        if (group.length === 1) return row;
+        const older = el("details", { class: "work-session-duplicates" },
+          el("summary", {}, `${group.length - 1} more session${group.length === 2 ? "" : "s"} with this title`),
+          ...group.slice(1).map((item) => sessionRow(item, true)));
+        return el("div", { class: "work-session-group" }, row, older);
       }));
       window.ArcPaper?.workSessions?.(sessions.length);
     }
@@ -800,7 +903,10 @@
       if (run && run.status === "running") { notice("Stop the current task first."); return; }
       try {
         const r = await ctx.request(`/v1/agent/sessions/${encodeURIComponent(id)}`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.ok) {
+          const failure = await r.json().catch(() => ({}));
+          throw new Error(failure.detail || `HTTP ${r.status}`);
+        }
         const record = await r.json();
         runs = (record.runs || []).map((x) => {
           // Undo needs the files kept in memory right after a run, so it is only offered then.
@@ -812,14 +918,17 @@
         if (record.model && [...$("#work-model").options].some(o => o.value === record.model && !o.disabled)) { $("#work-model").value = record.model; modelPicked = true; store(MODEL_KEY, record.model); }
         if (record.profileId && profiles.some((p) => p.id === record.profileId)) chooseProfile(record.profileId);
         sessionId = record.id;
-        if (record.folder) $("#work-root").value = record.folder;
+        sessionOrigin = record.origin || "";
+        if (record.folder || record.native) $("#work-root").value = record.folder || "";
         if (record.harness && [...$("#work-harness").options].some((o) => o.value === record.harness && !o.disabled)) $("#work-harness").value = record.harness;
+        else if (record.native) $("#work-harness").value = "builtin";
         commandsKey = "";
         updateHarnessControls();
         problem("");
         render();
         window.ArcPaper?.closeWorkSessions?.();
         window.dispatchEvent(new Event("arc-paper-work-mode"));
+        if (record.native) notice(`Opened ${record.harness === "opencode" ? "OpenCode" : "Hermes"} text history. Follow-ups save a Work copy using your selected local model; the original session stays in its harness.${record.folder ? "" : " Choose a project folder to continue."}`);
         $("#work-task").focus();
       } catch (e) {
         problem(`Could not reopen that session: ${e.message}`);
@@ -827,7 +936,10 @@
     }
 
     // ---- slash commands: Arc Llama's own, plus whatever the chosen harness offers for this folder
-    const LOCAL_COMMANDS = [{ name: "compact", description: "Shorten earlier context. Add a focus, e.g. /compact keep file names", source: "arc-llama", takes_arguments: true }];
+    const LOCAL_COMMANDS = [
+      { name: "compact", description: "Shorten earlier context. Add a focus, e.g. /compact keep file names", source: "arc-llama", takes_arguments: true },
+      { name: "sessions", description: "Browse Work, OpenCode, and Hermes conversation history", source: "arc-llama", takes_arguments: false },
+    ];
     let harnessCommands = [], commandsKey = "", menuItems = [], menuIndex = 0;
     const allCommands = () => [...LOCAL_COMMANDS, ...harnessCommands.filter((c) => !LOCAL_COMMANDS.some((l) => l.name === c.name))];
     async function loadCommands() {
@@ -959,6 +1071,10 @@
           }
           break;
         }
+        case "performance": {
+          if (Number.isFinite(event.generation_tok_s) && event.generation_tok_s > 0) run.generationTokS = event.generation_tok_s;
+          break;
+        }
         case "usage": {
           if (Number.isFinite(event.prompt_tokens) && event.prompt_tokens >= 0 && Number.isFinite(event.completion_tokens) && event.completion_tokens >= 0) run.context = { ...run.context, prompt_tokens: event.prompt_tokens, completion_tokens: event.completion_tokens, exact: true, source: "usage" };
           break;
@@ -1014,6 +1130,15 @@
       const task = $("#work-task").value.trim();
       if (compactingSession) { notice("Wait for compaction to finish before starting a task."); return; }
       if (!task) { $("#work-task").focus(); return; }
+      // Local history browsing needs neither a harness process nor a selected model/folder.
+      const localCommand = /^\/sessions\s*$/i.test(task);
+      if (localCommand) {
+        $("#work-task").value = ""; autosize();
+        document.querySelector("#paper-sessions-toggle")?.click();
+        await loadRecent();
+        refreshWorkContext();
+        return;
+      }
       await loadCommands();
       const command = parseCommand(task);
       if (command && command.local) { await compactSession(command.args); if ($("#work-task").value.trim() === task) { $("#work-task").value = ""; autosize(); refreshWorkContext(); } return; }
@@ -1048,7 +1173,7 @@
       try {
         const res = await ctx.request("/v1/agent", {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-          body: JSON.stringify({ model, task, harness, root: folder, track_changes: true, local_only: true, auto_confirm: autoOn, history, ...(command ? { command: command.name, arguments: command.args } : {}), ...(profileFor() ? { tool_profile_id: profileFor().id } : {}) }),
+          body: JSON.stringify({ model, task, harness, work_type: workType(), root: folder, work_session_id: sessionId, track_changes: true, local_only: true, auto_confirm: autoOn, history, ...(command ? { command: command.name, arguments: command.args } : {}), ...(profileFor() ? { tool_profile_id: profileFor().id } : {}) }),
         });
         if (!res.ok) {
           let detail = `The request failed (${res.status}).`;
@@ -1185,6 +1310,7 @@
         run = null;
         compacted = null;
         sessionId = null;
+        sessionOrigin = "";
         render();
         loadRecent();
         $("#work-task").focus();
@@ -1210,6 +1336,17 @@
       // Only offer auto-approve when the server says its adapter keeps destructive commands asking.
       $("#work-auto").hidden = !info.auto_approve;
       if (!info.auto_approve && autoOn) setAuto(false);
+      const types = $("#work-type");
+      if (types && Array.isArray(info.work_types) && info.work_types.length > 1) {
+        types.replaceChildren(...info.work_types.map((t) => el("option", { value: t.id, disabled: !!t.needs_vision && !(info.vision_models || []).length }, t.label + (t.needs_vision && !(info.vision_models || []).length ? " (needs a vision model)" : ""))));
+        $("#work-type-label").hidden = false;
+        types.addEventListener("change", () => {
+          // Documents runs on the built-in agent only.
+          if (workType() === "documents") $("#work-harness").value = "builtin";
+          $("#work-harness").disabled = workType() === "documents";
+          commandsKey = ""; updateHarnessControls(); modelPicked = false; syncModels();
+        });
+      }
       const harness = $("#work-harness");
       harness.replaceChildren(...info.harnesses.map((h) => el("option", { value: h.id, disabled: !h.available }, h.label + (h.available ? "" : " (not installed)"))));
       const saved = recall(HARNESS_KEY);

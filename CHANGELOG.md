@@ -9,6 +9,26 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ### Added
 
+- Settings Arc Llama does not recognise, such as those written by a newer version,
+  are kept when it saves the config instead of being dropped, so rolling back to
+  this version no longer loses them. Upgrade and rollback are tested against
+  configs written by the published 0.8.0, 0.9.0 and 0.9.1.2 packages, and
+  `scripts/check_config_versions.py` repeats the round trips against PyPI
+  releases. See [Upgrading and rolling back](docs/upgrading.md).
+
+- Per-model llama-server executable and environment overrides in Model settings,
+  TOML and `model-runtime`. Launch flags, tuning and compatibility follow that
+  model's runtime; global defaults and other models remain independent.
+
+- A Work tokens-per-second counter shows the latest backend-measured generation
+  rate for built-in, OpenCode, and Hermes runs, retains it in saved sessions,
+  and excludes loading, prompt processing, tool execution, and approval time.
+
+- Work Sessions and `/sessions` include native OpenCode and Hermes text history,
+  with project folders and continuation into a Work copy using the selected
+  local model. History reads do not start harnesses or change their databases;
+  original sessions remain protected from Work deletion.
+
 - Work tab with project-scoped instructions and permissions, a persistent serial
   job queue, activity history, pause/resume, restart recovery, and exact per-command
   approvals. Job execution continues independently of its browser connection.
@@ -37,6 +57,15 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
   frontend asset checks.
 
 ### Fixed
+
+- Work Sessions represent generated harness sessions through their saved Work
+  conversation, rather than listing each turn again. Older repeated titles
+  collapse into expandable groups without deleting history, and new OpenCode
+  sessions use the task title instead of a generic context heading.
+
+- Tool profiles keep saved choices available during discovery failures, offer Retry,
+  and prevent edits with an incomplete tool list. A single Save and use action
+  applies a profile; failed saves and deletes preserve the current selection.
 
 - Accept bare JSON arrays of Work acceptance criteria from local models instead
   of silently dropping their checks.

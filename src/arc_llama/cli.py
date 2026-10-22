@@ -1241,7 +1241,7 @@ def _emit_recipe_submission(ctx: click.Context, cfg: Any, report: Any) -> None:
         tune_schema_version=3,
         vram_mb=(gpu.vram_mb if gpu is not None and gpu.vram_mb is not None else 0),
     )
-    provenance = llama_server_build_identity(cfg.paths.llama_server)
+    provenance = llama_server_build_identity(cfg.model_llama_server(m), env=m.env) if m.env else llama_server_build_identity(cfg.model_llama_server(m))
     best = report.best
     doc = submission_document(
         fingerprint=fp,

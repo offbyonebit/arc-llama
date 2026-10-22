@@ -45,7 +45,7 @@ from arc_llama.platform_checks import (
     source_setvars,
 )
 from arc_llama.policy import apply_launch_policy
-from arc_llama.server_caps import probe_server_caps
+from arc_llama.server_caps import ServerCaps, probe_server_caps
 
 log = logging.getLogger("arc_llama.launcher")
 
@@ -193,11 +193,11 @@ _SYCL_ONLY_ENVS: frozenset[str] = frozenset(
 
 
 @lru_cache(maxsize=8)
-def _vulkan_devices_cached(binary_path: str) -> tuple[tuple[int, str], ...]:
-    return tuple(list_vulkan_devices(binary_path))
+def _vulkan_devices_cached(binary_path: str, env_key: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[int, str], ...]:
+    return tuple(list_vulkan_devices(binary_path, env=dict(env_key))) if env_key else tuple(list_vulkan_devices(binary_path))
 
 
-def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None) -> int | None:
+def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env: dict[str, str] | None = None) -> int | None:
     """Resolve the Vulkan device index for *gpu*, or None to leave it unset.
 
     Returning None means "don't set GGML_VK_VISIBLE_DEVICES at all", which lets
@@ -209,7 +209,7 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None) -> int | 
         return gpu.vulkan_index
 
     if llama_server:
-        devices = list(_vulkan_devices_cached(str(llama_server)))
+        devices = list(_vulkan_devices_cached(str(llama_server), tuple(sorted(probe_env.items())))) if probe_env else list(_vulkan_devices_cached(str(llama_server)))
         index = resolve_vulkan_index(devices, gpu_name=gpu.name)
         if index is not None:
             return index
@@ -277,6 +277,7 @@ def build_env(
     llama_server: str | Path | None = None,
     oneapi_setvars: str | None = None,
     extra_gpus: list[GPUConfig] | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Compose the environment for llama-server based on backend and arch.
 
@@ -299,7 +300,8 @@ def build_env(
         # so on a box with a discrete NVIDIA/AMD card the Arc can be Vulkan1
         # while sycl_index is still 0. Using sycl_index there silently ran
         # models on the other vendor's GPU.
-        indices = [_vulkan_index_for(g, llama_server) for g in [gpu, *(extra_gpus or [])]]
+        probe_env = {**env, **overrides} if overrides else None
+        indices = [_vulkan_index_for(g, llama_server, probe_env) if probe_env else _vulkan_index_for(g, llama_server) for g in [gpu, *(extra_gpus or [])]]
         if all(i is not None for i in indices):
             env["GGML_VK_VISIBLE_DEVICES"] = ",".join(str(i) for i in indices)
         elif extra_gpus:
@@ -351,20 +353,40 @@ def build_env(
     return env
 
 
+def build_model_env(cfg: Config, model: ModelConfig, gpu: GPUConfig) -> dict[str, str]:
+    """Automatic GPU/oneAPI defaults followed by explicit model-only overrides."""
+    split_gpus = resolve_split_gpus(cfg, model)
+    env = build_env(
+        profile_for(Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN), gpu,
+        llama_server=cfg.model_llama_server(model),
+        oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None),
+        extra_gpus=split_gpus[1:] if split_gpus else None,
+        **({"overrides": model.env} if model.env else {}),
+    )
+    env.update(model.env)
+    return env
+
+
+def probe_model_caps(cfg: Config, model: ModelConfig) -> ServerCaps:
+    """Use the same executable and custom environment as this model's launch."""
+    from arc_llama.server_caps import probe_server_caps as probe
+
+    binary = cfg.model_llama_server(model)
+    gpu = cfg.find_gpu(model.gpu_pci_slot)
+    if model.env:
+        env = build_model_env(cfg, model, gpu) if gpu else {**os.environ, **model.env}
+        return probe(binary, env=env)
+    return probe(binary)
+
+
 def build_plan(
     cfg: Config, model: ModelConfig, gpu: GPUConfig, host: str = "127.0.0.1"
 ) -> LaunchPlan:
     arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
-    profile = profile_for(arch)
     backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
     split_gpus = resolve_split_gpus(cfg, model)
-    env = build_env(
-        profile,
-        gpu,
-        llama_server=cfg.paths.llama_server,
-        oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None),
-        extra_gpus=split_gpus[1:] if split_gpus else None,
-    )
+    binary = cfg.model_llama_server(model)
+    env = build_model_env(cfg, model, gpu)
     recipe = model.launch_recipe()
     if recipe.tensor_split and split_gpus is None:
         recipe.tensor_split = None
@@ -414,7 +436,7 @@ def build_plan(
         model_name=model.name,
     )
 
-    caps = probe_server_caps(cfg.paths.llama_server)
+    caps = probe_server_caps(binary, env=env) if model.env else probe_server_caps(binary)
     if recipe.spec_draft_p_min is not None and caps.probed and not caps.supports_draft_confidence:
         log.warning("[%s] runtime has no confidence flag; omitting typed confidence", model.name)
         recipe.spec_draft_p_min = None
@@ -423,7 +445,7 @@ def build_plan(
             "[%s] recipe requests flash_attn=%s but %s has no --flash-attn; omitting",
             model.name,
             recipe.flash_attn,
-            cfg.paths.llama_server,
+            binary,
         )
         recipe.flash_attn = None
 
@@ -446,7 +468,7 @@ def build_plan(
 
     if recipe.spec_type and not caps.supports_speculative:
         log.warning(
-            "[%s] %s has no --spec-type; starting target-only", model.name, cfg.paths.llama_server
+            "[%s] %s has no --spec-type; starting target-only", model.name, binary
         )
         recipe.spec_type = None
         recipe.spec_draft_model = None
@@ -458,14 +480,14 @@ def build_plan(
         log.warning(
             "[%s] %s has no n-gram speculation; starting target-only",
             model.name,
-            cfg.paths.llama_server,
+            binary,
         )
         recipe.spec_type = None
     elif recipe.spec_draft_model and not caps.supports_draft_model:
         log.warning(
             "[%s] %s has no --spec-draft-model; starting target-only",
             model.name,
-            cfg.paths.llama_server,
+            binary,
         )
         recipe.spec_type = None
         recipe.spec_draft_model = None
@@ -474,22 +496,22 @@ def build_plan(
         log.warning(
             "[%s] %s has no --mmproj; starting text-only (image input disabled)",
             model.name,
-            cfg.paths.llama_server,
+            binary,
         )
         recipe.mmproj = None
     if recipe.reranking and not caps.supports_reranking:
         log.warning(
-            "[%s] %s has no --reranking; rerank disabled", model.name, cfg.paths.llama_server
+            "[%s] %s has no --reranking; rerank disabled", model.name, binary
         )
         recipe.reranking = False
     if recipe.tensor_split and not caps.supports_tensor_split:
         log.warning(
-            "[%s] %s has no --tensor-split; using a single GPU", model.name, cfg.paths.llama_server
+            "[%s] %s has no --tensor-split; using a single GPU", model.name, binary
         )
         recipe.tensor_split = None
 
     argv: list[str] = [
-        cfg.paths.llama_server,
+        binary,
         "-m",
         model.path,
         "--host",
@@ -516,6 +538,24 @@ def build_plan(
             else None
         ),
     )
+
+
+STOP_GRACE_DEFAULT_SECONDS = 60.0
+
+
+def default_stop_grace() -> float:
+    """Seconds a llama-server gets to exit after SIGTERM before SIGKILL.
+
+    A healthy server exits on SIGTERM in well under a second, so this only matters when it is
+    stuck, typically still releasing GPU memory. On Intel Arc a SIGKILL in that state can wedge the
+    GPU until a reboot, so the default is generous. ARC_LLAMA_STOP_GRACE overrides it."""
+    raw = os.environ.get("ARC_LLAMA_STOP_GRACE", "").strip()
+    if not raw:
+        return STOP_GRACE_DEFAULT_SECONDS
+    try:
+        return max(float(raw), 0.0)
+    except ValueError:
+        return STOP_GRACE_DEFAULT_SECONDS
 
 
 class LlamaServer:
@@ -728,9 +768,11 @@ class LlamaServer:
         """Path retaining this process's detailed output, when logging is enabled."""
         return self._log_path
 
-    def stop(self, drain_seconds: float = 3.0) -> None:
+    def stop(self, drain_seconds: float | None = None) -> None:
         # Memory-pressure, cancellation and router cleanup can coincide.
         # Only one worker may signal/reap/release this child at a time.
+        if drain_seconds is None:
+            drain_seconds = default_stop_grace()
         with self._stop_lock:
             self._stop(drain_seconds)
 
@@ -812,7 +854,7 @@ class LlamaServer:
             self._log_file = None
         self._release_resident_lock()
 
-    async def astop(self, drain_seconds: float = 3.0) -> None:
+    async def astop(self, drain_seconds: float | None = None) -> None:
         """Async version of stop() for callers running on the event loop.
 
         stop() performs blocking waits and subprocess calls; running it

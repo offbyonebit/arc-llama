@@ -91,7 +91,7 @@ def _runtime_path(command: str) -> Path | None:
 
 def _check_runtime(command: str) -> None:
     path = _runtime_path(command)
-    action = "Install a compatible runtime or update paths.llama_server."
+    action = "Install a compatible runtime or update this model's llama_server override or paths.llama_server."
     if path is None or not path.exists():
         raise StartupFailureError(
             "runtime_missing",
@@ -162,7 +162,7 @@ def preflight_launch(
         raise StartupFailureError(
             "runtime_missing",
             "No llama-server runtime is configured.",
-            "Install a compatible runtime or update paths.llama_server.",
+            "Install a compatible runtime or update this model's llama_server override or paths.llama_server.",
         )
     _check_runtime(plan.argv[0])
     _check_gguf(model.path)

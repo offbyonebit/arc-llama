@@ -1,0 +1,97 @@
+{
+ "agent": {
+  "profile": "probe-profile",
+  "root": "."
+ },
+ "gpus": [
+  {
+   "arch": "probe-arch",
+   "backend": "sycl",
+   "enabled": false,
+   "name": "probe-name",
+   "pci_slot": "probe-pci_slot",
+   "sycl_index": 14,
+   "vram_mb": 7,
+   "vulkan_index": 7
+  }
+ ],
+ "mcp_servers": [
+  {
+   "args": [
+    "probe-args"
+   ],
+   "command": "probe-command",
+   "env": {
+    "PROBE_KEY": "probe-value"
+   },
+   "name": "probe-name"
+  }
+ ],
+ "models": [
+  {
+   "aliases": [
+    "probe-aliases"
+   ],
+   "display_name": "probe-display_name",
+   "gpu_pci_slot": "probe-gpu_pci_slot",
+   "kv_class": "default",
+   "name": "probe-name",
+   "path": "probe-path",
+   "port": 14,
+   "recipe": {
+    "PROBE_KEY": "probe-value"
+   },
+   "tune_error": "probe-tune_error",
+   "tune_fingerprint": "probe-tune_fingerprint",
+   "tune_state": "untuned",
+   "tuned_at": 1.5
+  }
+ ],
+ "paths": {
+  "llama_server": "llama-server",
+  "models_dir": "/home/user/.local/share/arc-llama/models",
+  "oneapi_setvars": "probe-oneapi_setvars",
+  "scan_paths": [
+   "probe-scan_paths"
+  ],
+  "skills_dir": "/home/user/.config/arc-llama/skills",
+  "state_dir": "/home/user/.local/state/arc-llama"
+ },
+ "profiles": [
+  {
+   "mcp_servers": [
+    "probe-mcp_servers"
+   ],
+   "name": "probe-name"
+  }
+ ],
+ "server": {
+  "admin_token": "probe-admin_token",
+  "host": "127.0.0.1",
+  "port": 11444,
+  "single_resident": false,
+  "switch_drain_seconds": 31.5,
+  "switch_interrupt_policy": "reject_new"
+ },
+ "tune": {
+  "auto": false,
+  "gen_tokens": 135,
+  "idle_seconds": 127,
+  "min_uses": 8,
+  "prompt_tokens": 1031,
+  "retune_on_fingerprint_change": false,
+  "target": "balanced"
+ },
+ "upstreams": [
+  {
+   "name": "probe-name",
+   "url": "probe-url"
+  }
+ ],
+ "version": 1,
+ "workload": {
+  "context_length": "probe-context_length",
+  "priority": "probe-priority",
+  "style": "probe-style"
+ }
+}

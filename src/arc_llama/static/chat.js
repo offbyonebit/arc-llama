@@ -718,6 +718,9 @@ async function fetchStatus() {
         m.cache_type_v  = s.cache_type_v  ?? m.cache_type_v;
         m.kv_class      = s.kv_class      ?? m.kv_class;
         m.vram_estimate = s.vram_estimate || null;
+        m.llama_server = s.llama_server || "";
+        m.effective_llama_server = s.effective_llama_server || "";
+        m.env = s.env || {};
       }
       return m;
     });

@@ -436,6 +436,7 @@ async def run_hermes(
                     if not isinstance(sid, str) or not sid:
                         raise HermesError("Hermes did not create an ACP session")
                     rpc.session = sid
+                    yield {"type": "harness_session", "session_id": "hermes-" + sid}
                     stage = "session/set_mode"
                     expected = await rpc.request(stage, {"sessionId": sid, "modeId": "default"})
                 elif stage == "session/set_mode":

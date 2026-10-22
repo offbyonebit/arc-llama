@@ -408,3 +408,17 @@ async def test_agent_does_not_invent_usage_when_runtime_omits_it(tmp_root: Path)
                 "usage": {"prompt_tokens": -1, "completion_tokens": 37}}
     events = await collect_events("say hi", [response], tmp_root)
     assert not any(event["type"] == "usage" for event in events)
+
+
+@pytest.mark.parametrize("timings,expected", [
+    ({"predicted_n": 100, "predicted_ms": 2000}, 50.0),
+    ({"predicted_per_second": 42.5}, 42.5),
+    ({"predicted_per_second": -1}, None),
+    ({}, None),
+])
+async def test_agent_reports_only_backend_measured_generation_speed(tmp_root, timings, expected):
+    response = {"choices": [{"message": {"role": "assistant", "content": "Synthetic answer"}}],
+                "usage": {"prompt_tokens": 4000, "completion_tokens": 100}, "timings": timings}
+    events = await collect_events("Synthetic task", [response], tmp_root)
+    measured = [event for event in events if event["type"] == "performance"]
+    assert measured == ([] if expected is None else [{"type": "performance", "generation_tok_s": expected}])

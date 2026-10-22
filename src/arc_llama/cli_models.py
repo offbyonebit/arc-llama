@@ -364,6 +364,43 @@ def register_model_commands(
             base = f"{base}-{m.group(1).lower()}"
         return base
 
+    @cli.command("model-runtime")
+    @click.argument("name")
+    @click.option("--llama-server", default=None, help="Executable for this model only; empty uses the global default.")
+    @click.option("--env", "variables", multiple=True, help="Model-only KEY=value; repeat for multiple variables.")
+    @click.option("--unset-env", multiple=True, help="Remove a model-only environment override.")
+    @click.option("--reset", is_flag=True, help="Clear this model's binary and environment overrides.")
+    @click.pass_context
+    def model_runtime(ctx, name, llama_server, variables, unset_env, reset):
+        """Show or configure one model's runtime without changing global defaults."""
+        from arc_llama.config import validate_model_runtime
+
+        cfg = load_config(ctx.obj["config_path"])
+        model = cfg.find_model(name)
+        if model is None:
+            raise click.ClickException(f"unknown model {name!r}")
+        binary = "" if reset else model.llama_server
+        env = {} if reset else dict(model.env)
+        if llama_server is not None:
+            binary = llama_server
+        for key in unset_env:
+            env.pop(key, None)
+        for assignment in variables:
+            key, separator, value = assignment.partition("=")
+            if not separator:
+                raise click.ClickException("--env requires KEY=value")
+            env[key] = value
+        try:
+            validate_model_runtime(binary, env)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if reset or llama_server is not None or variables or unset_env:
+            model.llama_server, model.env = binary, env
+            save_or_die(cfg, ctx.obj["config_path"])
+            console.print("[green]Saved. Reload the service config to activate; only this model's override changes.[/green]")
+        console.print(f"Runtime: {cfg.model_llama_server(model)}", markup=False)
+        console.print("Environment overrides: " + (", ".join(sorted(env)) or "none"), markup=False)
+
     # ===========================================================================
     # scan
     # ===========================================================================
