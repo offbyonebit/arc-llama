@@ -26,25 +26,21 @@ was run. See the tour notes for scope and the original captures.*
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Version 0.9.1.2 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1.2).
+> **Arc Llama 1.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v1.0.0).
 
-## In development: 0.9.2
+## What's new in 1.0
 
-This branch contains **0.9.2.dev0**, including the new Paper interface and
-experimental Work agents. These additions are not included in the published
-0.9.1.2 package. To try this branch:
-
-```bash
-git clone --branch release/0.9.2-work-mode https://github.com/offbyonebit/arc-llama.git
-cd arc-llama
-pip install -e .
-ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve
-```
-
-Use an existing Arc Llama configuration, or follow the setup steps below first.
-The environment variable enables Work; Chat, Models, Discover, and System remain
-available without it.
-
+- **Arc Llama Runtime (optional):** `arc-llama install-runtime --optimized` installs
+  an optimized llama.cpp build for Intel Arc B-series on Linux. On an Arc Pro B60,
+  Gemma 4 26B-A4B decodes ~1.9x faster than stock llama.cpp (84 vs 45 t/s; 128-146
+  t/s with speculative decoding on code) and Ornith/Qwen3.5-MoE 35B ~14% faster,
+  with output checked against the CPU backend. Free, signed binaries; stock
+  llama.cpp stays the default. See [Arc Llama Runtime](docs/optimized-runtime.md).
+- **Per-model runtimes:** run a different llama-server executable and environment
+  per model. See [per-model runtimes](docs/per-model-runtimes.md).
+- **Safer upgrades and rollbacks:** settings written by newer versions are kept,
+  and upgrades from 0.8 and 0.9 are tested against configs written by those
+  releases. See [upgrading and rolling back](docs/upgrading.md).
 - **Redesigned web UI:** a shared icon sidebar for Chat, Work, Models, Discover,
   and System, with light/dark themes and mobile navigation. Discover has its own
   destination, and model details show download, memory-fit, and runtime state.
@@ -61,6 +57,7 @@ available without it.
   activity, approvals, file changes, and Undo when available. OpenCode also
   supports tool profiles and its native slash commands.
 
+Work is experimental: enable it with `ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve`.
 See [Work below](#work-local-project-conversations) for setup and the differences
 between harnesses, or [Work harness details](docs/work-harnesses.md).
 
@@ -403,16 +400,16 @@ not a claim that its code passed tests. See [Work details](docs/work.md).
 
 ## Tested hardware
 
-The recorded native validation below used the **0.9.0rc2 candidate** and the
-models and recipes in the linked report. It does not establish validation for
-every driver, model, or later release.
+The recorded native validations below used the candidates, models and recipes in
+the linked reports (Linux: 0.9.0rc2; Windows: the 1.0 development branch). They do
+not establish validation for every driver, model, or later release.
 
 | GPU | Platform | Backend | Recorded validation |
 | --- | --- | --- | --- |
 | Arc Pro B60 (24 GiB) | Linux | Vulkan and SYCL | [Native release validation](docs/release-validation-linux-2026-10-03.md) |
 | Alchemist (A-series) | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
 | Lunar Lake | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
-| Arc Pro B60 | Windows | Vulkan / SYCL | Native Windows validation [requested](https://github.com/offbyonebit/arc-llama/issues/69) |
+| Arc Pro B60 (24 GiB) | Windows 11 | Vulkan | [Native Windows validation](docs/release-validation-windows-2026-10-22.md) |
 
 Alchemist and Lunar Lake are detected and use the same runtimes, so they are
 expected to work, but they stay outside the [compatibility
@@ -840,7 +837,7 @@ defining the compatibility promises that begin with 1.0.
 - [x] Clarify experimental and optional features before 1.0.
 - [ ] Improve diagnostics for model-startup and GPU-runtime failures.
 - [x] Complete a repeatable release-candidate validation checklist.
-- [ ] Run a 0.9 release-candidate stabilization period before 1.0.
+- [x] Record native Linux and Windows validation on Arc B-series and release 1.0.
 
 The unchecked items will be linked to public tracking issues as they are
 opened. Multi-GPU support remains available for testing but is not a blocker

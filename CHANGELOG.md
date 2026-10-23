@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## [Unreleased]
+## [1.0.0] - 2026-10-23
+
+Arc Llama 1.0: the stable single-GPU release, with the optional Arc Llama Runtime for
+Intel Arc B-series. Validated natively on Linux and Windows 11 (Arc Pro B60).
 
 ### Added
 
