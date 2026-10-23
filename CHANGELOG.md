@@ -69,6 +69,8 @@ Intel Arc B-series. Validated natively on Linux and Windows 11 (Arc Pro B60).
 - SYCL runtimes no longer fail to start with "libsvml.so: cannot open shared object file" when
   Arc Llama runs without oneAPI sourced: the oneAPI check now requires the compiler runtime on the
   loader path, and no longer accepts the driver's Level Zero loader alone.
+- The llama-server capability probe also sources oneAPI when a SYCL runtime cannot load its
+  libraries, so flag detection reads the real capabilities instead of falling back to guesses.
 
 - Work Sessions represent generated harness sessions through their saved Work
   conversation, rather than listing each turn again. Older repeated titles

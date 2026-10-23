@@ -151,3 +151,24 @@ class TestProbe:
         os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
         os.utime(path, (os.stat(path).st_atime, os.stat(path).st_mtime + 10))
         assert probe_server_caps(path).flash_attn_takes_value
+
+
+def test_probe_sources_oneapi_when_the_runtime_needs_it(tmp_path, monkeypatch):
+    # a SYCL llama-server started outside a oneAPI shell fails --help with a missing library
+    from helpers import python_executable
+
+    import arc_llama.platform_checks as pc
+
+    binary = python_executable(
+        tmp_path / "sycl-server",
+        "import os, sys\n"
+        "if os.environ.get('ONEAPI_MARK') != '1':\n"
+        "    sys.stderr.write('llama-server: error while loading shared libraries: libsvml.so: cannot open shared object file\\n')\n"
+        "    sys.exit(127)\n"
+        "print('--flash-attn on off auto')\n",
+    )
+    monkeypatch.setattr(pc, "oneapi_runtime_env_needed", lambda: True)
+    monkeypatch.setattr(pc, "oneapi_setvars_path", lambda: tmp_path / "setvars.sh")
+    monkeypatch.setattr(pc, "source_setvars", lambda _p: {"ONEAPI_MARK": "1"})
+    caps = probe_server_caps(str(binary))
+    assert caps.probed and caps.supports_flash_attn

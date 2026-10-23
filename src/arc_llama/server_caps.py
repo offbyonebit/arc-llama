@@ -19,6 +19,7 @@ treated like any other failed probe.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -112,6 +113,23 @@ def _parse_help(help_text: str) -> ServerCaps:
     return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
 
 
+def _env_with_oneapi(env: dict[str, str] | None) -> dict[str, str] | None:
+    """*env* (or the process environment) with oneAPI's setvars applied, or None if that cannot help."""
+    from arc_llama.platform_checks import (
+        oneapi_runtime_env_needed,
+        oneapi_setvars_path,
+        source_setvars,
+    )
+
+    if not oneapi_runtime_env_needed():
+        return None
+    setvars = oneapi_setvars_path()
+    sourced = source_setvars(setvars) if setvars is not None else {}
+    if not sourced:
+        return None
+    return {**(env if env is not None else os.environ), **sourced}
+
+
 def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -> ServerCaps:
     """Return the capabilities of the given llama-server binary, cached."""
     llama_server = shutil.which(llama_server, path=env.get("PATH", "") if env is not None else None) or str(Path(llama_server).expanduser())
@@ -145,6 +163,17 @@ def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -
             timeout=_HELP_TIMEOUT_S,
             env=env,
         )
+        if proc.returncode != 0 and "error while loading shared libraries" in (proc.stderr or ""):
+            # A SYCL build started outside a oneAPI shell; launches source setvars, so the probe must too.
+            oneapi_env = _env_with_oneapi(env)
+            if oneapi_env is not None:
+                proc = subprocess.run(
+                    [llama_server, "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=_HELP_TIMEOUT_S,
+                    env=oneapi_env,
+                )
         if proc.returncode == 0:
             caps = _parse_help(proc.stdout + proc.stderr)
         else:
