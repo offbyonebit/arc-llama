@@ -8,6 +8,7 @@ version = "1.0.0"
 description = "Plug-and-play llama.cpp runtime for Intel Arc GPUs. Auto-detects your card, picks safe SYCL defaults, and exposes an OpenAI-compatible API."
 readme = "README.md"
 license = { text = "MIT" }
+authors = [{ name = "offbyonebit" }]
 requires-python = ">=3.10"
 keywords = ["llama.cpp", "intel", "arc", "sycl", "llm", "inference", "battlemage", "alchemist"]
 classifiers = [
