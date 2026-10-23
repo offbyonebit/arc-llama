@@ -363,6 +363,10 @@ def build_model_env(cfg: Config, model: ModelConfig, gpu: GPUConfig) -> dict[str
         extra_gpus=split_gpus[1:] if split_gpus else None,
         **({"overrides": model.env} if model.env else {}),
     )
+    # an Arc Llama Runtime ships tuned per-architecture settings; the model's own env still wins
+    from arc_llama.optimized_runtime import model_runtime_defaults
+
+    env.update(model_runtime_defaults(cfg.model_llama_server(model), model.path))
     env.update(model.env)
     return env
 

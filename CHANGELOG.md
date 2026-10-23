@@ -9,6 +9,11 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ### Added
 
+- Optional Arc Llama Runtime: `arc-llama install-runtime --optimized` installs an optimized, signed llama.cpp
+  build for Intel Arc B-series on Linux (oneAPI). Signature and checksum are verified before extraction; other
+  hosts keep stock llama.cpp. Tuned per-model settings shipped with the runtime apply automatically, and a
+  model's own env still wins. See [Arc Llama Runtime](docs/optimized-runtime.md).
+
 - Settings Arc Llama does not recognise, such as those written by a newer version,
   are kept when it saves the config instead of being dropped, so rolling back to
   this version no longer loses them. Upgrade and rollback are tested against

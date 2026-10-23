@@ -74,6 +74,7 @@ packages = ["src/arc_llama"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/arc_llama/data/recipes.json" = "src/arc_llama/data/recipes.json"
+"src/arc_llama/data/arc-llama-runtime.allowed_signers" = "src/arc_llama/data/arc-llama-runtime.allowed_signers"
 
 [tool.hatch.build.targets.sdist]
 # .gitignore is honoured by default but only covers .venv/; keep every

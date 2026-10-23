@@ -193,6 +193,37 @@ def register_runtime_commands(
         console.print(f"[green]Rolled back[/green] {restored[0]} -> {restored[1]}")
         console.print("Restart arc-llama serve to use it.")
 
+    def _install_optimized(ctx, cfg, runtime_version, dest, archive, set_default, force):
+        from arc_llama.optimized_runtime import OptimizedRuntimeError, install_optimized_runtime
+
+        source = archive.name if archive else f"release {runtime_version}"
+        console.print(f"[bold]Installing Arc Llama Runtime[/bold] ({source}) ...")
+        try:
+            result = install_optimized_runtime(
+                cfg=cfg,
+                config_path=ctx.obj["config_path"],
+                version=runtime_version,
+                archive=archive,
+                dest=dest,
+                set_default=set_default,
+                force=force,
+            )
+        except OptimizedRuntimeError as e:
+            console.print(f"[red]install-runtime failed:[/red] {e}")
+            console.print("Stock llama.cpp is unchanged: [bold]arc-llama install-runtime --backend sycl[/bold]")
+            sys.exit(1)
+        except Exception as e:
+            console.print(f"[red]install-runtime failed:[/red] {e}")
+            sys.exit(1)
+        console.print(f"[green]Installed[/green] {result.binary_path}")
+        console.print("  signature and checksum verified")
+        console.print(f"  llama.cpp base: {result.tag}")
+        if result.set_as_default:
+            console.print("  [dim]config paths.llama_server updated.[/dim]")
+        console.print("  Tuned per-model settings apply automatically; a model's own env still wins.")
+        console.print("  Built on llama.cpp (MIT). Sponsor the work: https://github.com/sponsors/offbyonebit")
+        console.print("\nRestart arc-llama serve to use it.")
+
     @cli.command("install-runtime")
     @click.option(
         "--backend",
@@ -218,6 +249,21 @@ def register_runtime_commands(
         help="Install directory (default: <state_dir>/runtime).",
     )
     @click.option(
+        "--optimized",
+        is_flag=True,
+        default=False,
+        help=(
+            "Install Arc Llama Runtime, the optimized llama.cpp build for Intel Arc B-series "
+            "(Linux x86-64, oneAPI). Signed closed binaries; verified before install."
+        ),
+    )
+    @click.option(
+        "--archive",
+        type=click.Path(path_type=Path, exists=True, dir_okay=False),
+        default=None,
+        help="With --optimized: install a downloaded archive (SHA256SUMS and .sig must sit next to it).",
+    )
+    @click.option(
         "--set-default/--no-set-default",
         default=True,
         help="Write the downloaded binary's path into the config as paths.llama_server.",
@@ -228,7 +274,7 @@ def register_runtime_commands(
         help="Re-download even if this version is already installed.",
     )
     @click.pass_context
-    def install_runtime_cmd(ctx, backend, runtime_version, dest, set_default, force):
+    def install_runtime_cmd(ctx, backend, runtime_version, dest, optimized, archive, set_default, force):
         """Download a prebuilt llama-server so you can skip building llama.cpp.
 
         Fetches an official ggml-org/llama.cpp release binary for your platform,
@@ -249,6 +295,12 @@ def register_runtime_commands(
         from arc_llama.runtime import RuntimeInstallError, install_runtime
 
         cfg = load_config(ctx.obj["config_path"])
+        if archive is not None and not optimized:
+            console.print("[red]install-runtime failed:[/red] --archive needs --optimized.")
+            sys.exit(1)
+        if optimized:
+            _install_optimized(ctx, cfg, runtime_version, dest, archive, set_default, force)
+            return
         console.print(
             f"[bold]Fetching {backend} llama-server[/bold] (llama.cpp {runtime_version}) ..."
         )
