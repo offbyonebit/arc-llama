@@ -221,7 +221,7 @@ def register_runtime_commands(
         if result.set_as_default:
             console.print("  [dim]config paths.llama_server updated.[/dim]")
         console.print("  Tuned per-model settings apply automatically; a model's own env still wins.")
-        console.print("  Built on llama.cpp (MIT). Sponsor the work: https://github.com/sponsors/offbyonebit")
+        console.print("  A modified build of llama.cpp (MIT). Sponsor the work: https://github.com/sponsors/offbyonebit")
         console.print("\nRestart arc-llama serve to use it.")
 
     @cli.command("install-runtime")

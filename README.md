@@ -31,7 +31,7 @@ was run. See the tour notes for scope and the original captures.*
 ## What's new in 1.0
 
 - **Arc Llama Runtime (optional):** `arc-llama install-runtime --optimized` installs
-  an optimized llama.cpp build for Intel Arc B-series on Linux. On an Arc Pro B60,
+  a modified, optimized llama.cpp build for Intel Arc B-series on Linux. On an Arc Pro B60,
   Gemma 4 26B-A4B decodes ~1.9x faster than stock llama.cpp (84 vs 45 t/s; 128-146
   t/s with speculative decoding on code) and Ornith/Qwen3.5-MoE 35B ~14% faster,
   with output checked against the CPU backend. Free, signed binaries; stock

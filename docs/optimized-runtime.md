@@ -1,6 +1,6 @@
 # Arc Llama Runtime (optional optimized runtime)
 
-Arc Llama Runtime is an optimized build of llama.cpp for Intel Arc B-series (Battlemage) GPUs, distributed by the
+Arc Llama Runtime is a modified, optimized build of llama.cpp for Intel Arc B-series (Battlemage) GPUs, distributed by the
 Arc Llama project as free, signed, closed binaries under the MIT license. On an Arc Pro B60 it decodes Gemma 4
 26B-A4B up to ~2x faster and Ornith 1.5 35B-A3B (Qwen3.5-MoE) ~14% faster than stock llama.cpp, with output checked
 against llama.cpp's CPU backend for every release.
@@ -49,5 +49,6 @@ Llama Runtime for some models and stock llama.cpp for others.
 
 ## Credits
 
-Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT). Not affiliated with or endorsed by the llama.cpp
-project or Intel.
+A modified version of [llama.cpp](https://github.com/ggml-org/llama.cpp), Copyright (c) 2023-2026 The ggml authors,
+MIT; the modifications are Copyright (c) 2026 offbyonebit, MIT. Each release ships llama.cpp's license and the notices of
+the libraries it bundles. Not affiliated with or endorsed by the llama.cpp project, Intel or Meta.
