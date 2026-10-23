@@ -252,6 +252,7 @@ def register_runtime_commands(
         "--optimized",
         is_flag=True,
         default=False,
+        hidden=True,  # Arc Llama Runtime is not released yet; shown again with its 1.1 launch
         help=(
             "Install Arc Llama Runtime, the optimized llama.cpp build for Intel Arc B-series "
             "(Linux x86-64, oneAPI). Signed closed binaries; verified before install."
@@ -261,6 +262,7 @@ def register_runtime_commands(
         "--archive",
         type=click.Path(path_type=Path, exists=True, dir_okay=False),
         default=None,
+        hidden=True,
         help="With --optimized: install a downloaded archive (SHA256SUMS and .sig must sit next to it).",
     )
     @click.option(

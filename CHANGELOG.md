@@ -7,15 +7,10 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [1.0.0] - 2026-10-23
 
-Arc Llama 1.0: the stable single-GPU release, with the optional Arc Llama Runtime for
-Intel Arc B-series. Validated natively on Linux and Windows 11 (Arc Pro B60).
+Arc Llama 1.0: the stable single-GPU release. Validated natively on Linux and Windows 11
+(Arc Pro B60).
 
 ### Added
-
-- Optional Arc Llama Runtime: `arc-llama install-runtime --optimized` installs an optimized, signed llama.cpp
-  build for Intel Arc B-series on Linux (oneAPI). Signature and checksum are verified before extraction; other
-  hosts keep stock llama.cpp. Tuned per-model settings shipped with the runtime apply automatically, and a
-  model's own env still wins. See [Arc Llama Runtime](docs/optimized-runtime.md).
 
 - Settings Arc Llama does not recognise, such as those written by a newer version,
   are kept when it saves the config instead of being dropped, so rolling back to
