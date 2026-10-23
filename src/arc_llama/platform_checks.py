@@ -324,24 +324,16 @@ def oneapi_runtime_env_needed() -> bool:
                     pass
         return True
 
-    names = (
-        "libsvml.so",
-        "libsvml.so.2",
-        "libze_loader.so.1",
-        "libze_loader.so",
-    )
-    search_dirs = [
-        Path("/opt/intel/oneapi/lib"),
-        Path("/opt/intel/oneapi/lib/intel64"),
-        Path("/usr/local/intel/oneapi/lib"),
-        Path("/usr/local/intel/oneapi/lib/intel64"),
-    ]
-    oneapi_root = os.environ.get("ONEAPI_ROOT") or os.environ.get("CMPLR_ROOT")
-    if oneapi_root:
-        p = Path(oneapi_root)
-        search_dirs.extend([p, p / "lib", p / "lib" / "intel64"])
+    # The oneAPI compiler runtime (SVML, the SYCL runtime) must be resolvable by the dynamic loader: in the ldconfig
+    # cache or on LD_LIBRARY_PATH. Files under /opt/intel or $ONEAPI_ROOT are not enough on their own, and the Level
+    # Zero loader does not count: GPU driver packages install it system-wide without the compiler runtime, and a SYCL
+    # llama-server then fails with "libsvml.so: cannot open shared object file".
+    names = ("libsvml.so", "libsycl.so")
+    for entry in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        d = Path(entry.strip()) if entry.strip() else None
+        if d is not None and d.is_dir() and any((d / name).exists() for name in names):
+            return False
 
-    # If ldconfig can resolve any of the runtime libs, the env/system is fine.
     ldconfig = shutil.which("ldconfig")
     if ldconfig:
         try:
@@ -352,25 +344,12 @@ def oneapi_runtime_env_needed() -> bool:
                 timeout=5,
                 check=False,
             )
-            for name in names:
-                if name in out.stdout:
+            for line in out.stdout.splitlines():
+                lib = line.strip().split(" ", 1)[0]
+                if any(lib == name or lib.startswith(name + ".") for name in names):
                     return False
         except (OSError, subprocess.TimeoutExpired):
             pass
-
-    # Check common oneAPI prefixes directly.
-    for d in search_dirs:
-        if not d.is_dir():
-            continue
-        for name in names:
-            if (d / name).exists():
-                return False
-            try:
-                for child in d.iterdir():
-                    if child.is_dir() and (child / name).exists():
-                        return False
-            except OSError:
-                pass
 
     return True
 

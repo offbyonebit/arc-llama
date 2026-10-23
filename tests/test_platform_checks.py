@@ -145,13 +145,36 @@ class TestOneapiRuntimeEnvNeeded:
         monkeypatch.setattr("arc_llama.platform_checks.shutil.which", lambda _x: None)
         assert oneapi_runtime_env_needed() is True
 
-    def test_finds_lib_in_oneapi_root(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows resolves DLLs through PATH")
+    def test_runtime_on_the_loader_path_is_enough(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        lib_dir = tmp_path / "lib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "libsvml.so").write_text("")
+        monkeypatch.setenv("LD_LIBRARY_PATH", str(lib_dir))
+        monkeypatch.setattr("arc_llama.platform_checks.shutil.which", lambda _x: None)
+        assert oneapi_runtime_env_needed() is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows resolves DLLs through PATH")
+    def test_runtime_only_on_disk_still_needs_setvars(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         lib_dir = tmp_path / "lib" / "intel64"
         lib_dir.mkdir(parents=True)
-        (lib_dir / _runtime_lib_name()).write_text("")
+        (lib_dir / "libsvml.so").write_text("")
         monkeypatch.setenv("ONEAPI_ROOT", str(tmp_path))
-        monkeypatch.setenv("CMPLR_ROOT", "")
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
         monkeypatch.setattr("arc_llama.platform_checks.shutil.which", lambda _x: None)
+        assert oneapi_runtime_env_needed() is True
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="ldconfig is Linux-only")
+    def test_level_zero_alone_does_not_count_but_svml_does(self, monkeypatch: pytest.MonkeyPatch):
+        import subprocess as sp
+
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
+        monkeypatch.setattr("arc_llama.platform_checks.shutil.which", lambda _x: "/sbin/ldconfig")
+        cache = "\tlibze_loader.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libze_loader.so.1\n"
+        monkeypatch.setattr("arc_llama.platform_checks.subprocess.run",
+                            lambda *a, **k: sp.CompletedProcess(a, 0, stdout=cache, stderr=""))
+        assert oneapi_runtime_env_needed() is True
+        cache += "\tlibsvml.so (libc6,x86-64) => /opt/intel/oneapi/compiler/2026.1/lib/libsvml.so\n"
         assert oneapi_runtime_env_needed() is False
 
 
