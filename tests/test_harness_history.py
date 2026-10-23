@@ -1,6 +1,7 @@
 """Native history uses synthetic databases only; never inspect personal chats."""
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 
@@ -13,7 +14,7 @@ from arc_llama.agent import harness_history as history
 def databases(tmp_path, monkeypatch):
     paths = {"opencode": tmp_path / "opencode.db", "hermes": tmp_path / "hermes.db"}
     monkeypatch.setattr(history, "history_paths", lambda: paths)
-    with sqlite3.connect(paths["opencode"]) as connection:
+    with contextlib.closing(sqlite3.connect(paths["opencode"])) as connection, connection:
         connection.executescript("""
             CREATE TABLE session (id TEXT, title TEXT, directory TEXT, parent_id TEXT,
                 time_updated INTEGER, time_archived INTEGER);
@@ -34,7 +35,7 @@ def databases(tmp_path, monkeypatch):
                                (f"p{index}", f"m{index}", json.dumps({"type": "text", "text": text}), 100 + index))
         connection.execute("INSERT INTO part VALUES ('tool', 'm2', 'ses_fixture', ?, 105)",
                            (json.dumps({"type": "tool", "state": {"input": {"command": "DO NOT REPLAY"}}}),))
-    with sqlite3.connect(paths["hermes"]) as connection:
+    with contextlib.closing(sqlite3.connect(paths["hermes"])) as connection, connection:
         connection.executescript("""
             CREATE TABLE sessions (id TEXT, title TEXT, cwd TEXT, parent_session_id TEXT,
                 started_at REAL, ended_at REAL, archived INTEGER);
@@ -89,7 +90,7 @@ def test_missing_databases_are_not_created(tmp_path, monkeypatch):
 
 
 def test_incompatible_database_is_reported_without_hiding_other_history(databases):
-    with sqlite3.connect(databases["opencode"]) as connection:
+    with contextlib.closing(sqlite3.connect(databases["opencode"])) as connection, connection:
         connection.execute("DROP TABLE session")
     sessions, warnings = history.list_native_sessions()
     assert len(sessions) == len(warnings) == 1
@@ -110,7 +111,7 @@ def test_database_connection_is_read_only(databases):
 
 
 def test_live_wal_history_is_visible(databases):
-    with sqlite3.connect(databases["opencode"]) as writer:
+    with contextlib.closing(sqlite3.connect(databases["opencode"])) as writer, writer:
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("UPDATE session SET title = 'Synthetic WAL update' WHERE id='ses_fixture'")
         writer.commit()
@@ -122,7 +123,7 @@ def test_oversized_and_corrupt_history_is_explicit(databases, monkeypatch):
     with pytest.raises(history.NativeHistoryError, match="too large"):
         history.get_native_session("oc-ses_fixture")
     monkeypatch.setattr(history, "MAX_SESSION_BYTES", 4 * 1024 * 1024)
-    with sqlite3.connect(databases["opencode"]) as connection:
+    with contextlib.closing(sqlite3.connect(databases["opencode"])) as connection, connection:
         connection.execute("UPDATE part SET data='not JSON' WHERE id='p2'")
     with pytest.raises(history.NativeHistoryError, match="could not be read"):
         history.get_native_session("oc-ses_fixture")
@@ -145,7 +146,7 @@ def test_paths_follow_harness_environment(tmp_path, monkeypatch):
 
 def test_hermes_text_blocks_exclude_attachments(databases):
     blocks = [{"type": "text", "text": "Synthetic block"}, {"type": "image_url", "image_url": {"url": "private"}}]
-    with sqlite3.connect(databases["hermes"]) as connection:
+    with contextlib.closing(sqlite3.connect(databases["hermes"])) as connection, connection:
         connection.execute("UPDATE messages SET content=? WHERE id=2", (json.dumps(blocks),))
     record = history.get_native_session("hermes-fixture_hermes")
     assert record["runs"][0]["answer"] == ["Synthetic block"]

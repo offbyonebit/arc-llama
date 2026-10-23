@@ -96,8 +96,9 @@ def test_probe_environment_and_cache_are_model_specific(tmp_path):
     binary = python_executable(
         tmp_path / "env-server", "import os\nprint(os.environ.get('HELP', 'usage'))\n"
     )
-    first = probe_server_caps(str(binary), env={"HELP": "usage"})
-    second = probe_server_caps(str(binary), env={"HELP": "--flash-attn on off auto"})
+    # a real launch passes the full environment plus overrides; Windows Python 3.10 cannot start without SYSTEMROOT
+    first = probe_server_caps(str(binary), env={**os.environ, "HELP": "usage"})
+    second = probe_server_caps(str(binary), env={**os.environ, "HELP": "--flash-attn on off auto"})
     assert first.probed and not first.supports_flash_attn
     assert second.probed and second.supports_flash_attn
 

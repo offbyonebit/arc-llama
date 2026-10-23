@@ -22,6 +22,7 @@ class SessionStore:
     def __init__(self, directory: Path) -> None:
         self.directory = Path(directory)
         self._links_lock = threading.Lock()
+        self._last_updated = 0.0
 
     def _path(self, session_id: str) -> Path:
         if not SESSION_ID.fullmatch(session_id):
@@ -39,7 +40,7 @@ class SessionStore:
             "origin": data.get("origin") if data.get("origin") in ("opencode", "hermes") else "",
             "compacted": data.get("compacted") if isinstance(data.get("compacted"), dict) else None,
             "runs": data.get("runs") if isinstance(data.get("runs"), list) else [],
-            "updated": time.time(),
+            "updated": self._next_timestamp(),
         }
         blob = json.dumps(record)
         if len(blob.encode()) > MAX_SESSION_BYTES:
@@ -47,6 +48,13 @@ class SessionStore:
         self._write(path, blob)
         self._prune()
         return self._summary(record)
+
+    def _next_timestamp(self) -> float:
+        # Windows' clock can return the same time.time() for saves in quick succession, which made the
+        # newest-first order fall back to file order. Keep this store's timestamps strictly increasing.
+        now = max(time.time(), self._last_updated + 1e-6)
+        self._last_updated = now
+        return now
 
     @staticmethod
     def _write(path: Path, blob: str) -> None:

@@ -277,7 +277,7 @@ class _ACP:
 async def _stop(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is None and proc.stdin is not None:
         proc.stdin.close()
-        with contextlib.suppress(TimeoutError):
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(proc.wait(), 0.75)
     with contextlib.suppress(ProcessLookupError):
         if sys.platform != "win32" and os.name == "posix":
@@ -288,7 +288,7 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
         return
     try:
         await asyncio.wait_for(proc.wait(), 3)
-    except TimeoutError:
+    except asyncio.TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             if sys.platform != "win32" and os.name == "posix":
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -406,7 +406,7 @@ async def run_hermes(
                         approved = await asyncio.wait_for(
                             confirm_callback(event["id"], event["tool"], event["arguments"]), 50
                         )
-                    except TimeoutError as exc:
+                    except asyncio.TimeoutError as exc:
                         raise HermesError(
                             "Hermes approval timed out. Start the task again to retry."
                         ) from exc
@@ -453,11 +453,11 @@ async def run_hermes(
                             f"Hermes stopped without finishing ({result.get('stopReason', 'unknown reason')})."
                         )
                     break
-    except (OSError, TimeoutError, HermesError, BrokenPipeError) as exc:
+    except (OSError, asyncio.TimeoutError, HermesError, BrokenPipeError) as exc:
         yield {
             "type": "error",
             "message": "Hermes did not become ready in time."
-            if isinstance(exc, TimeoutError)
+            if isinstance(exc, (TimeoutError, asyncio.TimeoutError))
             else str(exc),
         }
     finally:

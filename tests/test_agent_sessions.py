@@ -23,6 +23,15 @@ def test_store_round_trips_lists_newest_first_and_deletes(tmp_path):
     assert store.delete("session-aaaa") is False
 
 
+def test_newest_first_survives_a_coarse_clock(tmp_path, monkeypatch):
+    # Windows can return the same time.time() for saves in quick succession
+    monkeypatch.setattr("arc_llama.agent.sessions.time.time", lambda: 1000.0)
+    store = SessionStore(tmp_path)
+    store.save("session-aaaa", {"title": "First"})
+    store.save("session-bbbb", {"title": "Second"})
+    assert [s["title"] for s in store.list()] == ["Second", "First"]
+
+
 def test_store_refuses_bad_ids_and_oversize(tmp_path):
     store = SessionStore(tmp_path)
     for bad in ("../x", "short", "a/b/c/d/e/f/g/h", "x" * 100):
