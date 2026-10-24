@@ -21,6 +21,7 @@ _HTTP_STATUS = {
     "startup_timeout": 504,
     "process_exited": 503,
     "switch_busy": 409,
+    "model_busy": 409,
 }
 
 _SECRET_KEY = re.compile(
@@ -142,5 +143,5 @@ def bounded_details(details: Any, *, limit: int = _MAX_DETAIL_CHARS) -> dict[str
     encoded = json.dumps(result, ensure_ascii=True, default=str)
     if len(encoded) > limit:
         # A JSON-encoded preview can expand each character to six bytes.
-        return {"truncated": True, "preview": encoded[:max(0, (limit - 100) // 6)]}
+        return {"truncated": True, "preview": encoded[: max(0, (limit - 100) // 6)]}
     return result

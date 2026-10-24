@@ -15,9 +15,11 @@ from arc_llama.model_library import (
     disk_report,
     file_readiness,
     fit_badge,
+    folder_report,
     group_repo_files,
     quant_label,
     repo_options,
+    resolve_download_dir,
     search_repos,
 )
 
@@ -25,6 +27,7 @@ GB = 1024**3
 
 
 def test_quant_labels() -> None:
+    assert quant_label("model-MXFP4_MOE.gguf") == "MXFP4_MOE"
     assert quant_label("Qwen3-8B-Q4_K_M.gguf") == "Q4_K_M"
     assert quant_label("x-UD-Q8_K_XL-00001-of-00002.gguf") == "UD-Q8_K_XL"
     assert quant_label("model-IQ3_XXS.gguf") == "IQ3_XXS"
@@ -286,3 +289,107 @@ def test_file_readiness_detects_read_access_failure(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(Path, "open", deny_read)
     result = file_readiness(model)
     assert result["status"] == "inaccessible" and result["available"] is False
+
+
+async def test_download_goes_to_chosen_folder(tmp_path, monkeypatch) -> None:
+    import arc_llama.models as models_mod
+
+    seen: list[Path] = []
+
+    def fake_download(spec, *, target_dir, progress):
+        seen.append(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out = target_dir / spec.file
+        out.write_bytes(b"x")
+        return out
+
+    monkeypatch.setattr(models_mod, "download_from_hf", fake_download)
+
+    async def register(_path):
+        return ["m"]
+
+    manager = DownloadManager(_cfg(tmp_path), register)
+    chosen = tmp_path / "elsewhere"
+    job = manager.submit("u/repo", "m.gguf", None, str(chosen))
+    assert Path(job.target_dir) == chosen / "repo"
+    for _ in range(100):
+        if job.status in ("done", "error"):
+            break
+        await asyncio.sleep(0.02)
+    assert job.status == "done", job.error
+    assert seen == [chosen / "repo"]
+
+
+def test_download_folder_validation(tmp_path) -> None:
+    assert resolve_download_dir(str(tmp_path / "new" / "dir")) == tmp_path / "new" / "dir"
+    for bad in ("", "relative/dir", f"{tmp_path}/../x"):
+        with pytest.raises(ValueError):
+            resolve_download_dir(bad)
+    afile = tmp_path / "f"
+    afile.write_text("x")
+    with pytest.raises(ValueError, match="file"):
+        resolve_download_dir(str(afile))
+    report = folder_report(str(tmp_path / "not" / "yet"))
+    assert report["exists"] is False and report["free_mb"] > 0
+
+
+def test_submit_rejects_when_chosen_folder_is_too_small(tmp_path, monkeypatch) -> None:
+    import shutil
+
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _p: SimpleNamespace(free=1 * GB, total=10 * GB)
+    )
+    manager = DownloadManager(_cfg(tmp_path), lambda _p: None)
+    with pytest.raises(ValueError, match="Not enough disk space"):
+        manager.submit("u/repo", "m.gguf", 5 * GB, str(tmp_path / "small"))
+
+
+async def test_chosen_folder_api_requires_auth_and_validates_paths(monkeypatch, tmp_path):
+    _, app = _app(monkeypatch, tmp_path)
+    auth = {"Authorization": "Bearer tok"}
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            path = str(tmp_path / "new models ü")
+            assert (
+                await client.get("/admin/library/folder", params={"path": path})
+            ).status_code == 401
+            report = await client.get("/admin/library/folder", params={"path": path}, headers=auth)
+            assert report.status_code == 200
+            assert report.json()["exists"] is False
+            assert report.json()["path"] == path
+            for bad in ("relative/path", str(tmp_path / ".." / "x"), "\0"):
+                assert (
+                    await client.get("/admin/library/folder", params={"path": bad}, headers=auth)
+                ).status_code == 400
+            monkeypatch.setattr("arc_llama.model_library.os.access", lambda *args: False)
+            denied = await client.get("/admin/library/folder", params={"path": path}, headers=auth)
+            assert denied.status_code == 400 and "permission" in denied.json()["detail"]
+            response = await client.post(
+                "/admin/library/download",
+                headers=auth,
+                json={"repo": "u/r", "file": "a.gguf", "dest_dir": path},
+            )
+            assert response.status_code == 400 and "permission" in response.json()["detail"]
+            bad = await client.post(
+                "/admin/library/download",
+                headers=auth,
+                json={"repo": "u/r", "file": "a.gguf", "dest_dir": []},
+            )
+            assert bad.status_code == 400
+
+
+async def test_queue_rechecks_free_space_before_downloading(tmp_path, monkeypatch):
+    import shutil
+
+    free = 10 * GB
+    monkeypatch.setattr(shutil, "disk_usage", lambda _p: SimpleNamespace(free=free, total=20 * GB))
+    manager = DownloadManager(_cfg(tmp_path), lambda _p: None)
+    job = manager.submit("u/repo", "m.gguf", 5 * GB, str(tmp_path / "models"))
+    free = 1 * GB
+    for _ in range(100):
+        if job.status == "error":
+            break
+        await asyncio.sleep(0.01)
+    assert job.status == "error"
+    assert "disk space" in job.error
+    await manager.shutdown()

@@ -712,8 +712,12 @@ async def test_completed_sweep_retains_measured_before_after(cfg, monkeypatch):
 
     router = FakeRouter(cfg)
     tuner = _make_tuner(cfg, router)
-    before = BenchmarkResult("m", 8192, "f16", "f16", 64, 32, prompt_eval_tok_s=100, generation_tok_s=20)
-    after = BenchmarkResult("m", 8192, "q8_0", "q8_0", 64, 32, prompt_eval_tok_s=120, generation_tok_s=30)
+    before = BenchmarkResult(
+        "m", 8192, "f16", "f16", 64, 32, prompt_eval_tok_s=100, generation_tok_s=20
+    )
+    after = BenchmarkResult(
+        "m", 8192, "q8_0", "q8_0", 64, 32, prompt_eval_tok_s=120, generation_tok_s=30
+    )
 
     async def measured_report(*args, **kwargs):
         return TuneReport(model="m", target="balanced", baseline=before, best=after, applied=True)

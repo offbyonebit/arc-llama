@@ -23,6 +23,7 @@ Verified on Battlemage B60 + SYCL llama-server + Qwen3.6-27B-MTP
 Adoption rule: measure with ``scripts/empirical_throughput.py`` before new
 defaults.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,13 +36,15 @@ from arc_llama.recipes import KVCacheType, LaunchRecipe
 log = logging.getLogger("arc_llama.policy")
 
 # Quantized V-cache types that need flash-attn on the *Vulkan* backend.
-_QUANT_KV: frozenset[KVCacheType] = frozenset({
-    KVCacheType.Q8_0,
-    KVCacheType.Q5_1,
-    KVCacheType.Q5_0,
-    KVCacheType.Q4_1,
-    KVCacheType.Q4_0,
-})
+_QUANT_KV: frozenset[KVCacheType] = frozenset(
+    {
+        KVCacheType.Q8_0,
+        KVCacheType.Q5_1,
+        KVCacheType.Q5_0,
+        KVCacheType.Q4_1,
+        KVCacheType.Q4_0,
+    }
+)
 
 
 def _has_flag(flags: list[str], flag: str) -> bool:

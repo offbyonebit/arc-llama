@@ -1,0 +1,28 @@
+
+Caption        : Microsoft Windows 11 Pro
+Version        : 10.0.26200
+BuildNumber    : 26200
+OSArchitecture : 64-bit
+
+
+Name          : Parsec Virtual Display Adapter
+DriverVersion : 0.45.0.0
+DriverDate    : 1/24/2024 6:00:00 PM
+AdapterRAM    : 
+
+Name          : Intel(R) Arc(TM) Pro B60 Graphics
+DriverVersion : 32.0.101.8735
+DriverDate    : 4/19/2026 7:00:00 PM
+AdapterRAM    : 2147479552
+
+Name          : NVIDIA GeForce RTX 4060 Ti
+DriverVersion : 32.0.15.9186
+DriverDate    : 1/19/2026 6:00:00 PM
+AdapterRAM    : 4293918720
+
+
+ProductName    : Windows 10 Pro
+DisplayVersion : 25H2
+CurrentBuild   : 26200
+UBR            : 9457
+

@@ -1757,3 +1757,14 @@ header > * { position: relative; z-index: 1; }
 .app-nav { display: flex; align-items: center; gap: 4px; }
 .app-nav .nav-link { color: var(--fg-dim); text-decoration: none; font-weight: 600; font-size: 13px; padding: 7px 9px; border-radius: 4px; }
 .app-nav .nav-link:hover, .app-nav .nav-link.active { color: var(--fg); background: var(--bg-sunk); }
+
+
+/* Manual, reversible context compaction. */
+.compact-controls { width: 100%; max-width: 768px; margin-inline: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 20px; font-size: 12px; }
+.compact-controls button { font: inherit; color: var(--fg); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+.compact-controls button:disabled { opacity: .45; cursor: default; }
+.compact-controls [hidden] { display: none; }
+#compact-status { color: var(--fg-dim); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .compact-controls { padding: 6px 12px; } }
+
+.budget-warning button { margin: .5rem .5rem 0 0; padding: .4rem .6rem; }

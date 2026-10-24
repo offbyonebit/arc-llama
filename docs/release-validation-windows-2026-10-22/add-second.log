@@ -1,0 +1,10 @@
+Downloading Qwen/Qwen2.5-0.5B-Instruct-GGUF → 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-
+Instruct-GGUF
+2026-10-22 13:54:30,958 INFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-10-22 13:54:31,085 INFO httpx2: HTTP Request: HEAD https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q8_0.gguf "HTTP/1.1 302 Found"
+2026-10-22 13:54:31,241 INFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/xet-read-token/9217f5db79a29953eb74d5343926648285ec7e67 "HTTP/1.1 200 OK"
+Registered qwen05-q8 on unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00, port 
+18081 (ctx=32768 ub=1024 b=2048)
+EXIT_CODE=0

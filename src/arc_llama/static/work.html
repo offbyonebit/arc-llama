@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work: arc-llama</title>
+<link rel="icon" href="/assets/arc-llama-logo.png">
+<link rel="stylesheet" href="/style.css?v=ui-0.28">
+<link rel="stylesheet" href="/work.css?v=work-4">
+</head>
+<body>
+<header class="app-header"><div class="brand"><img class="brand-logo" src="/assets/arc-llama-logo.png" alt="" width="42" height="42"><h1>arc-llama</h1><span class="tagline">Work</span></div>
+<nav class="app-nav" aria-label="Primary navigation"><a class="nav-link" href="/">Models</a><a class="nav-link" href="/chat">Chat</a><a class="nav-link active" href="/work" aria-current="page">Work</a><a class="nav-link" href="/#system">System</a></nav><button id="theme-toggle" class="ghost" type="button">Light theme</button></header>
+<main class="work-layout">
+<aside class="work-rail" aria-label="Projects and jobs">
+<div class="rail-project"><label for="workspace-picker" class="rail-label">Project</label><select id="workspace-picker"><option value="">Choose a project</option></select>
+<details id="project-editor"><summary>Project settings</summary>
+<div class="sheet"><div class="sheet-head"><h2>Project settings</h2><button type="button" id="close-project" class="ghost">Done</button></div>
+<p class="work-note">Each project has its own instructions and permissions. Jobs always work in a separate copy.</p>
+<form id="workspace-form">
+<fieldset><legend>Project</legend>
+<label for="workspace-name">Name</label><input id="workspace-name" required maxlength="100">
+<label for="workspace-root">Folder on this server</label><input id="workspace-root" required placeholder="Full path to your project">
+<label for="workspace-model">Local model</label><select id="workspace-model" required></select>
+<label for="workspace-instructions">Instructions</label><textarea id="workspace-instructions" rows="4" maxlength="20000" placeholder="Build commands, conventions, and constraints"></textarea></fieldset>
+<fieldset><legend>Permissions</legend>
+<label class="check"><input id="allow-edits" type="checkbox" checked> Allow edits in the isolated copy</label>
+<label class="check"><input id="allow-commands" type="checkbox"> Allow isolated commands, with approval</label>
+<p class="work-note" id="sandbox-note">Commands require Linux OS isolation. File-only jobs also work without it.</p></fieldset>
+<fieldset><legend>Quality</legend>
+<label class="check"><input id="verify-work" type="checkbox" checked> Check results against acceptance criteria</label>
+<div class="field-row"><div><label for="max-attempts">Maximum attempts</label><input id="max-attempts" type="number" min="1" max="5" step="1" value="1" required aria-describedby="attempt-settings-note"></div>
+<div><label for="time-budget-minutes">Attempt budget (minutes)</label><input id="time-budget-minutes" type="number" min="1" max="720" step="1" value="30" required aria-describedby="attempt-settings-note"></div></div>
+<p class="work-note" id="attempt-settings-note">With result checking on, try up to 5 times on separate copies and keep the best result. The budget decides whether another attempt can start; it does not stop one already running.</p></fieldset>
+<div class="toolbar"><button type="submit" id="save-workspace" class="primary">Save project</button><button type="button" id="new-workspace" class="ghost">New project</button></div>
+</form></div></details></div>
+<button type="button" id="new-task" class="rail-new">New task</button>
+<h2 class="rail-label">Jobs</h2><div id="job-list" aria-label="Project jobs"></div>
+</aside>
+<div class="work-main">
+<div id="work-error" role="alert" hidden></div>
+<form id="work-auth" hidden><label for="work-token">Server admin token</label><input id="work-token" type="password" autocomplete="off" required><button type="submit" class="primary">Connect</button></form>
+<section id="composer" class="composer" aria-labelledby="composer-title"><h2 id="composer-title">What should we work on?</h2>
+<p class="work-lede">Describe the result you want. The agent works in a separate copy of your project, so nothing changes until you review and apply it.</p>
+<form id="task-form"><label for="task" class="sr-only">What should the agent do?</label><textarea id="task" rows="5" required maxlength="20000" placeholder="Describe the result you want"></textarea><div class="composer-bar"><span class="work-note">You can leave this tab while it works.</span><button type="submit" id="start-job" class="primary" disabled>Start job</button></div></form>
+<p class="work-note fine-print">Copies exclude Git metadata, environments, dependencies, build outputs, .env files and symbolic links (limit 128 MiB).</p></section>
+<section id="job-view" class="work-detail" aria-labelledby="job-title" hidden>
+<header class="job-head"><h2 id="job-title">Your local workbench</h2><p id="job-state" role="status">Choose a project and start a task.</p><p id="job-copy" class="work-note"></p><div id="job-actions" class="toolbar"></div></header>
+<label id="uncertain-row" class="check" hidden><input type="checkbox" id="acknowledge-uncertain"> I reviewed the project copy after the interrupted operation.</label>
+<section id="approval" class="card caution" hidden><h3>Command approval</h3><p>Runs only inside this job's OS sandbox, without network or GPU access.</p><pre id="approval-command"></pre><div class="toolbar"><button id="approve-command" type="button" class="primary">Approve this command</button><button id="deny-command" type="button" class="ghost">Deny</button></div></section>
+<section id="attempt-history" class="card" hidden><h3>Attempts</h3><p id="attempt-progress" role="status"></p><ol id="attempt-list"></ol></section>
+<section id="verification" class="card" hidden><h3>Does it do what you asked?</h3><p id="verdict" role="status"></p><ul id="check-list"></ul><p id="criteria-note" class="work-note"></p></section>
+<section class="card"><div class="work-tabs"><h3>Changes</h3><button id="review-changes" type="button" class="ghost" disabled>Review changes</button></div><p id="change-summary">No job selected.</p><pre id="diff" tabindex="0" aria-label="File changes"></pre></section>
+<details class="card activity-card"><summary><h3>Activity</h3></summary><div id="activity" role="log" aria-live="polite"></div></details>
+</section></div>
+</main><script src="/work.js?v=work-4"></script>
+</body></html>

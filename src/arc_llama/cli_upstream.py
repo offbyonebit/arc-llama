@@ -1,4 +1,5 @@
 """CLI commands for managing OpenAI-compatible upstream endpoints."""
+
 from __future__ import annotations
 
 import sys

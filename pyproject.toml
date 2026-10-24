@@ -4,10 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arc-llama"
-version = "0.9.1.2"
+version = "1.0.0"
 description = "Plug-and-play llama.cpp runtime for Intel Arc GPUs. Auto-detects your card, picks safe SYCL defaults, and exposes an OpenAI-compatible API."
 readme = "README.md"
 license = { text = "MIT" }
+authors = [{ name = "offbyonebit" }]
 requires-python = ">=3.10"
 keywords = ["llama.cpp", "intel", "arc", "sycl", "llm", "inference", "battlemage", "alchemist"]
 classifiers = [
@@ -40,10 +41,19 @@ semantic = [
     "fastembed>=0.3.0",
     "numpy>=1.24",
 ]
+documents = [
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+]
 mcp = [
     "mcp>=1.0,<2",
 ]
 dev = [
+    "distlib>=0.3.8; sys_platform=='win32'",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
     "httpx2>=2.13.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -65,6 +75,7 @@ packages = ["src/arc_llama"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/arc_llama/data/recipes.json" = "src/arc_llama/data/recipes.json"
+"src/arc_llama/data/arc-llama-runtime.allowed_signers" = "src/arc_llama/data/arc-llama-runtime.allowed_signers"
 
 [tool.hatch.build.targets.sdist]
 # .gitignore is honoured by default but only covers .venv/; keep every

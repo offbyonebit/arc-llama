@@ -3,6 +3,7 @@
 The loop talks to the local OpenAI-compatible server, executes tools in a
 sandboxed project root, and yields SSE events so a UI can stream progress.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,7 @@ import httpx
 
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.prompts import (
+    DOCUMENT_INSTRUCTIONS,
     PLANNING_INSTRUCTIONS,
     SYSTEM_PROMPT,
     USER_INSTRUCTIONS,
@@ -23,6 +25,7 @@ from arc_llama.agent.prompts import (
 )
 from arc_llama.agent.tools import TOOLS, ToolContext, ToolResult
 from arc_llama.chat_store import ChatStore
+from arc_llama.stream_metrics import generation_rate
 
 log = logging.getLogger("arc_llama.agent.loop")
 
@@ -40,9 +43,11 @@ async def run_agent(
     run_id: str | None = None,
     checkpoint_store: CheckpointStore | None = None,
     max_turns: int = 30,
+    report_context: bool = False,
     timeout: float = 600.0,
     chat_store: ChatStore | None = None,
     extra: dict[str, Any] | None = None,
+    work_type: str = "code",
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the agent loop and yield SSE-shaped events.
 
@@ -50,6 +55,8 @@ async def run_agent(
         {"type": "status", "message": str}
         {"type": "plan", "content": str}
         {"type": "assistant", "content": str}
+        {"type": "usage", "prompt_tokens": int, "completion_tokens": int}
+        {"type": "performance", "generation_tok_s": float}
         {"type": "tool_call", "id": str, "name": str, "arguments": dict}
         {"type": "tool_result", "id": str, "name": str, "content": str, "error": bool}
         {"type": "confirm_required", "id": str, "tool": str, "arguments": dict}
@@ -66,6 +73,14 @@ async def run_agent(
             auto_confirm is False.
     """
     root = root.resolve()
+    if work_type == "documents":
+        from arc_llama.agent.documents import documents_registry
+
+        tools = documents_registry()
+        instructions = DOCUMENT_INSTRUCTIONS
+    else:
+        tools = TOOLS
+        instructions = USER_INSTRUCTIONS
     if plan_mode and not auto_confirm and plan_callback is None:
         yield {
             "type": "error",
@@ -75,7 +90,7 @@ async def run_agent(
 
     conversation: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{USER_INSTRUCTIONS}{task}"},
+        {"role": "user", "content": f"{instructions}{task}"},
     ]
 
     yield {"type": "status", "message": f"Starting agent for model '{model}' in {root}"}
@@ -104,7 +119,9 @@ async def run_agent(
                 )
                 plan_response.raise_for_status()
                 plan_data = plan_response.json()
-                plan_content = plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                plan_content = (
+                    plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
@@ -146,13 +163,23 @@ async def run_agent(
         for turn in range(max_turns):
             yield {"type": "status", "message": f"Turn {turn + 1}/{max_turns}"}
 
+            yield {"type": "activity", "phase": "generating"}
+            if report_context:
+                try:
+                    counted = await client.post("/v1/chat/budget", json={"model": model, "messages": conversation, "tools": tools.definitions, "max_tokens": 1}, timeout=4.0)
+                    counted.raise_for_status()
+                    budget = counted.json()
+                    if type(budget.get("prompt_tokens")) is int and budget["prompt_tokens"] >= 0:
+                        yield {"type": "context", "prompt_tokens": budget["prompt_tokens"], "context_tokens": budget.get("context_tokens"), "exact": budget.get("exact") is True, "source": "agent_request"}
+                except (httpx.HTTPError, ValueError, TypeError):
+                    pass
             try:
                 response = await client.post(
                     "/v1/chat/completions",
                     json={
                         "model": model,
                         "messages": conversation,
-                        "tools": TOOLS.definitions,
+                        "tools": tools.definitions,
                         "tool_choice": "auto",
                     },
                 )
@@ -164,6 +191,18 @@ async def run_agent(
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM: {e}"}
                 return
+
+            rate = generation_rate(data)
+            if rate is not None:
+                yield {"type": "performance", "generation_tok_s": rate}
+
+            usage = data.get("usage") or {}
+            prompt_tokens = usage.get("prompt_tokens")
+            completion_tokens = usage.get("completion_tokens")
+            if (type(prompt_tokens) is int and prompt_tokens >= 0
+                    and type(completion_tokens) is int and completion_tokens >= 0):
+                yield {"type": "usage", "prompt_tokens": prompt_tokens,
+                       "completion_tokens": completion_tokens}
 
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
@@ -192,7 +231,7 @@ async def run_agent(
 
                 yield {"type": "tool_call", "id": call_id, "name": name, "arguments": arguments}
 
-                if TOOLS.requires_confirmation(name) and not auto_confirm:
+                if tools.requires_confirmation(name) and not auto_confirm:
                     yield {
                         "type": "confirm_required",
                         "id": call_id,
@@ -224,9 +263,9 @@ async def run_agent(
                             error=True,
                         )
                     else:
-                        result = await TOOLS.execute(name, arguments, ctx)
+                        result = await tools.execute(name, arguments, ctx)
                 else:
-                    result = await TOOLS.execute(name, arguments, ctx)
+                    result = await tools.execute(name, arguments, ctx)
 
                 if result.checkpoint_id:
                     yield {
@@ -244,12 +283,23 @@ async def run_agent(
                 }
 
                 result_text = format_tool_result(name, arguments, result.content, result.error)
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", call_id),
-                    "name": name,
-                    "content": result_text,
-                })
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", call_id),
+                        "name": name,
+                        "content": result_text,
+                    }
+                )
+                if result.images:
+                    # Tool messages carry text only, so a page picture goes in as the next user turn.
+                    conversation.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": f"Image from {name}:"}]
+                            + [{"type": "image_url", "image_url": {"url": url}} for url in result.images],
+                        }
+                    )
 
         yield {
             "type": "error",

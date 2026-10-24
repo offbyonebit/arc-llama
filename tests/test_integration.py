@@ -192,7 +192,10 @@ class TestIntegrationPayload:
     def test_payload_exposes_api_key_guidance_not_a_key(self, tmp_path: Path):
         payload = self._base_fields(_gguf=tmp_path / "m.gguf")
         assert "non-empty" in payload["api_key_guidance"]
-        assert "key" not in payload["api_key_guidance"].lower() or "valid" in payload["api_key_guidance"].lower()
+        assert (
+            "key" not in payload["api_key_guidance"].lower()
+            or "valid" in payload["api_key_guidance"].lower()
+        )
 
     def test_upstreams_listed_without_change(self, tmp_path: Path):
         upstreams = [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")]
@@ -209,23 +212,17 @@ class TestIntegrationPayload:
 
     def test_registered_ollama_upstream_by_name_is_detected(self, tmp_path: Path):
         upstreams = [UpstreamConfig(name="ollama", url="http://127.0.0.1:11434")]
-        payload = self._base_fields(
-            _gguf=tmp_path / "m.gguf", upstreams=upstreams
-        )
+        payload = self._base_fields(_gguf=tmp_path / "m.gguf", upstreams=upstreams)
         assert payload["ollama"]["already_registered"] is True
 
     def test_registered_ollama_upstream_by_url_is_detected(self, tmp_path: Path):
         upstreams = [UpstreamConfig(name="my-ollama", url="http://127.0.0.1:11434/")]
-        payload = self._base_fields(
-            _gguf=tmp_path / "m.gguf", upstreams=upstreams
-        )
+        payload = self._base_fields(_gguf=tmp_path / "m.gguf", upstreams=upstreams)
         assert payload["ollama"]["already_registered"] is True
 
     def test_other_upstreams_do_not_mark_ollama_registered(self, tmp_path: Path):
         upstreams = [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")]
-        payload = self._base_fields(
-            _gguf=tmp_path / "m.gguf", upstreams=upstreams
-        )
+        payload = self._base_fields(_gguf=tmp_path / "m.gguf", upstreams=upstreams)
         assert payload["ollama"]["already_registered"] is False
 
     def test_curl_examples_are_platform_specific(self, tmp_path: Path):
@@ -244,8 +241,9 @@ class TestIntegrationPayload:
 def _make_test_app(cfg: Config):
     import arc_llama.server as server_mod
 
-    with patch.object(server_mod, "Router", FakeRouter), patch.object(
-        server_mod, "UpstreamManager", FakeUpstreamManager
+    with (
+        patch.object(server_mod, "Router", FakeRouter),
+        patch.object(server_mod, "UpstreamManager", FakeUpstreamManager),
     ):
         return create_app(cfg, plugins=[])
 
@@ -285,7 +283,9 @@ class TestAdminIntegrationEndpoint:
                 )
                 assert ok.status_code == 200
 
-    async def test_endpoint_without_token_is_open_like_other_admin_reads(self, tmp_path: Path, monkeypatch):
+    async def test_endpoint_without_token_is_open_like_other_admin_reads(
+        self, tmp_path: Path, monkeypatch
+    ):
         import httpx
 
         self._probe_stub(monkeypatch)

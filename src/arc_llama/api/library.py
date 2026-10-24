@@ -22,13 +22,17 @@ async def _compatibility_until_disconnect(request: Request, body: dict[str, Any]
             if (await request.receive())["type"] == "http.disconnect":
                 return
 
-    check = asyncio.create_task(request.app.state.compatibility_checks.assess(request.app.state.cfg, body))
+    check = asyncio.create_task(
+        request.app.state.compatibility_checks.assess(request.app.state.cfg, body)
+    )
     watcher = asyncio.create_task(disconnected())
     try:
         done, _ = await asyncio.wait({check, watcher}, return_when=asyncio.FIRST_COMPLETED)
         if check in done:
             return await check
-        raise HTTPException(status_code=499, detail="Compatibility check cancelled after disconnect")
+        raise HTTPException(
+            status_code=499, detail="Compatibility check cancelled after disconnect"
+        )
     finally:
         for task in (check, watcher):
             if not task.done():
@@ -126,12 +130,26 @@ def register_library_routes(
         size_mb = body.get("size_mb")
         if not isinstance(repo, str) or not isinstance(file, str):
             raise HTTPException(status_code=400, detail="repo and file must be strings")
-        total = int(size_mb) * 1_048_576 if isinstance(size_mb, int) and size_mb > 0 else None
+        total = int(size_mb) * 1_048_576 if type(size_mb) is int and size_mb > 0 else None
+        dest_dir = body.get("dest_dir")
+        if dest_dir is not None and not isinstance(dest_dir, str):
+            raise HTTPException(status_code=400, detail="dest_dir must be a string")
         try:
-            job = _downloads(request).submit(repo, file, total)
-        except ValueError as e:
+            job = _downloads(request).submit(repo, file, total, dest_dir or None)
+        except (ValueError, OSError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return job.public()
+
+    @app.get("/admin/library/folder")
+    async def library_folder(
+        path: str = Query(..., max_length=4096), _auth: None = Depends(require_admin)
+    ) -> dict[str, Any]:
+        from arc_llama.model_library import folder_report
+
+        try:
+            return await asyncio.to_thread(folder_report, path)
+        except (ValueError, OSError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/admin/library/jobs")
     async def library_jobs(

@@ -3,6 +3,7 @@
 Fetches and caches model lists from configured upstreams so they appear
 alongside local models in /v1/models and can be proxied transparently.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,7 @@ UPSTREAM_CACHE_TTL = 30.0  # seconds
 @dataclass
 class UpstreamModel:
     """A model discovered on an upstream endpoint."""
+
     id: str
     upstream_name: str
     upstream_url: str
@@ -84,19 +86,19 @@ class UpstreamManager:
             model_id = m.get("id", "")
             if not model_id:
                 continue
-            parsed.append(UpstreamModel(
-                id=model_id,
-                upstream_name=upstream.name,
-                upstream_url=upstream.url,
-                metadata=m.get("metadata") or {},
-            ))
+            parsed.append(
+                UpstreamModel(
+                    id=model_id,
+                    upstream_name=upstream.name,
+                    upstream_url=upstream.url,
+                    metadata=m.get("metadata") or {},
+                )
+            )
 
         async with self._lock:
             self._cache[upstream.name] = parsed
             self._last_fetch[upstream.name] = time.monotonic()
-            log.debug(
-                "upstream %s refreshed: %d models", upstream.name, len(parsed)
-            )
+            log.debug("upstream %s refreshed: %d models", upstream.name, len(parsed))
 
     def find_model(self, model_id: str) -> UpstreamModel | None:
         """Look up a model id in the cached upstream lists."""
@@ -139,10 +141,12 @@ class UpstreamManager:
         result: list[dict[str, Any]] = []
         for u in self._upstreams:
             models = self._cache.get(u.name, [])
-            result.append({
-                "name": u.name,
-                "url": u.url,
-                "model_count": len(models),
-                "last_fetch": self._last_fetch.get(u.name),
-            })
+            result.append(
+                {
+                    "name": u.name,
+                    "url": u.url,
+                    "model_count": len(models),
+                    "last_fetch": self._last_fetch.get(u.name),
+                }
+            )
         return result

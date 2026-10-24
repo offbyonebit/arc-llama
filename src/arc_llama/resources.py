@@ -90,11 +90,11 @@ class ResourceLeaseManager:
         self._shared_idle = asyncio.Event()
         self._shared_idle.set()
         self._shared_scope: ContextVar[_SharedScope | None] = ContextVar(
-            f"arc_gpu_shared_{id(self)}", default=None,
+            f"arc_gpu_shared_{id(self)}",
+            default=None,
         )
         if router is not None:
             router.resources = self
-
 
     @property
     def active_leases(self) -> dict[str, int]:

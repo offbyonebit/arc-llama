@@ -1,4 +1,5 @@
 """Tests for arc_llama.launcher — env construction, command-line building."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,17 +29,23 @@ class TestBuildEnv:
     def test_sets_device_selector(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=2))
         assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:2"
 
     def test_strips_bad_vars(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(os, "environ", {
-            "PATH": "/usr/bin",
-            "GGML_SYCL_DISABLE_OPT": "1",
-            "SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS": "1",
-        })
+        monkeypatch.setattr(
+            os,
+            "environ",
+            {
+                "PATH": "/usr/bin",
+                "GGML_SYCL_DISABLE_OPT": "1",
+                "SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS": "1",
+            },
+        )
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=0))
         assert "GGML_SYCL_DISABLE_OPT" not in env
@@ -47,6 +54,7 @@ class TestBuildEnv:
     def test_applies_arch_env(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=0))
         assert env["SYCL_CACHE_PERSISTENT"] == "0"
@@ -55,6 +63,7 @@ class TestBuildEnv:
     def test_vulkan_uses_visible_devices(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
         gpu = _gpu(sycl_index=2, backend=Backend.VULKAN)
         gpu.vulkan_index = 3
@@ -73,18 +82,24 @@ class TestBuildEnv:
         """
         monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=2, backend=Backend.VULKAN))
         assert "GGML_VK_VISIBLE_DEVICES" not in env
 
     def test_vulkan_strips_sycl_env(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(os, "environ", {
-            "PATH": "/usr/bin",
-            "ONEAPI_DEVICE_SELECTOR": "level_zero:0",
-            "SYCL_CACHE_PERSISTENT": "1",
-            "ZES_ENABLE_SYSMAN": "1",
-        })
+        monkeypatch.setattr(
+            os,
+            "environ",
+            {
+                "PATH": "/usr/bin",
+                "ONEAPI_DEVICE_SELECTOR": "level_zero:0",
+                "SYCL_CACHE_PERSISTENT": "1",
+                "ZES_ENABLE_SYSMAN": "1",
+            },
+        )
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=0, backend=Backend.VULKAN))
         assert "ONEAPI_DEVICE_SELECTOR" not in env
@@ -92,7 +107,9 @@ class TestBuildEnv:
         assert "ZES_ENABLE_SYSMAN" not in env
 
     def test_sycl_sources_setvars_when_runtime_missing(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ):
         if sys.platform == "win32":
             pytest.skip("bash setvars sourcing is not exercised on Windows")
@@ -101,15 +118,12 @@ class TestBuildEnv:
         setvars.write_text("export ONEAPI_ROOT=/fake/oneapi\nexport LD_LIBRARY_PATH=/fake/lib\n")
 
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
 
         # Force the missing-runtime path and point it at our fake script.
-        monkeypatch.setattr(
-            "arc_llama.launcher.oneapi_runtime_env_needed", lambda: True
-        )
-        monkeypatch.setattr(
-            "arc_llama.launcher.oneapi_setvars_path", lambda: setvars
-        )
+        monkeypatch.setattr("arc_llama.launcher.oneapi_runtime_env_needed", lambda: True)
+        monkeypatch.setattr("arc_llama.launcher.oneapi_setvars_path", lambda: setvars)
 
         env = build_env(profile, _gpu(sycl_index=0))
         assert env["ONEAPI_ROOT"] == "/fake/oneapi"
@@ -118,21 +132,20 @@ class TestBuildEnv:
         assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:0"
 
     def test_sycl_does_not_source_when_runtime_present(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ):
         monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
         setvars = tmp_path / "setvars.sh"
         setvars.write_text("export ONEAPI_ROOT=/should-not-apply\n")
 
         from arc_llama.arch import profile_for
+
         profile = profile_for(Arch.BATTLEMAGE)
 
-        monkeypatch.setattr(
-            "arc_llama.launcher.oneapi_runtime_env_needed", lambda: False
-        )
-        monkeypatch.setattr(
-            "arc_llama.launcher.oneapi_setvars_path", lambda: setvars
-        )
+        monkeypatch.setattr("arc_llama.launcher.oneapi_runtime_env_needed", lambda: False)
+        monkeypatch.setattr("arc_llama.launcher.oneapi_setvars_path", lambda: setvars)
 
         env = build_env(profile, _gpu(sycl_index=0))
         assert "ONEAPI_ROOT" not in env
@@ -144,7 +157,7 @@ class TestBuildPlan:
         model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")
         gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
         plan = build_plan(cfg, model, gpu)
-        assert plan.argv[0] == "/bin/llama-server"
+        assert Path(plan.argv[0]) == Path("/bin/llama-server")
         assert "-m" in plan.argv
         assert "/m.gguf" in plan.argv
         assert "--port" in plan.argv
@@ -303,16 +316,20 @@ class TestLlamaServerLifecycle:
         assert not log_dir.exists()
         # Mock Popen to avoid actually spawning
         import subprocess
+
         original_popen = subprocess.Popen
         called = {}
 
         def _fake_popen(*args, **kwargs):
             called["args"] = args
             called["kwargs"] = kwargs
+
             class FakeProc:
                 pid = 12345
+
                 def poll(self):
                     return None
+
             return FakeProc()
 
         subprocess.Popen = _fake_popen
@@ -385,17 +402,22 @@ class TestLlamaServerLifecycle:
         srv.started_at = 0.0
 
         astops = []
+
         async def _recording_astop(drain_seconds=3.0):
             astops.append(drain_seconds)
+
         monkeypatch.setattr(srv, "astop", _recording_astop)
 
         import httpx
+
         async def _fake_get(self, url):
             return type("R", (), {"status_code": 503})()
+
         monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
 
         async def _sleep_then_cancel(delay):
             raise asyncio.CancelledError("mock cancel")
+
         monkeypatch.setattr(asyncio, "sleep", _sleep_then_cancel)
 
         with pytest.raises(asyncio.CancelledError):
@@ -420,18 +442,22 @@ class TestLlamaServerLifecycle:
 
         async def _cancelled_astop(drain_seconds=3.0):
             raise asyncio.CancelledError("cancelled during cleanup")
+
         monkeypatch.setattr(srv, "astop", _cancelled_astop)
 
         stops = []
         monkeypatch.setattr(srv, "stop", lambda *a, **k: stops.append(True))
 
         import httpx
+
         async def _fake_get(self, url):
             return type("R", (), {"status_code": 503})()
+
         monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
 
         async def _sleep_then_cancel(delay):
             raise asyncio.CancelledError("mock cancel")
+
         monkeypatch.setattr(asyncio, "sleep", _sleep_then_cancel)
 
         with pytest.raises(asyncio.CancelledError):
@@ -448,14 +474,18 @@ class TestLlamaServerLifecycle:
         srv = LlamaServer(plan)
 
         to_thread_calls = []
+
         async def _fake_to_thread(func, *args, **kwargs):
             to_thread_calls.append((func, args, kwargs))
             return func(*args, **kwargs)
+
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
 
         stop_calls = []
+
         def _recording_stop(drain_seconds=3.0):
             stop_calls.append(drain_seconds)
+
         monkeypatch.setattr(srv, "stop", _recording_stop)
 
         await srv.astop(drain_seconds=1.5)
@@ -490,12 +520,16 @@ class TestLogHandling:
         def _fake_popen(*args, **kwargs):
             class FakeProc:
                 pid = 12345
+
                 def poll(self):
                     return None
+
                 def send_signal(self, sig):
                     pass
+
                 def wait(self, timeout):
                     self._waited = True
+
             return FakeProc()
 
         subprocess.Popen = _fake_popen
@@ -525,23 +559,29 @@ class TestLogHandling:
         log_dir = tmp_path / "logs"
 
         closes = []
+
         class FakeFile:
             def write(self, data):
                 pass
+
             def flush(self):
                 pass
+
             def close(self):
                 closes.append(True)
 
         real_open = open
+
         def _fake_open(path, mode="r", *args, **kwargs):
             if mode == "ab" and str(path).endswith(".log"):
                 return FakeFile()
             return real_open(path, mode, *args, **kwargs)
+
         monkeypatch.setattr("builtins.open", _fake_open)
 
         def _fake_popen(*args, **kwargs):
             raise FileNotFoundError("llama-server not found")
+
         monkeypatch.setattr(subprocess, "Popen", _fake_popen)
 
         with pytest.raises(FileNotFoundError):
@@ -567,10 +607,13 @@ class TestWindowsLifecycle:
 
         def _fake_popen(*args, **kwargs):
             called["kwargs"] = kwargs
+
             class FakeProc:
                 pid = 12345
+
                 def poll(self):
                     return None
+
             return FakeProc()
 
         subprocess.Popen = _fake_popen
@@ -600,10 +643,13 @@ class TestWindowsLifecycle:
 
         class FakeProc:
             pid = 12345
+
             def poll(self):
                 return None
+
             def send_signal(self, sig):
                 calls.append(("send_signal", sig))
+
             def wait(self, timeout):
                 if not any(c[0] == "taskkill" for c in calls):
                     raise subprocess.TimeoutExpired("cmd", timeout)
@@ -633,10 +679,13 @@ class TestWindowsLifecycle:
 
         class FakeProc:
             pid = 12345
+
             def poll(self):
                 return None
+
             def send_signal(self, sig):
                 calls.append(("send_signal", sig))
+
             def wait(self, timeout):
                 return None
 
@@ -653,12 +702,15 @@ class TestWindowsLifecycle:
 class TestBuildPlanFlashAttn:
     def _plan(self, recipe, caps, monkeypatch):
         from arc_llama.server_caps import ServerCaps
-        monkeypatch.setattr(
-            "arc_llama.launcher.probe_server_caps", lambda path: ServerCaps(**caps)
-        )
+
+        monkeypatch.setattr("arc_llama.launcher.probe_server_caps", lambda path: ServerCaps(**caps))
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
         model = ModelConfig(
-            name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0", recipe=recipe,
+            name="m",
+            path="/m.gguf",
+            port=18080,
+            gpu_pci_slot="00:00.0",
+            recipe=recipe,
         )
         gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
         return build_plan(cfg, model, gpu)
@@ -840,9 +892,14 @@ async def test_pressure_cleanup_wins_over_health_success(monkeypatch, cancelled)
 
     monkeypatch.setattr(srv, "_wait_ready_health", health)
     monkeypatch.setattr(srv, "astop", stop)
-    monkeypatch.setattr(launcher, "host_memory_pressure", lambda: {
-        "available_host_mb": 100, "reserved_host_mb": 4096,
-    })
+    monkeypatch.setattr(
+        launcher,
+        "host_memory_pressure",
+        lambda: {
+            "available_host_mb": 100,
+            "reserved_host_mb": 4096,
+        },
+    )
     waiter = asyncio.create_task(srv.wait_ready())
     await asyncio.wait_for(stopping.wait(), 2)
     await asyncio.sleep(0)

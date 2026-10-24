@@ -108,7 +108,9 @@ async def test_unconfirmed_shutdown_blocks_swap_and_same_model_retry(tmp_path, m
     async def stuck_stop(*args, **kwargs):
         srv.ready = False
         raise StartupFailureError(
-            "gpu_unavailable", "Child has not exited", "Wait for child exit",
+            "gpu_unavailable",
+            "Child has not exited",
+            "Wait for child exit",
             details={"reason": "shutdown_timeout"},
         )
 

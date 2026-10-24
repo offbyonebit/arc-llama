@@ -7,6 +7,7 @@ can reference prior conversations.
 Chats can optionally live in a folder (a subdirectory). Empty folder means the
 legacy root directory, so existing flat chats keep working.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,9 @@ from pathlib import Path
 from typing import Any
 
 
-def _validate_record(data: dict[str, Any], strings: tuple[str, ...], times: tuple[str, ...]) -> None:
+def _validate_record(
+    data: dict[str, Any], strings: tuple[str, ...], times: tuple[str, ...]
+) -> None:
     if not isinstance(data, dict):
         raise ValueError("Chat records and messages must be JSON objects")
     for key in strings:
@@ -30,7 +33,11 @@ def _validate_record(data: dict[str, Any], strings: tuple[str, ...], times: tupl
         if key in data:
             value = data[key]
             try:
-                valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+                valid = (
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and math.isfinite(value)
+                )
             except OverflowError:
                 valid = False
             if not valid:
@@ -44,18 +51,58 @@ class ChatMessage:
     role: str
     content: str
     timestamp: float = field(default_factory=time.time)
+    images: list[str] = field(default_factory=list)
+    thinking: str = ""
+    status: str = "completed"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"role": self.role, "content": self.content, "timestamp": self.timestamp}
+        data: dict[str, Any] = {
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp,
+        }
+        if self.status != "completed":
+            data["status"] = self.status
+        if self.images:
+            data["images"] = list(self.images)
+        if self.thinking:
+            data["thinking"] = self.thinking
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChatMessage:
-        _validate_record(data, ("role", "content"), ("timestamp",))
+        _validate_record(data, ("role", "content", "thinking"), ("timestamp",))
+        status = data.get("status", "completed")
+        if status not in ("completed", "stopped", "interrupted"):
+            raise ValueError("status must be completed, stopped, or interrupted")
+        images = data.get("images", [])
+        if not isinstance(images, list) or any(not isinstance(image, str) for image in images):
+            raise ValueError("images must be an array of strings")
         return cls(
             role=data.get("role", ""),
             content=data.get("content", ""),
             timestamp=data.get("timestamp", time.time()),
+            images=list(images),
+            thinking=data.get("thinking", ""),
+            status=status,
         )
+
+
+def validate_compaction(value: Any, message_count: int) -> dict[str, Any] | None:
+    """Validate the separate effective-context summary against the full transcript."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("compaction must be an object or null")
+    boundary = value.get("boundary")
+    summary = value.get("summary")
+    if type(boundary) is not int or not 0 < boundary <= message_count:
+        raise ValueError("compaction boundary must be within the transcript")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 100_000:
+        raise ValueError(
+            "compaction summary must be a nonempty string of at most 100000 characters"
+        )
+    return {"boundary": boundary, "summary": summary}
 
 
 @dataclass
@@ -68,6 +115,7 @@ class Chat:
     updated_at: float = field(default_factory=time.time)
     messages: list[ChatMessage] = field(default_factory=list)
     folder: str = ""
+    compaction: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +125,7 @@ class Chat:
             "updated_at": self.updated_at,
             "messages": [m.to_dict() for m in self.messages],
             "folder": self.folder,
+            "compaction": self.compaction,
         }
 
     @classmethod
@@ -93,6 +142,7 @@ class Chat:
             updated_at=data.get("updated_at", time.time()),
             messages=[ChatMessage.from_dict(m) for m in data.get("messages", [])],
             folder=data.get("folder", "") or "",
+            compaction=validate_compaction(data.get("compaction"), len(data.get("messages", []))),
         )
 
     def summary(self) -> dict[str, Any]:
@@ -225,8 +275,14 @@ class ChatStore:
         text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
         temporary: Path | None = None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                             prefix=f".{path.stem}.", suffix=".tmp", delete=False) as handle:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.stem}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
                 temporary = Path(handle.name)
                 handle.write(text)
                 handle.flush()
@@ -287,12 +343,16 @@ class ChatStore:
 
     def list_summaries(self, folder: str | None = None) -> list[dict[str, Any]]:
         """Reuse unchanged chat summaries without decoding message histories."""
-        paths = list(self.directory.rglob("*.json") if folder is None
-                     else self._folder_path(folder).glob("*.json"))
+        paths = list(
+            self.directory.rglob("*.json")
+            if folder is None
+            else self._folder_path(folder).glob("*.json")
+        )
         if folder is None:
             present = set(paths)
-            self._summary_cache = {path: value for path, value in self._summary_cache.items()
-                                   if path in present}
+            self._summary_cache = {
+                path: value for path, value in self._summary_cache.items() if path in present
+            }
         summaries = []
         for path in paths:
             try:
@@ -391,4 +451,9 @@ class ChatStore:
                 errors.append(f"{chat_id}: could not import chat ({e})")
                 continue
             imported += 1
-        return {"imported": imported, "skipped": skipped, "errors": len(errors), "error_details": errors}
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "errors": len(errors),
+            "error_details": errors,
+        }

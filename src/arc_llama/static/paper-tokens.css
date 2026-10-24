@@ -1,0 +1,50 @@
+/* Arc Llama "Paper" design tokens. Source of truth for the redesign.
+   Sample metrics in the prototype are demo data, never real measurements. */
+:root, [data-theme="light"] {
+  --bg: #F5F6F8;      /* app background */
+  --pn: #FFFFFF;      /* panels, cards, rail, composer */
+  --ln: #E2E5EB;      /* borders and dividers */
+  --tx: #12151C;      /* primary text */
+  --t2: #444C5C;      /* secondary text */
+  --t3: #5A6376;      /* tertiary text, captions */
+  --ac: #1E6BE6;      /* accent */
+  --acf: #FFFFFF;     /* text on accent */
+  --ok: #17794F;  --okb: #EAF6F0;  --okl: #B7DFCB;
+  --wn: #A35A06;  --wnb: #FBF3E3;  --wnl: #EBD3A8;
+  --bd: #B3321F;  --bdb: #FCEDEA;  --bdl: #EBC4BC;
+  --acb: #EAF1FD; --acl: #BCD3F8;
+  --sel: #E4ECFA;     /* selected row, user message bubble */
+  --cc: #EEF1F6;      /* inline code, hover, muted chip */
+  --pw: #FFFCF5;      /* permission card surface */
+  --sh: rgba(20,30,60,.22);
+  --ad: #EAF6F0; --ae: #0F5A39;   /* diff added bg / text */
+  --dd: #FCEDEA; --de: #8F2615;   /* diff removed bg / text */
+  --kw: #7A4FD6;      /* code keyword */
+}
+[data-theme="dark"] {
+  --bg: #0E1015; --pn: #171A21; --ln: #252A35;
+  --tx: #E9EDF4; --t2: #B2BACA; --t3: #8891A3;
+  --ac: #4D9BFF; --acf: #06142B;
+  --ok: #43CC93; --okb: #12261E; --okl: #1F4A3A;
+  --wn: #F0B14E; --wnb: #2A2112; --wnl: #5A4520;
+  --bd: #FF8372; --bdb: #2E1714; --bdl: #5C2A22;
+  --acb: #14233D; --acl: #264A7C;
+  --sel: #1B2740; --cc: #1D212B; --pw: #221C10;
+  --sh: rgba(0,0,0,.5);
+  --ad: #12261E; --ae: #7BE0B4; --dd: #2E1714; --de: #FFA899; --kw: #B79BFF;
+}
+:root {
+  --font-ui: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+  --fs-ui: 13px;        /* controls, tables, captions are 12px */
+  --fs-title: 16px;     /* screen title, weight 600 */
+  --fs-message: 15.5px; --lh-message: 1.68;
+  --r-chip: 999px; --r-control: 8px; --r-card: 12px; --r-composer: 18px; --r-bubble: 16px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-6: 24px; --sp-8: 32px;
+  --rail-w: 68px;
+  --reading-w: 700px;      /* chat and work column */
+  --review-w: 460px;       /* 420px under 1420px wide */
+  --inspector-w: 380px;    /* 340px under 1420px wide */
+  --history-w: 300px;      /* slide-over */
+  --bp-narrow: 820px;      /* rail becomes bottom tabs, panels become sheets */
+}

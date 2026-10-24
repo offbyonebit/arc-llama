@@ -33,6 +33,7 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
   ".svg": "image/svg+xml",
+  ".ttf": "font/ttf",
   ".md": "text/markdown; charset=utf-8",
 };
 
@@ -244,6 +245,8 @@ async function startStaticServer(staticRoot = STATIC) {
       let pathname = decodeURIComponent(url.pathname);
       if (pathname === "/") pathname = "/index.html";
       if (pathname === "/chat") pathname = "/chat.html";
+      if (pathname === "/work") pathname = "/chat.html";
+      if (pathname === "/workbench") pathname = "/work.html";
       const target = normalize(join(staticRoot, pathname));
       if (!target.startsWith(staticRoot + "/") && !target.startsWith(staticRoot + "\\")) {
         res.writeHead(403).end("forbidden");
@@ -279,3 +282,11 @@ async function openChat(page, origin, { model = "qwen" } = {}) {
 
 
 export { ASSISTANT_REPLY, STRUCTURED_LOAD_FAILURE, MODELS, ADMIN_STATUS, METRICS, CHATS, installApiMocks, recordSessionTokenCalls, startStaticServer, openChat };
+
+export async function choosePaperModel(page, id) {
+  await page.locator("#paper-model-pill").click();
+  await page.locator(`.paper-model-option[data-model="${id}"]`).click();
+}
+export async function openContext(page) {
+  if (await page.locator("#paper-context-pop").isHidden()) await page.locator("#paper-context-toggle").click();
+}

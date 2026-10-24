@@ -119,7 +119,7 @@ def sse(payload: dict) -> bytes:
 
 def test_observer_records_first_generated_content_as_ttft_origin():
     obs = StreamMetricsObserver()
-    obs.feed(b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n", now=1.0)
+    obs.feed(b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n', now=1.0)
     assert obs.first_token_at is None, "role-only deltas are not generated content"
     obs.feed(sse({"choices": [{"delta": {"content": "H"}}]}), now=2.5)
     assert obs.first_token_at == 2.5

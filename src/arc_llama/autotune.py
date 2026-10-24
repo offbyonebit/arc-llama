@@ -21,6 +21,7 @@ import hashlib
 import logging
 import os
 import platform
+import shutil
 import sys
 import time
 from collections.abc import Callable
@@ -138,9 +139,13 @@ def compute_fingerprint(
     h.update(b"|")
     h.update(_file_fingerprint(model.path).encode())
     h.update(b"\nbinary:")
+    llama_server_path = str(Path(model.llama_server or llama_server_path).expanduser())
+    llama_server_path = shutil.which(llama_server_path, path=model.env.get("PATH", os.environ.get("PATH", ""))) or llama_server_path
     h.update(llama_server_path.encode())
     h.update(b"|")
     h.update(_file_fingerprint(llama_server_path).encode())
+    h.update(b"\nmodel-env:")
+    h.update(repr(sorted(model.env.items())).encode())
     h.update(b"\ngpu:")
     h.update((gpu.pci_slot if gpu else "").encode())
     h.update(b"|")
@@ -202,7 +207,7 @@ def reset_tuned_state_if_stale(
     gpu = cfg.find_gpu(model.gpu_pci_slot)
     fp = compute_fingerprint(
         model,
-        cfg.paths.llama_server,
+        cfg.model_llama_server(model),
         gpu,
         arc_llama_version,
         workload.fingerprint_key(cfg.workload),
@@ -436,7 +441,7 @@ class Autotuner:
         gpu = self.cfg.find_gpu(model.gpu_pci_slot)
         fp = compute_fingerprint(
             model,
-            self.cfg.paths.llama_server,
+            self.cfg.model_llama_server(model),
             gpu,
             self.version,
             workload.fingerprint_key(self.cfg.workload),
@@ -558,7 +563,7 @@ class Autotuner:
                 gpu = self.cfg.find_gpu(model.gpu_pci_slot)
                 fp = compute_fingerprint(
                     model,
-                    self.cfg.paths.llama_server,
+                    self.cfg.model_llama_server(model),
                     gpu,
                     self.version,
                     workload.fingerprint_key(self.cfg.workload),

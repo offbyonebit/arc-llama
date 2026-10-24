@@ -7,8 +7,13 @@ below may still happen during 0.9, but releases will document them.
 
 - Windows 10/11 x86-64 and Linux x86-64.
 - Python 3.10 through 3.14.
-- Intel Arc Alchemist, Battlemage, and Lunar Lake GPUs recognized by
-  `arc-llama gpus`.
+- Battlemage GPUs recognized by `arc-llama gpus`; native validation is recorded
+  for the Arc Pro B60 on Linux (see the README's Tested hardware table).
+- Alchemist and Lunar Lake GPUs are recognized and expected to work through the
+  same Vulkan and SYCL runtimes, but no native results have been recorded for
+  them yet, so they are not covered by this contract. Hardware reports
+  ([issue #71](https://github.com/offbyonebit/arc-llama/issues/71)) move a
+  device into the validated list.
 - Vulkan is the portable default. SYCL is supported when a compatible Intel
   oneAPI runtime and SYCL llama.cpp build are installed.
 

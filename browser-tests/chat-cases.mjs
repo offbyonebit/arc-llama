@@ -1,3 +1,4 @@
+import { choosePaperModel, openContext } from "./harness.mjs";
 // Existing regression cases; shared fixtures and browser setup live in harness.mjs.
 import {
   ASSISTANT_REPLY,
@@ -11,13 +12,13 @@ export async function testChatSelection({ page, origin }) {
   await openChat(page, origin);
   const options = await page.$$eval("#model-select option", (els) => els.map((e) => e.value));
   if (options.join(",") !== "qwen,gemma") throw new Error(`unexpected model options: ${options}`);
-  await page.selectOption("#model-select", "gemma");
+  await choosePaperModel(page, "gemma");
   const stored = await page.evaluate(() => sessionStorage.getItem("arc-llama-selected-model"));
   if (stored !== "gemma") throw new Error(`selected model not persisted, got ${stored}`);
   const status = await page.textContent("#status-text");
   // gemma is not loaded per the mocked admin status
   if (status !== "idle") throw new Error(`expected idle status, got ${status}`);
-  await page.selectOption("#model-select", "qwen");
+  await choosePaperModel(page, "qwen");
   await page.waitForTimeout(100);
 }
 
@@ -131,14 +132,15 @@ export async function testStructuredLoadFailure({ page, origin }) {
   // Retry button re-attempts: the mock fails deterministically again.
   await card.locator(".load-failure-retry").click();
   await page.waitForSelector(".load-failure-card", { timeout: 5000 });
-  // No assistant bubble was created for the failed send.
+  await page.waitForFunction(() => !document.querySelector("#input-wrap").classList.contains("generating"));
+  // No assistant bubble remains once the failed retry has settled.
   const assistants = await page.locator("#chat-log .message.assistant").count();
   if (assistants !== 0) throw new Error(`assistant bubble appeared for failed send (${assistants})`);
 }
 
 export async function testRefreshPreservesEdits({ page, origin }) {
   await openChat(page, origin, { model: "" });
-  await page.selectOption("#model-select", "gemma");
+  await choosePaperModel(page, "gemma");
   await page.fill("#message-input", "draft that must survive refresh");
   await page.reload();
   await page.waitForSelector("#model-select option", { state: "attached", timeout: 5000 });
@@ -395,4 +397,40 @@ export async function testImagesNeedVisionModel({ page, origin }) {
   if (!Array.isArray(parts) || parts[1]?.type !== "image_url" || !parts[1].image_url.url.startsWith("data:image/png;base64,")) {
     throw new Error("image was not sent as an image_url part");
   }
+}
+
+export async function testChatSingleReplyLifecycle({page,origin}) {
+  let releaseLoad, releaseReply;
+  const loadGate=new Promise(resolve=>{releaseLoad=resolve;});
+  let replyGate=new Promise(resolve=>{releaseReply=resolve;});
+  const requests=[];
+  await page.route('**/admin/load/gemma',async route=>{
+    await loadGate;return route.fulfill({status:200,contentType:'application/json',body:'{"loaded":true}'});
+  });
+  await page.route('**/v1/chat/completions',async route=>{
+    requests.push(route.request().postDataJSON());await replyGate;
+    return route.fulfill({status:200,contentType:'text/event-stream',body:ASSISTANT_REPLY});
+  });
+  try {
+    await openChat(page,origin,{model:'gemma'});
+    await page.fill('#message-input','First turn');await page.press('#message-input','Enter');
+    await page.locator('.message.assistant.load-wait-card .live-activity').waitFor();
+    if(await page.locator('.message.assistant').count()!==1 || await page.locator('.message.system').count())throw new Error('loading created a separate response entry');
+    await page.locator('.message.assistant').evaluate(node=>{window.__pendingResponse=node;});
+    releaseLoad();
+    await page.locator('.message.assistant .live-activity').filter({hasText:'Generating'}).waitFor();
+    if(!(await page.locator('.message.assistant').evaluate(node=>node===window.__pendingResponse)))throw new Error('loading response was replaced for generation');
+    releaseReply();
+    await page.locator('.message.assistant .live-activity').waitFor({state:'detached'});
+    if(!(await page.locator('.message.assistant').evaluate(node=>node===window.__pendingResponse)))throw new Error('generation response was replaced on completion');
+    replyGate=new Promise(resolve=>{releaseReply=resolve;});
+    await page.fill('#message-input','Second turn');await page.press('#message-input','Enter');
+    await page.locator('.message.assistant .live-activity').filter({hasText:'Generating'}).waitFor();
+    if(await page.locator('.message.assistant').count()!==2)throw new Error('send duplicated an assistant response');
+    if(await page.locator('.message.assistant').first().locator('.live-activity, #streaming-indicator').count())throw new Error('previous response appears active during the new reply');
+    if(await page.locator('.message.assistant .live-activity').count()!==1)throw new Error('multiple active reply indicators');
+    releaseReply();
+    await page.locator('.message.assistant .live-activity').waitFor({state:'detached'});
+    if(requests.length!==2 || requests[1].messages.filter(m=>m.role==='user').length!==2)throw new Error('duplicate generation or user turn');
+  } finally {releaseLoad();releaseReply();}
 }

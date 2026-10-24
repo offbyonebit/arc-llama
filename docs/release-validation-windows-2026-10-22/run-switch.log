@@ -1,0 +1,95 @@
+  Backend selected: Vulkan (portable fallback; a runtime will be installed if 
+needed).
+2/4 Installing verified vulkan llama-server ...
+2026-10-22 13:57:04,810 INFO httpx: HTTP Request: GET https://api.github.com/repos/ggml-org/llama.cpp/releases/latest "HTTP/1.1 200 OK"
+2026-10-22 13:57:05,539 INFO httpx: HTTP Request: GET https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30 "HTTP/1.1 200 OK"
+2026-10-22 13:57:06,852 INFO httpx: HTTP Request: GET https://github.com/ggml-org/llama.cpp/releases/download/b11823/llama-b11823-bin-win-vulkan-x64.zip "HTTP/1.1 302 Found"
+2026-10-22 13:57:06,921 INFO httpx: HTTP Request: GET https://release-assets.githubusercontent.com/github-production-release-asset/612354784/10cb59b7-c01d-4e82-a004-a496638bd3d1?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-22T19%3A49%3A59Z&rscd=attachment%3B+filename%3Dllama-b11823-bin-win-vulkan-x64.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-22T18%3A49%3A50Z&ske=2026-10-22T19%3A49%3A59Z&sks=b&skv=2018-11-09&sig=0EHY34vwxRbecdEk5weaVhJX3Bq8rlkaCQezuoKHatM%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc5MjY5NzIyMiwibmJmIjoxNzkyNjk1NDIyLCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.ai72IyO4PUkItEQ5bdy_nfixBsm0qhlBX_WW-Id4L3c&response-content-disposition=attachment%3B%20filename%3Dllama-b11823-bin-win-vulkan-x64.zip&response-content-type=application%2Foctet-stream "HTTP/1.1 200 OK"
+---------------------------------------- 36.9/36.9 MB 100%
+  verified llama.cpp b11823 · 
+C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
+\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823
+-vulkan\llama-server.exe
+3/4 Model ready · qwen05
+4/4 Launch plan
+Model          qwen05 (0.5 GiB)                     
+GPU            Arc Pro B60                          
+Recipe         ctx 32,768 · KV q8_0 · backend vulkan
+Estimated fit  comfortable · 1,685/24,382 MiB       
+
+Arc inference is ready · model qwen05
+  OpenAI base URL  http://127.0.0.1:11437/v1
+  Web UI           http://127.0.0.1:11437/
+  Press Ctrl+C to stop. The first request loads the selected model.
+
+Auto-tune: on -- 2 model(s) eligible; sweep starts after 120s idle. Use 
+--no-auto-tune to disable.
+Admin authentication is enabled via config file 
+(C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-ar
+c\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml). Admin 
+endpoints require 'Authorization: Bearer <token>'.
+arc-llama serve — applied Arc profiles:
+  GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00: battlemage (vulkan) · 
+24382 MB
+  model qwen05: ctx=32768 · KV q8_0 · port 18080
+  model qwen05-q8: ctx=32768 · KV q8_0 · port 18081
+INFO:     Started server process [26924]
+INFO:     Waiting for application startup.
+2026-10-22 13:57:22,749 INFO arc_llama.autotune: autotune: started background loop
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:11437 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51415 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51415 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51415 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+2026-10-22 13:57:32,260 INFO arc_llama.router: loading model qwen05 on GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00 ...
+2026-10-22 13:57:32,261 INFO arc_llama.launcher: [qwen05] starting: C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823-vulkan\llama-server.exe -m C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-Instruct-GGUF\qwen2.5-0.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 18080 -ngl 999 -c 32768 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 -ub 1024 -b 2048 --flash-attn on
+2026-10-22 13:57:32,975 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"
+INFO:     127.0.0.1:60748 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+2026-10-22 13:57:34,497 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 200 OK"
+2026-10-22 13:57:34,500 INFO arc_llama.launcher: [qwen05] ready after 2.2s
+2026-10-22 13:57:34,818 INFO httpx: HTTP Request: POST http://127.0.0.1:18080/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51446 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "GET /admin/status HTTP/1.1" 200 OK
+2026-10-22 13:57:37,286 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/props "HTTP/1.1 200 OK"
+2026-10-22 13:57:37,307 INFO httpx: HTTP Request: POST http://127.0.0.1:18080/apply-template "HTTP/1.1 200 OK"
+2026-10-22 13:57:37,338 INFO httpx: HTTP Request: POST http://127.0.0.1:18080/tokenize "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60748 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60748 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /admin/status HTTP/1.1" 200 OK
+2026-10-22 13:57:40,288 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/props "HTTP/1.1 200 OK"
+2026-10-22 13:57:40,310 INFO httpx: HTTP Request: POST http://127.0.0.1:18080/apply-template "HTTP/1.1 200 OK"
+2026-10-22 13:57:40,331 INFO httpx: HTTP Request: POST http://127.0.0.1:18080/tokenize "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63925 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+2026-10-22 13:57:42,889 INFO arc_llama.router: evicting qwen05 before starting qwen05-q8
+2026-10-22 13:57:42,889 INFO arc_llama.launcher: [qwen05] stopping pid=33072
+INFO:     127.0.0.1:63925 - "GET /admin/status HTTP/1.1" 200 OK
+2026-10-22 13:57:43,009 INFO arc_llama.router: loading model qwen05-q8 on GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00 ...
+2026-10-22 13:57:43,009 INFO arc_llama.launcher: [qwen05-q8] starting: C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823-vulkan\llama-server.exe -m C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-Instruct-GGUF\qwen2.5-0.5b-instruct-q8_0.gguf --host 127.0.0.1 --port 18081 -ngl 999 -c 32768 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 -ub 1024 -b 2048 --flash-attn on
+INFO:     127.0.0.1:63925 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+2026-10-22 13:57:43,759 INFO httpx: HTTP Request: GET http://127.0.0.1:18081/health "HTTP/1.1 503 Service Unavailable"
+2026-10-22 13:57:45,265 INFO httpx: HTTP Request: GET http://127.0.0.1:18081/health "HTTP/1.1 200 OK"
+2026-10-22 13:57:45,267 INFO arc_llama.launcher: [qwen05-q8] ready after 2.2s
+INFO:     127.0.0.1:63925 - "GET /admin/status HTTP/1.1" 200 OK
+2026-10-22 13:57:45,543 INFO httpx: HTTP Request: POST http://127.0.0.1:18081/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60803 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63950 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "POST /v1/chat/budget HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53857 - "GET /admin/library/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56588 - "GET /admin/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56588 - "POST /v1/chat/budget HTTP/1.1" 200 OK

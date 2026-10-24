@@ -4,6 +4,7 @@ The resident lock coordinates participating launchers. DRM fdinfo also finds
 legacy services that bypass that lock, including buffers evicted to system
 memory. This is a best-effort admission check, not an OS-wide GPU reservation.
 """
+
 from __future__ import annotations
 
 import sys
@@ -49,9 +50,7 @@ def check_gpu_ownership(pci_slot: str, ignored_pids: set[int] | None = None) -> 
                     text = stream.read(16_384)
             except OSError:
                 continue
-            fields = dict(
-                line.split(":", 1) for line in text.splitlines() if ":" in line
-            )
+            fields = dict(line.split(":", 1) for line in text.splitlines() if ":" in line)
             if _pci_slot(fields.get("drm-pdev", "")) != _pci_slot(pci_slot):
                 continue
             allocated = False
@@ -73,8 +72,12 @@ def check_gpu_ownership(pci_slot: str, ignored_pids: set[int] | None = None) -> 
             service = None
             try:
                 service = next(
-                    (part for part in (process / "cgroup").read_text().split("/")
-                     if part.strip().endswith(".service")), None
+                    (
+                        part
+                        for part in (process / "cgroup").read_text().split("/")
+                        if part.strip().endswith(".service")
+                    ),
+                    None,
                 )
                 if service:
                     service = service.strip()
@@ -87,8 +90,12 @@ def check_gpu_ownership(pci_slot: str, ignored_pids: set[int] | None = None) -> 
                 f"Another llama-server owns allocations on GPU {pci_slot}: {owner}.",
                 "Stop the conflicting model server before loading this model. "
                 "Disable its automatic startup if Arc Llama should own this GPU.",
-                details={"gpu": pci_slot, "pid": pid, "service": service,
-                         "reason": "external_model_owner"},
+                details={
+                    "gpu": pci_slot,
+                    "pid": pid,
+                    "service": service,
+                    "reason": "external_model_owner",
+                },
             )
 
 

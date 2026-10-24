@@ -5,6 +5,7 @@
     const KV_CLASSES = ["default","moe_a3b","qwen3_27b_dense","gemma_swa"];
     const PRESETS_KEY = "arc-llama-presets";
     let settingsDirty = false;
+    let runtimeBinaryDirty = false, runtimeEnvDirty = false;
     let settingsDraftModel = null;
     function renderPresetPanel() {
       const host = ctx.$("#s-preset");
@@ -18,10 +19,13 @@
           <textarea id="s-system" rows="4" placeholder="Optional instructions sent before every chat"></textarea></div>
         <div class="s-field"><label for="s-temp">Temperature</label>
           <input id="s-temp" type="number" min="0" max="2" step="0.05" placeholder="model default"></div>
+        <div class="s-field"><label for="s-max-tokens">Reply token limit</label>
+          <input id="s-max-tokens" type="number" min="1" step="1" placeholder="1024"></div>
         <button class="s-apply" id="s-preset-save" type="button">Save preset</button>
         <div class="s-note" id="s-preset-note">Saved in this browser; applies to the next message.</div>
       `;
       ctx.$("#s-system").value = preset.system;
+      ctx.$("#s-max-tokens").value = String(preset.max_tokens);
       ctx.$("#s-temp").value = preset.temperature == null ? "" : String(preset.temperature);
       ctx.$("#s-preset-save").addEventListener("click", () => {
         const raw = ctx.$("#s-temp").value.trim();
@@ -30,7 +34,12 @@
           ctx.$("#s-preset-note").textContent = "Temperature must be between 0 and 2.";
           return;
         }
-        savePreset(ctx.selectedModel, { system: ctx.$("#s-system").value.trim(), temperature: temp });
+        const maxTokens = Number(ctx.$("#s-max-tokens").value || 1024);
+        if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0) {
+          ctx.$("#s-preset-note").textContent = "Reply token limit must be a positive whole number.";
+          return;
+        }
+        savePreset(ctx.selectedModel, { system: ctx.$("#s-system").value.trim(), temperature: temp, max_tokens: maxTokens });
         ctx.$("#s-preset-note").textContent = "Preset saved.";
         ctx.budgetBase = null;
         ctx.refreshBudget();
@@ -49,6 +58,7 @@
       }
       settingsDraftModel = ctx.selectedModel;
       settingsDirty = false;
+      runtimeBinaryDirty = false; runtimeEnvDirty = false;
       ctx.sModelName.textContent = ctx.selectedModel || "Not selected";
       if (!m || (m.owned_by && m.owned_by.startsWith("upstream:"))) {
         ctx.sFields.innerHTML = '<div class="s-upstream">Settings not available for upstream models.</div>';
@@ -76,13 +86,25 @@
         <div class="s-field"><label>KV Class</label>
           <select id="s-kvc">${classOpts}</select></div>
         <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
+        <details class="s-runtime"><summary>Runtime for this model</summary>
+          <div class="s-field"><label for="s-llama-server">llama-server path</label>
+            <input id="s-llama-server" type="text" placeholder="Use the global runtime"></div>
+          <div class="s-field"><label for="s-runtime-env">Environment variables</label>
+            <textarea id="s-runtime-env" rows="4" spellcheck="false" placeholder="KEY=value, one per line"></textarea></div>
+          <div class="s-note">Applies only to this model. Empty fields use the defaults. Values are literal; no shell expansion.</div>
+        </details>
         <button class="s-apply" id="s-apply">Apply</button>
         <div class="s-note">Takes effect on next model load.</div>
       `;
+      ctx.$("#s-llama-server").value = m.llama_server || "";
+      ctx.$("#s-llama-server").placeholder = m.effective_llama_server || "Use the global runtime";
+      ctx.$("#s-runtime-env").value = Object.entries(m.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
       ctx.$("#s-apply").addEventListener("click", applySettings);
-      ctx.sFields.querySelectorAll("input, select").forEach((field) => {
+      ctx.sFields.querySelectorAll("input, select, textarea").forEach((field) => {
         const markDirty = () => {
           settingsDirty = true;
+          if (field.id === "s-llama-server") runtimeBinaryDirty = true;
+          if (field.id === "s-runtime-env") runtimeEnvDirty = true;
           ctx.$("#s-fit").textContent = "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate.";
         };
         field.addEventListener("input", markDirty);
@@ -112,6 +134,18 @@
     async function applySettings() {
       const m = ctx.models.find(m => m.id === ctx.selectedModel);
       if (!m) return;
+      const env = Object.create(null);
+      for (const line of (runtimeEnvDirty ? ctx.$("#s-runtime-env").value.split("\n") : [])) {
+        if (!line.trim()) continue;
+        const separator = line.indexOf("=");
+        const key = line.slice(0, separator).trim();
+        if (separator < 1 || !key || /[=\0]/.test(key) || Object.hasOwn(env, key)) {
+          ctx.sFeedback.textContent = "Use one unique KEY=value per line.";
+          return;
+        }
+        env[key] = line.slice(separator + 1);
+      }
+      const modelId = ctx.selectedModel;
       const btn = ctx.$("#s-apply");
       btn.disabled = true;
       ctx.sFeedback.textContent = "";
@@ -121,9 +155,11 @@
         cache_type_v: ctx.$("#s-ctv").value,
         parallel:     parseInt(ctx.$("#s-par").value, 10),
         kv_class:     ctx.$("#s-kvc").value,
+        ...(runtimeBinaryDirty ? { llama_server: ctx.$("#s-llama-server").value.trim() } : {}),
+        ...(runtimeEnvDirty ? { env } : {}),
       };
       try {
-        const r = await ctx.request(`/admin/models/${encodeURIComponent(ctx.selectedModel)}/edit`, {
+        const r = await ctx.request(`/admin/models/${encodeURIComponent(modelId)}/edit`, {
           method: "POST",
           headers: ctx.authHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(body),
@@ -135,13 +171,18 @@
         m.cache_type_v = body.cache_type_v;
         m.parallel     = body.parallel;
         m.kv_class     = body.kv_class;
+        if (Object.hasOwn(body, "llama_server")) m.llama_server = body.llama_server;
+        if (Object.hasOwn(body, "env")) m.env = body.env;
+        if (ctx.selectedModel !== modelId) return;
         ctx.sFeedback.style.color = "var(--accent-bright)";
         ctx.sFeedback.textContent = "Saved.";
         settingsDirty = false;
+        runtimeBinaryDirty = false; runtimeEnvDirty = false;
         // The VRAM estimate depends on ctx/KV; refresh status so the settings
         // panel re-renders an honest fit line instead of the stale one.
         ctx.fetchStatus().catch(() => {});
       } catch (e) {
+        if (ctx.selectedModel !== modelId) return;
         ctx.sFeedback.style.color = "#e8b0b0";
         ctx.sFeedback.textContent = "Error: " + e.message;
       } finally {
@@ -158,12 +199,13 @@
       return {
         system: typeof p.system === "string" ? p.system : "",
         temperature: typeof p.temperature === "number" ? p.temperature : null,
+        max_tokens: Number.isSafeInteger(p.max_tokens) && p.max_tokens > 0 ? p.max_tokens : 1024,
       };
     }
 
     function savePreset(model, preset) {
       const all = loadPresets();
-      if (!preset.system && preset.temperature == null) delete all[model];
+      if (!preset.system && preset.temperature == null && (!preset.max_tokens || preset.max_tokens === 1024)) delete all[model];
       else all[model] = preset;
       try { ctx.storage.setItem(PRESETS_KEY, JSON.stringify(all)); } catch (_) {}
     }

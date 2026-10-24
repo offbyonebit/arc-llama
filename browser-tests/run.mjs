@@ -1,7 +1,10 @@
+import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
 import { installApiMocks, recordSessionTokenCalls, startStaticServer } from "./harness.mjs";
 import {
+  testChatSingleReplyLifecycle,
   testChatSelection,
   testChatHistoryComponents,
   testChatSend,
@@ -18,6 +21,36 @@ import {
   testTextAttachmentExtensionFallback,
   testImagesNeedVisionModel,
 } from "./chat-cases.mjs";
+import {
+  testWorkGenerationSpeedCounter,
+  testWorkNativeHarnessHistory,
+  testWorkSessionDuplicatesAreExpandable,
+  testWorkRunCarriesItsStableConversationId,
+  testWorkLinkedHarnessSessionsStayAccessible,
+  testWorkHermesHarness,
+  testWorkHermesUnavailable,
+  testWorkViewHiddenUnlessExperimental,
+  testWorkResumeAndVisibleContext,
+  testWorkLiveActivityAndFullPrompt,
+  testChatLiveActivity,
+  testWorkContextIgnoresStaleBudgets,
+  testWorkModeApprovalAndUndo,
+  testWorkModeDeniedAndStopped,
+  testWorkModeServerRejectsMissingFolder,
+  testWorkModeEndedWithoutResultIsAnError,
+  testWorkModeOffersClosestFolder,
+  testWorkModeAutoApprove,
+  testWorkModeAutoApproveHiddenOnOldServer,
+  testWorkModeKeepsTheConversation,
+  testWorkModeOutsideFolderIsSaidPlainly,
+  testWorkModeCompactReplacesEarlierTurns,
+  testWorkSlashMenuListsHarnessCommands,
+  testWorkSlashCommandRunsInTheHarness,
+  testWorkSessionsAreSavedAndReopened,
+  testWorkToolProfilesLimitWhatARunCanUse,
+  testWorkProfilesRecoverFromDiscoveryFailure,
+  testWorkProfilesIgnoreClosedDiscovery,
+} from "./work-cases.mjs";
 import {
   testDashboardMeasurements,
   testDashboardFitAndEmptyMeasurements,
@@ -41,7 +74,56 @@ import {
   testMissingFileRecovery,
 } from "./library-cases.mjs";
 
+import {
+  testCompactionUndoFailureAndEdit,
+  testCompactionRequiresPersistenceAck,
+  testCompactionRoundTrip,
+  testCompactionReloadAndClear,
+  testCompactionFailures,
+  testCompactionSaveFailure,
+  testCompactionCancelAndGuards,
+  testCompactionOversizedAndImages,
+  testCompactionRecentTooLarge,
+} from "./compaction-cases.mjs";
+
+import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudgetAndReplyLimit,
+  testBudgetDiscardsStaleResponses, testDownloadFolderAndRetry } from "./release-cases.mjs";
+
+import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./workbench-cases.mjs";
+
 const TESTS = [
+  ["work-hermes-harness", testWorkHermesHarness],
+  ["work-hermes-unavailable", testWorkHermesUnavailable],
+  ["work-live-activity-full-prompt", testWorkLiveActivityAndFullPrompt],
+  ["chat-single-reply-lifecycle", testChatSingleReplyLifecycle],
+  ["chat-live-activity", testChatLiveActivity],
+  ["work-resume-visible-context", testWorkResumeAndVisibleContext],
+  ["work-context-stale-budgets", testWorkContextIgnoresStaleBudgets],
+  ["paper-picker-list-visibility", testPaperPickerListVisibility],
+  ["paper-discover-navigation", testPaperDiscoverNavigation],
+  ["paper-shell-model-picker", testPaperShellAndModelPicker],
+  ["paper-mobile-sheets", testPaperMobileSheets],
+  ["paper-claims-context", testPaperRealClaimsAndContext],
+  ["paper-model-load-stop", testPaperModelLoadStop],
+  ["paper-work-model-picker", testPaperWorkModelPicker],
+  ["work-attempt-settings-and-results", testWorkAttemptSettingsAndResults],
+  ["work-projects-jobs-and-review", testWorkProjectsJobsAndReview],
+  ["work-manual-token-loads-models", testWorkManualTokenLoadsModels],
+  ["interrupted-answer-persists", testInterruptedAnswerPersists],
+  ["stopped-answer-persists", testStoppedAnswerPersists],
+  ["exact-budget-and-reply-limit", testExactBudgetAndReplyLimit],
+  ["budget-discards-stale-responses", testBudgetDiscardsStaleResponses],
+  ["download-folder-and-retry", testDownloadFolderAndRetry],
+  ["compaction-requires-persistence-ack", testCompactionRequiresPersistenceAck],
+  ["compaction-undo-failure-and-edit", testCompactionUndoFailureAndEdit],
+  ["compaction-roundtrip", testCompactionRoundTrip],
+  ["compaction-reloadandclear", testCompactionReloadAndClear],
+  ["compaction-failures", testCompactionFailures],
+  ["compaction-savefailure", testCompactionSaveFailure],
+  ["compaction-cancelandguards", testCompactionCancelAndGuards],
+  ["compaction-oversizedandimages", testCompactionOversizedAndImages],
+  ["compaction-recenttoolarge", testCompactionRecentTooLarge],
+
   ["recovery-download", testDownloadRecovery],
   ["recovery-missing-file", testMissingFileRecovery],
   ["polling-efficiency", testPollingEfficiency],
@@ -57,6 +139,8 @@ const TESTS = [
   ["refresh-preserves-edits", testRefreshPreservesEdits],
   ["keyboard-navigation", testKeyboardNavigation],
   ["settings-survive-status-poll", testSettingsSurviveStatusPoll],
+  ["per-model-runtime-settings", testPerModelRuntimeSettings],
+  ["per-model-runtime-unrelated-edits", testRuntimeOverridesSurviveUnrelatedEdits],
   ["retry-original-turn-once", testRetrySendsOriginalTurnOnce],
   ["dashboard-measurements", testDashboardMeasurements],
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
@@ -75,6 +159,28 @@ const TESTS = [
   ["preset-shapes-request", testPresetShapesRequest],
   ["text-attachment-extension-fallback", testTextAttachmentExtensionFallback],
   ["images-need-vision-model", testImagesNeedVisionModel],
+  ["work-hidden-unless-experimental", testWorkViewHiddenUnlessExperimental],
+  ["work-approval-and-undo", testWorkModeApprovalAndUndo],
+  ["work-denied-and-stopped", testWorkModeDeniedAndStopped],
+  ["work-server-rejects-missing-folder", testWorkModeServerRejectsMissingFolder],
+  ["work-ended-without-result", testWorkModeEndedWithoutResultIsAnError],
+  ["work-auto-approve", testWorkModeAutoApprove],
+  ["work-auto-approve-hidden-on-old-server", testWorkModeAutoApproveHiddenOnOldServer],
+  ["work-keeps-the-conversation", testWorkModeKeepsTheConversation],
+  ["work-outside-folder-is-said-plainly", testWorkModeOutsideFolderIsSaidPlainly],
+  ["work-offers-closest-folder", testWorkModeOffersClosestFolder],
+  ["work-compact-replaces-earlier-turns", testWorkModeCompactReplacesEarlierTurns],
+  ["work-slash-menu-lists-harness-commands", testWorkSlashMenuListsHarnessCommands],
+  ["work-slash-command-runs-in-the-harness", testWorkSlashCommandRunsInTheHarness],
+  ["work-sessions-saved-and-reopened", testWorkSessionsAreSavedAndReopened],
+  ["work-native-harness-history", testWorkNativeHarnessHistory],
+  ["work-session-duplicates", testWorkSessionDuplicatesAreExpandable],
+  ["work-stable-conversation-id", testWorkRunCarriesItsStableConversationId],
+  ["work-linked-harness-history", testWorkLinkedHarnessSessionsStayAccessible],
+  ["work-generation-speed-counter", testWorkGenerationSpeedCounter],
+  ["work-tool-profiles-limit-a-run", testWorkToolProfilesLimitWhatARunCanUse],
+  ["work-profiles-discovery-recovery", testWorkProfilesRecoverFromDiscoveryFailure],
+  ["work-profiles-stale-discovery", testWorkProfilesIgnoreClosedDiscovery],
 ];
 
 // ---------------------------------------------------------------------------

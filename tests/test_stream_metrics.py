@@ -61,7 +61,7 @@ def test_proxy_records_split_sse_without_changing_bytes_or_leaking_slot(monkeypa
     class SplitStream(FakeUpstreamStream):
         async def aiter_raw(self):
             for offset in range(0, len(payload), 7):
-                yield payload[offset:offset + 7]
+                yield payload[offset : offset + 7]
 
     class SplitClient(FakeAsyncClient):
         async def send(self, request, stream=False):
@@ -73,7 +73,9 @@ def test_proxy_records_split_sse_without_changing_bytes_or_leaking_slot(monkeypa
     monkeypatch.setattr(server_mod.httpx, "AsyncClient", SplitClient)
     app = server_mod.create_app(Config(), plugins=[])
     with TestClient(app) as client:
-        response = client.post("/v1/chat/completions", json={"model": "qwen", "stream": True, "messages": []})
+        response = client.post(
+            "/v1/chat/completions", json={"model": "qwen", "stream": True, "messages": []}
+        )
         assert response.content == payload
         assert app.state.router.inflight == 0
         summary = app.state.router.timings.snapshot()["models"]["qwen"]

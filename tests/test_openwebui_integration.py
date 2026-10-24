@@ -3,6 +3,7 @@
 Covers CORS, /v1/models created timestamps, and serve env-var bindings.
 Full docker compose + Open WebUI UI is manual (see PR test plan).
 """
+
 from __future__ import annotations
 
 import os
@@ -40,16 +41,17 @@ def _cfg(gguf: Path, *, upstream: bool = True) -> Config:
     return Config(
         server=ServerConfig(host="127.0.0.1", port=11437, admin_token=None),
         gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=24576)],
-        models=[ModelConfig(
-            name="qwen",
-            path=str(gguf),
-            port=18080,
-            gpu_pci_slot="0000:03:00.0",
-            aliases=["qwen.gguf"],
-        )],
+        models=[
+            ModelConfig(
+                name="qwen",
+                path=str(gguf),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                aliases=["qwen.gguf"],
+            )
+        ],
         upstreams=(
-            [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")]
-            if upstream else []
+            [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")] if upstream else []
         ),
     )
 
@@ -65,17 +67,21 @@ def gguf(tmp_path: Path) -> Path:
 async def test_cors_allows_cross_origin(gguf: Path):
     import arc_llama.server as server_mod
 
-    with patch.object(server_mod, "Router", FakeRouter), \
-         patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
+    with (
+        patch.object(server_mod, "Router", FakeRouter),
+        patch.object(server_mod, "UpstreamManager", FakeUpstreamManager),
+    ):
         app = create_app(_cfg(gguf))
         async with app.router.lifespan_context(app):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 pre = await client.options(
-                "/v1/models",
-                headers={
-                    "Origin": "http://localhost:3000",
-                    "Access-Control-Request-Method": "GET",
-                },
+                    "/v1/models",
+                    headers={
+                        "Origin": "http://localhost:3000",
+                        "Access-Control-Request-Method": "GET",
+                    },
                 )
                 assert pre.status_code in (200, 204)
                 assert pre.headers.get("access-control-allow-origin") == "http://localhost:3000"
@@ -87,17 +93,21 @@ async def test_cors_allows_cross_origin(gguf: Path):
 async def test_cors_rejects_unconfigured_cross_origin(gguf: Path):
     import arc_llama.server as server_mod
 
-    with patch.object(server_mod, "Router", FakeRouter), \
-         patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
+    with (
+        patch.object(server_mod, "Router", FakeRouter),
+        patch.object(server_mod, "UpstreamManager", FakeUpstreamManager),
+    ):
         app = create_app(_cfg(gguf))
         async with app.router.lifespan_context(app):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 pre = await client.options(
-                "/v1/models",
-                headers={
-                    "Origin": "http://evil.example.com",
-                    "Access-Control-Request-Method": "GET",
-                },
+                    "/v1/models",
+                    headers={
+                        "Origin": "http://evil.example.com",
+                        "Access-Control-Request-Method": "GET",
+                    },
                 )
                 assert "access-control-allow-origin" not in pre.headers
 
@@ -105,11 +115,15 @@ async def test_cors_rejects_unconfigured_cross_origin(gguf: Path):
 async def test_list_models_created_from_gguf_mtime(gguf: Path):
     import arc_llama.server as server_mod
 
-    with patch.object(server_mod, "Router", FakeRouter), \
-         patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
+    with (
+        patch.object(server_mod, "Router", FakeRouter),
+        patch.object(server_mod, "UpstreamManager", FakeUpstreamManager),
+    ):
         app = create_app(_cfg(gguf))
         async with app.router.lifespan_context(app):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 data = (await client.get("/v1/models")).json()["data"]
             local = next(m for m in data if m["id"] == "qwen")
             assert local["created"] == 1_700_000_123
@@ -122,11 +136,15 @@ async def test_list_models_missing_file_created_zero(tmp_path: Path):
     import arc_llama.server as server_mod
 
     missing = tmp_path / "gone.gguf"
-    with patch.object(server_mod, "Router", FakeRouter), \
-         patch.object(server_mod, "UpstreamManager", FakeUpstreamManager):
+    with (
+        patch.object(server_mod, "Router", FakeRouter),
+        patch.object(server_mod, "UpstreamManager", FakeUpstreamManager),
+    ):
         app = create_app(_cfg(missing, upstream=False))
         async with app.router.lifespan_context(app):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 local = next(
                     m for m in (await client.get("/v1/models")).json()["data"] if m["id"] == "qwen"
                 )
@@ -147,12 +165,20 @@ def test_serve_options_read_env_vars():
 def test_upstream_add_lmstudio(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     Config().save(cfg_path)
-    result = CliRunner().invoke(cli, [
-        "--config", str(cfg_path),
-        "upstream", "add", "lmstudio", "http://127.0.0.1:1234",
-    ])
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(cfg_path),
+            "upstream",
+            "add",
+            "lmstudio",
+            "http://127.0.0.1:1234",
+        ],
+    )
     assert result.exit_code == 0, result.output
     from arc_llama.config import load_config
+
     loaded = load_config(cfg_path)
     assert any(u.name == "lmstudio" and "1234" in u.url for u in loaded.upstreams)
 
@@ -195,8 +221,6 @@ def test_changelog_has_no_duplicate_heading():
     changelog = root / "CHANGELOG.md"
     assert changelog.is_file()
     headings = [
-        line.strip()
-        for line in changelog.read_text().splitlines()
-        if line.startswith("## [")
+        line.strip() for line in changelog.read_text().splitlines() if line.startswith("## [")
     ]
     assert len(headings) == len(set(headings)), f"duplicate headings: {headings}"

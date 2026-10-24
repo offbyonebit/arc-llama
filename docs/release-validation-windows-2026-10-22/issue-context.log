@@ -1,0 +1,13 @@
+69 200 Record a native Windows validation run Windows 10/11 is release-blocking in `docs/1.0-plan.md`, but native Windows GPU detection, runtime install and inference have only been covered by CI and mocks. The rc1 Windows pass was never written down in detail.
+
+**Do**
+- Run `arc-llama gpus`, `doctor`, and `run` on a native Windows machine.
+- Record OS build, GPU, driver, backend, Python version, llama.cpp build, model, and output.
+
+**Acceptance**
+- A `docs/release-validation-windows-*.md` file exists with the above.
+- The rc1 Windows pass is backfilled if the details can be recovered.
+73 200 Exercise fresh-install native paths on real hardware Fresh runtime download, native cold start, and GPU eviction under real memory pressure are currently covered by mocks only.
+
+**Acceptance**
+- One recorded real run on Linux covering each of the three, and Windows as well once the Windows validation issue is done.

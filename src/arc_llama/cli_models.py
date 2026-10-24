@@ -1,4 +1,5 @@
 """Registration for model catalog and local model file commands."""
+
 from __future__ import annotations
 
 import sys
@@ -16,15 +17,22 @@ from arc_llama.models import parse_hf_spec, scan_models
 
 
 def register_model_commands(
-    cli: click.Group, *, console: Console, load_config: Any, save_or_die: Any,
-    add_local_model: Any, download_from_hf: Any, detect_gpus: Any,
-    do_scan: Any, print_gpu_table: Any, httpx_module: Any,
+    cli: click.Group,
+    *,
+    console: Console,
+    load_config: Any,
+    save_or_die: Any,
+    add_local_model: Any,
+    download_from_hf: Any,
+    detect_gpus: Any,
+    do_scan: Any,
+    print_gpu_table: Any,
+    httpx_module: Any,
 ) -> dict[str, Any]:
     """Register GPU and model catalog commands, returning legacy CLI exports."""
     # ===========================================================================
     # gpus
     # ===========================================================================
-
 
     @cli.command("gpus")
     def gpus_cmd() -> None:
@@ -34,7 +42,6 @@ def register_model_commands(
             console.print("[red]No Intel GPUs detected.[/red]")
             sys.exit(2)
         print_gpu_table(gpus)
-
 
     def _print_gpu_table(gpus) -> None:
         table = Table(title="Intel GPUs")
@@ -56,11 +63,9 @@ def register_model_commands(
             )
         console.print(table)
 
-
     # ===========================================================================
     # list
     # ===========================================================================
-
 
     @cli.command("list")
     @click.pass_context
@@ -68,7 +73,9 @@ def register_model_commands(
         """List registered models and which one is currently loaded."""
         cfg = load_config(ctx.obj["config_path"])
         if not cfg.models:
-            console.print("[yellow]No models registered. Run [bold]arc-llama add ...[/bold].[/yellow]")
+            console.print(
+                "[yellow]No models registered. Run [bold]arc-llama add ...[/bold].[/yellow]"
+            )
             return
 
         loaded: set[str] = set()
@@ -122,11 +129,9 @@ def register_model_commands(
                 f"[dim]Status not available from {status_url}; server may not be running.[/dim]"
             )
 
-
     # ===========================================================================
     # add
     # ===========================================================================
-
 
     @cli.command("add")
     @click.argument("source")
@@ -347,7 +352,6 @@ def register_model_commands(
             f"({ctx_info}{batch_info})"
         )
 
-
     def _slugify_for_name(parent: str, file: str) -> str:
         import re
 
@@ -360,11 +364,46 @@ def register_model_commands(
             base = f"{base}-{m.group(1).lower()}"
         return base
 
+    @cli.command("model-runtime")
+    @click.argument("name")
+    @click.option("--llama-server", default=None, help="Executable for this model only; empty uses the global default.")
+    @click.option("--env", "variables", multiple=True, help="Model-only KEY=value; repeat for multiple variables.")
+    @click.option("--unset-env", multiple=True, help="Remove a model-only environment override.")
+    @click.option("--reset", is_flag=True, help="Clear this model's binary and environment overrides.")
+    @click.pass_context
+    def model_runtime(ctx, name, llama_server, variables, unset_env, reset):
+        """Show or configure one model's runtime without changing global defaults."""
+        from arc_llama.config import validate_model_runtime
+
+        cfg = load_config(ctx.obj["config_path"])
+        model = cfg.find_model(name)
+        if model is None:
+            raise click.ClickException(f"unknown model {name!r}")
+        binary = "" if reset else model.llama_server
+        env = {} if reset else dict(model.env)
+        if llama_server is not None:
+            binary = llama_server
+        for key in unset_env:
+            env.pop(key, None)
+        for assignment in variables:
+            key, separator, value = assignment.partition("=")
+            if not separator:
+                raise click.ClickException("--env requires KEY=value")
+            env[key] = value
+        try:
+            validate_model_runtime(binary, env)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if reset or llama_server is not None or variables or unset_env:
+            model.llama_server, model.env = binary, env
+            save_or_die(cfg, ctx.obj["config_path"])
+            console.print("[green]Saved. Reload the service config to activate; only this model's override changes.[/green]")
+        console.print(f"Runtime: {cfg.model_llama_server(model)}", markup=False)
+        console.print("Environment overrides: " + (", ".join(sorted(env)) or "none"), markup=False)
 
     # ===========================================================================
     # scan
     # ===========================================================================
-
 
     def _persist_scan_roots(cfg: Config, extras: list[Path]) -> list[str]:
         """Persist explicit scan roots into paths.scan_paths (deduped).
@@ -398,11 +437,9 @@ def register_model_commands(
             added.append(display)
         return added
 
-
     def _do_scan(cfg: Config, extra_paths: list[Path]) -> list:
         result = scan_models(cfg, extra_paths)
         return result.new
-
 
     @cli.command("scan")
     @click.argument("paths", nargs=-1, type=click.Path(exists=True, file_okay=False))
@@ -500,11 +537,9 @@ def register_model_commands(
         else:
             console.print("[dim]--no-persist: config NOT saved.[/dim]")
 
-
     # ===========================================================================
     # remove
     # ===========================================================================
-
 
     @cli.command("remove")
     @click.argument("name")
@@ -520,8 +555,6 @@ def register_model_commands(
             sys.exit(1)
         save_or_die(cfg, cfg_path)
         console.print(f"[green]Removed {name}.[/green]")
-
-
 
     return {
         "gpus_cmd": gpus_cmd,

@@ -7,6 +7,7 @@ Tools can be registered dynamically through ``ToolRegistry`` so that user
 skills and MCP-style extensions can extend the agent without modifying core
 code.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -24,23 +25,34 @@ from typing import Any
 import httpx
 
 GIT_MUTATION_COMMANDS = frozenset(
-    {"git commit", "git push", "git pull", "git fetch", "git merge", "git rebase",
-     "git reset", "git checkout", "git switch", "git branch", "git tag",
-     "git stash", "git cherry-pick", "git revert"}
+    {
+        "git commit",
+        "git push",
+        "git pull",
+        "git fetch",
+        "git merge",
+        "git rebase",
+        "git reset",
+        "git checkout",
+        "git switch",
+        "git branch",
+        "git tag",
+        "git stash",
+        "git cherry-pick",
+        "git revert",
+    }
 )
 
 # Wrappers that prefix a command without changing what it ultimately invokes.
 # Stripping them lets us catch e.g. `sudo git push` or `env git commit`. This is
 # a guardrail, not a sandbox: we only unwrap a fixed, well-known set rather than
 # trying to defeat arbitrary shell metaprogramming. Best-effort by design.
-_COMMAND_WRAPPERS = frozenset(
-    {"sudo", "env", "command", "exec", "time", "nice", "xargs"}
-)
+_COMMAND_WRAPPERS = frozenset({"sudo", "env", "command", "exec", "time", "nice", "xargs"})
 
 # Shell operators that separate independent commands on one line. Splitting on
 # these lets the denylist catch a mutation that happens after `&&`, `;`, `|`,
 # etc. We deliberately keep this to single-character control operators; bash
-#isms like `$(...)` or backticks are out of scope for a best-effort guard.
+# isms like `$(...)` or backticks are out of scope for a best-effort guard.
 _SHELL_OPERATOR_RE = re.compile(r"[;|&]+")
 
 
@@ -59,6 +71,8 @@ class ToolResult:
     content: str
     error: bool = False
     checkpoint_id: str | None = None
+    # data: URLs the model should look at (page renders). Only vision models can use them.
+    images: tuple[str, ...] = ()
 
 
 @dataclass
@@ -107,6 +121,7 @@ class ToolRegistry:
         The decorated function is called as ``func(arguments, ctx)``. If the
         function is a coroutine it is awaited automatically.
         """
+
         def decorator(func: Any) -> Any:
             self.register(
                 Tool(
@@ -134,6 +149,16 @@ class ToolRegistry:
         """Return the names of all registered tools."""
         return sorted(self._tools.keys())
 
+    def select(
+        self, include: frozenset[str] | None = None, exclude: frozenset[str] = frozenset()
+    ) -> ToolRegistry:
+        """A copy limited to ``include`` (when given) and without ``exclude``."""
+        picked = ToolRegistry()
+        for name, tool in self._tools.items():
+            if (include is None or name in include) and name not in exclude:
+                picked.register(tool)
+        return picked
+
     @property
     def definitions(self) -> list[dict[str, Any]]:
         """Return OpenAI-compatible tool definitions for the LLM."""
@@ -154,9 +179,7 @@ class ToolRegistry:
         tool = self._tools.get(name)
         return tool.requires_confirmation if tool else False
 
-    async def execute(
-        self, name: str, arguments: dict[str, Any], ctx: ToolContext
-    ) -> ToolResult:
+    async def execute(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         """Execute a registered tool."""
         tool = self._tools.get(name)
         if tool is None:
@@ -202,6 +225,7 @@ def tool(
 # ---------------------------------------------------------------------------
 # Individual tool implementations
 # ---------------------------------------------------------------------------
+
 
 def _resolve_path(path: str, root: Path) -> Path:
     """Resolve *path* under *root*, rejecting directory traversal.
@@ -418,7 +442,11 @@ def apply_patch(
             error=True,
         )
 
-    new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+    new_text = (
+        text.replace(old_string, new_string)
+        if replace_all
+        else text.replace(old_string, new_string, 1)
+    )
 
     try:
         target.write_text(new_text, encoding="utf-8")
@@ -559,7 +587,7 @@ def _write_file_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(
     name="apply_patch",
     description="Apply a surgical search/replace edit to a file. "
-                "old_string must match exactly once unless replace_all is true.",
+    "old_string must match exactly once unless replace_all is true.",
     parameters={
         "type": "object",
         "properties": {
@@ -742,6 +770,7 @@ def _search_files_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResul
 # Chat-history tools (require chat_store in ToolContext.extra)
 # ---------------------------------------------------------------------------
 
+
 @tool(
     name="list_chats",
     description="List saved chat conversations ordered by most recently updated first. Optionally filter by folder.",
@@ -813,8 +842,7 @@ def _search_chats_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResul
     folder = arguments.get("folder")
     results = store.search(query, limit=limit, folder=folder)
     payload = [
-        {"chat": chat.summary(), "matching_message_indices": indices}
-        for chat, indices in results
+        {"chat": chat.summary(), "matching_message_indices": indices} for chat, indices in results
     ]
     return ToolResult(json.dumps(payload, indent=2))
 
@@ -822,6 +850,7 @@ def _search_chats_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResul
 # ---------------------------------------------------------------------------
 # Checkpoint tools (require checkpoint_store in ToolContext)
 # ---------------------------------------------------------------------------
+
 
 @tool(
     name="list_checkpoints",
@@ -919,7 +948,9 @@ def _semantic_search_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolRe
         index = SemanticIndex(ctx.root / ".arc_llama_semantic_index")
         ctx.extra["semantic_index"] = index
     try:
-        results = index.search(ctx.root, arguments.get("query", ""), top_k=int(arguments.get("top_k", 5)))
+        results = index.search(
+            ctx.root, arguments.get("query", ""), top_k=int(arguments.get("top_k", 5))
+        )
     except RuntimeError as e:
         return ToolResult(str(e), error=True)
     except Exception as e:

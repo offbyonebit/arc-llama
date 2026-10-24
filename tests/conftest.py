@@ -20,7 +20,9 @@ def make_sysfs_gpu(tmp_path: Path):
     if sys.platform == "win32":
         pytest.skip("simulates Linux-only /sys/bus/pci layout")
 
-    def _make(slot: str, device_id: int = 0xE211, vram_bytes: int | None = None, driver: str = "xe"):
+    def _make(
+        slot: str, device_id: int = 0xE211, vram_bytes: int | None = None, driver: str = "xe"
+    ):
         base = tmp_path / "sys" / "bus" / "pci" / "devices" / slot
         base.mkdir(parents=True)
         (base / "vendor").write_text("0x8086\n")
@@ -44,6 +46,7 @@ def make_sysfs_gpu(tmp_path: Path):
             # detect.py also looks at the PCI device path directly
             (base / "mem_info_vram_total").write_text(f"{vram_bytes}\n")
         return base
+
     return _make
 
 
@@ -144,7 +147,9 @@ def _block_host_lifecycle_signals(monkeypatch, request):
 
     # Opt-in hardware smoke tests own real subprocesses. Their containing
     # runner supplies process/memory isolation; unit tests retain barriers.
-    if request.node.get_closest_marker("live_inference") and os.environ.get("ARC_LLAMA_SMOKE_MODEL"):
+    if request.node.get_closest_marker("live_inference") and os.environ.get(
+        "ARC_LLAMA_SMOKE_MODEL"
+    ):
         return
 
     original_popen = subprocess.Popen

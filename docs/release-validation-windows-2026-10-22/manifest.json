@@ -1,0 +1,230 @@
+{
+  "add-second.log": {
+    "bytes": 907,
+    "sha256": "37edea18e61560a072c3b38533732db4405502edf3809d5a3d5a256b3304a092"
+  },
+  "ca-export.log": {
+    "bytes": 170,
+    "sha256": "ccafd9fa3eb13c4bb514126a7a48ade86779bc42bce93f5989580080fda48de9"
+  },
+  "clone-retry.log": {
+    "bytes": 64,
+    "sha256": "8fdde24f058ad86b8c4cd188c9dba6e6e8f8a693e03756067a8f6a6ebc91ee23"
+  },
+  "clone.log": {
+    "bytes": 175,
+    "sha256": "4c59bd69231954a1887e9cf179a5062fe8f1be82cf623466eee6488176133c55"
+  },
+  "config-versions-windows-ca.log": {
+    "bytes": 390,
+    "sha256": "8336ba38634431b1657306d33369f8aabaaaf5611222869b7cc2b87624201d66"
+  },
+  "config-versions.log": {
+    "bytes": 1677,
+    "sha256": "8294bf26f51adba94b99af7b94a1946c9592c3efbb6ba7cfa98098ad6d26af3e"
+  },
+  "doctor.log": {
+    "bytes": 5345,
+    "sha256": "858e0aff0a2a4f3e8394d4cb47cdb6a4b16197aec2b730d7f407196631c530ef"
+  },
+  "env.ps1": {
+    "bytes": 621,
+    "sha256": "b29c6487957397b94c6232a36e0a3f0503b21fe6a745c66deec0950b9d8ac143"
+  },
+  "final-listeners.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "final-validation-processes.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "gpus.log": {
+    "bytes": 2559,
+    "sha256": "9f39edd84b8c2279e5932efd3a1fd84db836a057c8eba5b5dba23a5ad9e97869"
+  },
+  "hardware.log": {
+    "bytes": 658,
+    "sha256": "69061fa3af60367bcde1909cd4d0f85ce758330c1654d8f3388e3d598fbddc29"
+  },
+  "installed-runtime-metadata.json": {
+    "bytes": 218,
+    "sha256": "a5d24016672e04889037017e5d72fc02d08f5b115e1fca1005362dcadac2bd55"
+  },
+  "issue-69.json": {
+    "bytes": 3446,
+    "sha256": "deb75e63b96d1f4d3a725f2774e356355a952a2c198ba97e8e2c910a299940e8"
+  },
+  "issue-73.json": {
+    "bytes": 3172,
+    "sha256": "80259ccd1528d6a3954b22e08c2aefbf8ee7d97a030c0818c8ffca2d7d5050b9"
+  },
+  "issue-context.log": {
+    "bytes": 930,
+    "sha256": "cf1ec9b0ce9e526873339c84af4dade409f601fb74293a4945bceaf4a3611201"
+  },
+  "json-request.json": {
+    "bytes": 177,
+    "sha256": "1d0f5a39a3cd4fbbae52ac112579d19be3d66920d6a51109e01f5766904877b6"
+  },
+  "json-request.log": {
+    "bytes": 1611,
+    "sha256": "86b5cc32daa9d4d282e3ab16e337b06ec786c087ac37d0dda49586332f7d8ca4"
+  },
+  "json-response.json": {
+    "bytes": 863,
+    "sha256": "66e6bef05918a4cb1e9da68a9ab4165d10e4a7d7cdbe0692fba45adb724882b7"
+  },
+  "listeners-after-ctrlc.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "llama-server-qwen05-q8.log": {
+    "bytes": 1898,
+    "sha256": "c2660ff32c28ed2d7040921b5649e80cea829b299ba764094772ff89db5c5afa"
+  },
+  "llama-server-qwen05.log": {
+    "bytes": 6639,
+    "sha256": "a1f84273b3cd1663fe8ee1b5d9a6ea2715650884f11cc5b8a865d7e38bda1909"
+  },
+  "pip-freeze.txt": {
+    "bytes": 1342,
+    "sha256": "146a35965cd91eecae059a6597160a0d35a1ecf935c90f1cf086829f1501ed65"
+  },
+  "pip-install.log": {
+    "bytes": 17410,
+    "sha256": "ddc05699cb7bf95da917bdb31d47b224f4d6527eba638cb70819680a197b1fc8"
+  },
+  "process-after-ctrlc-first.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "process-after-ctrlc-recovery.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "process-after-ctrlc-switch.json": {
+    "bytes": 4,
+    "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f"
+  },
+  "process-after-qwen05.json": {
+    "bytes": 821,
+    "sha256": "846cda2f13a77995351a50f87f92e00234642d6bbd1407785a3b3b370d61def2"
+  },
+  "process-after-stream-retry.json": {
+    "bytes": 821,
+    "sha256": "38c0b361fb82eab15389de60086077ee4db98f8beb111e69f87f28de9db534a6"
+  },
+  "process-baseline.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "process-recovery-ended.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "process-ui-failure.json": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "pytest-failures.txt": {
+    "bytes": 2444,
+    "sha256": "77adaba52cad0f5f545745f368a5cf51cd268f52179551ad524bc29b22ab4fb3"
+  },
+  "pytest.log": {
+    "bytes": 466962,
+    "sha256": "135242c3638c1547a537c6c4e95e1b8a528ab7b08a89ef84e37508b55ecb0417"
+  },
+  "python-processes-diagnostic.json": {
+    "bytes": 1457,
+    "sha256": "d1b6772263bea461136503c2a6a37ab6400c55d4d43762d0afeaf74caf4893ac"
+  },
+  "run-first.log": {
+    "bytes": 1060,
+    "sha256": "c12cf2d6744e3af0cf97a8d86658db2fab74241db6de9070474ba515d4b7c080"
+  },
+  "run-recovery.log": {
+    "bytes": 15011,
+    "sha256": "de65bbcde27eb54de831a02797d6bce2a097a4f2b7e4f8c23934b7957a5d25ec"
+  },
+  "run-switch.log": {
+    "bytes": 8704,
+    "sha256": "eea44976eaed29427a68870ce7e0b753d95f420a668a60f64da45d71d3cc60d6"
+  },
+  "run-windows-ca.log": {
+    "bytes": 14612,
+    "sha256": "2ca2f92c1cb745421e717e35c7d927c2b08b301357c0d7d3aeb63a81dac2967d"
+  },
+  "runtime-build-and-plans.log": {
+    "bytes": 1890,
+    "sha256": "686cbdf6c18ae5874ce0555648351884482e2e4602a9f7e538208a710b9bdade"
+  },
+  "runtime-inspection.log": {
+    "bytes": 598,
+    "sha256": "05d40a6950b54f3e9f9db984c56931004eafc0b9ef8afcaa72cc789be19792f4"
+  },
+  "shutdown-check.log": {
+    "bytes": 22,
+    "sha256": "a051a0cd022ca227de9685867959f3da80d2d0b73deb2db4d50917c3a0b7e9aa"
+  },
+  "stream-request.json": {
+    "bytes": 156,
+    "sha256": "0538d697150e2b117ed8cd8160acb1bc1f5e0ff75cb14bc12a2de920a7e7aa71"
+  },
+  "stream-request.log": {
+    "bytes": 1105,
+    "sha256": "d71d74a6db585d13d21d78f39939713bbb6230778da8c95e313175c37d84a1c2"
+  },
+  "stream-response.sse": {
+    "bytes": 536,
+    "sha256": "522f606d92e91ca95229776b5219f2f3d77a551f1f59364a865be632ab290439"
+  },
+  "stream-retry-request.json": {
+    "bytes": 174,
+    "sha256": "7516a70a4cc6e534c8049d4cac4094323d5910a3c58c537e980f85776a09c1d4"
+  },
+  "stream-retry-response.sse": {
+    "bytes": 5720,
+    "sha256": "87367729e321b2f9fe2607f0b007cbbf785e23a8816ac6eb81079d68da4914ad"
+  },
+  "stream-retry.log": {
+    "bytes": 5743,
+    "sha256": "590c2b9bf1ad35ea64d6b27a6b324b14bdcf4703778e6817ae25091dcd81147b"
+  },
+  "switch-admin-status.json": {
+    "bytes": 3764,
+    "sha256": "8c5b1e4b57963d12da6c4b6044c29aa98a5cd2732ba1ed4447249a5d83992be1"
+  },
+  "switch-process-qwen05-q8.json": {
+    "bytes": 835,
+    "sha256": "620d933e90652b970da6556d53c7517368855f884d06be4faf15b990c14b4a38"
+  },
+  "switch-process-qwen05.json": {
+    "bytes": 837,
+    "sha256": "8704a07d1559870f4a51770f11c40a5ae920b858c582f5626aa0ed9247d36136"
+  },
+  "switch-qwen05-q8-response.json": {
+    "bytes": 863,
+    "sha256": "2b5a90b41427e93b0935872ce2490ad3b20afb96bf81c85718159eadbe0d9d9f"
+  },
+  "switch-qwen05-response.json": {
+    "bytes": 895,
+    "sha256": "4eb82fce58e37416c1b9c3e6d1d7d22dd21d2e47ef958c273e03ef203d5d5348"
+  },
+  "switch-requests.log": {
+    "bytes": 1882,
+    "sha256": "947d88b70694693e84c7804149d45b80eed9664ada4be40af1885dc6bc33c001"
+  },
+  "version.log": {
+    "bytes": 44,
+    "sha256": "5f3009a62d1dc88af8bbbcbb70cad778e9d7b2dd0bf2094cdce2c8514b117fdc"
+  },
+  "windows-ui-chat-success.png": {
+    "bytes": 29976,
+    "sha256": "f81d1995e6e165d070dd015fe3792e315eee8cc8c8203fcdd5a03fac413f3c60"
+  },
+  "windows-ui-first-failure.png": {
+    "bytes": 63318,
+    "sha256": "deefd1b5cd6d6b1bd7550ccbee3cf380d54a9b36a3b45d710117f825987d571c"
+  }
+}

@@ -55,9 +55,7 @@ def test_serve_auto_registers_new_gguf(runner, tmp_path, monkeypatch):
         patch("signal.signal"),
         patch("atexit.register"),
     ):
-        result = runner.invoke(
-            cli, ["--config", str(tmp_path / "config.toml"), "serve"]
-        )
+        result = runner.invoke(cli, ["--config", str(tmp_path / "config.toml"), "serve"])
 
     assert result.exit_code == 0, result.output
     assert "Auto-registered" in result.output
@@ -105,9 +103,7 @@ def test_serve_scan_is_idempotent(runner, tmp_path, monkeypatch):
     )
     for _ in range(2):
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
-            result = runner.invoke(
-                cli, ["--config", str(tmp_path / "config.toml"), "serve"]
-            )
+            result = runner.invoke(cli, ["--config", str(tmp_path / "config.toml"), "serve"])
             assert result.exit_code == 0, result.output
 
     assert len(cfg.models) == 1  # not duplicated on the second run
@@ -129,9 +125,7 @@ def test_serve_banner_printed_once(runner, tmp_path, monkeypatch):
         patch("signal.signal"),
         patch("atexit.register"),
     ):
-        result = runner.invoke(
-            cli, ["--config", str(tmp_path / "config.toml"), "serve"]
-        )
+        result = runner.invoke(cli, ["--config", str(tmp_path / "config.toml"), "serve"])
 
     assert result.exit_code == 0, result.output
     assert result.output.count("Auto-tune") == 1
@@ -152,9 +146,7 @@ def test_serve_does_not_print_admin_token(runner, tmp_path, monkeypatch):
         patch("signal.signal"),
         patch("atexit.register"),
     ):
-        result = runner.invoke(
-            cli, ["--config", str(tmp_path / "config.toml"), "serve"]
-        )
+        result = runner.invoke(cli, ["--config", str(tmp_path / "config.toml"), "serve"])
 
     assert result.exit_code == 0, result.output
     assert "super-secret-token" not in result.output
@@ -241,11 +233,14 @@ def test_list_models_sends_admin_bearer(runner, tmp_path, monkeypatch):
 
     def fake_get(url, *, timeout, headers=None):
         calls.append((url, headers))
+
         class Resp:
             def raise_for_status(self):
                 pass
+
             def json(self):
                 return {"models": [{"name": "qwen", "loaded": True}]}
+
         return Resp()
 
     monkeypatch.setattr("arc_llama.cli.httpx.get", fake_get)

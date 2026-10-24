@@ -264,6 +264,8 @@ async def _complete(
     ignore_eos: bool = False,
     cache_prompt: bool = True,
     is_chat: bool = True,
+    temperature: float | None = None,
+    seed: int | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Send one non-streamed completion. Returns (wall_seconds, response_json).
 
@@ -287,6 +289,10 @@ async def _complete(
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if temperature is not None:
+        body["temperature"] = temperature
+    if seed is not None:
+        body["seed"] = seed
     if is_chat:
         body["messages"] = [{"role": "user", "content": prompt}]
     else:
@@ -676,7 +682,9 @@ class DepthResult:
         return asdict(self)
 
 
-def usable_depths(depths: list[int], ctx: int | None, gen_tokens: int) -> tuple[list[int], list[int]]:
+def usable_depths(
+    depths: list[int], ctx: int | None, gen_tokens: int
+) -> tuple[list[int], list[int]]:
     """Split requested depths into (runnable, skipped) for a model's context.
 
     A depth is runnable when the prefill plus the generated tokens plus a
@@ -763,9 +771,7 @@ def print_depth_table(model: str, results: list[DepthResult], skipped: list[int]
         if r.error:
             table.add_row(f"{r.depth:,}", "-", "-", f"[red]{r.error}[/red]")
             continue
-        ratio = (
-            f"{r.generation_tok_s / base * 100:.0f}%" if base and r.generation_tok_s else "-"
-        )
+        ratio = f"{r.generation_tok_s / base * 100:.0f}%" if base and r.generation_tok_s else "-"
         table.add_row(
             f"{r.measured_depth or r.depth:,}",
             _fmt_speed(r.prompt_eval_tok_s),

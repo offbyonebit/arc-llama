@@ -104,15 +104,18 @@ def create_support_bundle(
             config_text = redact_config(config_path.read_text(encoding="utf-8"))
         except OSError as exc:
             config_text = f"could not read config: {exc}\n"
-    manifest = "\n".join(
-        (
-            f"arc-llama={__version__}",
-            f"python={sys.version.split()[0]}",
-            f"platform={platform.platform()}",
-            "contents=config.toml (redacted), hardware.txt, models.txt, plugins.txt",
-            "model files, environment variables, and credentials are excluded",
+    manifest = (
+        "\n".join(
+            (
+                f"arc-llama={__version__}",
+                f"python={sys.version.split()[0]}",
+                f"platform={platform.platform()}",
+                "contents=config.toml (redacted), hardware.txt, models.txt, plugins.txt",
+                "model files, environment variables, and credentials are excluded",
+            )
         )
-    ) + "\n"
+        + "\n"
+    )
     with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.txt", manifest)
         archive.writestr("config.toml", config_text)

@@ -30,7 +30,11 @@ def test_settings_panel_consumes_admin_status_vram_estimate():
 
 def test_apply_settings_refreshes_the_fit_line():
     js = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
-    body = js[js.index("async function applySettings") : js.index("function start()", js.index("async function applySettings"))]
+    body = js[
+        js.index("async function applySettings") : js.index(
+            "function start()", js.index("async function applySettings")
+        )
+    ]
     # After saving recipe edits the status is refetched so the fit line and
     # loaded state re-render instead of showing stale estimates.
     assert "fetchStatus().catch" in body

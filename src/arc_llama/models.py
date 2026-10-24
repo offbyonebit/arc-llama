@@ -568,10 +568,9 @@ def find_mmproj(model_path: Path | str, siblings: list[Path] | None = None) -> P
     if model_family is None:
         return None
     others = [
-        p for p in siblings
-        if p.name.lower().endswith(".gguf")
-        and not is_auxiliary_gguf(p.name)
-        and p != main
+        p
+        for p in siblings
+        if p.name.lower().endswith(".gguf") and not is_auxiliary_gguf(p.name) and p != main
     ]
     same_family_dir = all(_family(p.stem) == model_family for p in others)
 
@@ -1025,10 +1024,11 @@ def plan_hf_files(spec: HFModelSpec, repo_files: list[str] | None) -> tuple[str,
     # find_mmproj looks when the model is registered.
     family = _family(Path(file).stem)
     projectors = [
-        f for f in ggufs
+        f
+        for f in ggufs
         if is_mmproj_gguf(f)
         and f.startswith(folder)
-        and "/" not in f[len(folder):]
+        and "/" not in f[len(folder) :]
         and _family(Path(f).stem) in (family, None)
     ]
     if projectors:

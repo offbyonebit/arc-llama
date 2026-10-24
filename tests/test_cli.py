@@ -1,4 +1,5 @@
 """Tests for arc_llama.cli — arcllama entry point."""
+
 from __future__ import annotations
 
 import subprocess

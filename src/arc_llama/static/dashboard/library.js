@@ -16,8 +16,9 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
   };
 
   function compressionDescription(quant) {
-    const code = String(quant || "unknown").toUpperCase();
-    const bits = code.match(/^(?:I?Q)([1-8])(?:_|$)/)?.[1];
+    // Strip Unsloth's "UD-" (dynamic) prefix: UD-Q5_K_M is still a 5-bit copy.
+    const code = String(quant || "unknown").toUpperCase().replace(/^UD-/, "");
+    const bits = code.match(/^(?:I?Q)([1-8])(?:_|$)/)?.[1] ?? (/^MXFP4/.test(code) ? "4" : undefined);
     if (bits) {
       const description = Number(bits) <= 3
         ? "Very compact. Strong compression reduces memory use, but can affect answer quality."
@@ -31,7 +32,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     if (/^(BF16|F16|FP16|F32|FP32)$/.test(code)) {
       return [`${code.includes("32") ? "32" : "16"}-bit precision`, "Less compressed; usually a larger download with higher memory use than quantized copies of the same model."];
     }
-    return ["Compression not reported", "No plain-language compression estimate is available. Check the technical details before choosing."];
+    return ["Compression not reported", "This file name does not say how it was compressed. Check the model page before choosing."];
   }
 
   function modelSize(mb) {
@@ -39,19 +40,25 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb} MiB`;
   }
 
+  const compatibilityIdentity = (target) => {
+    const snapshot = getSnapshot();
+    const model = target?.name && snapshot?.models?.find(item => item.name === target.name);
+    return model && Object.hasOwn(model, "runtime_compatibility_identity") ? model.runtime_compatibility_identity : snapshot?.runtime_compatibility_identity;
+  };
   let localCompatibility = null;
   const compatibilityHosts = new Map();
   function invalidateCompatibility() {
-    const identity = getSnapshot()?.runtime_compatibility_identity;
     for (const [host, state] of compatibilityHosts) {
       if (!host.isConnected) { state.cancel(); compatibilityHosts.delete(host); continue; }
+      const identity = compatibilityIdentity(state.target);
       if (state.identity !== identity) { state.reset(); state.identity = identity; }
     }
   }
   function compatibilityControl(target) {
     const snapshot = getSnapshot();
+    const identity = compatibilityIdentity(target);
     const model = target.name && snapshot?.models?.find(item => item.name === target.name);
-    const localKey = target.name ? JSON.stringify([target.name, snapshot?.runtime_compatibility_identity, model?.path, model?.file_readiness, model?.gpu_pci_slot]) : null;
+    const localKey = target.name ? JSON.stringify([target.name, identity, model?.path, model?.file_readiness, model?.gpu_pci_slot]) : null;
     if (localKey && localCompatibility?.key === localKey) return localCompatibility.host;
     const host = doc.createElement("div");
     host.className = "library-compatibility";
@@ -76,9 +83,9 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       message.className = "plugin-meta";
       message.textContent = "Runtime changed. Check compatibility again.";
     };
-    compatibilityHosts.set(host, { identity: snapshot?.runtime_compatibility_identity, reset, cancel });
+    compatibilityHosts.set(host, { target, identity, reset, cancel });
     const check = makeButton("Check runtime compatibility", "secondary", async () => {
-      const checkedIdentity = getSnapshot()?.runtime_compatibility_identity;
+      const checkedIdentity = compatibilityIdentity(target);
       const attempt = ++revision;
       const controller = new AbortController();
       activeCheck = controller;
@@ -94,7 +101,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         const result = await response.json().catch(() => ({}));
         if (attempt !== revision) return;
         if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
-        if (checkedIdentity !== getSnapshot()?.runtime_compatibility_identity) throw new Error("Runtime changed. Check again.");
+        if (checkedIdentity !== compatibilityIdentity(target)) throw new Error("Runtime changed. Check again.");
         message.textContent = `${result.label}: ${result.detail} ${result.action}`;
         message.className = `plugin-meta${result.status === "incompatible" ? " library-error" : ""}`;
         explanation.textContent = [result.scope, result.source, result.runtime && `Runtime: ${result.runtime} (${result.runtime_fingerprint || "unknown identity"})`, result.backend && `Configured backend: ${result.backend}`, result.architecture && `Architecture: ${result.architecture}`, result.revision && `Model revision: ${result.revision}`].filter(Boolean).join(" · ");
@@ -173,6 +180,57 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     }
   }
 
+  // Folder the next download goes to. Remembered per browser; blank means the
+  // server's configured models folder. Free space is checked as the user types.
+  const FOLDER_KEY = "arc-llama.download-folder";
+  function downloadFolderControl() {
+    const node = doc.createElement("div");
+    node.className = "library-folder";
+    const label = doc.createElement("label");
+    label.textContent = "Download folder on this server";
+    const input = doc.createElement("input");
+    input.type = "text";
+    input.className = "library-folder-input";
+    input.spellcheck = false;
+    input.placeholder = "Default models folder";
+    input.setAttribute("aria-label", "Download folder");
+    try { input.value = localStorage.getItem(FOLDER_KEY) || ""; } catch { /* storage unavailable */ }
+    const hint = doc.createElement("p");
+    hint.className = "plugin-meta";
+    hint.setAttribute("role", "status");
+    node.append(label, input, hint);
+    let timer = null;
+    let seq = 0;
+    async function refresh() {
+      const mine = ++seq;
+      const path = input.value.trim();
+      try { localStorage.setItem(FOLDER_KEY, path); } catch { /* storage unavailable */ }
+      try {
+        let report;
+        if (path) {
+          const r = await request(`/admin/library/folder?path=${encodeURIComponent(path)}`, { headers: authHeaders() });
+          report = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(report.detail || `HTTP ${r.status}`);
+        } else {
+          const r = await request("/admin/library/disk", { headers: authHeaders() });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          report = { path: d.models_dir, free_mb: d.free_mb, exists: true };
+        }
+        if (mine !== seq) return;
+        hint.className = "plugin-meta";
+        hint.textContent = `${report.exists ? "" : "Will be created. "}${formatMb(report.free_mb)} free in ${report.path}`;
+      } catch (e) {
+        if (mine !== seq) return;
+        hint.className = "library-note error";
+        hint.textContent = e.message;
+      }
+    }
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(refresh, 400); });
+    refresh();
+    return { node, value: () => input.value.trim() };
+  }
+
   async function libraryShowRepo(repo, host) {
     writeMessage(host, "Reading files…");
     try {
@@ -193,6 +251,8 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         host.appendChild(v);
       }
       if (!data.options.length) { writeMessage(host, "No downloadable GGUF files."); return; }
+      const folder = downloadFolderControl();
+      host.appendChild(folder.node);
       for (const option of data.options) {
         const row = doc.createElement("div");
         row.className = "library-option";
@@ -232,7 +292,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
             const resp = await request("/admin/library/download", {
               method: "POST",
               headers: authHeaders({ "Content-Type": "application/json" }),
-              body: JSON.stringify({ repo, file: option.file, size_mb: option.size_mb }),
+              body: JSON.stringify({ repo, file: option.file, size_mb: option.size_mb, dest_dir: folder.value() || undefined }),
             });
             const job = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(job.detail || `HTTP ${resp.status}`);
@@ -275,6 +335,13 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
     let accepted = false;
     try {
       const body = { repo: job.repo, file: job.file };
+      // target_dir is <chosen folder>/<repo name>; retry into the same folder.
+      if (job.target_dir) {
+        const target = job.target_dir.replace(/\\/g, "/");
+        const parent = target.replace(/\/[^/]+\/?$/, "");
+        // A drive root needs its separator: "D:" is drive-relative on Windows.
+        body.dest_dir = /^[A-Za-z]:$/.test(parent) ? `${parent}/` : parent || "/";
+      }
       if (Number.isFinite(job.bytes_total) && job.bytes_total >= 1048576) body.size_mb = Math.floor(job.bytes_total / 1048576);
       const response = await request("/admin/library/download", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
       const result = await response.json().catch(() => ({}));

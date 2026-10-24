@@ -9,6 +9,7 @@ terminal.
 
 Color choices avoid red/green — status is signalled by brightness/dim, not hue.
 """
+
 from __future__ import annotations
 
 import os
@@ -110,11 +111,13 @@ class EditRecipeScreen(ModalScreen[dict | None]):
         if ctx < 256:
             self.query_one("#ctx", Input).focus()
             return
-        self.dismiss({
-            "ctx": ctx,
-            "cache_type_k": self.query_one("#kv-k", Select).value,
-            "cache_type_v": self.query_one("#kv-v", Select).value,
-        })
+        self.dismiss(
+            {
+                "ctx": ctx,
+                "cache_type_k": self.query_one("#kv-k", Select).value,
+                "cache_type_v": self.query_one("#kv-v", Select).value,
+            }
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -230,8 +233,10 @@ class ArcLlamaTUI(App):
             r = await self._client.get("/admin/status")
             r.raise_for_status()
         except (httpx.HTTPError, httpx.TimeoutException) as e:
-            bar.update_status(self._last_status.get("server") if self._last_status else None,
-                              f"[#d29922]error: {type(e).__name__}[/]")
+            bar.update_status(
+                self._last_status.get("server") if self._last_status else None,
+                f"[#d29922]error: {type(e).__name__}[/]",
+            )
             return
         s = r.json()
         self._last_status = s
@@ -240,13 +245,14 @@ class ArcLlamaTUI(App):
 
     def _fmt_now(self) -> str:
         from datetime import datetime
+
         return f"updated {datetime.now().strftime('%H:%M:%S')}"
 
     def _render(self, s: dict[str, Any]) -> None:
         gpus = self.query_one("#gpus", DataTable)
         gpus.clear()
         for g in s.get("gpus", []):
-            vram = "?" if g.get("vram_mb") is None else f"{g['vram_mb']/1024:.1f} GB"
+            vram = "?" if g.get("vram_mb") is None else f"{g['vram_mb'] / 1024:.1f} GB"
             gpus.add_row(
                 g.get("pci_slot", "?"),
                 g.get("arch", "?"),
@@ -274,8 +280,16 @@ class ArcLlamaTUI(App):
             kv = f"{m.get('cache_type_k') or '?'}/{m.get('cache_type_v') or '?'}"
             path = m.get("path") or "—"
             short = "/".join(Path(path).parts)[-50:]
-            row_text = (status, tune_label, m["name"], m.get("gpu_pci_slot", "?"),
-                        str(m.get("port") or "?"), str(m.get("ctx") or "?"), kv, short)
+            row_text = (
+                status,
+                tune_label,
+                m["name"],
+                m.get("gpu_pci_slot", "?"),
+                str(m.get("port") or "?"),
+                str(m.get("ctx") or "?"),
+                kv,
+                short,
+            )
             if loaded:
                 models.add_row(*row_text)
             else:
@@ -321,20 +335,23 @@ class ArcLlamaTUI(App):
         if self._client is None:
             return
         bar = self.query_one("#status-bar", StatusBar)
-        bar.update_status(self._last_status.get("server") if self._last_status else None,
-                          "scanning…")
+        bar.update_status(
+            self._last_status.get("server") if self._last_status else None, "scanning…"
+        )
         try:
             r = await self._client.post("/admin/scan", timeout=30.0)
             r.raise_for_status()
             j = r.json()
             added = j.get("added") or []
-            msg = (f"scanned {j.get('found', 0)} GGUF(s); "
-                   f"registered {len(added)} new"
-                   + (f": {', '.join(added)}" if added else ""))
+            msg = f"scanned {j.get('found', 0)} GGUF(s); registered {len(added)} new" + (
+                f": {', '.join(added)}" if added else ""
+            )
             bar.update_status(self._last_status.get("server") if self._last_status else None, msg)
         except httpx.HTTPError as e:
-            bar.update_status(self._last_status.get("server") if self._last_status else None,
-                              f"[#d29922]scan failed: {e}[/]")
+            bar.update_status(
+                self._last_status.get("server") if self._last_status else None,
+                f"[#d29922]scan failed: {e}[/]",
+            )
             return
         await self._refresh()
 
@@ -344,14 +361,17 @@ class ArcLlamaTUI(App):
         if not name or self._client is None:
             return
         bar = self.query_one("#status-bar", StatusBar)
-        bar.update_status(self._last_status.get("server") if self._last_status else None,
-                          f"loading {name}…")
+        bar.update_status(
+            self._last_status.get("server") if self._last_status else None, f"loading {name}…"
+        )
         try:
             r = await self._client.post(f"/admin/load/{name}", timeout=180.0)
             r.raise_for_status()
         except httpx.HTTPError as e:
-            bar.update_status(self._last_status.get("server") if self._last_status else None,
-                              f"[#d29922]load {name} failed: {e}[/]")
+            bar.update_status(
+                self._last_status.get("server") if self._last_status else None,
+                f"[#d29922]load {name} failed: {e}[/]",
+            )
             return
         await self._refresh()
 
@@ -405,7 +425,9 @@ class ArcLlamaTUI(App):
         srv_info = self._last_status.get("server") if self._last_status else None
         try:
             r = await self._client.post(
-                f"/admin/models/{name}/edit", json=payload, timeout=15.0,
+                f"/admin/models/{name}/edit",
+                json=payload,
+                timeout=15.0,
             )
             r.raise_for_status()
         except httpx.HTTPError as e:

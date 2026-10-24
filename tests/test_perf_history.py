@@ -47,7 +47,13 @@ def test_hourly_medians_are_persisted(tmp_path) -> None:
 def test_old_and_corrupt_points_are_pruned(tmp_path) -> None:
     now = 400 * 86400
     path = tmp_path / "h.jsonl"
-    old = {"t": now - (RETENTION_DAYS + 1) * 86400, "model": "m", "metric": "ttft_s", "median": 1, "n": 1}
+    old = {
+        "t": now - (RETENTION_DAYS + 1) * 86400,
+        "model": "m",
+        "metric": "ttft_s",
+        "median": 1,
+        "n": 1,
+    }
     fresh = {"t": now - 86400, "model": "m", "metric": "ttft_s", "median": 2, "n": 1}
     path.write_text("\n".join([json.dumps(old), "not json", json.dumps(fresh)]) + "\n")
     history = PerfHistory(path, clock=Clock(now))

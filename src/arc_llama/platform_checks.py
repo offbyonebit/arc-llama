@@ -3,6 +3,7 @@
 Used by ``arc-llama doctor``. Detection is best-effort and never requires
 root. Unknown results return None so the UI can say "could not determine".
 """
+
 from __future__ import annotations
 
 import os
@@ -25,6 +26,7 @@ _REBAR_ON_MIN = 1024 * 1024 * 1024
 @dataclass
 class CheckResult:
     """One doctor line item."""
+
     name: str
     ok: bool | None  # True pass, False fail, None unknown/skip
     detail: str
@@ -127,7 +129,11 @@ def user_in_groups(*needed: str) -> dict[str, bool]:
         return {g: False for g in needed}
     try:
         out = subprocess.run(
-            ["id", "-nG"], capture_output=True, text=True, timeout=2, check=False,
+            ["id", "-nG"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
         )
         groups = set(out.stdout.split())
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -216,7 +222,11 @@ def level_zero_loader_present() -> tuple[bool, str]:
     if ldconfig:
         try:
             out = subprocess.run(
-                [ldconfig, "-p"], capture_output=True, text=True, timeout=5, check=False,
+                [ldconfig, "-p"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
             )
             for name in names:
                 if name in out.stdout:
@@ -262,10 +272,12 @@ def oneapi_setvars_path() -> Path | None:
         # CMPLR_ROOT points at e.g. .../oneapi/compiler/2026.1; setvars.sh is two
         # levels above, at the oneapi root.
         candidates.append(Path(cmplr_root).parent.parent / "setvars.sh")
-    candidates.extend([
-        Path("/opt/intel/oneapi/setvars.sh"),
-        Path("/usr/local/intel/oneapi/setvars.sh"),
-    ])
+    candidates.extend(
+        [
+            Path("/opt/intel/oneapi/setvars.sh"),
+            Path("/usr/local/intel/oneapi/setvars.sh"),
+        ]
+    )
     for p in candidates:
         if p.exists():
             return p
@@ -312,49 +324,32 @@ def oneapi_runtime_env_needed() -> bool:
                     pass
         return True
 
-    names = (
-        "libsvml.so",
-        "libsvml.so.2",
-        "libze_loader.so.1",
-        "libze_loader.so",
-    )
-    search_dirs = [
-        Path("/opt/intel/oneapi/lib"),
-        Path("/opt/intel/oneapi/lib/intel64"),
-        Path("/usr/local/intel/oneapi/lib"),
-        Path("/usr/local/intel/oneapi/lib/intel64"),
-    ]
-    oneapi_root = os.environ.get("ONEAPI_ROOT") or os.environ.get("CMPLR_ROOT")
-    if oneapi_root:
-        p = Path(oneapi_root)
-        search_dirs.extend([p, p / "lib", p / "lib" / "intel64"])
+    # The oneAPI compiler runtime (SVML, the SYCL runtime) must be resolvable by the dynamic loader: in the ldconfig
+    # cache or on LD_LIBRARY_PATH. Files under /opt/intel or $ONEAPI_ROOT are not enough on their own, and the Level
+    # Zero loader does not count: GPU driver packages install it system-wide without the compiler runtime, and a SYCL
+    # llama-server then fails with "libsvml.so: cannot open shared object file".
+    names = ("libsvml.so", "libsycl.so")
+    for entry in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        d = Path(entry.strip()) if entry.strip() else None
+        if d is not None and d.is_dir() and any((d / name).exists() for name in names):
+            return False
 
-    # If ldconfig can resolve any of the runtime libs, the env/system is fine.
     ldconfig = shutil.which("ldconfig")
     if ldconfig:
         try:
             out = subprocess.run(
-                [ldconfig, "-p"], capture_output=True, text=True, timeout=5, check=False,
+                [ldconfig, "-p"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
             )
-            for name in names:
-                if name in out.stdout:
+            for line in out.stdout.splitlines():
+                lib = line.strip().split(" ", 1)[0]
+                if any(lib == name or lib.startswith(name + ".") for name in names):
                     return False
         except (OSError, subprocess.TimeoutExpired):
             pass
-
-    # Check common oneAPI prefixes directly.
-    for d in search_dirs:
-        if not d.is_dir():
-            continue
-        for name in names:
-            if (d / name).exists():
-                return False
-            try:
-                for child in d.iterdir():
-                    if child.is_dir() and (child / name).exists():
-                        return False
-            except OSError:
-                pass
 
     return True
 
@@ -415,10 +410,7 @@ def source_setvars(setvars_path: Path | str) -> dict[str, str]:
 
     # Use bash to source the script and dump the environment. setvars.sh is
     # a bash script, so this is the most reliable way to capture its effects.
-    script = (
-        f"source '{setvars_path}' > /dev/null 2>&1; "
-        "env -0 | sort -z"
-    )
+    script = f"source '{setvars_path}' > /dev/null 2>&1; env -0 | sort -z"
     try:
         out = subprocess.run(
             ["bash", "-c", script],

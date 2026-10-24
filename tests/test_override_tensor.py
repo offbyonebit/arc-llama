@@ -2,6 +2,7 @@
 
 All tests use fakes. No llama-server process, no GPU probing, no systemd.
 """
+
 from __future__ import annotations
 
 import re
@@ -36,7 +37,8 @@ def _patch_reader(monkeypatch: pytest.MonkeyPatch, tensors, arch: str = "gemma4"
         lambda _path: _FakeReader(tensors, arch),
     )
     monkeypatch.setattr(
-        gguf, "GGUFReader",
+        gguf,
+        "GGUFReader",
         lambda _path: _FakeReader(tensors, arch),
     )
 
@@ -274,13 +276,16 @@ def _moe_cfg(tmp_path: Path, *, vram_mb: int) -> Config:
     gguf.write_bytes(b"\x00" * 64)
     return Config(
         paths=PathsConfig(llama_server=str(tmp_path / "no-such-server")),
-        gpus=[GPUConfig(
-            pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=vram_mb
-        )],
-        models=[ModelConfig(
-            name="m", path=str(gguf), port=18080, gpu_pci_slot="0000:03:00.0",
-            recipe={"ctx": 8192, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
-        )],
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=vram_mb)],
+        models=[
+            ModelConfig(
+                name="m",
+                path=str(gguf),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                recipe={"ctx": 8192, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+            )
+        ],
     )
 
 
@@ -318,9 +323,14 @@ class _MoeMeasurements:
             key = f"n={n}"
         pp, gen = self.perf.get(key, (500.0, 40.0))
         return BenchmarkResult(
-            model="m", ctx=8192, cache_type_k="q8_0", cache_type_v="q8_0",
-            prompt_tokens=1024, gen_tokens=128,
-            prompt_eval_tok_s=pp, generation_tok_s=gen,
+            model="m",
+            ctx=8192,
+            cache_type_k="q8_0",
+            cache_type_v="q8_0",
+            prompt_tokens=1024,
+            gen_tokens=128,
+            prompt_eval_tok_s=pp,
+            generation_tok_s=gen,
         )
 
 

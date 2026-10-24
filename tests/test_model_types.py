@@ -353,6 +353,8 @@ def test_edit_endpoint_accepts_new_fields(monkeypatch, tmp_path) -> None:
             {"split_mode": "diagonal"},
         ):
             assert client.post("/admin/models/qwen/edit", json=bad).status_code == 400, bad
-        cleared = client.post("/admin/models/qwen/edit", json={"mmproj": None, "tensor_split": None})
+        cleared = client.post(
+            "/admin/models/qwen/edit", json={"mmproj": None, "tensor_split": None}
+        )
         assert "mmproj" not in cleared.json()["recipe"]
         assert "tensor_split" not in cleared.json()["recipe"]

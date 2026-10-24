@@ -7,7 +7,7 @@ function applyTheme(theme) {
   if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
   if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
 }
-applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "light"));
 // Side panels open beneath the header so its history/settings buttons stay reachable.
 (() => {
   const header = $("header");
@@ -122,7 +122,7 @@ if (visionModeChipCancel) {
 }
 
 function selectComposerAction(action) {
-  if (generating || generatingImage) return;
+  if (chatBusy()) return;
   // Toggle behavior: picking the same tool twice turns image mode off.
   if (activeComposerAction && activeComposerAction.id === action.id) {
     setComposerAction(null);
@@ -134,7 +134,7 @@ function selectComposerAction(action) {
 async function sendComposerAction() {
   const action = activeComposerAction;
   const prompt = input.value.trim();
-  if (!action || generating || generatingImage) return;
+  if (!action || chatBusy()) return;
   if (!prompt && !hasReadyAttachments()) return;
   if (!action.route) {
     showError("Selected tool has no route.");
@@ -152,6 +152,7 @@ async function sendComposerAction() {
   hideCommandPalette();
 
   generatingImage = true;
+  refreshCompactionControls();
   sendButton.disabled = true;
   inputWrap.classList.add("generating");
 
@@ -189,6 +190,7 @@ async function sendComposerAction() {
   }
   finally {
     generatingImage = false;
+    refreshCompactionControls();
     sendButton.disabled = false;
     inputWrap.classList.remove("generating");
     input.focus();
@@ -330,6 +332,17 @@ let lastUsage = null;
 let streamStartTime = null;
 let streamTokenCount = 0;
 const conversation = [];
+let compactionState = null;
+let compacting = false;
+let compactAbort = null;
+const compactor = window.ArcChat.compaction;
+function effectiveConversation(entries = conversation) { return compactor.effective(entries, compactionState); }
+function chatBusy() { return generating || sendingMessage || generatingImage || compacting; }
+function allowChatChange() {
+  if (!chatBusy()) return true;
+  showError("Finish or stop the current request before changing chats or models.");
+  return false;
+}
 // Abort handle for the generation in flight; the send button stops it.
 let activeAbort = null;
 // DOM of the latest exchange, for Regenerate / Edit.
@@ -434,7 +447,19 @@ const {
   vramFitText,
 } = settingsComponent;
 
+const workComponent = window.ArcChat.createWork({
+  getModelState: id => models.find(m => m.id === id)?.state,
+  getContextLimit: id => { const model = models.find(m => m.id === id); return model?.usableCtx || model?.ctx || null; },
+  request: (...args) => fetch(...args),
+  renderMarkdown,
+  storage: { getItem: (...args) => localStorage.getItem(...args), setItem: (...args) => localStorage.setItem(...args) },
+});
+
 const historyComponent = window.ArcChat.createHistory({
+  allowChatChange,
+  refreshBudget,
+  get compactionState() { return compactionState; },
+  set compactionState(value) { compactionState = value; refreshCompactionControls(); },
   request: (...args) => fetch(...args),
   storage: { getItem: (...args) => localStorage.getItem(...args), setItem: (...args) => localStorage.setItem(...args) },
   autoScroll,
@@ -457,6 +482,8 @@ const historyComponent = window.ArcChat.createHistory({
   parseStructuredFailure,
   renderMarkdown,
   renderThinking,
+  renderUserImages,
+  renderResponseStatus,
   shouldAutoScroll,
   showError,
   updateCtxMeter,
@@ -512,10 +539,11 @@ function openSettingsFromLink() {
 
 
 
-async function saveCurrentChat() {
-  if (conversation.length === 0) return;
+async function saveCurrentChat({ strict = false, state = compactionState } = {}) {
+  if (conversation.length === 0 && !currentChatId) return;
   const firstUser = conversation.find(m => m.role === "user");
-  const title = truncateTitle(firstUser ? firstUser.content : "New chat");
+  const savedTitle = strict ? loadChats().find(c => c.id === currentChatId)?.title : null;
+  const title = savedTitle || truncateTitle(firstUser ? firstUser.content : "New chat");
   const now = Date.now();
   if (!currentChatId) {
     currentChatId = generateId();
@@ -525,22 +553,31 @@ async function saveCurrentChat() {
     id: currentChatId,
     title,
     model: selectedModel,
-    messages: conversation.map(m => ({ role: m.role, content: m.content })),
+    messages: conversation.map(m => ({ role: m.role, content: m.content,
+      ...(m.images?.length ? { images: m.images } : {}), ...(m.thinking ? { thinking: m.thinking } : {}), ...(m.status ? { status: m.status } : {}) })),
+    compaction: state,
     createdAt: now,
     updatedAt: now,
   };
 
   // Server is the source of truth; persist the full chat there first.
   try {
-    await apiRequest(`/v1/chats/${encodeURIComponent(currentChatId)}`, {
+    const saved = await apiRequest(`/v1/chats/${encodeURIComponent(currentChatId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title,
         messages: chatDoc.messages,
+        compaction: state,
       }),
     });
+    if (strict && (state
+      ? saved.compaction?.boundary !== state.boundary || saved.compaction?.summary !== state.summary
+      : saved.compaction !== null)) {
+      throw new Error("The server did not confirm the saved compaction. Restart Arc Llama to load the updated chat support, then retry.");
+    }
   } catch (e) {
+    if (strict) throw e;
     console.warn("Could not save chat to server:", e.message);
   }
 
@@ -558,6 +595,8 @@ async function saveCurrentChat() {
 }
 
 async function newChat() {
+  if (!allowChatChange()) return;
+  compactionState = null;
   conversation.length = 0;
   budgetBase = null;
   lastUserDiv = null;
@@ -574,11 +613,12 @@ async function newChat() {
   ctxMeter.classList.remove("visible");
   ctxLabelTps.textContent = "";
   await ensureServerChat("New chat", getCurrentFolder());
+  refreshCompactionControls();
   input.focus();
 }
 
 function estimateTokens() {
-  const chars = conversation.reduce((n, m) => n + (m.content || "").length, 0);
+  const chars = effectiveConversation().reduce((n, m) => n + (m.content || "").length, 0);
   return Math.round(chars / 4);
 }
 
@@ -640,7 +680,19 @@ function renderModelPicker() {
   openSettingsFromLink();
 }
 
+let paperJobsAt = 0;
+let paperJobsRequest = null;
+function refreshPaperJobs() {
+  if (document.hidden || paperJobsRequest || Date.now() - paperJobsAt < 10000) return;
+  paperJobsAt = Date.now();
+  paperJobsRequest = fetch("/admin/library/jobs", { headers: authHeaders() })
+    .then(async response => window.ArcPaper?.jobs(response.ok ? (await response.json()).jobs : null))
+    .catch(() => window.ArcPaper?.jobs(null))
+    .finally(() => { paperJobsRequest = null; });
+}
+
 async function fetchStatus() {
+  refreshPaperJobs();
   try {
     const r = await fetch("/admin/status", { headers: authHeaders() });
     if (!r.ok) return;
@@ -660,15 +712,20 @@ async function fetchStatus() {
       const s = modelMap.get(m.id);
       if (s) {
         m.loaded        = s.loaded;
+        m.state         = s.state;
         m.ctx           = s.ctx           ?? m.ctx;
         m.cache_type_k  = s.cache_type_k  ?? m.cache_type_k;
         m.cache_type_v  = s.cache_type_v  ?? m.cache_type_v;
         m.kv_class      = s.kv_class      ?? m.kv_class;
         m.vram_estimate = s.vram_estimate || null;
+        m.llama_server = s.llama_server || "";
+        m.effective_llama_server = s.effective_llama_server || "";
+        m.env = s.env || {};
       }
       return m;
     });
     updatePickerStatus();
+    window.dispatchEvent(new Event("arc-paper-models"));
     if (settingsPanel.classList.contains("open")) renderSettingsPanel();
   } catch (e) {
     // silent: the chat endpoint will surface real errors
@@ -691,18 +748,33 @@ function updatePickerStatus() {
   }
 }
 
+function syncPaperModels() {
+  if (!window.ArcPaper) return;
+  const work = document.body.classList.contains("work-mode");
+  const active = work ? $("#work-model").value || selectedModel : selectedModel;
+  window.ArcPaper?.syncModels(models.map(m => m.id === loadingModel ? { ...m, state: "loading" } : m), active, id => {
+    if (work) { $("#work-model").value = id; $("#work-model").dispatchEvent(new Event("change")); }
+    else { modelSelect.value = id; modelSelect.dispatchEvent(new Event("change")); }
+    syncPaperModels();
+  }, work ? false : chatBusy() || !!loadingModel);
+}
+
 function updateStatus(state) {
+  syncPaperModels();
   modelStatus.className = "model-status " + state;
   statusText.textContent = state;
 }
 
 modelSelect.addEventListener("change", () => {
+  if (!allowChatChange()) { modelSelect.value = selectedModel || ""; return; }
+  budgetBase = null;
   selectedModel = modelSelect.value;
   sessionStorage.setItem("arc-llama-selected-model", selectedModel);
   loadingModel = null;
   updatePickerStatus();
   if (settingsPanel.classList.contains("open")) renderSettingsPanel();
   restoreDraft();
+  refreshBudget();
 });
 
 
@@ -798,7 +870,7 @@ async function parseStructuredFailure(response) {
   return null;
 }
 
-async function ensureModelLoaded() {
+async function ensureModelLoaded(signal) {
   const m = models.find(m => m.id === selectedModel);
   if (!m) throw new Error("No model selected");
   if (m.loaded || (m.owned_by && m.owned_by.startsWith("upstream:"))) return;
@@ -806,6 +878,7 @@ async function ensureModelLoaded() {
   updateStatus("loading");
   try {
     const r = await fetch(`/admin/load/${encodeURIComponent(selectedModel)}`, {
+      signal,
       method: "POST",
       headers: authHeaders(),
     });
@@ -872,7 +945,7 @@ function estimateBudget(draft = "") {
     tokens = budgetBase.tokens + Math.round(chars(added) / 4) + images(added) * IMAGE_TOKEN_ESTIMATE;
     exact = added.length === 0;
   } else {
-    tokens = Math.round(chars(conversation) / 4) + images(conversation) * IMAGE_TOKEN_ESTIMATE;
+    tokens = Math.round(chars(effectiveConversation()) / 4) + images(effectiveConversation()) * IMAGE_TOKEN_ESTIMATE;
   }
   const preset = presetFor(selectedModel);
   if (!budgetBase && preset.system) tokens += Math.round(preset.system.length / 4);
@@ -881,18 +954,93 @@ function estimateBudget(draft = "") {
   return { tokens, exact: exact && !draftChars && !pending.length };
 }
 
+let budgetTimer = null;
+let budgetAbort = null;
+let budgetSequence = 0;
+let countedBudget = null;
+
+function budgetPayload(entries) {
+  return { model: selectedModel, messages: toApiMessages(entries), max_tokens: presetFor(selectedModel).max_tokens };
+}
+
+function draftEntries() {
+  const attachments = buildAttachmentText();
+  const text = input.value.trim();
+  const content = text && attachments ? `${text}\n\n${attachments}` : text || attachments;
+  const images = getAttachments().filter(a => a.image && !a.error && !a.processing).map(a => a.image);
+  return [...effectiveConversation(), ...(content || images.length ? [{ role: "user", content, ...(images.length ? { images } : {}) }] : [])];
+}
+
+function displayBudget(budget) {
+  const model = models.find(m => m.id === selectedModel);
+  const ctx = budget.context_tokens || model?.usableCtx || model?.ctx;
+  const total = budget.total_tokens;
+  window.ArcPaper?.budget({ ...budget, context_tokens: ctx });
+  if (ctx) updateCtxMeter(total, ctx);
+  ctxMeter.classList.add("visible");
+  ctxLabelL.textContent = `${budget.exact ? "" : "~"}${total.toLocaleString()} / ${ctx ? ctx.toLocaleString() : "?"} tokens (${budget.reserved_tokens.toLocaleString()} reply)`;
+  const over = ctx && total > ctx;
+  ctxMeter.classList.toggle("over-budget", !!over);
+  ctxMeter.title = budget.reason + (over ? " Compact older turns, lower the reply limit in settings, or increase context." : "");
+}
+
+async function countBudget(entries) {
+  const payload = budgetPayload(entries);
+  const model = models.find(m => m.id === selectedModel);
+  const key = JSON.stringify([payload, model?.loaded, model?.ctx]);
+  if (countedBudget?.key === key && Date.now() - countedBudget.at < 1000) return countedBudget.value;
+  const mine = ++budgetSequence;
+  budgetAbort?.abort();
+  const controller = new AbortController();
+  budgetAbort = controller;
+  const deadline = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch("/v1/chat/budget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: controller.signal });
+    if (!response.ok) return null;
+    const value = await response.json();
+    if (!Number.isFinite(value.total_tokens) || !Number.isFinite(value.reserved_tokens)) return null;
+    if (mine !== budgetSequence) return null;
+    countedBudget = { key, value, at: Date.now() };
+    if (model && Number.isFinite(value.context_tokens)) model.usableCtx = value.context_tokens;
+    return value;
+  } catch { return null; }
+  finally { clearTimeout(deadline); }
+}
+
 function refreshBudget() {
-  const m = models.find(x => x.id === selectedModel);
-  if (!m || !m.ctx) return;
-  const { tokens, exact } = estimateBudget(input.value);
-  if (!tokens) { ctxMeter.classList.remove("visible"); return; }
-  updateCtxMeter(tokens, m.ctx);
-  if (!exact) ctxLabelL.textContent = `~${tokens.toLocaleString()} / ${m.ctx.toLocaleString()} tokens`;
-  const over = tokens > m.ctx;
-  ctxMeter.classList.toggle("over-budget", over);
-  ctxMeter.title = over
-    ? "This conversation is larger than the model's context. Older turns will be cut off; start a new chat or run /compact."
-    : "";
+  refreshCompactionControls();
+  clearTimeout(budgetTimer);
+  budgetAbort?.abort();
+  budgetSequence++;
+  if (!selectedModel || generating) return;
+  const estimate = estimateBudget(input.value);
+  const reply = presetFor(selectedModel).max_tokens;
+  displayBudget({ total_tokens: estimate.tokens + reply, reserved_tokens: reply, exact: false, reason: "Estimated context budget; checking the resident model when available." });
+  budgetTimer = setTimeout(async () => {
+    const value = await countBudget(draftEntries());
+    if (value) displayBudget(value);
+  }, 350);
+}
+
+function offerBudgetChoices(budget, retry) {
+  const { div, content } = createMessage("system", "This message and reply allowance exceed the model's usable context. Your transcript was kept.");
+  div.classList.add("budget-warning");
+  for (const [label, action] of [
+    ["Compact older turns", () => compactConversation()],
+    ["Adjust context or reply limit", () => { settingsPanel.classList.add("open"); renderSettingsPanel(); }],
+    ["Retry message", retry],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      if (chatBusy()) return;
+      if (label === "Retry message") div.remove();
+      await action();
+    });
+    content.appendChild(button);
+  }
+  displayBudget(budget);
 }
 
 function setStopMode(on) {
@@ -934,9 +1082,10 @@ function renderTurnActions() {
 }
 
 async function regenerateLast() {
-  if (generating || sendingMessage) return;
+  if (chatBusy()) return;
   if (!conversation.length || conversation[conversation.length - 1].role !== "assistant") return;
   conversation.pop();
+  validateCompactionBoundary();
   if (lastAssistantDiv) lastAssistantDiv.remove();
   lastAssistantDiv = null;
   budgetBase = null;
@@ -946,12 +1095,13 @@ async function regenerateLast() {
 }
 
 async function editLastUser() {
-  if (generating || sendingMessage) return;
+  if (chatBusy()) return;
   let i = conversation.length - 1;
   while (i >= 0 && conversation[i].role !== "user") i--;
   if (i < 0) return;
   const entry = conversation[i];
   conversation.length = i;
+  validateCompactionBoundary();
   if (lastAssistantDiv) lastAssistantDiv.remove();
   if (lastUserDiv) lastUserDiv.remove();
   lastAssistantDiv = null;
@@ -982,8 +1132,9 @@ function renderUserImages(div, images) {
 }
 
 async function sendMessage() {
+  if (compacting) return;
   if (isComposerActionActive()) { sendComposerAction(); return; }
-  if (generating || sendingMessage || !selectedModel) return;
+  if (chatBusy() || !selectedModel) return;
   const text = input.value.trim();
   if (!text && !hasReadyAttachments()) return;
   if (hasProcessingAttachments()) {
@@ -1018,10 +1169,11 @@ async function sendMessage() {
   sendingMessage = true;
   try {
     await ensureServerChat(fullText, getCurrentFolder());
-    serverAppendMessages(currentChatId, [{ role: "user", content: fullText }]);
+    await serverAppendMessages(currentChatId, [userEntry]);
     await runSend();
   } finally {
     sendingMessage = false;
+    refreshCompactionControls();
   }
 }
 
@@ -1029,7 +1181,7 @@ async function sendMessage() {
 // the transcript. A failed startup renders a retry card that re-enters
 // here directly, so a retried send never duplicates the user turn.
 async function runSend() {
-  if (generating || !selectedModel || !conversation.length) return false;
+  if (generating || compacting || !selectedModel || !conversation.length) return false;
   const retryChatId = currentChatId;
   const retryModel = selectedModel;
   const retryTranscript = conversation;
@@ -1043,29 +1195,33 @@ async function runSend() {
     return runSend();
   };
   generating = true;
+  refreshCompactionControls();
   sendButton.disabled = true;
   inputWrap.classList.add("generating");
 
-  // Honest waiting stage: if the model is not loaded yet, say so in the log
-  // instead of leaving an empty assistant bubble for tens of seconds of
-  // cold start. The card is removed as soon as the load resolves one way
-  // or another.
+  // One response entry owns every phase, including a cold model load.
   const needsLoad = (() => {
     const m = models.find(m => m.id === selectedModel);
     return !(m && (m.loaded || (m.owned_by && m.owned_by.startsWith("upstream:"))));
   })();
-  let loadingCard = null;
+  const assistantMsg = createMessage("assistant");
+  lastAssistantDiv = assistantMsg.div;
+  const live = document.createElement("div"); live.className = "live-activity"; live.dataset.phase = needsLoad ? "loading" : "generating";
+  const liveDot = document.createElement("span"); liveDot.className = "live-activity-dot"; liveDot.setAttribute("aria-hidden", "true");
+  const liveLabel = document.createElement("span"); liveLabel.setAttribute("role", "status"); liveLabel.setAttribute("aria-live", "polite"); liveLabel.textContent = needsLoad ? "Starting model" : "Generating";
+  const liveTime = document.createElement("span"); liveTime.setAttribute("aria-hidden", "true");
+  live.append(liveDot, liveLabel, liveTime); assistantMsg.div.querySelector(".role").appendChild(live);
+  const liveStarted = Date.now(); const liveTimer = setInterval(() => { liveTime.textContent = `${Math.floor((Date.now() - liveStarted) / 1000)} s`; }, 1000);
+  const discardPending = () => { clearInterval(liveTimer); assistantMsg.div.remove(); lastAssistantDiv = null; };
   if (needsLoad) {
-    loadingCard = createMessage("system", "Starting model, this can take a while on first load…");
-    loadingCard.div.classList.add("load-wait-card");
+    assistantMsg.div.classList.add("load-wait-card");
+    live.title = "Starting model, this can take a while on first load…";
   }
-  const streamingDot = $("#streaming-indicator");
-  if (streamingDot) streamingDot.style.opacity = "1";
 
   try {
     await ensureModelLoaded();
   } catch (e) {
-    if (loadingCard) loadingCard.div.remove();
+    discardPending();
     if (e.structured) {
       showStartupFailure(e.structured, { onRetry: retryTurn, retryLabel: "Retry load" });
     } else {
@@ -1074,10 +1230,17 @@ async function runSend() {
     finishGeneration();
     return;
   }
-  if (loadingCard) loadingCard.div.remove();
+  assistantMsg.div.classList.remove("load-wait-card");
+  live.dataset.phase = "generating"; liveLabel.textContent = "Generating"; live.removeAttribute("title");
+  clearTimeout(budgetTimer);
+  const budget = await countBudget(effectiveConversation());
+  if (budget?.exact && budget.over_budget) {
+    discardPending();
+    finishGeneration();
+    offerBudgetChoices(budget, retryTurn);
+    return false;
+  }
 
-  const assistantMsg = createMessage("assistant");
-  lastAssistantDiv = assistantMsg.div;
   conversation.push({ role: "assistant", content: "", thinking: "" });
   const convoIndex = conversation.length - 1;
   const controller = new AbortController();
@@ -1096,8 +1259,9 @@ async function runSend() {
       signal: controller.signal,
       body: JSON.stringify({
         model: selectedModel,
-        messages: toApiMessages(conversation.slice(0, -1)),
+        messages: toApiMessages(effectiveConversation(conversation.slice(0, -1))),
         stream: true,
+        max_tokens: preset.max_tokens,
         stream_options: { include_usage: true },
         ...(preset.temperature != null ? { temperature: preset.temperature } : {}),
       }),
@@ -1115,20 +1279,34 @@ async function runSend() {
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let streamFinished = false;
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        if (!streamFinished) throw new Error("The stream ended before completion. Your partial answer was kept.");
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop();
       for (const line of lines) {
+        if (line.trim() === "data: [DONE]") streamFinished = true;
+        if (line.startsWith("data:")) {
+          let event;
+          try { event = JSON.parse(line.slice(5)); } catch { /* non-JSON SSE */ }
+          if (event?.error) throw new Error(event.error.message || "Generation was interrupted.");
+        }
         const chunkText = processSseLine(line);
         if (chunkText != null) {
+          let reasoning = false;
+          try { reasoning = !!JSON.parse(line.slice(5)).choices?.[0]?.delta?.reasoning_content; } catch (_) {}
           if (streamStartTime === null) streamStartTime = Date.now();
           streamTokenCount += Math.max(1, Math.round(chunkText.length / 4));
           streamRaw += chunkText;
           const parsed = parseThinking(streamRaw);
           if (!parsed.hasPartialTag) {
+            const phase = reasoning || (parsed.thinking && !parsed.content.trim()) ? "thinking" : "answering";
+            live.dataset.phase = phase; liveLabel.textContent = phase === "thinking" ? "Thinking" : "Writing answer";
             const newContent = parsed.content.slice(lastDisplayedContent.length);
             lastDisplayedContent = parsed.content;
             currentThinking = parsed.thinking;
@@ -1165,53 +1343,53 @@ async function runSend() {
                            ? (completionToks / elapsed).toFixed(1)
                            : null;
     if (tps) ctxLabelTps.textContent = tps + " tok/s";
-    updateCtxMeter(totalToks, m?.ctx || 131072);
+    updateCtxMeter(totalToks, m?.usableCtx || m?.ctx || 131072);
     budgetBase = lastUsage ? { tokens: lastUsage.total_tokens, length: conversation.length } : null;
     await serverAppendMessages(currentChatId, [{ role: "assistant", content: conversation[convoIndex].content }]);
     await saveCurrentChat();
     renderTurnActions();
   } catch (e) {
-    if (e.name === "AbortError") {
-      // Stopped by the user: keep whatever arrived, marked as interrupted.
-      const partial = parseThinking(streamRaw);
-      if (partial.content.trim()) {
-        conversation[convoIndex].content = partial.content;
-        conversation[convoIndex].thinking = partial.thinking;
-        renderMarkdown(assistantMsg.content, partial.content);
-        assistantMsg.div.classList.add("stopped");
-        const note = document.createElement("div");
-        note.className = "stopped-note";
-        note.textContent = "Stopped";
-        assistantMsg.div.appendChild(note);
-        budgetBase = null;
-        await serverAppendMessages(currentChatId, [{ role: "assistant", content: partial.content }]);
-        await saveCurrentChat();
-        renderTurnActions();
-      } else {
-        assistantMsg.div.remove();
-        lastAssistantDiv = null;
-        conversation.pop();
-        renderTurnActions();
-      }
-      return;
-    }
-    assistantMsg.div.remove();
-    lastAssistantDiv = null;
-    conversation.pop();
-    if (e.structured) {
-      // The user turn is the last transcript entry again; retry re-enters
-      // runSend directly so the turn is not duplicated.
-      showStartupFailure(e.structured, { onRetry: retryTurn, retryLabel: "Retry" });
+    const partial = parseThinking(streamRaw);
+    if (partial.content.trim() || partial.thinking.trim()) {
+      const entry = conversation[convoIndex];
+      entry.content = partial.content;
+      entry.thinking = partial.thinking;
+      entry.status = e.name === "AbortError" ? "stopped" : "interrupted";
+      renderMarkdown(assistantMsg.content, partial.content);
+      renderThinking(assistantMsg.div, partial.thinking);
+      renderResponseStatus(assistantMsg.div, entry.status);
+      budgetBase = null;
+      await serverAppendMessages(currentChatId, [entry]);
+      await saveCurrentChat();
+      renderTurnActions();
     } else {
-      showError("Generation failed: " + e.message);
+      assistantMsg.div.remove();
+      lastAssistantDiv = null;
+      conversation.pop();
+      renderTurnActions();
+    }
+    if (e.name !== "AbortError") {
+      if (e.structured) showStartupFailure(e.structured, { onRetry: retryTurn, retryLabel: "Retry" });
+      else showError("Generation failed: " + e.message);
     }
   } finally {
+    clearInterval(liveTimer); live.remove();
+    controller.abort();
     if (activeAbort === controller) activeAbort = null;
     lastUsage = null;
     streamStartTime = null;
     streamTokenCount = 0;
     finishGeneration();
   }
+}
+
+function renderResponseStatus(div, status) {
+  if (status !== "stopped" && status !== "interrupted") return;
+  div.classList.add("stopped");
+  const note = document.createElement("div");
+  note.className = "stopped-note";
+  note.textContent = status === "stopped" ? "Stopped" : "Interrupted: partial answer";
+  div.appendChild(note);
 }
 
 function processSseLine(line) {
@@ -1240,11 +1418,10 @@ function processSseLine(line) {
 
 function finishGeneration() {
   generating = false;
+  refreshCompactionControls();
   setStopMode(false);
   sendButton.disabled = false;
   inputWrap.classList.remove("generating");
-  const indicator = $("#streaming-indicator");
-  if (indicator) indicator.style.opacity = "0";
   // Collapse any thinking blocks that are open and hide empty ones
   const openThinking = document.querySelectorAll(".thinking-toggle.open");
   for (const t of openThinking) {
@@ -1281,7 +1458,8 @@ const SLASH_COMMANDS = [
   { name: "clear", desc: "Clear the current conversation", needsArgs: false },
   { name: "new", desc: "Start a new chat", needsArgs: false },
   { name: "model", desc: "Switch model, e.g. /model <id>", needsArgs: true },
-  { name: "compact", desc: "Summarize context, optional: /compact <focus>", needsArgs: false },
+  { name: "compact", desc: "Compact older turns; optional: /compact <focus>", needsArgs: false },
+  { name: "uncompact", desc: "Restore full conversation context", needsArgs: false },
 ];
 
 let paletteSelectedIndex = -1;
@@ -1374,6 +1552,9 @@ async function executeSlashCommand(rawText) {
     case "model":
       switchModel(parsed.rest);
       break;
+    case "uncompact":
+      await undoCompaction();
+      break;
     case "compact":
       await compactConversation(parsed.rest);
       break;
@@ -1402,15 +1583,23 @@ function renderHelpMessage() {
 }
 
 async function clearChat() {
+  if (!allowChatChange()) return;
+  compactionState = null;
+  budgetBase = null;
+  lastUserDiv = null;
+  lastAssistantDiv = null;
   conversation.length = 0;
   chatLog.innerHTML = "";
   if (emptyState) emptyState.style.display = "";
   updateCtxMeter(0, models.find((m) => m.id === selectedModel)?.ctx || 131072);
   ctxLabelTps.textContent = "";
   await saveCurrentChat();
+  refreshBudget();
 }
 
 function switchModel(modelId) {
+  if (!allowChatChange()) return;
+  budgetBase = null;
   if (!modelId) {
     showError("Usage: /model <model-id>");
     return;
@@ -1431,61 +1620,123 @@ function switchModel(modelId) {
   });
 }
 
-async function compactConversation(instruction) {
-  if (conversation.length === 0) {
-    showError("Nothing to compact.");
-    return;
-  }
-  if (!selectedModel) {
-    showError("Select a model first.");
-    return;
-  }
-  try {
-    await ensureModelLoaded();
-  } catch (e) {
-    if (e.structured) showStartupFailure(e.structured, { onRetry: () => compactConversation(instruction), retryLabel: "Retry load" });
-    else showError(e.message);
-    return;
-  }
+function validateCompactionBoundary() {
+  if (compactionState && compactionState.boundary >= conversation.length) compactionState = null;
+  refreshCompactionControls();
+}
 
-  const systemPrompt = instruction
-    ? `Summarize the following conversation concisely. Focus on: ${instruction}. Preserve key facts, decisions, code snippets, and user intent. Return only the summary.`
-    : "Summarize the following conversation concisely. Preserve key facts, decisions, code snippets, and user intent. Return only the summary.";
-
-  const summaryMsg = { role: "system", content: systemPrompt };
-  const messages = [summaryMsg, ...conversation];
-
-  try {
-    const r = await fetch("/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: selectedModel, messages, stream: false }),
-    });
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(`${r.status} ${t}`);
-    }
-    const data = await r.json();
-    const summary = data.choices?.[0]?.message?.content?.trim();
-    if (!summary) {
-      throw new Error("Model returned an empty summary.");
-    }
-
-    conversation.length = 0;
-    conversation.push({ role: "system", content: "Summary of prior conversation:\n\n" + summary });
-
-    chatLog.innerHTML = "";
-    if (emptyState) emptyState.style.display = "none";
-    const msg = createMessage("system", "Context compacted. Summary:\n\n" + summary);
-    if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
-
-    const m = models.find((x) => x.id === selectedModel);
-    updateCtxMeter(estimateTokens(), m?.ctx || 131072);
-    await saveCurrentChat();
-  } catch (e) {
-    showError("Compact failed: " + e.message);
+function refreshCompactionControls() {
+  syncPaperModels();
+  const button = $("#compact-button");
+  if (!button) return;
+  button.disabled = chatBusy() || !selectedModel || !compactor.boundary(conversation);
+  $("#compact-undo").hidden = !compactionState;
+  $("#compact-undo").disabled = chatBusy();
+  $("#compact-cancel").hidden = !compacting || !compactAbort;
+  if (!compacting) {
+    const status = $("#compact-status");
+    if (compactionState) {
+      const before = Math.round(conversation.reduce((n, m) => n + (m.content || "").length, 0) / 4);
+      const after = Math.round(effectiveConversation().reduce((n, m) => n + (m.content || "").length, 0) / 4);
+      status.textContent = `Compacted context: ~${before.toLocaleString()} → ~${after.toLocaleString()} tokens · full transcript kept`;
+    } else status.textContent = "";
   }
 }
+
+async function compactConversation(instruction = "") {
+  if (chatBusy()) { showError("Finish or stop the current request before compacting."); return; }
+  const boundary = compactor.boundary(conversation);
+  if (!boundary) { showError("Nothing older to compact yet. Keep chatting first."); return; }
+  if (!selectedModel) { showError("Select a model first."); return; }
+  // Freeze the operation's identity. Nothing mutates until inference and save succeed.
+  const chatId = currentChatId;
+  const modelId = selectedModel;
+  const snapshot = JSON.stringify(conversation);
+  const messages = JSON.parse(snapshot);
+  const configuredCtx = models.find(m => m.id === modelId)?.ctx;
+  let ctx = models.find(m => m.id === modelId)?.usableCtx || configuredCtx;
+  if (!ctx) { showError("Model context size is unknown; cannot compact safely."); return; }
+  compacting = true;
+  compactAbort = new AbortController();
+  const signal = compactAbort.signal;
+  sendButton.disabled = true;
+  modelSelect.disabled = true;
+  const status = $("#compact-status");
+  status.textContent = "Starting compaction…";
+  refreshCompactionControls();
+  const unchanged = () => currentChatId === chatId && selectedModel === modelId && JSON.stringify(conversation) === snapshot;
+  try {
+    await ensureModelLoaded(signal);
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    if (!unchanged()) throw new Error("Chat changed; compaction discarded.");
+    const measured = await countBudget(effectiveConversation());
+    ctx = measured?.context_tokens || ctx;
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    const summary = await compactor.summarize({ messages: messages.slice(0, boundary), ctx, instruction, signal,
+      progress: calls => { status.textContent = `Summarizing older turns… (${calls} request${calls === 1 ? "" : "s"})`; },
+      request: async (body, requestSignal) => {
+        const response = await fetch("/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json" }, signal: requestSignal,
+          body: JSON.stringify({ ...body, model: modelId }),
+        });
+        if (!response.ok) throw new Error(`Summary request failed (HTTP ${response.status}).`);
+        return response.json();
+      },
+    });
+    if (models.find(m => m.id === modelId)?.ctx !== configuredCtx) throw new Error("Model context settings changed; try compaction again.");
+    const candidate = { boundary, summary };
+    const effective = compactor.effective(messages, candidate);
+    const preset = presetFor(modelId);
+    const system = preset.system ? [{ content: preset.system }] : [];
+    const before = compactor.contextCost([...system, ...messages]);
+    const after = compactor.contextCost([...system, ...effective]);
+    if (after >= before) throw new Error("Summary would not reduce context. The chat is unchanged; try again after more turns.");
+    if (after + preset.max_tokens + 256 > ctx) {
+      throw new Error("Recent turns still exceed the context estimate. Use a larger context or start a new chat; the transcript is unchanged.");
+    }
+    if (!unchanged() || signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    // Saving is the final uncancellable step: cancellation cannot race a disk write.
+    compactAbort = null;
+    refreshCompactionControls();
+    status.textContent = "Saving compaction…";
+    await saveCurrentChat({ strict: true, state: candidate });
+    if (!unchanged()) throw new Error("Chat changed; reload the saved chat to use its compaction.");
+    compactionState = candidate;
+    budgetBase = null;
+  } catch (e) {
+    if (e.name !== "AbortError") showError("Compact failed: " + e.message);
+  } finally {
+    compacting = false;
+    compactAbort = null;
+    sendButton.disabled = false;
+    modelSelect.disabled = false;
+    refreshBudget();
+  }
+}
+
+async function undoCompaction() {
+  if (chatBusy() || !compactionState) return;
+  compacting = true;
+  sendButton.disabled = true;
+  modelSelect.disabled = true;
+  $("#compact-status").textContent = "Restoring full context…";
+  refreshCompactionControls();
+  try {
+    await saveCurrentChat({ strict: true, state: null });
+    compactionState = null;
+    budgetBase = null;
+  } catch (e) { showError("Undo failed: " + e.message); }
+  finally {
+    compacting = false;
+    sendButton.disabled = false;
+    modelSelect.disabled = false;
+    refreshBudget();
+  }
+}
+
+$("#compact-button").addEventListener("click", () => compactConversation());
+$("#compact-undo").addEventListener("click", undoCompaction);
+$("#compact-cancel").addEventListener("click", () => compactAbort?.abort());
 
 input.addEventListener("keydown", async (e) => {
   if (commandPalette.classList.contains("open")) {
@@ -1522,6 +1773,7 @@ input.addEventListener("keydown", async (e) => {
       input.value = "";
       input.style.height = "auto";
       hideCommandPalette();
+      input.dispatchEvent(new Event("input"));
       return;
     }
     if (isComposerActionActive()) {
@@ -1542,6 +1794,7 @@ sendButton.addEventListener("click", async () => {
     input.value = "";
     input.style.height = "auto";
     hideCommandPalette();
+    input.dispatchEvent(new Event("input"));
     return;
   }
   if (isComposerActionActive()) {
@@ -1590,9 +1843,13 @@ function restoreDraft() {
   attachmentsComponent.start();
   settingsComponent.start();
   historyComponent.start();
+  workComponent.start();
+  window.addEventListener("arc-paper-work-mode", syncPaperModels);
+  $("#work-model").addEventListener("change", syncPaperModels);
   await loadPluginActions();
   await fetchModels();
   await fetchStatus();
+  refreshCompactionControls();
   await loadFolders();
   await syncChatsFromServer();
   restoreDraft();

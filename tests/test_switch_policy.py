@@ -99,7 +99,8 @@ async def test_concurrent_arrivals_during_drain_do_not_prolong_it(tmp_path, monk
 async def test_switch_timeout_interrupt_policy_stops_incumbent(tmp_path, monkeypatch):
     """interrupt: after the bounded drain the incumbent is stopped anyway."""
     rt = _router(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         switch_drain_seconds=0.2,
         switch_interrupt_policy="interrupt",
     )
@@ -119,7 +120,8 @@ async def test_switch_timeout_reject_new_policy_keeps_incumbent(tmp_path, monkey
     and points at the two knobs that change the outcome.
     """
     rt = _router(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         switch_drain_seconds=0.2,
         switch_interrupt_policy="reject_new",
     )
@@ -149,7 +151,8 @@ async def test_switch_timeout_reject_new_policy_keeps_incumbent(tmp_path, monkey
 
 async def test_switch_busy_error_carries_config_knobs(tmp_path, monkeypatch):
     rt = _router(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         switch_drain_seconds=1.25,
         switch_interrupt_policy="reject_new",
     )
@@ -243,9 +246,7 @@ def test_migrated_config_gains_new_server_keys(tmp_path):
     config_dir = tmp_path / "arc-llama"
     config_dir.mkdir(parents=True)
     config_path = config_dir / "config.toml"
-    config_path.write_text(
-        "[server]\nhost = \"127.0.0.1\"\nport = 11437\nsingle_resident = true\n"
-    )
+    config_path.write_text('[server]\nhost = "127.0.0.1"\nport = 11437\nsingle_resident = true\n')
 
     cfg = load_config(config_path)
     assert cfg.server.switch_drain_seconds == 30.0

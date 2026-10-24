@@ -137,7 +137,7 @@ async def test_status_route() -> None:
     assert response.json()["plugin"] == "{name}"
     assert response.json()["api_version"].startswith("{major}.")
 ''',
-        "README.md": f'''# {dist}
+        "README.md": f"""# {dist}
 
 An [arc-llama](https://github.com/offbyonebit/arc-llama) plugin.
 
@@ -150,7 +150,7 @@ arc-llama serve         # routes appear under /plugins/{name}/
 
 Import only from `arc_llama.plugin_api`; other core modules are private and
 may change without notice.
-''',
+""",
     }
 
 

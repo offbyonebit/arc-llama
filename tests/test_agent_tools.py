@@ -1,4 +1,5 @@
 """Tests for the agent tool sandbox."""
+
 from __future__ import annotations
 
 import sys

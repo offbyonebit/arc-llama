@@ -14,17 +14,46 @@ something useful before lunch.
 
 ## See it in action
 
-[![Arc Llama interface tour: models, Hugging Face discovery, runtime checks, chat, and system status](docs/showcase/cover.png)](docs/showcase/01-models.md)
+[![Arc Llama development interface tour: models, discovery, runtime checks, chat, system status, and Work](docs/showcase/cover.png)](docs/showcase/01-models.md)
 
 **[Click through the screenshot tour →](docs/showcase/01-models.md)** ·
-[All screenshots and swipeable gallery](docs/showcase/README.md)
+[All screenshots and interactive gallery](docs/showcase/README.md)
 
-*Actual app captures of the interface included in 0.9.1.2.*
+*Updated 2026-10-22: nine annotated views of the Work development UI, including
+pending local UI work. Captures use synthetic example data; no local inference
+was run. See the tour notes for scope and the original captures.*
 
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
 
 > [!NOTE]
-> **Version 0.9.1.2 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v0.9.1.2).
+> **Arc Llama 1.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v1.0.0).
+
+## What's new in 1.0
+
+- **Per-model runtimes:** run a different llama-server executable and environment
+  per model. See [per-model runtimes](docs/per-model-runtimes.md).
+- **Safer upgrades and rollbacks:** settings written by newer versions are kept,
+  and upgrades from 0.8 and 0.9 are tested against configs written by those
+  releases. See [upgrading and rolling back](docs/upgrading.md).
+- **Redesigned web UI:** a shared icon sidebar for Chat, Work, Models, Discover,
+  and System, with light/dark themes and mobile navigation. Discover has its own
+  destination, and model details show download, memory-fit, and runtime state.
+- **Clearer chat controls:** a model picker with multiple visible rows, scroll
+  cues, and keyboard navigation; a single response entry from loading through
+  streaming; and live generation activity.
+- **Return to earlier conversations:** open **History** in Chat or **Sessions**
+  in Work to reopen saved conversations and continue with a follow-up.
+- **Visible context usage:** token counts, context limits, and compaction controls
+  in Chat and Work. Estimates are marked; Work updates its count from actual
+  model requests, including agent instructions and tools.
+- **Choose your Work agent:** the built-in agent, OpenCode, or Hermes Agent,
+  using a selected local model. Work shows streamed replies, thinking/tool
+  activity, approvals, file changes, and Undo when available. OpenCode also
+  supports tool profiles and its native slash commands.
+
+Work is experimental: enable it with `ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve`.
+See [Work below](#work-local-project-conversations) for setup and the differences
+between harnesses, or [Work harness details](docs/work-harnesses.md).
 
 ## What's new in 0.9.1.2
 
@@ -104,9 +133,11 @@ multi-GPU tensor split.
 - **Plugin extension point** for adding routes and lifecycle integrations
   without modifying the inference core. Plugins are isolated at startup and
   are optional; see `examples/hello-plugin` for a minimal example.
-- **A web UI** at `http://127.0.0.1:11437/` , ships with the install. Model
-  picker, load/stop buttons, **inline ctx + KV-quant editing**, GPU + VRAM
-  panel. Pure HTML/JS, no build step.
+- **A web UI** at `http://127.0.0.1:11437/`, included with the install.
+  Chat, model management, Hugging Face discovery, and system status share one
+  interface, with experimental Work agents on this branch. Model controls
+  include load/stop, **inline ctx + KV-quant editing**, and GPU/VRAM information.
+  Pure HTML/JS, no build step.
 - **A terminal UI** (`arc-llama tui`) using Textual , same load/stop/edit
   controls, no browser needed. Optional install: `pip install 'arc-llama[tui]'`.
 - **Background autotune.** Drop in a GGUF, use it once, and `arc-llama serve`
@@ -211,18 +242,172 @@ arc-llama runtime rollback               # undo the last switch
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
 
+### Keeping long chats usable
+
+In the bundled chat, use **Compact chat** or `/compact` (optionally
+`/compact <focus>`) when a conversation grows long. It summarizes older turns
+and keeps the two newest exchanges, or the latest exchange in a short chat.
+The full transcript stays visible, saved, and included in exports. **Undo
+compaction** or `/uncompact` restores full context, including later messages.
+Summaries can omit details, so undo when exact earlier wording matters.
+Compaction runs through the selected model and may take several requests
+for oversized histories. Cancel stops summarizing; a failed summary or save
+leaves the chat unchanged. Token reductions are estimates. Image files stay in
+the transcript, but their contents are not read during text summarization.
+If the recent turns alone exceed the context estimate, use more context or
+start a new chat.
+
+### Context budgets and interrupted answers
+
+The chat meter includes the reply token limit (1024 by default). Change it in
+**Settings → Chat preset → Reply token limit**. For a resident local text model,
+Arc Llama applies its chat template and tokenizer and reads its actual per-slot
+context, including parallel inference limits. An exact over-budget request offers
+compaction or settings changes before generation. The saved transcript stays intact.
+Upstream models, images, unloaded models, and runtimes without counting endpoints
+show an explicitly approximate budget; image token costs depend on the projector.
+Counting never loads a model or sends chat text to an external upstream.
+
+Stopped and interrupted answers retain their partial text and reasoning, with a
+status label that survives reopening and exporting the chat. A disconnected or
+unfinished stream is marked interrupted; it is not presented as a completed answer.
+
+Local streaming requests have separate deadlines after model loading completes:
+
+```toml
+[server]
+inference_first_response_seconds = 600.0  # headers and first streamed bytes
+inference_stream_idle_seconds = 120.0     # gap between subsequent chunks
+```
+
+Set either value to `0` for an intentional unlimited deadline. Long prefills use
+the first-response allowance; active streams can run longer than either deadline.
+A timeout closes the backend request and releases its request/resource counters,
+so a later request can proceed. Connection establishment has a separate 10-second
+limit. Non-streaming requests retain their existing 600-second network timeout.
+
+### Choosing a model download disk
+
+Hugging Face model choices include a **Download folder on this server** field
+and available disk space. Use an absolute path on the machine running Arc Llama;
+leave it blank for `paths.models_dir`. The choice is remembered in this browser,
+and retries keep the original destination. A missing folder is created by the
+download. Permissions and advertised download size are checked before queuing;
+known-size jobs check free space again when they start. This is a preflight check,
+not a disk reservation, and other writes can still exhaust free space.
+
+Models downloaded elsewhere are registered normally. File deletion remains
+restricted to `paths.models_dir`; removing an external model registration leaves
+its files in place.
+
+## Work: local project conversations
+
+Enable experimental Work when starting the server:
+
+```bash
+ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve
+```
+
+For a service installation, set the variable in the service environment and
+restart the service. Open **Work** in the sidebar (or `/work`), choose a model
+and a project folder on the server, select an **Agent**, and send a task.
+Follow-ups retain earlier conversation context. The activity display shows
+startup, thinking, writing, tool execution, and pending approvals as reported
+by the agent. Use **Stop** to cancel the active task.
+
+### Supported agents
+
+Work integrates each harness through an adapter; support is specific to the
+agents below. External agents must be installed separately and available to
+the process running Arc Llama.
+
+| Agent | Integration | Available controls |
+| --- | --- | --- |
+| Built-in | Included with Arc Llama | File/command tools, approvals, and optional auto-approve |
+| OpenCode | Installed `opencode` executable | Streamed replies, approvals, tool profiles, and native slash commands |
+| Hermes Agent | Installed `hermes` with ACP support | Streamed replies and thought activity, file-edit and flagged-command approvals; no auto-approve |
+
+Arc Llama finds OpenCode on PATH, or through `ARC_LLAMA_OPENCODE_BIN`. OpenCode
+uses its existing project/user tool setup. Named tool profiles let you choose
+which MCP servers, skills, web tools, and other tools a task can use.
+Type `/` in the composer to see available commands, including Work's `/compact`.
+
+For Hermes, `hermes acp --check` should succeed. Arc Llama discovers the binary
+on PATH, or you can set `ARC_LLAMA_HERMES_BIN`. Each task uses an isolated
+Hermes home; global Hermes credentials, MCP configuration, skills, and memory
+are not imported. Primary and auxiliary model requests use Arc Llama's selected
+local model, with cloud fallback disabled. Hermes uses its native approval
+policy: file edits and flagged commands ask, while routine commands can run
+under that policy. OpenCode profiles and native slash commands are unavailable
+for Hermes. See [Work harness details](docs/work-harnesses.md).
+
+### Resume, context, and file changes
+
+Open **Sessions** in Work to reopen a saved conversation with its project,
+model, agent selection, and earlier tasks, then send a follow-up. This restores
+the conversation; it does not restart an interrupted process. Chat has a
+separate **History** control for saved chats.
+
+The Work context meter shows token usage against the model's context limit and
+flags partial or approximate counts. Before an external agent's first request,
+its instructions and tools are not yet counted. Once inference starts, the
+meter counts the full model request; exactness depends on the local runtime's
+counting support. Use **Compact session** or `/compact <focus>` after a task
+finishes to summarize earlier context. The full session stays saved, but a
+summary can omit details.
+
+Conversational Work operates in the selected project folder. Review the file
+changes after a task and use **Undo** while the run's backup is available.
+Undo refuses to overwrite later independent edits and may be unavailable for
+large projects or files. Reopened sessions retain change history, but cannot
+restore the original run's Undo backup. This mode is not an OS command sandbox;
+connected tools may access external services according to the harness setup.
+
+### Copy-based project jobs
+
+The earlier project-job interface remains at `/workbench`. Register a project
+folder, choose a local model, and save project instructions and permissions.
+New jobs use an independent copy of the current regular files, including
+uncommitted edits. Your original project stays unchanged until you review and
+explicitly apply a job's changes. Undo restores the original file contents and
+refuses to overwrite later independent edits.
+
+Jobs run independently of the browser. Progress, tool results, approvals, and
+conversation state are saved after each step. Pause takes effect between steps.
+A server restart pauses interrupted work; uncertain tool operations require your
+review before resume and are never automatically repeated. Commands need a
+separate approval for each exact call. File-edit permission applies only to the
+job copy, and saved project-setting changes apply to future jobs.
+
+Work supports file-only jobs across platforms. Optional commands require Linux,
+Bubblewrap, prlimit, and a working systemd user session. The command sandbox has
+no host-home, network, or GPU access; only its project copy is writable, along
+with a temporary directory. It uses aggregate memory/process limits, a CPU quota,
+and time/output/file-size limits. There is no fallback to an unrestricted shell.
+
+Copies exclude Git metadata, environments, dependencies, build outputs, `.env`
+files, and symbolic links. Limits: 4000 files, 16 MiB per file, 128 MiB per copy,
+20 retained copies, and 30 model turns per job. Project virtual environments and
+MCP/user-skill tools are not exposed in these copy-based jobs. Commands use
+installed OS tools. A finished agent run still needs review; a completed job is
+not a claim that its code passed tests. See [Work details](docs/work.md).
+
 ## Tested hardware
 
-The recorded native validation below used the **0.9.0rc2 candidate** and the
-models and recipes in the linked report. It does not establish validation for
-every driver, model, or later release.
+The recorded native validations below used the candidates, models and recipes in
+the linked reports (Linux: 0.9.0rc2; Windows: the 1.0 development branch). They do
+not establish validation for every driver, model, or later release.
 
 | GPU | Platform | Backend | Recorded validation |
 | --- | --- | --- | --- |
 | Arc Pro B60 (24 GiB) | Linux | Vulkan and SYCL | [Native release validation](docs/release-validation-linux-2026-10-03.md) |
 | Alchemist (A-series) | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
 | Lunar Lake | Linux / Windows | Vulkan / SYCL | Hardware reports [requested](https://github.com/offbyonebit/arc-llama/issues/71) |
-| Arc Pro B60 | Windows | Vulkan / SYCL | Native Windows validation [requested](https://github.com/offbyonebit/arc-llama/issues/69) |
+| Arc Pro B60 (24 GiB) | Windows 11 | Vulkan | [Native Windows validation](docs/release-validation-windows-2026-10-22.md) |
+
+Alchemist and Lunar Lake are detected and use the same runtimes, so they are
+expected to work, but they stay outside the [compatibility
+contract](docs/compatibility.md) until a native result is recorded.
 
 Have one of these devices? [Submit a hardware validation report](https://github.com/offbyonebit/arc-llama/issues/new?template=hardware-validation.yml)
 with your environment, configuration, and observed results. Reports can include
@@ -391,6 +576,9 @@ The model list is cached for 30 seconds and refreshed on demand.
 
 ## Configuration reference
 
+Models can select a [dedicated runtime and environment](docs/per-model-runtimes.md)
+from Model settings, TOML, or `arc-llama model-runtime`.
+
 On Linux the config lives at `$XDG_CONFIG_HOME/arc-llama/config.toml` (usually
 `~/.config/arc-llama/config.toml`). On Windows it lives at
 `%APPDATA%\arc-llama\config.toml`.
@@ -445,8 +633,8 @@ url  = "http://127.0.0.1:11434"
 
 > [!NOTE]
 > The optional agent/coding-assistant mode is experimental. Enable it by setting
-> `ARC_LLAMA_EXPERIMENTAL_AGENT=1` before running `arc-llama agent`, `code`,
-> or `agent-tui`.
+> `ARC_LLAMA_EXPERIMENTAL_AGENT=1` before running `arc-llama serve` for web Work,
+> or before running `arc-llama agent`, `code`, or `agent-tui`.
 
 `kv_class` controls the KV-cache size estimate that `arc-llama add` uses to
 pick a context length. Currently:
@@ -514,14 +702,16 @@ SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch (see
 Two front-ends are bundled and both talk to the same admin endpoints
 (`/admin/status`, `/admin/load/{name}`, `/admin/stop/{name}`, `/admin/stop-all`):
 
-- **Web UI** at `http://<host>:<port>/` (default `127.0.0.1:11437`). Single
-  static page polled every 5 s. Status, GPUs, model list, per-model
-  Load/Stop buttons, "Stop all" panic button. No build step, no JS deps.
+- **Web UI** at `http://<host>:<port>/` (default `127.0.0.1:11437`). The Paper
+  sidebar links Chat (`/chat`), experimental Work (`/work`), Models (`/`),
+  Discover (`/#discover`), and System (`/#system`). Includes saved conversations,
+  context meters, model Load/Stop controls, GPU status, and a "Stop all" button.
+  Static HTML/CSS/JavaScript with bundled assets and no build step.
 - **Terminal UI** via `arc-llama tui` , Textual-based. Bindings: `r` refresh,
   `l` load selected model, `s` stop selected, `S` stop all, `q` quit. Run it
   alongside `arc-llama serve` (or against a remote one with `--server`).
 
-Both use brightness/dim for status (loaded vs idle) , no red/green palettes.
+The web UI supports light and dark themes and adapts to desktop and mobile.
 
 ## Connect a frontend
 
@@ -641,7 +831,7 @@ defining the compatibility promises that begin with 1.0.
 - [x] Clarify experimental and optional features before 1.0.
 - [ ] Improve diagnostics for model-startup and GPU-runtime failures.
 - [x] Complete a repeatable release-candidate validation checklist.
-- [ ] Run a 0.9 release-candidate stabilization period before 1.0.
+- [x] Record native Linux and Windows validation on Arc B-series and release 1.0.
 
 The unchecked items will be linked to public tracking issues as they are
 opened. Multi-GPU support remains available for testing but is not a blocker
@@ -649,7 +839,8 @@ for the initial single-GPU 1.0 release.
 
 See the [compatibility contract](docs/compatibility.md), [GPU setup
 guide](docs/gpu-setup.md), [remote-access and
-security guidance](docs/security.md), and [release-candidate
+security guidance](docs/security.md), [upgrading and rolling
+back](docs/upgrading.md), and [release-candidate
 checklist](docs/release-checklist.md) for the concrete promises and validation
 matrix. The detailed implementation sequence and release gates are in the
 [1.0 release plan](docs/1.0-plan.md).
@@ -678,3 +869,52 @@ If you'd like to support development, you can [sponsor me on GitHub](https://git
 ## License
 
 MIT , see [LICENSE](LICENSE).
+
+
+### Tune MTP speculation on your hardware
+
+This improvement was inspired by [DeepSeek's DeepInfer](https://github.com/deepseek-ai/DeepInfer)
+and its confidence-scheduled speculative decoding. Arc Llama applies that tuning
+principle through llama.cpp's native MTP controls. Credit for the inspiration
+belongs to the DeepSeek team. Any credited performance gain must be supported
+by local measurements on the stated hardware and workload.
+
+For a registered model with embedded MTP heads or a configured MTP sidecar:
+
+```bash
+arc-llama speculative MODEL --tune-mtp --dry-run
+arc-llama speculative MODEL --tune-mtp
+# Use a representative local prompt; save measurements as JSON:
+arc-llama speculative MODEL --tune-mtp --prompt-file task.txt --json > mtp-results.json
+```
+
+Run this while the GPU is idle. This opt-in sweep uses the running Arc Llama
+server and may take several minutes, restarting the model between recipes.
+It tests draft lengths 1–4, then confidence thresholds at the fastest length.
+Each recipe gets five uncached repeated requests after warmup, using greedy
+sampling and seed 42 to hold the generated workload constant; output hashes
+must match before a speedup is accepted. The report
+includes median decode speed, complete request time, prompt processing time
+(when supplied), and token-weighted draft acceptance (unknown when omitted by
+the engine). The default prompt is a Python coding task; use `--prompt-file`
+to measure your workload. Prompt processing time is not a streamed TTFT measurement.
+
+A winner must improve both decode and request throughput by at least 5% against
+the original recipe and target-only inference, then pass fresh confirmation.
+Target-only may win when speculation costs more than it saves. Otherwise the
+original settings are restored, including confidence flags and sidecar settings.
+Trials temporarily persist recipes, as with ordinary tuning; interruption and
+errors trigger rollback. Do not edit recipes or run another tuner during a sweep.
+This does not run in background autotuning and does not guarantee a speedup on
+other prompts. `--repeats` increases sampling; `--gen-tokens` changes response length.
+Use `--min-speedup` to raise the threshold above 0.05.
+
+
+Local validation on 2026-10-20 (Arc Pro B60, Qwen3.8-27B UD-Q4_K_XL): the
+sweep exercised real MTP, confidence thresholds, acceptance telemetry and
+rollback. Some candidates measured faster, but an exploratory winner failed
+fresh confirmation. A subsequent greedy, fixed-seed run produced different
+output hashes even across identical requests on this SYCL runtime, so the
+strict comparison guard rejected the candidates. The original draft length 3
+and effective confidence 0.75 were restored. No additional verified speedup
+is claimed for this validation; DeepSeek is credited for the tuning approach.

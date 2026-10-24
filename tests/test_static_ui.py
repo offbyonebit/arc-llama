@@ -33,7 +33,13 @@ def test_dashboard_components_load_before_coordinator_and_start_explicitly() -> 
     plugins = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
     integration = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
-    assert html.index("dashboard/library.js") < html.index("dashboard/measurements.js") < html.index("dashboard/plugins.js") < html.index("dashboard/integration.js") < html.index("/app.js")
+    assert (
+        html.index("dashboard/library.js")
+        < html.index("dashboard/measurements.js")
+        < html.index("dashboard/plugins.js")
+        < html.index("dashboard/integration.js")
+        < html.index("/app.js")
+    )
     assert "createLibraryController" in library and "createMeasurementsController" in measurements
     assert "createPluginsController" in plugins and "createIntegrationController" in integration
     assert "window.ArcDashboard.createLibraryController" in app
@@ -253,7 +259,23 @@ EM_DASH = "—"
 
 @pytest.mark.parametrize(
     "filename",
-    ["index.html", "app.js", "dashboard/library.js", "dashboard/measurements.js", "chat.html", "chat.js", "chat/history.js", "chat/attachments.js", "chat/settings.js", "chat/rendering.js", "style.css", "chat.css"],
+    [
+        "index.html",
+        "app.js",
+        "dashboard/library.js",
+        "dashboard/measurements.js",
+        "chat.html",
+        "chat.js",
+        "chat/history.js",
+        "chat/compaction.js",
+        "chat/attachments.js",
+        "chat/settings.js",
+        "chat/work.js",
+        "chat/work.css",
+        "chat/rendering.js",
+        "style.css",
+        "chat.css",
+    ],
 )
 def test_no_em_dashes_in_user_visible_ui_text(filename: str):
     content = (STATIC / filename).read_text(encoding="utf-8")
@@ -320,7 +342,13 @@ def test_marked_renderer_handles_safe_and_hostile_markdown():
 def test_chat_loads_safety_policy_before_renderer():
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
     assert html.index("markdown_safety.js") < html.index("chat/rendering.js")
-    assert html.index("chat/rendering.js") < html.index("chat/attachments.js") < html.index("chat/settings.js") < html.index("chat/history.js") < html.index("chat.js")
+    assert (
+        html.index("chat/rendering.js")
+        < html.index("chat/attachments.js")
+        < html.index("chat/settings.js")
+        < html.index("chat/history.js")
+        < html.index("chat.js")
+    )
 
 
 def test_chat_components_load_before_coordinator_and_start_explicitly():
@@ -331,11 +359,25 @@ def test_chat_components_load_before_coordinator_and_start_explicitly():
     settings = (STATIC / "chat" / "settings.js").read_text(encoding="utf-8")
     rendering = (STATIC / "chat" / "rendering.js").read_text(encoding="utf-8")
 
-    assert html.index("chat/rendering.js") < html.index("chat/attachments.js") < html.index("chat/settings.js") < html.index("chat/history.js") < html.index("/chat.js")
-    for module, factory in ((history, "createHistory"), (attachments, "createAttachments"), (settings, "createSettings"), (rendering, "createRendering")):
+    assert (
+        html.index("chat/rendering.js")
+        < html.index("chat/attachments.js")
+        < html.index("chat/settings.js")
+        < html.index("chat/history.js")
+        < html.index("/chat.js")
+    )
+    for module, factory in (
+        (history, "createHistory"),
+        (attachments, "createAttachments"),
+        (settings, "createSettings"),
+        (rendering, "createRendering"),
+    ):
         assert f"ArcChat.{factory} = function" in module
         assert "function start()" in module
-    assert all(f"{name}Component.start()" in chat for name in ("history", "attachments", "settings", "rendering"))
+    assert all(
+        f"{name}Component.start()" in chat
+        for name in ("history", "attachments", "settings", "rendering")
+    )
     assert "function runSend()" in chat
     assert "activeAbort.abort()" in chat
 
@@ -501,7 +543,7 @@ def test_plugins_panel_empty_state_mentions_entry_point_discovery():
 
 def test_plugin_fetch_failure_is_isolated():
     js = (STATIC / "dashboard" / "plugins.js").read_text(encoding="utf-8")
-    block = js[js.index("async function poll") : js.index("function bind()") ]
+    block = js[js.index("async function poll") : js.index("function bind()")]
 
     # The whole request/render path is wrapped so a failing plugins fetch
     # can never break the model panels it shares the page with.
@@ -619,9 +661,7 @@ def test_vision_generation_keeps_plugin_route_and_loader_pacing():
     # The generation call still goes to the action's declared plugin route
     # with only the prompt (server keeps the GPU lease contract).
     body = js[
-        js.index("async function sendComposerAction") : js.index(
-            "async function loadPluginActions"
-        )
+        js.index("async function sendComposerAction") : js.index("async function loadPluginActions")
     ]
     assert "fetch(action.route" in body
     assert "JSON.stringify(payload)" in body
@@ -723,7 +763,7 @@ def test_vision_composer_flow_under_stubbed_dom():
       }};
 
       globalThis.window = globalThis;
-      for (const component of ["rendering.js", "attachments.js", "settings.js", "history.js"]) {{
+      for (const component of ["rendering.js", "attachments.js", "settings.js", "history.js", "compaction.js", "work.js"]) {{
         const path = {json.dumps(str(STATIC / "chat"))} + "/" + component;
         (0, eval)(fs.readFileSync(path, "utf8"));
       }}
@@ -844,3 +884,122 @@ def test_vision_composer_flow_under_stubbed_dom():
     assert result["errorsAfterFailure"] == 1
     assert result["alertWasCalled"] is False
     assert result["modeChipHiddenAfterFailure"] is True
+
+
+# ---------------------------------------------------------------------------
+# Work view
+# ---------------------------------------------------------------------------
+
+
+def test_work_view_is_wired_and_ships_behind_the_experimental_switch():
+    html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    chat = (STATIC / "chat.js").read_text(encoding="utf-8")
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert html.index("chat/history.js") < html.index("chat/work.js") < html.index("/chat.js")
+    assert "chat/work.css" in html and 'id="work-view"' in html
+    assert 'id="mode-switch"' in html and "hidden" in html.split('id="mode-switch"', 1)[1].split(">", 1)[0]
+    assert "ArcChat.createWork = function" in work and "function begin_component" in work
+    assert "workComponent.start()" in chat
+    # The switch is only revealed when the server reports the experimental flag.
+    assert "info.experimental" in work and "/v1/agent/info" in work
+    # Output is built with textContent/createTextNode; no HTML injection from model output.
+    assert "innerHTML" not in work
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_work_step_translation_is_plain_language_and_flags_risk():
+    helper = STATIC / "chat" / "work.js"
+    program = f"""
+      const w = require({json.dumps(str(helper))});
+      const h = (n, a) => w.humanizeStep(n, a);
+      process.stdout.write(JSON.stringify({{
+        write: h("bash", {{ command: "printf 'x' > notes/hello.txt" }}),
+        read: h("read", {{ filePath: "/a/b/config.toml" }}),
+        cat: h("bash", {{ command: "cat README.md" }}),
+        tests: h("bash", {{ command: "uv run pytest -q" }}),
+        unittest: h("bash", {{ command: "python -m unittest test_calc -v" }}),
+        remove: h("bash", {{ command: "rm -rf build" }}),
+        unknown: h("bash", {{ command: "ffmpeg -i a.mov b.mp4" }}),
+        approval: w.describeApproval("bash", h("bash", {{ command: "rm -rf build" }})),
+        split: w.splitTask("Fix the parser. Then add tests for the edge cases."),
+        folders: ["home", "~", "~/proj", "proj/app", "/srv/x", "", "Home Folder"].map((v) => w.normalizeFolder(v, "/home/u")),
+      }}));
+    """
+    out = json.loads(subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True).stdout)
+    assert out["write"]["pending"] == "Writing hello.txt" and out["write"]["path"] == "notes/hello.txt"
+    assert out["read"]["done"] == "Read config.toml"
+    assert out["cat"]["pending"] == "Reading README.md"
+    assert out["tests"]["pending"] == "Running tests" and out["unittest"]["pending"] == "Running tests"
+    assert out["remove"]["risky"] is True and out["remove"]["kind"] == "delete"
+    assert out["unknown"]["pending"] == "Running a command" and out["unknown"]["command"].startswith("ffmpeg")
+    assert "delete" in out["approval"]["title"] and out["approval"]["showCommand"] is True
+    assert out["split"] == {"title": "Fix the parser", "rest": "Then add tests for the edge cases."}
+    assert out["folders"] == ["/home/u", "/home/u", "/home/u/proj", "/home/u/proj/app", "/srv/x", "", "/home/u"]
+
+
+def test_work_view_prefers_a_loaded_model_and_warns_before_a_swap():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert "metadata.loaded" in work and "preferLoadedModel" in work
+    assert "modelPicked" in work                       # an explicit choice is never overridden
+    assert "is not loaded yet" in work                 # the user is told before a slow swap
+
+
+def test_work_view_never_defaults_to_the_servers_own_folder():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert "recall(ROOT_KEY) || info.home" in work and "info.root ||" not in work
+    assert "Choose a project folder first." in work
+    css = (STATIC / "chat" / "work.css").read_text(encoding="utf-8")
+    assert "body.work-mode .compact-controls" in css      # chat-only controls stay out of the Work view
+
+
+def test_work_view_surfaces_problems_and_waiting_states():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    assert 'id="work-problem"' in html and 'role="alert"' in html.split('id="work-problem"', 1)[1].split(">", 1)[0]
+    assert "Choose a project folder first" in work and "problem(" in work
+    assert "ended before the task finished" in work            # a silent stream end is never shown as success
+    assert "was not in memory" in work and "Starting OpenCode" in work   # loading is explained
+    assert "whole home folder" in work
+
+
+def test_work_auto_approve_is_opt_in_tab_scoped_and_keeps_risky_commands_asking():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    assert 'id="work-auto"' in html and 'aria-pressed="false"' in html.split('id="work-auto"', 1)[1].split(">", 1)[0]
+    assert "auto_confirm: autoOn" in work
+    assert "sessionStorage" in work and "localStorage" not in work.split("AUTO_KEY", 1)[1].split("function", 1)[0]
+    assert "still asks" in work                  # the sheet explains why a risky command asked despite auto-approve
+
+
+def test_work_view_keeps_a_conversation_and_enter_never_stops_a_task():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    css = (STATIC / "chat" / "work.css").read_text(encoding="utf-8")
+    assert "runs.push(run)" in work and "function drawTurn" in work and "history" in work
+    assert ".work-turn" in css
+    # Enter goes through submit(), which refuses while a task runs; only the send button's Stop aborts.
+    assert "function submit()" in work and "function sendButton()" in work
+    assert 'e.preventDefault(); begin();' not in work
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_work_approval_is_truthful_about_paths_outside_the_folder():
+    helper = STATIC / "chat" / "work.js"
+    program = f"""
+      const w = require({json.dumps(str(helper))});
+      const folder = "/p/thread/work";
+      const stray = w.humanizeStep("write", {{ filePath: "/p/thread/fruit.txt" }});
+      const inside = w.humanizeStep("write", {{ filePath: "/p/thread/work/fruit.txt" }});
+      process.stdout.write(JSON.stringify({{
+        outside: [w.isOutside("/p/thread/fruit.txt", folder), w.isOutside("/p/thread/work/a.txt", folder),
+                  w.isOutside("a.txt", folder), w.isOutside("../a.txt", folder), w.isOutside("/p/thread/workshop/x", folder)],
+        stray: w.describeApproval("edit", stray, folder),
+        inside: w.describeApproval("edit", inside, folder),
+        external: w.describeApproval("external_directory", null, folder),
+      }}));
+    """
+    out = json.loads(subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True).stdout)
+    assert out["outside"] == [True, False, False, True, True]          # a sibling with a shared prefix is still outside
+    assert out["stray"]["outside"] is True and "outside your project folder" in out["stray"]["title"]
+    assert "/p/thread/fruit.txt" in out["stray"]["body"] and "not inside /p/thread/work" in out["stray"]["body"]
+    assert out["inside"]["outside"] is False and "in your project folder" in out["inside"]["body"]
+    assert out["external"]["outside"] is True                          # the harness's own signal is honoured too

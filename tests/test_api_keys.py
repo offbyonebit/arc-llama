@@ -93,9 +93,7 @@ async def test_remote_clients_need_a_key_once_one_exists(monkeypatch, tmp_path) 
             assert bad.status_code == 401
             ok = await remote.get("/v1/models", headers={"Authorization": f"Bearer {plaintext}"})
             assert ok.status_code == 200
-            admin = await remote.get(
-                "/v1/models", headers={"Authorization": "Bearer admin-tok"}
-            )
+            admin = await remote.get("/v1/models", headers={"Authorization": "Bearer admin-tok"})
             assert admin.status_code == 200
             # Loopback, health and the UI stay open.
             assert (await local.get("/v1/models")).status_code == 200
@@ -194,3 +192,18 @@ def test_backends_always_bind_loopback(tmp_path) -> None:
     plan = Router(cfg)._servers["m"].plan
     assert plan.argv[plan.argv.index("--host") + 1] == "127.0.0.1"
     assert plan.backend_url == "http://127.0.0.1:18555"
+
+
+def test_atomic_key_replacement_with_same_size_and_mtime_invalidates_cache(tmp_path):
+    store = ApiKeyStore.for_state_dir(tmp_path)
+    key, plaintext = store.create("client")
+    assert store.verify(plaintext) is not None
+    path = tmp_path / "api-keys.json"
+    before = path.stat()
+    replacement = tmp_path / "replacement.json"
+    replacement.write_bytes(path.read_bytes().replace(key.sha256.encode(), b"0" * 64))
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.replace(replacement, path)
+    assert path.stat().st_size == before.st_size
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
+    assert store.verify(plaintext) is None

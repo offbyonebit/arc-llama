@@ -18,6 +18,7 @@ global tool registry from ``arc_llama.agent.tools``:
 The loader imports every ``*.py`` file once at server startup. Import errors are
 caught and logged so a broken skill cannot prevent the server from starting.
 """
+
 from __future__ import annotations
 
 import importlib.util

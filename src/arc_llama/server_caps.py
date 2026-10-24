@@ -15,9 +15,12 @@ and repeated launches don't re-exec. Some SYCL builds still initialize enough
 runtime during help to abort when no GPU is visible, so a non-zero help exit is
 treated like any other failed probe.
 """
+
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +33,7 @@ _HELP_TIMEOUT_S = 10
 @dataclass(frozen=True)
 class ServerCaps:
     """What the probed llama-server binary understands."""
+
     supports_flash_attn: bool = True
     flash_attn_takes_value: bool = True
     """True: `-fa {on,off,auto}` (new style). False: boolean `-fa` (old style)."""
@@ -39,6 +43,8 @@ class ServerCaps:
     """Whether this binary exposes llama.cpp's ``--spec-type`` interface."""
     supports_draft_model: bool = False
     supports_ngram: bool = False
+    supports_mtp: bool = False
+    supports_draft_confidence: bool = False
     supports_load_mode: bool = False
     """Whether this binary takes ``--load-mode`` (newer builds).
 
@@ -79,7 +85,7 @@ DEFAULT_CAPS = ServerCaps(
     supports_tensor_split=True,
 )
 
-_cache: dict[tuple[str, float], ServerCaps] = {}
+_cache: dict[tuple[str, float, tuple[tuple[str, str], ...]], ServerCaps] = {}
 
 
 def _parse_help(help_text: str) -> ServerCaps:
@@ -87,6 +93,8 @@ def _parse_help(help_text: str) -> ServerCaps:
         "probed": True,
         "supports_speculative": "--spec-type" in help_text,
         "supports_draft_model": "--spec-draft-model" in help_text,
+        "supports_mtp": "draft-mtp" in help_text and "--spec-type" in help_text,
+        "supports_draft_confidence": "--spec-draft-p-min" in help_text,
         "supports_ngram": "ngram" in help_text.lower() and "--spec-type" in help_text,
         "supports_load_mode": "--load-mode" in help_text,
         "supports_mmproj": "--mmproj" in help_text,
@@ -105,8 +113,27 @@ def _parse_help(help_text: str) -> ServerCaps:
     return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
 
 
-def probe_server_caps(llama_server: str) -> ServerCaps:
+def _env_with_oneapi(env: dict[str, str] | None) -> dict[str, str] | None:
+    """*env* (or the process environment) with oneAPI's setvars applied, or None if that cannot help."""
+    from arc_llama.platform_checks import (
+        oneapi_runtime_env_needed,
+        oneapi_setvars_path,
+        source_setvars,
+    )
+
+    if not oneapi_runtime_env_needed():
+        return None
+    setvars = oneapi_setvars_path()
+    sourced = source_setvars(setvars) if setvars is not None else {}
+    if not sourced:
+        return None
+    return {**(env if env is not None else os.environ), **sourced}
+
+
+def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -> ServerCaps:
     """Return the capabilities of the given llama-server binary, cached."""
+    llama_server = shutil.which(llama_server, path=env.get("PATH", "") if env is not None else None) or str(Path(llama_server).expanduser())
+    env_key = tuple(sorted(env.items())) if env is not None else ()
     try:
         mtime = Path(llama_server).stat().st_mtime
     except OSError:
@@ -115,14 +142,16 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
         # inside asyncio.to_thread can leave the executor task stuck on some
         # Python/platform combinations.  Cache the optimistic fallback under
         # mtime 0, matching the old failed-probe semantics.
-        key = (llama_server, 0.0)
+        key = (llama_server, 0.0, env_key)
         hit = _cache.get(key)
         if hit is not None:
             return hit
         _cache[key] = DEFAULT_CAPS
-        log.warning("could not probe %s (file does not exist); assuming modern flag syntax", llama_server)
+        log.warning(
+            "could not probe %s (file does not exist); assuming modern flag syntax", llama_server
+        )
         return DEFAULT_CAPS
-    key = (llama_server, mtime)
+    key = (llama_server, mtime, env_key)
     hit = _cache.get(key)
     if hit is not None:
         return hit
@@ -132,7 +161,19 @@ def probe_server_caps(llama_server: str) -> ServerCaps:
             capture_output=True,
             text=True,
             timeout=_HELP_TIMEOUT_S,
+            env=env,
         )
+        if proc.returncode != 0 and "error while loading shared libraries" in (proc.stderr or ""):
+            # A SYCL build started outside a oneAPI shell; launches source setvars, so the probe must too.
+            oneapi_env = _env_with_oneapi(env)
+            if oneapi_env is not None:
+                proc = subprocess.run(
+                    [llama_server, "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=_HELP_TIMEOUT_S,
+                    env=oneapi_env,
+                )
         if proc.returncode == 0:
             caps = _parse_help(proc.stdout + proc.stderr)
         else:

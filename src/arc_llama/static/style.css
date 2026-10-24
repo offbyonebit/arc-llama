@@ -244,7 +244,8 @@ footer.error .status-dot { background: var(--red); }
 .library-disk-details summary { cursor: pointer; font-size: 13px; }
 
 /* Dashboard views start in the Models state before JavaScript runs. */
-.dashboard[data-dashboard-view="models"] [data-area="system"] { display: none; }
+.dashboard[data-dashboard-view="models"] [data-area="system"],
+.dashboard[data-dashboard-view="discover"] [data-area="system"] { display: none; }
 .dashboard[data-dashboard-view="system"] [data-area="models"] { display: none; }
 .model-card-file-warning { margin: 8px 0 0; color: var(--red); font-size: 12px; }
 .file-readiness-note { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
@@ -293,3 +294,7 @@ footer.error .status-dot { background: var(--red); }
 .library-compatibility { margin-top: 10px; }
 .library-compatibility-evidence { margin-top: 6px; font-size: 12px; overflow-wrap: anywhere; }
 .library-compatibility-evidence summary { cursor: pointer; color: var(--text-muted); }
+.library-folder { display: grid; gap: 4px; margin: 0 0 12px; }
+.library-folder label { font-size: 12px; font-weight: 600; }
+.library-folder-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; font-family: ui-monospace, monospace; font-size: 12px; }
+.library-folder .plugin-meta { margin: 0; }

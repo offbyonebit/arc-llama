@@ -1,0 +1,50 @@
+name: Published wheel smoke
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: '19 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-inference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install released wheel or latest PyPI wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke-env"
+          if [ -n "$RELEASE_TAG" ]; then
+            gh release download "$RELEASE_TAG" --pattern '*.whl' --dir "$RUNNER_TEMP/released-wheel"
+            "$RUNNER_TEMP/smoke-env/bin/python" -m pip install "$RUNNER_TEMP"/released-wheel/*.whl
+          else
+            "$RUNNER_TEMP/smoke-env/bin/python" -m pip install --only-binary=:all: arc-llama
+          fi
+      - name: Run installed CPU inference and asset checks
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          cd "$RUNNER_TEMP"
+          expected=()
+          if [ -n "$RELEASE_TAG" ]; then expected=(--expected-version "${RELEASE_TAG#v}"); fi
+          "$RUNNER_TEMP/smoke-env/bin/python" "$GITHUB_WORKSPACE/scripts/published_smoke.py" --work-dir "$RUNNER_TEMP/published-smoke" "${expected[@]}"
+      - name: Retain diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-wheel-smoke-logs
+          path: |
+            ${{ runner.temp }}/published-smoke/server.log
+            ${{ runner.temp }}/published-smoke/state/logs/
+          if-no-files-found: ignore

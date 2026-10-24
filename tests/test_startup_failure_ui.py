@@ -74,8 +74,8 @@ def test_chat_js_renders_structured_failure_cards():
     assert "diagnostics_id" in js
     # Message, action, diagnostics id, retry, and expandable details are all
     # present in the card markup the function builds.
-    assert 'div.dataset.failureCategory' in js
-    assert 'div.dataset.diagnosticsId' in js
+    assert "div.dataset.failureCategory" in js
+    assert "div.dataset.diagnosticsId" in js
     assert '"What to do: "' in js
     assert "load-failure-retry" in js
     assert "load-failure-details-toggle" in js
@@ -94,9 +94,8 @@ def test_chat_js_shows_honest_loading_stage():
     # The named loading stage appears in the chat log while the model loads.
     assert "Starting model, this can take a while on first load" in js
     assert "load-wait-card" in js
-    # The loading chip is removed on both load outcomes: never a stuck
-    # "waiting" message after success or a settled failure.
-    assert js.count("loadingCard") >= 3
+    # Browser cases verify success keeps the same response entry, and failure
+    # removes it without leaving a stuck loading message.
 
 
 def test_chat_failure_css_exists():
@@ -149,7 +148,9 @@ def test_public_inference_errors_do_not_expose_admin_diagnostics(monkeypatch):
     class FailingRouter(FakeRouter):
         async def ensure_active(self, query, *, acquire=False):
             raise StartupFailureError(
-                "process_exited", "Model could not start.", "Retry or inspect admin diagnostics.",
+                "process_exited",
+                "Model could not start.",
+                "Retry or inspect admin diagnostics.",
                 details={"log_tail": "private local backend log", "argv": ["/private/runtime"]},
             )
 

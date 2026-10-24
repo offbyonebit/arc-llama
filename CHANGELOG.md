@@ -5,7 +5,88 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## [Unreleased]
+## [1.0.0] - 2026-10-23
+
+Arc Llama 1.0: the stable single-GPU release. Validated natively on Linux and Windows 11
+(Arc Pro B60).
+
+### Added
+
+- Settings Arc Llama does not recognise, such as those written by a newer version,
+  are kept when it saves the config instead of being dropped, so rolling back to
+  this version no longer loses them. Upgrade and rollback are tested against
+  configs written by the published 0.8.0, 0.9.0 and 0.9.1.2 packages, and
+  `scripts/check_config_versions.py` repeats the round trips against PyPI
+  releases. See [Upgrading and rolling back](docs/upgrading.md).
+
+- Per-model llama-server executable and environment overrides in Model settings,
+  TOML and `model-runtime`. Launch flags, tuning and compatibility follow that
+  model's runtime; global defaults and other models remain independent.
+
+- A Work tokens-per-second counter shows the latest backend-measured generation
+  rate for built-in, OpenCode, and Hermes runs, retains it in saved sessions,
+  and excludes loading, prompt processing, tool execution, and approval time.
+
+- Work Sessions and `/sessions` include native OpenCode and Hermes text history,
+  with project folders and continuation into a Work copy using the selected
+  local model. History reads do not start harnesses or change their databases;
+  original sessions remain protected from Work deletion.
+
+- Work tab with project-scoped instructions and permissions, a persistent serial
+  job queue, activity history, pause/resume, restart recovery, and exact per-command
+  approvals. Job execution continues independently of its browser connection.
+- Work acceptance criteria, code checks and model review, up to two repair
+  passes per attempt, and one to five sequential attempts on fresh copies with
+  an admission budget and reviewed selection of the best result.
+- Independent project copies with diff review, revision-checked apply, conflict-aware
+  undo, and discard. Original project files are not changed by agent tools.
+- Optional Linux command sandbox using Bubblewrap and a systemd user scope with
+  bounded resources, no host home/network/GPU, and no unrestricted-shell fallback.
+
+- Reversible chat compaction: a Compact chat button and `/compact [focus]`
+  summarize older turns while keeping the newest exchanges and full saved
+  transcript. Undo compaction or `/uncompact` restores full context, including
+  subsequent messages. Oversized histories use bounded summary requests.
+
+- Resident-model context budgets using the runtime's tokenizer, chat template,
+  and actual per-slot context. Chat reserves a configurable reply limit and
+  offers compaction or settings changes before an exact over-budget request.
+  Unsupported runtimes, unloaded/upstream models, and images remain explicitly
+  approximate; counting does not load models or contact external upstreams.
+- Per-browser model download destinations, folder permission/free-space checks,
+  destination-preserving retries, and queued-job space rechecks.
+- Scheduled and release-triggered smoke validation of the published wheel with
+  checksum-pinned CPU runtime/model assets, real JSON/SSE inference, and installed
+  frontend asset checks.
+
+### Fixed
+
+- SYCL runtimes no longer fail to start with "libsvml.so: cannot open shared object file" when
+  Arc Llama runs without oneAPI sourced: the oneAPI check now requires the compiler runtime on the
+  loader path, and no longer accepts the driver's Level Zero loader alone.
+- The llama-server capability probe also sources oneAPI when a SYCL runtime cannot load its
+  libraries, so flag detection reads the real capabilities instead of falling back to guesses.
+
+- Work Sessions represent generated harness sessions through their saved Work
+  conversation, rather than listing each turn again. Older repeated titles
+  collapse into expandable groups without deleting history, and new OpenCode
+  sessions use the task title instead of a generic context heading.
+
+- Tool profiles keep saved choices available during discovery failures, offer Retry,
+  and prevent edits with an incomplete tool list. A single Save and use action
+  applies a profile; failed saves and deletes preserve the current selection.
+
+- Accept bare JSON arrays of Work acceptance criteria from local models instead
+  of silently dropping their checks.
+- Keep Work command approval identifiers distinct across attempts and prevent
+  source actions in the UI while verification is running. Journal attempt-copy
+  replacements for restart recovery and retain pause requests during planning.
+- Keep partial text and reasoning after generation errors, abrupt stream endings,
+  or Stop. Persist completed/stopped/interrupted status through chat reload and export.
+- Bound stalled local streams with separate configurable first-response and idle
+  deadlines. Return a useful HTTP/SSE failure and settle connections, request
+  counts, and resource leases before subsequent work.
+- Explain UD-prefixed and MXFP4 quantizations in the model picker.
 
 ## [0.9.1.2] - 2026-10-10
 

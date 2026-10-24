@@ -135,7 +135,7 @@ export async function testDashboardGenerationTrend({ page, origin }) {
 export async function testDashboardNavigationAndBlockedModel({ page, origin }) {
   await page.goto(origin);
   await page.waitForSelector("#model-list .model-card");
-  if (!(await page.locator("#library-title").isVisible())) throw new Error("Models view did not expose library");
+  if (!(await page.locator('.paper-rail a[aria-label="Discover"]').isVisible())) throw new Error("Models view did not expose Discover");
   if (await page.locator("#system-readiness").isVisible()) throw new Error("System content flashed into default Models view");
   await page.locator('[data-view-link="system"]').click();
   await page.waitForFunction(() => document.querySelector(".dashboard")?.dataset.dashboardView === "system");
@@ -152,6 +152,7 @@ export async function testDashboardNavigationAndBlockedModel({ page, origin }) {
     : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...ADMIN_STATUS, models: statusModels }) }));
   const refresh = () => page.evaluate(() => fetchStatus(true));
   await refresh();
+  await page.locator('.paper-rail a[aria-label="Models"]').click();
   const brokenCard = page.locator("#model-list .model-card");
   await brokenCard.locator("details summary").click();
   if (!(await brokenCard.locator("details").evaluate(node => node.open))) throw new Error("Advanced details did not open for a broken model");
@@ -223,12 +224,12 @@ export async function testFirstRunJourney({ page, origin }) {
     const library = document.querySelector(".library-section");
     const models = document.querySelector("#choose-title").closest("section");
     return {
-      libraryFirst: !!(library.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING),
+      discoveryReachable: document.querySelector('.paper-rail a[aria-label="Discover"]')?.getAttribute("href") === "/#discover" && library.hidden && !models.hidden,
       emptyReviewHidden: document.querySelector(".readiness-section").hidden,
       chatInsideReview: document.querySelector(".readiness-section").contains(document.querySelector("#chat-primary")),
     };
   });
-  if (!placement.libraryFirst || !placement.emptyReviewHidden || !placement.chatInsideReview) throw new Error("discovery/review layout does not follow the first-run order");
+  if (!placement.discoveryReachable || !placement.emptyReviewHidden || !placement.chatInsideReview) throw new Error("discovery navigation and model review do not expose the first-run flow");
   await page.locator("#next-step-action").click();
   if (!(await page.locator("#library-title").isVisible()) || await page.locator("#library-title").evaluate(node => node !== document.activeElement)) throw new Error("first model action did not focus discovery");
   jobs = [{ id: "new-download", repo: "test/New-GGUF", file: "new.gguf", status: "downloading", bytes_done: 25, bytes_total: 100, started_at: 10 }];
@@ -364,6 +365,7 @@ export async function testQueuedStatusRefresh({ page, origin }) {
   const pending = page.evaluate(() => Promise.all([fetchStatus(), fetchStatus(), fetchStatus(true), fetchStatus(true)]));
   await started;
   if (reads !== before + 1) throw new Error("forced refresh raced the older in-flight response");
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
   await page.locator("#library-query").focus();
   status.models[0].ctx = 32768;
   hold = false;

@@ -31,7 +31,7 @@ function applyTheme(theme) {
   if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
   if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
 }
-applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "dark"));
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "light"));
 const MIB = 1024;
 const SELECTED_MODEL_KEY = "arc-llama-selected-model";
 
@@ -164,6 +164,7 @@ function createDetails(model, gpu) {
     ["KV cache", `${model.cache_type_k || "default"} / ${model.cache_type_v || "default"}`],
     ["Port", model.port || "Not set"],
     ["Model path", model.path || "Not set"],
+    ["Runtime", model.effective_llama_server || "Global default"],
   ];
   const list = document.createElement("dl");
   for (const [term, value] of rows) {
@@ -194,6 +195,7 @@ function createModelCard(model) {
 
   const pick = () => {
     selectedModel = model.name;
+    window.ArcPaper?.openModel();
     sessionStorage.setItem(SELECTED_MODEL_KEY, model.name);
     render();
   };
@@ -238,14 +240,20 @@ function createModelCard(model) {
   review.setAttribute("aria-label", `Review model ${displayName(model)}`);
   review.title = `Review ${displayName(model)} and open its selected-model details`;
   side.appendChild(review);
-  card.append(body, side, createDetails(model, gpu));
+  const memory = document.createElement("div");
+  memory.className = "paper-model-fit";
+  memory.textContent = model.vram_estimate?.estimated_mb != null ? `~${fmtGiB(model.vram_estimate.estimated_mb)}` : "Unavailable";
+  const estimateLabel = document.createElement("small");
+  estimateLabel.textContent = "Estimated memory";
+  memory.append(estimateLabel);
+  card.append(body, memory, side, createDetails(model, gpu));
   return card;
 }
 
 function renderModels() {
   const list = $("#model-list");
   const models = snapshot?.models || [];
-  const fields = ["name", "display_name", "path", "model_file_mb", "gpu_pci_slot", "port", "loaded", "state", "ctx", "cache_type_k", "cache_type_v", "kv_class", "file_readiness"];
+  const fields = ["name", "display_name", "path", "model_file_mb", "gpu_pci_slot", "port", "loaded", "state", "ctx", "cache_type_k", "cache_type_v", "kv_class", "file_readiness", "vram_estimate"];
   const signature = JSON.stringify([selectedModel, models.map(model => fields.map(key => model[key])), (snapshot?.gpus || []).map(gpu => [gpu.pci_slot, gpu.name, gpu.sycl_index, gpu.vram_mb])]);
   if (signature === renderedModelsSignature) return;
   list.replaceChildren();
@@ -264,6 +272,9 @@ function renderModels() {
     renderedModelsSignature = signature;
     return;
   }
+  const headings = document.createElement("div"); headings.className = "paper-table-head"; headings.setAttribute("aria-hidden", "true");
+  for (const text of ["Model", "Memory · estimate", "State"]) { const label = document.createElement("span"); label.textContent = text; headings.append(label); }
+  list.append(headings);
   for (const model of models) list.appendChild(createModelCard(model));
   renderedModelsSignature = signature;
 }
@@ -590,24 +601,31 @@ function updateDashboardView() {
   const dashboard = $(".dashboard");
   if (!dashboard) return;
   const system = location.hash === "#system";
-  dashboard.dataset.dashboardView = system ? "system" : "models";
+  const discover = location.hash === "#discover" || location.hash.startsWith("#library");
+  const view = system ? "system" : discover ? "discover" : "models";
+  const label = system ? "System" : discover ? "Discover" : "Models";
+  window.ArcPaper?.view(view);
+  dashboard.dataset.dashboardView = view;
   for (const link of document.querySelectorAll("[data-view-link]")) {
-    const active = link.dataset.viewLink === (system ? "system" : "models");
+    const active = link.dataset.viewLink === view;
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   }
-  document.title = system ? "System: arc-llama" : "Models: arc-llama";
+  document.title = `${label}: arc-llama`;
   const title = $("#page-title");
   const description = title?.parentElement?.querySelector("p:not(.eyebrow)");
-  if (title) title.textContent = system ? "System" : "Models";
+  if (title) title.textContent = label;
   if (description) description.textContent = system
     ? "Server, GPU, plugins, measurements, and frontend integration."
-    : "Find a model, choose it from your library, and open chat.";
+    : discover ? "Find and download models from Hugging Face."
+    : "Choose a model from your local library and open chat.";
 }
 
 function showModelsView(targetSelector = "#choose-title") {
-  if (location.hash) history.pushState(null, "", `${location.pathname}${location.search}`);
+  const hash = /library/.test(targetSelector) ? targetSelector : "";
+  if (location.hash !== hash) history.pushState(null, "", `${location.pathname}${location.search}${hash}`);
   updateDashboardView();
+  if (/readiness/.test(targetSelector)) window.ArcPaper?.openModel();
   const target = $(targetSelector);
   if (target) {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -629,6 +647,7 @@ function setReviewMessage(message = "", { focus = false } = {}) {
 }
 
 async function reviewModel(modelName) {
+  window.ArcPaper?.openModel();
   const refreshed = await fetchStatus(true);
   if (!refreshed) {
     setReviewMessage("Could not refresh the model list. Use Refresh and try reviewing again.", { focus: true });
@@ -670,6 +689,7 @@ const libraryController = window.ArcDashboard.createLibraryController({
   reviewModel,
   showModelsView,
   onJobsChange: (jobs) => {
+    window.ArcPaper?.jobs(jobs);
     libraryJobs = jobs;
     libraryJobsUnavailable = jobs === null;
     renderNextStep();
@@ -697,12 +717,14 @@ const integrationController = window.ArcDashboard.createIntegrationController({
 function openFrontendDialog() { return integrationController.open(); }
 
 function render() {
+  window.ArcPaper?.syncModels(snapshot?.models || [], selectedModel, name => { selectedModel = name; sessionStorage.setItem(SELECTED_MODEL_KEY, name); render(); });
   libraryController.invalidateCompatibility();
   const loadedCount = snapshot?.models?.filter((model) => model.loaded).length || 0;
   $("#stop-all").disabled = loadedCount === 0;
   setServerState("online", loadedCount ? `${loadedCount} model${loadedCount === 1 ? "" : "s"} loaded` : "Server ready");
   renderModels();
   renderReadiness();
+  window.ArcPaper?.inspector(selected(), name => paperModelAction("load", name), name => paperModelAction("stop", name));
   renderSystemReadiness();
   renderStart();
   renderNextStep();
@@ -841,6 +863,20 @@ async function stopAll() {
   }
 }
 
+async function paperModelAction(action, name) {
+  const buttons = document.querySelectorAll("#paper-model-actions button");
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    const response = await fetch(`/admin/${action}/${encodeURIComponent(name)}`, { method: "POST", headers: authHeaders() });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error?.message || data.detail || `Model ${action} failed (${response.status})`);
+    }
+    setFooter(action === "load" ? "Model loaded." : "Model stopped.");
+  } catch (error) { setFooter(error.message, true); setReviewMessage(error.message); }
+  finally { await fetchStatus(true); }
+}
+
 // Plugin catalog and frontend integration guidance use focused controllers.
 
 // Frontend connection guidance is owned by its focused controller.
@@ -867,12 +903,12 @@ function startStatusPolling() {
 // Dashboard event binding and bootstrap.
 integrationController.bind();
 
-// In-page System view; ordinary modified/middle clicks retain native link behavior.
+// Dashboard views; ordinary modified/middle clicks retain native link behavior.
 for (const link of document.querySelectorAll("[data-view-link]")) {
   link.addEventListener("click", (event) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    const hash = link.dataset.viewLink === "system" ? "#system" : "";
+    const hash = link.dataset.viewLink === "models" ? "" : `#${link.dataset.viewLink}`;
     if (location.hash !== hash) history.pushState(null, "", hash || "/");
     updateDashboardView();
     window.scrollTo(0, 0);

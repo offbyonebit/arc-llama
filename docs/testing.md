@@ -115,3 +115,95 @@ do not identify the exact sandbox restriction responsible.
 
 The baseline skips required local GGUF fixtures or an explicitly configured
 GPU inference smoke model. Unit-test success is not hardware validation.
+
+## Next-release recovery and budget checks
+
+`tests/test_streaming_inflight.py` exercises stalled headers, first streamed
+bytes, idle gaps, slow prefills, unlimited mode, and cleanup/retry. It also
+retains upstream failure and cancellation coverage. `tests/test_context_budget.py`
+checks native template/tokenizer inputs, per-slot capacity, reply allowance,
+explicit fallbacks, validation, deadlines, and lease cleanup. Browser cases in
+`release-cases.mjs` cover saved interruptions/stops, exact budget guards,
+model-change races, and download destination/retry persistence.
+
+The published-wheel workflow runs on published releases, weekly, or manually.
+Release runs install the GitHub release wheel; scheduled/manual runs install the
+latest PyPI wheel. Its Python 3.12+ helper `scripts/published_smoke.py` downloads a
+checksum-pinned llama.cpp b11381 CPU runtime and Qwen2.5 0.5B Q4_K_M model, creates
+isolated config/state, and verifies real JSON/SSE inference plus installed HTML
+script/style references. It never allocates GPU layers. This validates package
+integration, not Intel GPU performance or compatibility.
+
+For a local candidate, install the wheel without extras in a fresh environment,
+then run the helper from outside the source checkout. On a Linux host, use an
+outer time limit and a memory-limited scope. The optional
+`--ui-check /absolute/path/to/browser-tests/installed-smoke.mjs` uses Playwright
+and Chrome/Chromium to verify exact counts against native inference usage,
+parallel-slot capacity, actual summarization, continuation, and undo with the
+complete original transcript retained. It uses the installed package's UI, with
+real HTTP endpoints and no inference mocks. Browser dependencies belong in the
+separate browser-tests environment, not the installed core wheel.
+
+
+## Work projects and jobs
+
+`tests/test_work.py` and `tests/test_work_api.py` exercise independent snapshots,
+read-only policy, path containment, exact approvals, persisted receipts, restart
+recovery, single-worker ownership, pause/resume, shutdown during copying,
+review revisions, source conflicts, apply rollback, undo, and retained audit
+history. `tests/test_work_verify.py` covers acceptance checks, repair feedback,
+evidence limits, and interrupted verification. `tests/test_work_attempts.py`
+covers fresh attempts, budget admission, best-result selection, approval IDs
+across attempts, legacy jobs, planning pauses, and restart at every copy-swap
+stage. The browser `work-` cases cover project/job creation, reload/reconnect,
+review/apply/undo, attempt settings, verification toggles, chosen results, active
+verification guards, and model loading after manual admin-token entry.
+
+For native candidate validation, pass
+`--ui-check /absolute/path/to/browser-tests/installed-work-smoke.mjs` to the
+published-wheel helper and set `ARC_WORK_SMOKE_ROOT` to a fresh
+`/tmp/arc-work-*` directory containing `README.txt` with `Original project`.
+The browser asks the installed local model to create a file in its job copy,
+checks the source is untouched, reloads, reviews and applies the diff, and undoes
+it. This uses actual HTTP/inference and the installed static assets.
+
+Optional command isolation also needs a native Linux check outside restricted
+CI containers. The 2026-10-17 host check confirmed copy-only writes, an isolated
+HOME, absent host home/GPU devices, blocked host-network connections, and
+termination of child processes on cancellation. This does not establish native
+Windows or macOS command isolation; those platforms support file-only Work.
+
+
+### Real Work verification and retry tests
+
+Use a core-only installed candidate wheel, not an editable checkout. The helper's
+`--model-size 1.5b` selects the official checksum-pinned Qwen2.5 1.5B Q4_K_M model;
+the default remains 0.5B for the ordinary published-wheel smoke test. Install the
+separate browser-tests dependencies and Chromium as described above. Run outside
+the restricted agent sandbox, with a fresh empty `/tmp/arc-work-*` source fixture:
+
+```bash
+systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=200% -p TasksMax=256 \
+  env ARC_WORK_SMOKE_ROOT=/tmp/arc-work-native-retry ARC_WORK_NATIVE_CASE=retry \
+  timeout 510s /path/to/core-only/bin/python scripts/published_smoke.py \
+  --work-dir /tmp/arc-work-native-assets --model-size 1.5b \
+  --expected-version 0.9.2.dev0 --ui-check-timeout 450 \
+  --ui-check browser-tests/installed-work-retry-smoke.mjs
+```
+
+Repeat with a different fresh source fixture and `ARC_WORK_NATIVE_CASE=keep-best`
+to test restoring the earlier result when the second attempt is worse. `normal`
+runs an unblocked single-attempt case. Project folders must be empty or absent;
+the harness refuses to overwrite an existing fixture. The asset/state directory
+may be reused after the prior run stops. The 1.5B model requires about 1.1 GB
+of disk space; the helper verifies its pinned SHA-256 before inference.
+
+The retry cases insert directories at output file paths in independent job
+copies, so real write operations fail without touching source files. They assert
+failed checks and two repair passes, fresh attempts, selected file contents,
+the displayed verdict/history after reload, reviewed apply, and undo. No API or
+model responses are mocked. At most two explicit admin resumes are attempted
+for malformed model calls; these are recorded, never presented as an unattended
+pass. A model that still cannot complete the case fails the harness. The native
+record for October 18 includes the 0.5B failure and successful 1.5B runs without
+admin resumes. These are opt-in tests, not additions to the default unit suite.

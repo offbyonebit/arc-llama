@@ -1,0 +1,10 @@
+runtime_exists True
+runtime_path C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823-vulkan\llama-server.exe
+runtime_directory [('ggml-rpc-server.exe', True, 117248), ('llama-server-impl.dll', True, 9600000), ('llama-server.exe', True, 9216)]
+single_resident True
+models [('qwen05', 491400032), ('qwen05-q8', 675710816)]
+
+Available devices:
+  Vulkan0: NVIDIA GeForce RTX 4060 Ti (16107 MiB, 15339 MiB free)
+  Vulkan1: Intel(R) Arc(TM) Pro B60 Graphics (24382 MiB, 23613 MiB free)
+

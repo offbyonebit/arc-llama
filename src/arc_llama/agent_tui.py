@@ -8,6 +8,7 @@ Requires a running `arc-llama serve` instance and the `[tui]` extra:
 
     pip install 'arc-llama[tui]'
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,9 +28,7 @@ try:
     from textual.screen import ModalScreen
     from textual.widgets import Button, Checkbox, Input, Label, RichLog, Static
 except ImportError as e:  # pragma: no cover
-    raise SystemExit(
-        "arcllama requires textual. Install with: pip install 'arc-llama[tui]'"
-    ) from e
+    raise SystemExit("arcllama requires textual. Install with: pip install 'arc-llama[tui]'") from e
 
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.interactive import InteractiveAgent
@@ -195,9 +194,7 @@ class AgentApp(App):
         self.folder = folder
         self.chat_store = chat_store
         self.checkpoint_store = checkpoint_store
-        self.session_chat = chat_store.create(
-            str(uuid.uuid4()), "TUI session", folder=folder
-        )
+        self.session_chat = chat_store.create(str(uuid.uuid4()), "TUI session", folder=folder)
         self.agent = InteractiveAgent(
             model=model,
             base_url=base_url,
@@ -226,8 +223,12 @@ class AgentApp(App):
         self.chat_log = self.query_one("#chat-log", RichLog)
         self.chat_input = self.query_one("#chat-input", Input)
         self.chat_input.focus()
-        self._write("[b]arcllama[/b] — type a task below. Press Ctrl+C to quit, Ctrl+N for a new session.")
-        self._write("[yellow]Draft interface:[/yellow] still working on ergonomics and style — subject to change.")
+        self._write(
+            "[b]arcllama[/b] — type a task below. Press Ctrl+C to quit, Ctrl+N for a new session."
+        )
+        self._write(
+            "[yellow]Draft interface:[/yellow] still working on ergonomics and style — subject to change."
+        )
 
     def _write(self, text: str) -> None:
         if self.chat_log is not None:
@@ -310,9 +311,7 @@ class AgentApp(App):
             ):
                 self.post_message(AgentEvent(event))
                 if event.get("type") == "assistant" and event.get("content"):
-                    turn_messages.append(
-                        ChatMessage(role="assistant", content=event["content"])
-                    )
+                    turn_messages.append(ChatMessage(role="assistant", content=event["content"]))
                 elif event.get("type") == "tool_result":
                     name = event.get("name", "tool")
                     content = event.get("content", "")
@@ -370,8 +369,7 @@ def run_agent_tui(
             health.raise_for_status()
         except Exception as e:
             raise SystemExit(
-                f"Cannot reach arc-llama server at {base_url}: {e}\n"
-                "Start one with: arc-llama serve"
+                f"Cannot reach arc-llama server at {base_url}: {e}\nStart one with: arc-llama serve"
             ) from e
 
         if model is None:
@@ -390,9 +388,7 @@ def run_agent_tui(
         if cfg.paths.state_dir:
             state_dir = Path(cfg.paths.state_dir).expanduser()
 
-        chat_store = ChatStore(
-            state_dir / "chats" if state_dir else Path(".arc_llama_chats")
-        )
+        chat_store = ChatStore(state_dir / "chats" if state_dir else Path(".arc_llama_chats"))
         checkpoint_store = CheckpointStore(
             state_dir / "checkpoints" if state_dir else Path(".arc_llama_checkpoints")
         )

@@ -1,4 +1,5 @@
 """Tests for arc_llama.server_caps — llama-server --help sniffing."""
+
 from __future__ import annotations
 
 import os
@@ -84,11 +85,10 @@ class TestParseHelp:
 
 class TestFormatSpeculationCapability:
     def test_supported_lists_modes(self):
-        caps = ServerCaps(probed=True, supports_speculative=True,
-                          supports_draft_model=True, supports_ngram=False)
-        assert format_speculation_capability(caps) == (
-            "available (draft-model: yes, n-gram: no)"
+        caps = ServerCaps(
+            probed=True, supports_speculative=True, supports_draft_model=True, supports_ngram=False
         )
+        assert format_speculation_capability(caps) == ("available (draft-model: yes, n-gram: no)")
 
     def test_unsupported_explains_required_flag(self):
         caps = ServerCaps(probed=True)
@@ -132,9 +132,7 @@ class TestProbe:
     def test_nonzero_help_exit_gives_optimistic_defaults(self, tmp_path):
         script = tmp_path / "llama-server"
         script.write_text(
-            "#!/bin/sh\n"
-            "echo 'terminate called after throwing a SYCL exception' >&2\n"
-            "exit 134\n"
+            "#!/bin/sh\necho 'terminate called after throwing a SYCL exception' >&2\nexit 134\n"
         )
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
 
@@ -153,3 +151,24 @@ class TestProbe:
         os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
         os.utime(path, (os.stat(path).st_atime, os.stat(path).st_mtime + 10))
         assert probe_server_caps(path).flash_attn_takes_value
+
+
+def test_probe_sources_oneapi_when_the_runtime_needs_it(tmp_path, monkeypatch):
+    # a SYCL llama-server started outside a oneAPI shell fails --help with a missing library
+    from helpers import python_executable
+
+    import arc_llama.platform_checks as pc
+
+    binary = python_executable(
+        tmp_path / "sycl-server",
+        "import os, sys\n"
+        "if os.environ.get('ONEAPI_MARK') != '1':\n"
+        "    sys.stderr.write('llama-server: error while loading shared libraries: libsvml.so: cannot open shared object file\\n')\n"
+        "    sys.exit(127)\n"
+        "print('--flash-attn on off auto')\n",
+    )
+    monkeypatch.setattr(pc, "oneapi_runtime_env_needed", lambda: True)
+    monkeypatch.setattr(pc, "oneapi_setvars_path", lambda: tmp_path / "setvars.sh")
+    monkeypatch.setattr(pc, "source_setvars", lambda _p: {"ONEAPI_MARK": "1"})
+    caps = probe_server_caps(str(binary))
+    assert caps.probed and caps.supports_flash_attn

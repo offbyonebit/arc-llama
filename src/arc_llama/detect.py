@@ -21,6 +21,7 @@ Detection is layered so we work even on minimal systems:
 We never assume `clinfo`, `sycl-ls`, or oneAPI are available — `arc-llama doctor`
 checks for those separately and tells the user how to install them.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -34,7 +35,7 @@ from pathlib import Path
 from arc_llama.arch import Arch, arch_for_device_id, known_vram_mib
 
 INTEL_VENDOR_ID = 0x8086
-PCI_CLASS_VGA = 0x030000      # 0x03_00_00 — VGA-compatible controller
+PCI_CLASS_VGA = 0x030000  # 0x03_00_00 — VGA-compatible controller
 PCI_CLASS_DISPLAY = 0x038000  # 0x03_80_00 — other display controller
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -47,15 +48,16 @@ _REG_BINARY = 3
 @dataclass
 class DetectedGPU:
     """One Intel GPU discovered on this host."""
-    pci_slot: str          # e.g. "0000:03:00.0"
-    device_id: int         # PCI device ID (e.g. 0xE212 for Arc Pro B60)
+
+    pci_slot: str  # e.g. "0000:03:00.0"
+    device_id: int  # PCI device ID (e.g. 0xE212 for Arc Pro B60)
     arch: Arch
-    name: str              # marketing name from arch table or fallback
-    driver: str | None     # kernel driver bound: "xe", "i915", or None
-    vram_mb: int | None    # total VRAM in MiB if discoverable, else None
-    drm_card: str | None   # e.g. "card1"
-    drm_render: str | None # e.g. "renderD128"
-    sysfs_path: str        # /sys/bus/pci/devices/<slot>
+    name: str  # marketing name from arch table or fallback
+    driver: str | None  # kernel driver bound: "xe", "i915", or None
+    vram_mb: int | None  # total VRAM in MiB if discoverable, else None
+    drm_card: str | None  # e.g. "card1"
+    drm_render: str | None  # e.g. "renderD128"
+    sysfs_path: str  # /sys/bus/pci/devices/<slot>
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -79,6 +81,7 @@ class DetectedGPU:
 # cfgmgr32 helpers (Windows only; never imported at module top level).
 # ---------------------------------------------------------------------------
 
+
 def _cfgmgr32_bdf(instance_id: str) -> tuple[int, int, int] | None:
     """Return (bus, device, function) for a PNP device instance via cfgmgr32.
 
@@ -98,7 +101,7 @@ def _cfgmgr32_bdf(instance_id: str) -> tuple[int, int, int] | None:
     # exists to avoid.
     cm_locate_devnode_normal = 0x00000000
     cm_drp_busnumber = 0x00000016  # SPDRP_BUSNUMBER (0x15) + 1
-    cm_drp_address = 0x0000001D    # SPDRP_ADDRESS (0x1C) + 1
+    cm_drp_address = 0x0000001D  # SPDRP_ADDRESS (0x1C) + 1
     cr_success = 0x00000000
 
     try:
@@ -167,6 +170,7 @@ def _cfgmgr32_bdf(instance_id: str) -> tuple[int, int, int] | None:
 # ---------------------------------------------------------------------------
 # Windows registry helpers (winreg is imported inside each function).
 # ---------------------------------------------------------------------------
+
 
 def _decode_qw_memory_size(raw, typ: int | None) -> int | None:
     """Interpret HardwareInformation.qwMemorySize as a byte count.
@@ -251,9 +255,7 @@ def _enum_pci_locations() -> list[dict]:
         return []
     import winreg
 
-    loc_re = re.compile(
-        r"PCI\s+bus\s+(\d+),\s*device\s+(\d+),\s*function\s+(\d+)", re.IGNORECASE
-    )
+    loc_re = re.compile(r"PCI\s+bus\s+(\d+),\s*device\s+(\d+),\s*function\s+(\d+)", re.IGNORECASE)
     slots: list[dict] = []
     try:
         with winreg.OpenKey(
@@ -338,6 +340,7 @@ def _parse_pnp_device_id(pnp: str) -> int | None:
 # ---------------------------------------------------------------------------
 # Windows scan orchestration.
 # ---------------------------------------------------------------------------
+
 
 def _scan_windows() -> list[DetectedGPU]:
     """Enumerate Intel GPUs on Windows.
@@ -439,9 +442,7 @@ def _scan_windows() -> list[DetectedGPU]:
                     "(HardwareInformation.qwMemorySize was missing)."
                 )
             else:
-                gpu.notes.append(
-                    "VRAM size not discoverable from registry or device-ID table."
-                )
+                gpu.notes.append("VRAM size not discoverable from registry or device-ID table.")
 
             if driver is None:
                 gpu.notes.append(
@@ -456,16 +457,12 @@ def _scan_windows() -> list[DetectedGPU]:
                     "slot may be less reliable than numeric cfgmgr32 data."
                 )
             elif source == "unknown":
-                gpu.notes.append(
-                    "PCI location could not be determined; using a synthetic slot."
-                )
+                gpu.notes.append("PCI location could not be determined; using a synthetic slot.")
 
             found.append(gpu)
 
     def _slot_sort_key(g: DetectedGPU):
-        m = re.match(
-            r"0000:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-9a-fA-F])", g.pci_slot
-        )
+        m = re.match(r"0000:([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-9a-fA-F])", g.pci_slot)
         if m:
             return tuple(int(x, 16) for x in m.groups())
         return (0xFFFF, 0xFFFF, 0xFFFF)
@@ -526,9 +523,7 @@ def _enrich_with_sycl_ls(gpus: list[DetectedGPU]) -> None:
     if sys.platform != "win32":
         return
     try:
-        out = subprocess.run(
-            ["sycl-ls"], capture_output=True, text=True, timeout=15
-        )
+        out = subprocess.run(["sycl-ls"], capture_output=True, text=True, timeout=15)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return
     if out.returncode != 0:
@@ -560,6 +555,7 @@ def _enrich_with_sycl_ls(gpus: list[DetectedGPU]) -> None:
 # ---------------------------------------------------------------------------
 # Linux scan (unchanged behaviour).
 # ---------------------------------------------------------------------------
+
 
 def _read_hex(path: Path) -> int | None:
     try:
@@ -604,11 +600,11 @@ def _drm_nodes(sysfs: Path) -> tuple[str | None, str | None]:
 def _vram_mib(sysfs: Path) -> int | None:
     """Pull VRAM size from xe / i915 / amdgpu sysfs layouts."""
     candidates = [
-        sysfs / "mem_info_vram_total",                       # amdgpu / some xe
+        sysfs / "mem_info_vram_total",  # amdgpu / some xe
         sysfs / "device" / "mem_info_vram_total",
-        sysfs / "tile0" / "physical_vram_size_bytes",        # xe (Battlemage)
+        sysfs / "tile0" / "physical_vram_size_bytes",  # xe (Battlemage)
         sysfs / "device" / "tile0" / "physical_vram_size_bytes",
-        sysfs / "lmem_total_bytes",                          # i915 dGPU
+        sysfs / "lmem_total_bytes",  # i915 dGPU
         sysfs / "device" / "lmem_total_bytes",
     ]
     for c in candidates:
@@ -870,7 +866,10 @@ def _enrich_with_clinfo(gpus: list[DetectedGPU]) -> None:
     """
     try:
         out = subprocess.run(
-            ["clinfo"], capture_output=True, text=True, timeout=15,
+            ["clinfo"],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return
@@ -878,8 +877,7 @@ def _enrich_with_clinfo(gpus: list[DetectedGPU]) -> None:
         return
     devices = _parse_clinfo_devices(out.stdout)
     intel_arc_devices = [
-        (n, g) for (n, g) in devices
-        if "Intel" in n and ("Arc" in n or "Graphics" in n)
+        (n, g) for (n, g) in devices if "Intel" in n and ("Arc" in n or "Graphics" in n)
     ]
     if not intel_arc_devices:
         return
@@ -940,15 +938,18 @@ def lspci_intel_gpus() -> str:
         return ""
     try:
         out = subprocess.run(
-            ["lspci", "-nn"], capture_output=True, text=True, timeout=5,
+            ["lspci", "-nn"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return ""
     if out.returncode != 0:
         return ""
     return "\n".join(
-        line for line in out.stdout.splitlines()
-        if re.search(r"\[8086:[0-9A-Fa-f]+\]", line) and (
-            "VGA" in line or "Display" in line or "3D" in line
-        )
+        line
+        for line in out.stdout.splitlines()
+        if re.search(r"\[8086:[0-9A-Fa-f]+\]", line)
+        and ("VGA" in line or "Display" in line or "3D" in line)
     )

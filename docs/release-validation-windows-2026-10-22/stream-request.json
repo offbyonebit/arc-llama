@@ -1,0 +1,11 @@
+{
+  "model": "qwen05",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello."
+    }
+  ],
+  "max_tokens": 32,
+  "stream": true
+}

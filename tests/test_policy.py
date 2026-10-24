@@ -1,4 +1,5 @@
 """Tests for launch policy (verified adjustments only)."""
+
 from __future__ import annotations
 
 from arc_llama.arch import Arch, Backend
@@ -103,6 +104,7 @@ class TestApplyLaunchPolicy:
 
     def test_warns_high_draft_n_max(self, caplog):
         import logging
+
         recipe = LaunchRecipe(spec_type="draft-mtp", spec_draft_n_max=6)
         with caplog.at_level(logging.WARNING):
             apply_launch_policy(

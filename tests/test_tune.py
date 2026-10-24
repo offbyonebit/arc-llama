@@ -1,4 +1,5 @@
 """Tests for arc_llama.tune — candidate generation, scoring, greedy sweep."""
+
 from __future__ import annotations
 
 import asyncio
@@ -30,9 +31,15 @@ from arc_llama.tune import (
 
 def _result(pp: float | None, gen: float | None, error: str | None = None) -> BenchmarkResult:
     return BenchmarkResult(
-        model="m", ctx=8192, cache_type_k="q8_0", cache_type_v="q8_0",
-        prompt_tokens=1024, gen_tokens=128,
-        prompt_eval_tok_s=pp, generation_tok_s=gen, error=error,
+        model="m",
+        ctx=8192,
+        cache_type_k="q8_0",
+        cache_type_v="q8_0",
+        prompt_tokens=1024,
+        gen_tokens=128,
+        prompt_eval_tok_s=pp,
+        generation_tok_s=gen,
+        error=error,
     )
 
 
@@ -115,18 +122,25 @@ class TestRestoreEdits:
 # End-to-end greedy loop with a faked measurement backend
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cfg(tmp_path):
     gguf = tmp_path / "m.gguf"
     gguf.write_bytes(b"\x00" * 16)
     return Config(
         paths=PathsConfig(llama_server=str(tmp_path / "no-such-llama-server")),
-        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage",
-                        vram_mb=24 * 1024)],
-        models=[ModelConfig(
-            name="m", path=str(gguf), port=18080, gpu_pci_slot="0000:03:00.0",
-            recipe={"ctx": 8192, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
-        )],
+        gpus=[
+            GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=24 * 1024)
+        ],
+        models=[
+            ModelConfig(
+                name="m",
+                path=str(gguf),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                recipe={"ctx": 8192, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+            )
+        ],
     )
 
 
@@ -178,8 +192,10 @@ async def test_tune_picks_and_applies_winner(cfg, monkeypatch):
 
     assert report.error is None
     assert report.best_edits == {
-        "cache_type_k": "f16", "cache_type_v": "f16",
-        "ubatch_size": 1024, "batch_size": 2048,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16",
+        "ubatch_size": 1024,
+        "batch_size": 2048,
         "flash_attn": "on",
     }
     assert report.applied
@@ -360,6 +376,7 @@ async def test_probe_server_caps_does_not_block_event_loop(cfg, monkeypatch):
 # tune_all: fleet-wide sweep orchestration
 # ---------------------------------------------------------------------------
 
+
 async def test_tune_all_runs_each_model_in_order(monkeypatch, cfg):
     calls: list[str] = []
     starts: list[tuple[str, int, int]] = []
@@ -459,13 +476,17 @@ async def test_offload_stage_skipped_when_model_fits_without_offload(cfg, monkey
 
     calls: list[tuple[str, int, int]] = []
     report = await tune_model(
-        "http://127.0.0.1:11437", "m", cfg=cfg,
+        "http://127.0.0.1:11437",
+        "m",
+        cfg=cfg,
         on_stage=lambda name, i, total: calls.append((name, i, total)),
     )
 
     assert report.error is None
     assert _offload_steps(report) == []
-    skips = [s for s in report.steps if s.skipped_reason and "fits without offload" in s.skipped_reason]
+    skips = [
+        s for s in report.steps if s.skipped_reason and "fits without offload" in s.skipped_reason
+    ]
     assert len(skips) == 1
     assert "n_cpu_moe" not in report.best_edits
     # The skipped stage frees its slot: ubatch/FA are numbered 2..3 of 3.
@@ -487,7 +508,9 @@ async def test_offload_stage_runs_after_kv_and_uses_winning_kv(cfg, monkeypatch)
 
     calls: list[tuple[str, int, int]] = []
     report = await tune_model(
-        "http://127.0.0.1:11437", "m", cfg=cfg,
+        "http://127.0.0.1:11437",
+        "m",
+        cfg=cfg,
         on_stage=lambda name, i, total: calls.append((name, i, total)),
     )
 
@@ -499,12 +522,8 @@ async def test_offload_stage_runs_after_kv_and_uses_winning_kv(cfg, monkeypatch)
     assert fake.state["n_cpu_moe"] == 6
     # Ordering: the first edit carrying the tuned offload comes after the
     # KV winner was applied.
-    first_kv_win = next(
-        i for i, e in enumerate(fake.edits_seen) if e.get("cache_type_k") == "f16"
-    )
-    first_offload = next(
-        i for i, e in enumerate(fake.edits_seen) if e.get("n_cpu_moe") == 6
-    )
+    first_kv_win = next(i for i, e in enumerate(fake.edits_seen) if e.get("cache_type_k") == "f16")
+    first_offload = next(i for i, e in enumerate(fake.edits_seen) if e.get("n_cpu_moe") == 6)
     assert first_kv_win < first_offload
     # Stage numbering: KV, offload, ubatch, FA = 4 stages.
     assert [i for _, i, _ in calls] == [1, 2, 3, 4]
@@ -578,7 +597,9 @@ async def test_ubatch_candidates_pruned_under_chosen_offload(cfg, monkeypatch):
     assert "would not fit" in (ub1024[0].skipped_reason or "")
     assert not any(ub == 1024 for _, ub, _ in fake.bench_calls)
     # The fitting ubatch candidates were still measured.
-    measured_ub = {s.edits.get("ubatch_size") for s in report.steps if s.result and "ubatch_size" in s.edits}
+    measured_ub = {
+        s.edits.get("ubatch_size") for s in report.steps if s.result and "ubatch_size" in s.edits
+    }
     assert measured_ub == {512, 256}
 
 
@@ -617,15 +638,23 @@ class TestBaselineErrorGuard:
 
         cfg = Config(
             server=ServerConfig(admin_token=None),
-            models=[ModelConfig(name="m", path="/m.gguf", port=1, gpu_pci_slot="pci", recipe={"ctx": 4096})],
+            models=[
+                ModelConfig(
+                    name="m", path="/m.gguf", port=1, gpu_pci_slot="pci", recipe={"ctx": 4096}
+                )
+            ],
             gpus=[GPUConfig(pci_slot="pci", sycl_index=0, arch="battlemage")],
             tune=TuneConfig(auto=False),
         )
 
-        monkeypatch.setattr("arc_llama.arch.profile_for", lambda arch: type("P", (), {"safe_kv_q8": True})())
+        monkeypatch.setattr(
+            "arc_llama.arch.profile_for", lambda arch: type("P", (), {"safe_kv_q8": True})()
+        )
         monkeypatch.setattr(
             "arc_llama.server_caps.probe_server_caps",
-            lambda path: type("C", (), {"supports_flash_attn": True, "flash_attn_takes_value": True})(),
+            lambda path: type(
+                "C", (), {"supports_flash_attn": True, "flash_attn_takes_value": True}
+            )(),
         )
         monkeypatch.setattr(wl, "target_ctx", lambda cfg: None)
         monkeypatch.setattr(wl, "score_priority", lambda cfg: None)
@@ -638,8 +667,10 @@ class TestBaselineErrorGuard:
         monkeypatch.setattr(tune_mod, "_apply_edits", noop_apply)
 
         report = await tune_model(
-            "http://127.0.0.1:1", "m",
-            cfg=cfg, should_abort=lambda: True,
+            "http://127.0.0.1:1",
+            "m",
+            cfg=cfg,
+            should_abort=lambda: True,
         )
         assert report.aborted is True
         assert report.error == "baseline measurement failed"
@@ -653,15 +684,27 @@ class TestOverrideTensorViability:
 
         cfg = Config(
             server=ServerConfig(admin_token=None),
-            models=[ModelConfig(name="m", path=str(tmp_path / "m.gguf"), port=1, gpu_pci_slot="pci", recipe={"ctx": 4096})],
+            models=[
+                ModelConfig(
+                    name="m",
+                    path=str(tmp_path / "m.gguf"),
+                    port=1,
+                    gpu_pci_slot="pci",
+                    recipe={"ctx": 4096},
+                )
+            ],
             gpus=[GPUConfig(pci_slot="pci", sycl_index=0, arch="battlemage", vram_mb=None)],
             tune=TuneConfig(auto=False),
         )
 
-        monkeypatch.setattr("arc_llama.arch.profile_for", lambda arch: type("P", (), {"safe_kv_q8": True})())
+        monkeypatch.setattr(
+            "arc_llama.arch.profile_for", lambda arch: type("P", (), {"safe_kv_q8": True})()
+        )
         monkeypatch.setattr(
             "arc_llama.server_caps.probe_server_caps",
-            lambda path: type("C", (), {"supports_flash_attn": False, "flash_attn_takes_value": True})(),
+            lambda path: type(
+                "C", (), {"supports_flash_attn": False, "flash_attn_takes_value": True}
+            )(),
         )
         monkeypatch.setattr(wl, "target_ctx", lambda cfg: None)
         monkeypatch.setattr(wl, "score_priority", lambda cfg: None)
@@ -669,21 +712,31 @@ class TestOverrideTensorViability:
         monkeypatch.setattr(wl, "stage_is_depth_sensitive", lambda axes: False)
 
         monkeypatch.setattr(
-            tune_mod, "_probe_offload_info",
+            tune_mod,
+            "_probe_offload_info",
             lambda model, gpu: tune_mod._OffloadInfo(n_layers=8, vram_mb=16000),
         )
         monkeypatch.setattr(tune_mod, "min_moe_offload_layers", lambda *a, **kw: 5)
         monkeypatch.setattr(tune_mod, "weight_tensor_table", lambda path: {"t": 1024 * 1024})
-        monkeypatch.setattr(tune_mod, "propose_override_tensor_patterns", lambda table: ["p1", "p2"])
+        monkeypatch.setattr(
+            tune_mod, "propose_override_tensor_patterns", lambda table: ["p1", "p2"]
+        )
         monkeypatch.setattr(tune_mod, "validate_override_patterns", lambda table, pats: (True, ""))
-        monkeypatch.setattr(tune_mod, "override_tensor_saved_bytes", lambda table, pats: 1024 * 1024)
+        monkeypatch.setattr(
+            tune_mod, "override_tensor_saved_bytes", lambda table, pats: 1024 * 1024
+        )
         monkeypatch.setattr(tune_mod, "_estimate_model_vram_mb", lambda *a, **kw: 1000)
 
         async def fake_benchmark(*a, **kw):
             return BenchmarkResult(
-                model="m", ctx=4096, cache_type_k="f16", cache_type_v="f16",
-                prompt_tokens=1, gen_tokens=1,
-                prompt_eval_tok_s=10.0, generation_tok_s=10.0,
+                model="m",
+                ctx=4096,
+                cache_type_k="f16",
+                cache_type_v="f16",
+                prompt_tokens=1,
+                gen_tokens=1,
+                prompt_eval_tok_s=10.0,
+                generation_tok_s=10.0,
             )
 
         monkeypatch.setattr(tune_mod, "benchmark_model", fake_benchmark)
@@ -702,6 +755,7 @@ class TestOverrideTensorViability:
 # ---------------------------------------------------------------------------
 # #30 / #37 — abort re-check inside measure, restore retry + fallback
 # ---------------------------------------------------------------------------
+
 
 async def test_measure_rechecks_abort_after_the_edit_await(cfg, monkeypatch):
     """#30: a real request registers while the candidate edit POST is in
@@ -731,7 +785,9 @@ async def test_measure_rechecks_abort_after_the_edit_await(cfg, monkeypatch):
     monkeypatch.setattr("arc_llama.tune.benchmark_model", bench)
 
     report = await tune_model(
-        "http://127.0.0.1:11437", "m", cfg=cfg,
+        "http://127.0.0.1:11437",
+        "m",
+        cfg=cfg,
         should_abort=lambda: abort_now,
     )
 
@@ -773,9 +829,7 @@ async def test_restore_final_state_direct_write_fallback(cfg, monkeypatch):
     # What the last candidate edit left behind.
     cfg.models[0].recipe = {"cache_type_k": "q8_0", "n_cpu_moe": 4}
 
-    err = await _restore_final_state(
-        None, "m", {"cache_type_k": "f16", "n_cpu_moe": None}, cfg
-    )
+    err = await _restore_final_state(None, "m", {"cache_type_k": "f16", "n_cpu_moe": None}, cfg)
 
     assert err is None
     assert cfg.models[0].recipe.get("cache_type_k") == "f16"
@@ -810,8 +864,13 @@ async def test_apply_state_to_recipe_mirrors_endpoint_rules():
     each other — the fallback must persist exactly what the endpoint would."""
     from arc_llama.tune import _apply_state_to_recipe
 
-    m = ModelConfig(name="m", path="/m.gguf", port=1, gpu_pci_slot="g",
-                    recipe={"cache_type_k": "q8_0", "n_cpu_moe": 4})
+    m = ModelConfig(
+        name="m",
+        path="/m.gguf",
+        port=1,
+        gpu_pci_slot="g",
+        recipe={"cache_type_k": "q8_0", "n_cpu_moe": 4},
+    )
     _apply_state_to_recipe(m, {"override_tensor": ["p"]})
     assert m.recipe == {"cache_type_k": "q8_0", "override_tensor": ["p"]}
     _apply_state_to_recipe(m, {"n_cpu_moe": 2})

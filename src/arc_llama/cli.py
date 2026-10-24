@@ -664,9 +664,12 @@ def _validate_run_source(cfg: Config, source: str | None) -> None:
     if source is None or cfg.find_model(source) is not None:
         return
     path = Path(source).expanduser()
-    looks_local = (path.is_absolute() or bool(PureWindowsPath(source).drive)
-                   or source.startswith(("./", "../", "~", ".\\", "..\\"))
-                   or (source.lower().endswith(".gguf") and ":" not in source))
+    looks_local = (
+        path.is_absolute()
+        or bool(PureWindowsPath(source).drive)
+        or source.startswith(("./", "../", "~", ".\\", "..\\"))
+        or (source.lower().endswith(".gguf") and ":" not in source)
+    )
     if looks_local and not path.is_file():
         raise click.ClickException(
             f"Local GGUF file not found or not a regular file: {source}. "
@@ -1193,8 +1196,7 @@ def _prepare_lan(cfg: Config, port: int, assume_yes: bool) -> None:
     for addr in _lan_addresses():
         console.print(f"  From other devices: [cyan]http://{addr}:{port}/chat[/cyan]")
     console.print(
-        "  [dim]Remote clients send 'Authorization: Bearer <key>'; this machine "
-        "needs no key.[/dim]"
+        "  [dim]Remote clients send 'Authorization: Bearer <key>'; this machine needs no key.[/dim]"
     )
 
 
@@ -1239,7 +1241,7 @@ def _emit_recipe_submission(ctx: click.Context, cfg: Any, report: Any) -> None:
         tune_schema_version=3,
         vram_mb=(gpu.vram_mb if gpu is not None and gpu.vram_mb is not None else 0),
     )
-    provenance = llama_server_build_identity(cfg.paths.llama_server)
+    provenance = llama_server_build_identity(cfg.model_llama_server(m), env=m.env) if m.env else llama_server_build_identity(cfg.model_llama_server(m))
     best = report.best
     doc = submission_document(
         fingerprint=fp,

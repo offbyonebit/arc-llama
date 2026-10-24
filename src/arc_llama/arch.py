@@ -4,6 +4,7 @@ Each Arc generation has its own set of SYCL/OneAPI env-var quirks and known bugs
 This module is the single source of truth for that knowledge — when llama.cpp's
 SYCL backend changes behaviour, update the profile here, not in launcher code.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,16 +12,17 @@ from enum import Enum
 
 
 class Arch(str, Enum):
-    ALCHEMIST = "alchemist"   # Xe-HPG, A-series (A310/A380/A580/A750/A770)
-    BATTLEMAGE = "battlemage" # Xe2, B-series (B570/B580, Pro B60)
-    LUNAR_LAKE = "lunar_lake" # Xe2-LPG iGPU
+    ALCHEMIST = "alchemist"  # Xe-HPG, A-series (A310/A380/A580/A750/A770)
+    BATTLEMAGE = "battlemage"  # Xe2, B-series (B570/B580, Pro B60)
+    LUNAR_LAKE = "lunar_lake"  # Xe2-LPG iGPU
     UNKNOWN = "unknown"
 
 
 class Backend(str, Enum):
     """Which llama.cpp compute backend to use for a GPU."""
-    SYCL = "sycl"     # Intel oneAPI/SYCL path; best prompt-eval on Arc
-    VULKAN = "vulkan" # Cross-vendor Vulkan path; often better token-gen on Arc
+
+    SYCL = "sycl"  # Intel oneAPI/SYCL path; best prompt-eval on Arc
+    VULKAN = "vulkan"  # Cross-vendor Vulkan path; often better token-gen on Arc
 
 
 @dataclass(frozen=True)
@@ -36,13 +38,16 @@ def hardware_support(device_id: int, arch: Arch, backend: Backend) -> HardwareSu
     if device_id == 0xE211:
         return HardwareSupport("validated", f"Arc Pro B60 {backend.value} path tested")
     if arch in (Arch.ALCHEMIST, Arch.BATTLEMAGE, Arch.LUNAR_LAKE):
-        return HardwareSupport("detected", f"{arch.value} detected; this exact SKU/backend needs confirmation")
+        return HardwareSupport(
+            "detected", f"{arch.value} detected; this exact SKU/backend needs confirmation"
+        )
     return HardwareSupport("unknown", f"unknown Intel GPU/backend combination ({backend.value})")
 
 
 @dataclass
 class ArchProfile:
     """SYCL recipe for a specific Intel GPU generation."""
+
     arch: Arch
     display_name: str
     sycl_env: dict[str, str]
@@ -116,8 +121,8 @@ BATTLEMAGE_IDS: dict[int, str] = {
     0xE20C: "Arc B570",
     0xE20D: "Arc B-series (variant)",
     0xE210: "Arc B-series (variant)",
-    0xE211: "Arc Pro B60",      # confirmed on real hardware 2026-05-02
-    0xE212: "Arc Pro B-series", # tentative; reserved
+    0xE211: "Arc Pro B60",  # confirmed on real hardware 2026-05-02
+    0xE212: "Arc Pro B-series",  # tentative; reserved
     0xE215: "Arc Pro B-series",
     0xE216: "Arc Pro B-series",
 }
@@ -143,21 +148,21 @@ LUNAR_LAKE_IDS: dict[int, str] = {
 VRAM_BY_DEVICE_ID: dict[int, int] = {
     # Alchemist (DG2)
     0x56A0: 16384,  # Arc A770 — also an 8 GB SKU shares this ID
-    0x56A1: 8192,   # Arc A750
-    0x56A2: 8192,   # Arc A580
-    0x56A3: 6144,   # Arc A380 (variant)
-    0x56A4: 4096,   # Arc A310
-    0x56A5: 6144,   # Arc A380
-    0x56A6: 6144,   # Arc A380
+    0x56A1: 8192,  # Arc A750
+    0x56A2: 8192,  # Arc A580
+    0x56A3: 6144,  # Arc A380 (variant)
+    0x56A4: 4096,  # Arc A310
+    0x56A5: 6144,  # Arc A380
+    0x56A6: 6144,  # Arc A380
     0x56A8: 12288,  # Arc Pro A60
     0x56A9: 12288,  # Arc Pro A60M
     0x56B2: 12288,  # Arc Pro A60M
     0x56B3: 12288,  # Arc Pro A60
-    0x56BA: 6144,   # Arc A380E
-    0x56BB: 4096,   # Arc A310E
+    0x56BA: 6144,  # Arc A380E
+    0x56BB: 4096,  # Arc A310E
     0x5690: 16384,  # Arc A770M
     0x5691: 12288,  # Arc A730M
-    0x5692: 8192,   # Arc A550M
+    0x5692: 8192,  # Arc A550M
     # Battlemage (BMG)
     0xE20B: 12288,  # Arc B580
     0xE20C: 10240,  # Arc B570
@@ -173,13 +178,23 @@ VRAM_BY_DEVICE_ID: dict[int, int] = {
 # Source: Intel oneAPI ocloc device naming.
 AOT_ARCH_BY_DEVICE_ID: dict[int, str] = {
     # Alchemist ACM-G10 (A770 / A750 / A580)
-    0x56A0: "acm-g10", 0x56A1: "acm-g10", 0x56A2: "acm-g10",
-    0x56A8: "acm-g10", 0x56B3: "acm-g10",  # Arc Pro A60 (ACM-G10)
+    0x56A0: "acm-g10",
+    0x56A1: "acm-g10",
+    0x56A2: "acm-g10",
+    0x56A8: "acm-g10",
+    0x56B3: "acm-g10",  # Arc Pro A60 (ACM-G10)
     # Alchemist ACM-G11 (A380 / A310)
-    0x56A3: "acm-g11", 0x56A4: "acm-g11", 0x56A5: "acm-g11", 0x56A6: "acm-g11",
-    0x56BA: "acm-g11", 0x56BB: "acm-g11",
+    0x56A3: "acm-g11",
+    0x56A4: "acm-g11",
+    0x56A5: "acm-g11",
+    0x56A6: "acm-g11",
+    0x56BA: "acm-g11",
+    0x56BB: "acm-g11",
     # Battlemage BMG-G21 (B570 / B580 / Pro B60)
-    0xE20B: "bmg-g21", 0xE20C: "bmg-g21", 0xE211: "bmg-g21", 0xE212: "bmg-g21",
+    0xE20B: "bmg-g21",
+    0xE20C: "bmg-g21",
+    0xE211: "bmg-g21",
+    0xE212: "bmg-g21",
 }
 
 

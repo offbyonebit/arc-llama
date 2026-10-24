@@ -1,0 +1,112 @@
+/* Work: a quiet two-pane workbench. Rail on the left, one centered column on the right. */
+.work-layout{max-width:1120px;margin:0 auto;padding:32px 24px 64px;display:grid;grid-template-columns:264px minmax(0,1fr);gap:48px;align-items:start}
+.work-layout [hidden]{display:none!important}
+.work-layout h2,.work-layout h3{margin:0;font-weight:600;letter-spacing:-.01em}
+.work-layout h3{font-size:15px}
+.work-layout p{line-height:1.55;margin:0}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* Form controls */
+.work-layout label:not(.check):not(.sr-only){display:block;margin:14px 0 6px;font-size:13px;color:var(--text-muted)}
+.work-layout input:not([type=checkbox]),.work-layout select,.work-layout textarea{width:100%;box-sizing:border-box;padding:10px 12px;background:var(--surface-sunk);color:var(--text);border:1px solid var(--border);border-radius:10px;font:inherit}
+.work-layout input:focus-visible,.work-layout select:focus-visible,.work-layout textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.work-layout textarea{resize:vertical;line-height:1.5}
+.work-layout input:disabled{opacity:.55}
+.work-layout button{cursor:pointer;border-radius:999px;padding:8px 16px}
+.work-layout button.primary{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+.work-layout button.primary:hover:not(:disabled){background:var(--text);border-color:var(--text)}
+.check{display:flex;align-items:flex-start;gap:10px;margin:12px 0;font-size:14px}
+.check input{margin-top:3px}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.work-note{font-size:13px;color:var(--text-muted);overflow-wrap:anywhere}
+
+/* Rail */
+.work-rail{position:sticky;top:24px;z-index:30;display:flex;flex-direction:column;gap:14px;min-width:0}
+.rail-label{font-size:12px!important;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin:10px 0 0!important}
+.rail-project label.rail-label{margin:0 0 6px}
+#project-editor{margin-top:8px}
+#project-editor>summary{cursor:pointer;font-size:13px;color:var(--text-muted);list-style:none;padding:4px 2px}
+#project-editor>summary::-webkit-details-marker{display:none}
+#project-editor>summary:hover{color:var(--text)}
+.rail-new{width:100%;background:var(--accent)!important;color:var(--bg)!important;border-color:var(--accent)!important;padding:10px 16px!important}
+#job-list{display:flex;flex-direction:column;gap:2px;margin:0 -8px}
+#job-list>:not(.work-job){padding:8px;font-size:13px;color:var(--text-faint)}
+.work-job{width:100%;display:flex!important;flex-direction:column;gap:3px;text-align:left;padding:10px 12px!important;border:0!important;border-radius:10px!important;background:transparent!important;color:inherit;font-weight:400!important}
+.work-job:hover{background:var(--surface-raised)!important}
+.work-job[aria-current=true]{background:var(--surface-raised)!important}
+.work-job strong{font-size:14px;font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.work-job span{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:7px}
+.work-job span::before,#job-state::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--text-faint);flex:none}
+.work-job[data-state=running] span::before,.work-job[data-state=verifying] span::before,.work-job[data-state=preparing] span::before{background:#5aa9e6}
+.work-job[data-state=waiting_approval] span::before,.work-job[data-state=paused] span::before,.work-job[data-state=interrupted] span::before{background:#e5a93a}
+.work-job[data-state=completed] span::before,.work-job[data-state=done] span::before{background:#4caf50}
+.work-job[data-state=failed] span::before{background:#f44336}
+
+/* Project settings: a slide-over sheet */
+#project-editor[open]>summary{position:relative;z-index:31}
+#project-editor[open]::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:29}
+#project-editor .sheet{display:none}
+#project-editor[open] .sheet{display:block;position:fixed;top:0;right:0;bottom:0;z-index:30;width:min(460px,100%);box-sizing:border-box;overflow:auto;padding:28px;background:var(--surface);border-left:1px solid var(--border);box-shadow:-24px 0 60px rgba(0,0,0,.35)}
+#project-editor[open]>summary{visibility:hidden}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.sheet-head h2{font-size:20px}
+.sheet fieldset{border:0;border-top:1px solid var(--border-muted);margin:20px 0 0;padding:14px 0 0;min-width:0}
+.sheet legend{padding:0 8px 0 0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint)}
+.sheet .toolbar{margin-top:24px}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* Main column */
+.work-main{max-width:720px;width:100%;margin:0 auto;min-width:0;display:flex;flex-direction:column;gap:20px}
+.composer{padding-top:10vh}
+.composer h2{font-size:34px;line-height:1.15;letter-spacing:-.025em}
+.work-lede{margin:12px 0 24px!important;font-size:16px;color:var(--text-muted)}
+#task{font-size:16px;padding:16px;border-radius:14px;min-height:150px}
+.composer-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px}
+.composer-bar .primary{padding:10px 22px}
+.fine-print{margin-top:28px!important;color:var(--text-faint)}
+
+/* Job */
+.job-head{display:flex;flex-direction:column;gap:8px}
+.job-head h2{font-size:26px;line-height:1.2;letter-spacing:-.02em;overflow-wrap:anywhere}
+#job-state{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-muted);text-transform:none}
+#job-state::before{width:9px;height:9px}
+.job-head .toolbar{margin-top:6px}
+.card{background:var(--surface);border:1px solid var(--border-muted);border-radius:16px;padding:20px}
+.card>h3+*,.card>.work-tabs+*{margin-top:12px}
+.caution{border-color:#8e7543}
+.work-tabs{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.work-layout pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface-sunk);padding:14px;border-radius:12px;font-size:13px;line-height:1.6;max-height:420px;overflow:auto;margin:12px 0 0}
+#diff:empty{display:none}
+.activity-card>summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between}
+.activity-card>summary::-webkit-details-marker{display:none}
+.activity-card>summary::after{content:"Show";font-size:13px;color:var(--text-muted)}
+.activity-card[open]>summary::after{content:"Hide"}
+.work-event{border-bottom:1px solid var(--border-muted);padding:10px 0}
+.work-event summary{font-size:13px;cursor:pointer}
+.work-event pre{margin-bottom:0}
+#check-list,#attempt-list{padding-left:20px;line-height:1.6;overflow-wrap:anywhere;margin:0}
+#check-list li[data-status=pass]::marker{color:#4caf50}
+#check-list li[data-status=fail]::marker{color:#f44336}
+#check-list li[data-status=unknown]::marker{color:#ffb300}
+#verdict{font-weight:600}
+#verdict[data-verdict=verified]{color:#4caf50}
+#verdict[data-verdict=failed]{color:#f44336}
+#verdict[data-verdict=partial],#verdict[data-verdict=judged],#verdict[data-verdict=unverified]{color:#ffb300}
+
+/* Feedback */
+#work-error{position:sticky;top:12px;z-index:5;background:#572d2d;color:#fff;border-radius:12px;padding:14px 16px;white-space:pre-wrap}
+#work-auth{background:var(--surface);border:1px solid var(--border-muted);border-radius:16px;padding:20px;max-width:420px}
+#work-auth button{margin-top:12px}
+
+@media(max-width:860px){
+.work-layout{grid-template-columns:1fr;gap:24px;padding:16px 16px 48px}
+.work-rail{position:static}
+.composer{padding-top:4vh}
+.composer h2{font-size:28px}
+.app-header,.app-nav{flex-wrap:wrap}
+.field-row{grid-template-columns:1fr}
+}
+#job-state[data-state=running]::before,#job-state[data-state=verifying]::before,#job-state[data-state=preparing]::before{background:#5aa9e6}
+#job-state[data-state=waiting_approval]::before,#job-state[data-state=paused]::before,#job-state[data-state=interrupted]::before{background:#e5a93a}
+#job-state[data-state=completed]::before,#job-state[data-state=done]::before{background:#4caf50}
+#job-state[data-state=failed]::before{background:#f44336}

@@ -558,3 +558,29 @@ def test_install_runtime_aligns_gpu_backend(monkeypatch, tmp_path):
 
     assert cfg.gpus[0].backend == "vulkan"
     assert cfg.paths.llama_server == str(result.binary_path)
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("override", [None, "SSL_CERT_FILE", "SSL_CERT_DIR"])
+def test_runtime_tls_respects_platform_and_explicit_ca(monkeypatch, windows, override):
+    import ssl
+    from unittest.mock import Mock
+
+    import arc_llama.runtime as rt
+
+    monkeypatch.setattr(rt, "_IS_WINDOWS", windows)
+    for key in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    if override:
+        monkeypatch.setenv(override, "/caller-selected-ca")
+    verified = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    create = Mock(return_value=verified)
+    monkeypatch.setattr(rt.ssl, "create_default_context", create)
+    result = rt._runtime_ssl_context()
+    if windows and override is None:
+        assert result is verified
+        assert result.check_hostname and result.verify_mode == ssl.CERT_REQUIRED
+        create.assert_called_once_with()
+    else:
+        assert result is True  # let httpx honour its normal CA/environment policy
+        create.assert_not_called()

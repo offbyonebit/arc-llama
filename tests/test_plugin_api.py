@@ -218,13 +218,9 @@ async def test_context_exposes_models_lease_events_and_admin(monkeypatch) -> Non
             assert body["owner"] == "probe"
             assert body["models"][0]["name"] == "qwen"
             assert (await client.post("/plugins/probe/secret")).status_code == 401
-            ok = await client.post(
-                "/plugins/probe/secret", headers={"Authorization": "Bearer tok"}
-            )
+            ok = await client.post("/plugins/probe/secret", headers={"Authorization": "Bearer tok"})
             assert ok.status_code == 200
-            catalog = await client.get(
-                "/admin/plugins", headers={"Authorization": "Bearer tok"}
-            )
+            catalog = await client.get("/admin/plugins", headers={"Authorization": "Bearer tok"})
             assert catalog.json()["api_version"] == PLUGIN_API_VERSION
         app.state.router.events.emit(MODEL_LOADED, {"model": "qwen"})
     assert events == [{"model": "qwen"}]

@@ -1,0 +1,5 @@
+{
+  "ProcessId": 16284,
+  "ExecutablePath": "C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe",
+  "CommandLine": "C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe -m C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 18080 -ngl 999 -c 32768 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 -ub 1024 -b 2048 --flash-attn on"
+}

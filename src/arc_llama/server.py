@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -32,22 +33,48 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.types import Receive, Scope, Send
 
 from arc_llama import __version__
 from arc_llama.agent import run_agent
+from arc_llama.agent.changes import ChangeTracker
 from arc_llama.agent.checkpoints import CheckpointStore
+from arc_llama.agent.harness import (
+    HARNESSES,
+    OpenCodeError,
+    clean_history,
+    compose_prompt,
+    experimental_enabled,
+    filter_commands,
+    find_binary,
+    find_hermes_binary,
+    list_capabilities,
+    list_commands,
+    run_hermes,
+    run_opencode,
+)
+from arc_llama.agent.harness_history import (
+    NativeHistoryError,
+    get_native_session,
+    list_native_sessions,
+)
 from arc_llama.agent.mcp_client import MCPClientManager
+from arc_llama.agent.profiles import PROFILE_ID, ProfileStore
 from arc_llama.agent.repo_map import SemanticIndex
+from arc_llama.agent.sessions import SESSION_ID, SessionStore
+from arc_llama.api.context_budget import register_context_budget_route
 from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
+from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
-from arc_llama.chat_store import Chat, ChatMessage, ChatStore
+from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
 from arc_llama.config import Config, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
@@ -81,14 +108,30 @@ log = logging.getLogger("arc_llama.server")
 _REASONING_FORMATS = {"auto", "none", "deepseek", "deepseek-legacy"}
 
 
-async def _iter_sse_body(response: httpx.Response):
-    """Yield an SSE response and stop once the protocol sends ``[DONE]``."""
+async def _iter_sse_body(response: httpx.Response, *, require_done: bool = False):
+    """Forward bytes unchanged; recognize only an SSE terminator line."""
     tail = b""
     async for chunk in response.aiter_raw():
         yield chunk
-        tail = (tail + chunk)[-64:]
-        if b"data: [DONE]" in tail:
+        combined = tail + chunk
+        if any(line.strip() == b"data: [DONE]" for line in combined.splitlines()):
             return
+        tail = combined[-64:]
+    if require_done:
+        raise httpx.ReadError("Inference stream ended without a completion marker")
+
+
+class _LocalStreamingResponse(StreamingResponse):
+    """Also finalize when the client disappears before body iteration starts."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Local stream finalizers are idempotent; the normal body/background
+            # paths may already have settled this request.
+            if self.background is not None:
+                await self.background()
 
 
 def _strip_response_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -263,6 +306,10 @@ def create_app(
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
         app.state.pending_plan_approvals = pending_plan_approvals
+        app.state.work_runs = {}
+        app.state.work_profiles = ProfileStore((state_dir / "work-profiles.json") if state_dir else Path(".arc_llama_work_profiles.json"))
+        app.state.work_sessions = SessionStore((state_dir / "work-sessions") if state_dir else Path(".arc_llama_work_sessions"))
+        app.state.work_undo_dir = (state_dir / "work-undo") if state_dir else Path(".arc_llama_work_undo")
         if state_dir:
             app.state.chat_store = ChatStore(state_dir / "chats")
             app.state.checkpoint_store = CheckpointStore(state_dir / "checkpoints")
@@ -271,6 +318,9 @@ def create_app(
             app.state.chat_store = ChatStore(Path(".arc_llama_chats"))
             app.state.checkpoint_store = CheckpointStore(Path(".arc_llama_checkpoints"))
             app.state.semantic_index = SemanticIndex(Path(".arc_llama_semantic_index"))
+        app.state.work = None
+        if state_dir and (state_dir / "work" / "work.sqlite3").exists():
+            await ensure_work(app)
         load_skills(cfg.paths.skills_dir)
         app.state.mcp_manager = MCPClientManager(cfg.active_mcp_servers())
         tuner: Any | None = None
@@ -292,6 +342,8 @@ def create_app(
             await startup_plugins(app_plugins, app)
             yield
         finally:
+            if getattr(app.state, "work", None) is not None:
+                await app.state.work.shutdown()
             if app.state.api_keys is not None:
                 app.state.api_keys.flush()
             if app.state.perf_history is not None:
@@ -323,9 +375,7 @@ def create_app(
 
     @app.middleware("http")
     async def require_client_key(request: Request, call_next):
-        if request.url.path.startswith(_CLIENT_PROTECTED_PREFIXES) and not client_allowed(
-            request
-        ):
+        if request.url.path.startswith(_CLIENT_PROTECTED_PREFIXES) and not client_allowed(request):
             return JSONResponse(
                 status_code=401,
                 content={
@@ -600,8 +650,12 @@ def create_app(
                 {
                     "name": item["id"],
                     "model": item["id"],
-                    "modified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.get("created", 0))),
-                    "size": int(item.get("metadata", {}).get("model_file_mb", 0) or 0) * 1024 * 1024,
+                    "modified_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(item.get("created", 0))
+                    ),
+                    "size": int(item.get("metadata", {}).get("model_file_mb", 0) or 0)
+                    * 1024
+                    * 1024,
                     "digest": "",
                     "details": {"family": item.get("owned_by", "arc-llama")},
                 }
@@ -614,7 +668,9 @@ def create_app(
         body = await _read_json_body(request)
         messages = body.get("messages")
         if not isinstance(messages, list):
-            raise HTTPException(status_code=400, detail="Ollama chat requests require a messages array")
+            raise HTTPException(
+                status_code=400, detail="Ollama chat requests require a messages array"
+            )
         payload = _ollama_to_openai(body, messages=messages)
         request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
         response = await _proxy_post(request, "/v1/chat/completions")
@@ -625,7 +681,9 @@ def create_app(
         body = await _read_json_body(request)
         prompt = body.get("prompt", "")
         if not isinstance(prompt, str):
-            raise HTTPException(status_code=400, detail="Ollama generate requests require a string prompt")
+            raise HTTPException(
+                status_code=400, detail="Ollama generate requests require a string prompt"
+            )
         payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
         payload.pop("messages")
         payload["prompt"] = prompt
@@ -645,7 +703,10 @@ def create_app(
                 "plan_mode": false,
                 "max_turns": 30,
                 "root": "/optional/project/root",  // defaults to agent.root in config
-                "profile": "optional-profile-name" // must match the server's active profile
+                "profile": "optional-profile-name", // must match the server's active profile
+                "harness": "builtin" | "opencode" | "hermes",  // experimental; default "builtin"
+                "local_only": true,                 // opencode only: never reach cloud providers
+                "track_changes": false              // emit a final "changes" event and allow undo
             }
 
         Returns a text/event-stream of JSON objects:
@@ -662,17 +723,88 @@ def create_app(
 
         model = body.get("model")
         task = body.get("task")
-        if not isinstance(model, str) or not model.strip() or not isinstance(task, str) or not task.strip():
-            raise HTTPException(status_code=400, detail="'model' and 'task' must be nonempty strings")
+        if (
+            not isinstance(model, str)
+            or not model.strip()
+            or not isinstance(task, str)
+            or not task.strip()
+        ):
+            raise HTTPException(
+                status_code=400, detail="'model' and 'task' must be nonempty strings"
+            )
         for key in ("root", "folder", "profile"):
             if body.get(key) is not None and not isinstance(body[key], str):
                 raise HTTPException(status_code=400, detail=f"{key} must be a string")
-        for key in ("auto_confirm", "plan_mode"):
+        for key in ("auto_confirm", "plan_mode", "track_changes"):
             if key in body and not isinstance(body[key], bool):
                 raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
         max_turns = body.get("max_turns", 30)
         if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
             raise HTTPException(status_code=400, detail="max_turns must be a positive integer")
+
+        work_session_id = body.get("work_session_id")
+        if work_session_id is not None and (not isinstance(work_session_id, str) or not SESSION_ID.fullmatch(work_session_id)):
+            raise HTTPException(status_code=400, detail="invalid work_session_id")
+        history = clean_history(body.get("history"))
+        if history is None:
+            raise HTTPException(status_code=400, detail="history must be a list of {role, content} messages")
+        harness = body.get("harness", "builtin")
+        if harness not in HARNESSES:
+            raise HTTPException(status_code=400, detail=f"harness must be one of {list(HARNESSES)}")
+        local_only = body.get("local_only", True)
+        if not isinstance(local_only, bool):
+            raise HTTPException(status_code=400, detail="local_only must be a boolean")
+        if harness == "hermes" and (body.get("auto_confirm", False) or not local_only):
+            raise HTTPException(status_code=400, detail="Hermes uses native approvals and requires local inference; auto-approve is unavailable")
+        work_type = body.get("work_type", "code")
+        if work_type not in WORK_TYPES:
+            raise HTTPException(status_code=400, detail=f"work_type must be one of {list(WORK_TYPES)}")
+        if work_type == "documents":
+            if harness != "builtin":
+                raise HTTPException(status_code=400, detail="Documents work uses the built-in agent")
+            doc_model = cfg.find_model(model)
+            has_vision = doc_model is not None and "vision" in model_capabilities(doc_model)
+            if doc_model is None:
+                try:
+                    upstream = await request.app.state.upstream_mgr.models()
+                except Exception:
+                    upstream = []
+                has_vision = any(
+                    u.id == model and "vision" in (u.metadata.get("capabilities") or []) for u in upstream
+                )
+            if not has_vision:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Documents work needs a model that can read images, and {model!r} cannot. "
+                        "Choose a vision model (one with a vision projector)."
+                    ),
+                )
+        tool_profile: dict[str, Any] | None = None
+        profile_id = body.get("tool_profile_id")
+        if profile_id is not None:
+            if harness != "opencode":
+                raise HTTPException(status_code=400, detail="Tool profiles need the OpenCode harness")
+            tool_profile = request.app.state.work_profiles.get(profile_id) if isinstance(profile_id, str) else None
+            if tool_profile is None:
+                raise HTTPException(status_code=400, detail="That tool profile no longer exists")
+        harness_command = body.get("command")
+        command_arguments = body.get("arguments", "")
+        if harness_command is not None:
+            if harness != "opencode":
+                raise HTTPException(status_code=400, detail="Slash commands need the OpenCode harness")
+            if not isinstance(harness_command, str) or not re.fullmatch(r"[\w.:-]{1,100}", harness_command):
+                raise HTTPException(status_code=400, detail="command must be a command name")
+            if not isinstance(command_arguments, str) or len(command_arguments) > 20000:
+                raise HTTPException(status_code=400, detail="arguments must be a string")
+        if harness != "builtin":
+            if not experimental_enabled():
+                raise HTTPException(
+                    status_code=403,
+                    detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.",
+                )
+            # A harness can read the project and run tools; keep it behind the admin token when one is set.
+            await _require_admin(request)
 
         auto_confirm = bool(body.get("auto_confirm", False))
         if auto_confirm:
@@ -680,7 +812,22 @@ def create_app(
         plan_mode = bool(body.get("plan_mode", False))
         folder = body.get("folder") or ""
         root_path = body.get("root") or cfg.agent.root
-        root = Path(root_path).expanduser().resolve()
+        root = Path(root_path).expanduser()
+        if body.get("root") and not root.is_absolute():
+            root = Path.home() / root      # a typed relative path means "inside the home folder", not the server's cwd
+        root = root.resolve()
+        if (harness != "builtin" or body.get("track_changes", False)) and not root.is_dir():
+            near = root
+            while near != near.parent and not near.is_dir():
+                near = near.parent
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": f"Project folder not found on the server: {root}",
+                    "closest": str(near) if near.is_dir() else None,
+                },
+            )
+        prompt = compose_prompt(task, history, str(root))
         requested_profile = body.get("profile")
         active_profile = cfg.agent.profile
         if requested_profile is not None and requested_profile != active_profile:
@@ -727,11 +874,38 @@ def create_app(
             await plan_event.wait()
             return plan_result["approved"]
 
+        tracker: ChangeTracker | None = None
+        if body.get("track_changes", False):
+            tracker = ChangeTracker(root, request.app.state.work_undo_dir / run_id)
+
         async def event_stream() -> AsyncIterator[str]:
             transcript: list[ChatMessage] = [ChatMessage(role="user", content=task)]
-            try:
-                async for event in run_agent(
-                    task=task,
+            kept = False
+            if tracker is not None:
+                await asyncio.to_thread(tracker.begin)
+            if harness == "opencode":
+                runner = run_opencode(
+                    task=prompt,
+                    model=model,
+                    base_url=base_url,
+                    root=root,
+                    auto_confirm=auto_confirm,
+                    confirm_callback=confirm_callback,
+                    local_only=local_only,
+                    command=harness_command,
+                    arguments=command_arguments,
+                    tool_profile=tool_profile,
+                    session_title=task,
+                )
+            elif harness == "hermes":
+                runner = run_hermes(
+                    task=prompt, model=model, base_url=base_url, root=root,
+                    auto_confirm=auto_confirm, confirm_callback=confirm_callback,
+                    local_only=local_only,
+                )
+            else:
+                runner = run_agent(
+                    task=prompt,
                     model=model,
                     base_url=base_url,
                     root=root,
@@ -742,9 +916,19 @@ def create_app(
                     run_id=run_id,
                     checkpoint_store=checkpoint_store,
                     max_turns=max_turns,
+                    report_context=True,
                     chat_store=chat_store,
                     extra={"semantic_index": semantic_index},
-                ):
+                    work_type=work_type,
+                )
+            streamed_message: ChatMessage | None = None
+            try:
+                async for event in runner:
+                    if event.get("type") == "harness_session" and work_session_id:
+                        try:
+                            await asyncio.to_thread(request.app.state.work_sessions.link_harness_session, work_session_id, event.get("session_id"))
+                        except (OSError, ValueError):
+                            log.warning("Could not link generated harness session to its Work conversation")
                     if event.get("type") == "confirm_required":
                         # Each destructive tool needs its own approval. Reset
                         # before publishing the event so a fast reply is not lost.
@@ -757,13 +941,39 @@ def create_app(
                         event = {**event, "run_id": run_id}
                     yield f"data: {json.dumps(event)}\n\n"
 
-                    if event.get("type") == "assistant" and event.get("content"):
+                    if event.get("type") == "assistant_delta" and event.get("content"):
+                        if streamed_message is None:
+                            streamed_message = ChatMessage(role="assistant", content="")
+                            transcript.append(streamed_message)
+                        streamed_message.content += event["content"]
+                    elif event.get("type") == "assistant" and event.get("content"):
+                        streamed_message = None
                         transcript.append(ChatMessage(role="assistant", content=event["content"]))
+                    elif event.get("type") == "tool_call":
+                        streamed_message = None
                     elif event.get("type") == "tool_result":
+                        streamed_message = None
                         label = event.get("name", "tool")
                         content = event.get("content", "")
                         transcript.append(ChatMessage(role="tool", content=f"{label}:\n{content}"))
+                if tracker is not None:
+                    summary = await asyncio.to_thread(tracker.finish)
+                    if summary["files"]:
+                        runs = request.app.state.work_runs
+                        runs[run_id] = tracker
+                        kept = True
+                        for old in list(runs)[:-8]:        # keep only the most recent runs undoable
+                            runs.pop(old).discard()
+                    yield f"data: {json.dumps({'type': 'changes', 'run_id': run_id, **summary})}\n\n"
             finally:
+                # A browser disconnect must close the adapter before discarding
+                # its change tracker, rather than leaving a harness running.
+                with anyio.CancelScope(shield=True):
+                    close_runner = getattr(runner, "aclose", None)
+                    if close_runner is not None:
+                        await close_runner()
+                if tracker is not None and not kept:
+                    tracker.discard()
                 pending.pop(run_id, None)
                 pending_plans.pop(run_id, None)
                 if agent_chat_id is not None:
@@ -781,6 +991,175 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+
+    @app.get("/v1/agent/commands")
+    async def agent_commands(
+        request: Request, harness: str = "opencode", root: str = "", model: str = "arc-llama", profile_id: str = "",
+        _auth: None = Depends(_require_admin),
+    ) -> dict[str, Any]:
+        """Slash commands the chosen harness offers for a project folder (empty for the built-in agent)."""
+        if harness not in HARNESSES:
+            raise HTTPException(status_code=400, detail=f"harness must be one of {list(HARNESSES)}")
+        if harness in ("builtin", "hermes"):
+            return {"commands": []}
+        if not experimental_enabled():
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        folder = Path(root).expanduser() if root else Path.home()
+        if not folder.is_absolute():
+            folder = Path.home() / folder
+        folder = folder.resolve()
+        if not folder.is_dir():
+            raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
+        try:
+            profile = request.app.state.work_profiles.get(profile_id) if profile_id else None
+            return {"commands": filter_commands(await list_commands(folder, model), profile)}
+        except OpenCodeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/v1/agent/capabilities")
+    async def agent_capabilities(root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        """What a tool profile can switch on or off for a project: MCP servers, skills and web tools."""
+        if not experimental_enabled():
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        folder = Path(root).expanduser() if root else Path.home()
+        if not folder.is_absolute():
+            folder = Path.home() / folder
+        folder = folder.resolve()
+        if not folder.is_dir():
+            raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
+        try:
+            return await list_capabilities(folder)
+        except OpenCodeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/v1/agent/profiles")
+    async def agent_profiles(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        return {"profiles": await asyncio.to_thread(request.app.state.work_profiles.list)}
+
+    @app.put("/v1/agent/profiles/{profile_id}")
+    async def agent_profile_put(profile_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            data = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Body must be JSON") from exc
+        try:
+            return await asyncio.to_thread(request.app.state.work_profiles.save, profile_id, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/v1/agent/profiles/{profile_id}")
+    async def agent_profile_delete(profile_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if not PROFILE_ID.fullmatch(profile_id):
+            raise HTTPException(status_code=400, detail="invalid profile id")
+        return {"deleted": await asyncio.to_thread(request.app.state.work_profiles.delete, profile_id)}
+
+    @app.get("/v1/agent/sessions")
+    async def agent_sessions(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        """Saved Work conversations and native harness history, newest first."""
+        sessions = await asyncio.to_thread(request.app.state.work_sessions.list)
+        warnings: list[str] = []
+        if experimental_enabled():
+            native, warnings = await asyncio.to_thread(list_native_sessions)
+            saved_ids = {item["id"] for item in sessions}
+            represented_ids = set(saved_ids)
+            by_id = {item["id"]: item for item in native}
+            for item in sessions:
+                linked = [by_id[sid] for sid in item.get("harness_sessions", []) if sid in by_id and sid not in represented_ids]
+                if linked:
+                    item["harness_history"] = sorted(linked, key=lambda entry: entry["updated"], reverse=True)
+                    represented_ids.update(entry["id"] for entry in linked)
+            sessions.extend(item for item in native if item["id"] not in represented_ids)
+        return {"sessions": sorted(sessions, key=lambda item: item["updated"], reverse=True), "warnings": warnings}
+
+    @app.get("/v1/agent/sessions/{session_id}")
+    async def agent_session_get(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            record = await asyncio.to_thread(request.app.state.work_sessions.get, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if record is None and experimental_enabled():
+            try:
+                record = await asyncio.to_thread(get_native_session, session_id)
+            except NativeHistoryError as exc:
+                raise HTTPException(status_code=413 if "too large" in str(exc) or "too many" in str(exc) else 503, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="No such session")
+        return record
+
+    @app.put("/v1/agent/sessions/{session_id}")
+    async def agent_session_put(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            data = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Body must be JSON") from exc
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        try:
+            return await asyncio.to_thread(request.app.state.work_sessions.save, session_id, data)
+        except ValueError as exc:
+            raise HTTPException(status_code=400 if "invalid" in str(exc) else 413, detail=str(exc)) from exc
+
+    @app.delete("/v1/agent/sessions/{session_id}")
+    async def agent_session_delete(session_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        try:
+            removed = await asyncio.to_thread(request.app.state.work_sessions.delete, session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": removed}
+
+    @app.get("/v1/agent/info")
+    async def agent_info(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        """What the Work view can offer on this server."""
+        experimental = experimental_enabled()
+        return {
+            "experimental": experimental,
+            "root": str(Path(cfg.agent.root).expanduser().resolve()),
+            "home": str(Path.home()),
+            # Present only on servers whose adapter keeps destructive commands asking under auto-approve.
+            "auto_approve": True,
+            "work_types": [
+                {"id": "code", "label": "Code", "needs_vision": False},
+                {"id": "documents", "label": "Documents", "needs_vision": True},
+            ],
+            "vision_models": sorted(
+                {m.name for m in request.app.state.router.all_models() if "vision" in model_capabilities(m)}
+                | {u.id for u in await _upstream_models(request) if "vision" in (u.metadata.get("capabilities") or [])}
+            ),
+            "harnesses": [
+                {"id": "builtin", "label": "Built-in", "available": True},
+                {"id": "opencode", "label": "OpenCode", "available": find_binary() is not None},
+                {"id": "hermes", "label": "Hermes", "available": find_hermes_binary() is not None,
+                 "auto_approve": False,
+                 "approval_note": "Hermes asks before file edits and commands flagged by its own checks. Auto-approve is unavailable."},
+            ],
+        }
+
+    @app.get("/v1/agent/{run_id}/changes/{path:path}")
+    async def agent_change_diff(
+        run_id: str, path: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        tracker: ChangeTracker | None = request.app.state.work_runs.get(run_id)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Run has no recorded changes")
+        diff = await asyncio.to_thread(tracker.diff_text, path)
+        if diff is None:
+            raise HTTPException(status_code=404, detail="No text diff available for that file")
+        return {"path": path, "diff": diff}
+
+    @app.post("/v1/agent/{run_id}/undo")
+    async def agent_undo(
+        run_id: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
+        """Undo the file changes recorded for a run. Files edited since are left alone."""
+        runs = request.app.state.work_runs
+        tracker: ChangeTracker | None = runs.get(run_id)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Run has no recorded changes")
+        result = await asyncio.to_thread(tracker.undo)
+        if result["restored"] or not tracker.undoable:
+            runs.pop(run_id, None)
+            tracker.discard()
+        return result
 
     @app.post("/v1/agent/{run_id}/confirm")
     async def confirm_agent_run(
@@ -856,7 +1235,10 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
-            raise HTTPException(status_code=503, detail="Could not save chat. Check disk space and storage permissions, then retry.") from exc
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save chat. Check disk space and storage permissions, then retry.",
+            ) from exc
 
     @app.get("/v1/chats")
     async def list_chats(request: Request, folder: str | None = Query(None)) -> dict[str, Any]:
@@ -901,7 +1283,10 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
-            raise HTTPException(status_code=503, detail="Could not create chat. Check disk space and storage permissions, then retry.") from exc
+            raise HTTPException(
+                status_code=503,
+                detail="Could not create chat. Check disk space and storage permissions, then retry.",
+            ) from exc
         return chat.to_dict()
 
     @app.post("/v1/chats/search")
@@ -989,6 +1374,14 @@ def create_app(
             chat.title = str(body["title"])
         if "messages" in body:
             chat.messages = _chat_messages(body)
+            # A replacement transcript invalidates an old summary unless the
+            # caller explicitly supplies the matching metadata.
+            chat.compaction = None
+        if "compaction" in body:
+            try:
+                chat.compaction = validate_compaction(body["compaction"], len(chat.messages))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         _persist_chat(store, chat)
         return chat.to_dict()
 
@@ -1035,9 +1428,7 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/admin/status")
-    async def admin_status(
-        request: Request, _auth: None = Depends(_require_admin)
-    ) -> dict:
+    async def admin_status(request: Request, _auth: None = Depends(_require_admin)) -> dict:
         rt: Router = request.app.state.router
         c: Config = request.app.state.cfg
         # Reuse one VRAM-estimate cache across this snapshot (and across calls:
@@ -1048,10 +1439,16 @@ def create_app(
         if vram_cache is None:
             vram_cache = {}
             request.app.state.vram_estimate_cache = vram_cache
+        from arc_llama.model_compatibility import model_runtime_identity
         from arc_llama.model_library import file_readiness
 
+        identities: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[str, str] | None] = {}
         models = []
         for m in rt.all_models():
+            runtime_key = (c.model_llama_server(m), tuple(sorted(m.env.items())))
+            if runtime_key not in identities:
+                identities[runtime_key] = await asyncio.to_thread(model_runtime_identity, c, m)
+            identity = identities[runtime_key]
             srv = rt._servers.get(m.name)
             r = m.recipe or {}
             running = bool(srv and srv.is_running)
@@ -1067,22 +1464,31 @@ def create_app(
             if fit_info and not c.server.single_resident:
                 fit_info["headroom_mb"] = None
                 fit_info["fit"] = None
-                fit_info["detail"] = "Per-model estimate; available memory depends on co-resident models."
+                fit_info["detail"] = (
+                    "Per-model estimate; available memory depends on co-resident models."
+                )
             files = await asyncio.to_thread(file_readiness, m)
             models.append(
                 {
                     "name": m.name,
                     "display_name": m.display_name,
                     "path": m.path,
+                    "llama_server": m.llama_server,
+                    "effective_llama_server": runtime_key[0],
+                    "env": dict(m.env),
+                    "runtime_compatibility_identity": identity[1][:12] if identity else None,
                     "model_file_mb": model_file_mb,
                     "file_readiness": files,
                     "gpu_pci_slot": m.gpu_pci_slot,
                     "port": m.port,
                     "loaded": loaded,
                     "state": (
-                        "draining" if m.name in getattr(rt, "_stopping", set())
-                        else "ready" if loaded
-                        else "loading" if running
+                        "draining"
+                        if m.name in getattr(rt, "_stopping", set())
+                        else "ready"
+                        if loaded
+                        else "loading"
+                        if running
                         else "idle"
                     ),
                     "pid": getattr(getattr(srv, "process", None), "pid", None) if running else None,
@@ -1120,7 +1526,9 @@ def create_app(
 
         compatibility_identity = await asyncio.to_thread(runtime_identity, c.paths.llama_server)
         return {
-            "runtime_compatibility_identity": compatibility_identity[1][:12] if compatibility_identity else None,
+            "runtime_compatibility_identity": compatibility_identity[1][:12]
+            if compatibility_identity
+            else None,
             "server": {
                 "host": c.server.host,
                 "port": c.server.port,
@@ -1134,6 +1542,8 @@ def create_app(
             "upstreams": mgr.upstreams_status(),
         }
 
+    register_work_routes(app, require_admin=_require_admin, read_json_body=_read_json_body)
+    register_context_budget_route(app)
     register_integration_route(app, require_admin=_require_admin)
 
     @app.get("/admin/plugins")
@@ -1151,9 +1561,7 @@ def create_app(
         any plugin code running here.
         """
         statuses: dict[str, str] = getattr(request.app.state, "plugin_status", {})
-        discovery: PluginDiscovery | None = getattr(
-            request.app.state, "plugin_discovery", None
-        )
+        discovery: PluginDiscovery | None = getattr(request.app.state, "plugin_discovery", None)
         extra = discovery.catalog() if discovery is not None else []
         return {
             "api_version": PLUGIN_API_VERSION,
@@ -1175,7 +1583,9 @@ def create_app(
         return actions
 
     @app.get("/admin/ui/layout")
-    async def get_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+    async def get_ui_layout(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
         actions = _ui_actions()
         ids = {a["id"] for a in actions}
         path = _ui_layout_path()
@@ -1192,11 +1602,15 @@ def create_app(
         for action in actions:
             if action["id"] not in used:
                 result["layout"][action.get("placement", "plugins")].append(action["id"])
-        result["hidden"] = [x for x in (saved.get("hidden", []) if isinstance(saved, dict) else []) if x in ids]
+        result["hidden"] = [
+            x for x in (saved.get("hidden", []) if isinstance(saved, dict) else []) if x in ids
+        ]
         return result
 
     @app.put("/admin/ui/layout")
-    async def put_ui_layout(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+    async def put_ui_layout(
+        request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, Any]:
         body = await request.json()
         actions = _ui_actions()
         ids = {a["id"] for a in actions}
@@ -1205,17 +1619,20 @@ def create_app(
         if not isinstance(layout, dict) or not isinstance(hidden, list):
             raise HTTPException(status_code=400, detail="Invalid UI layout")
         values = [x for p in ("toolbar", "plugins", "chat") for x in layout.get(p, [])]
-        if any(not isinstance(x, str) or x not in ids for x in values + hidden) or len(values) != len(set(values)):
+        if any(not isinstance(x, str) or x not in ids for x in values + hidden) or len(
+            values
+        ) != len(set(values)):
             raise HTTPException(status_code=400, detail="Unknown or duplicate UI action")
-        payload = {"layout": {p: list(layout.get(p, [])) for p in ("toolbar", "plugins", "chat")}, "hidden": hidden}
+        payload = {
+            "layout": {p: list(layout.get(p, [])) for p in ("toolbar", "plugins", "chat")},
+            "hidden": hidden,
+        }
         path = _ui_layout_path()
         path.write_text(json.dumps(payload, indent=2) + "\n")
         return await get_ui_layout(request)
 
     @app.post("/admin/load/{name}")
-    async def admin_load(
-        name: str, request: Request, _auth: None = Depends(_require_admin)
-    ) -> Any:
+    async def admin_load(name: str, request: Request, _auth: None = Depends(_require_admin)) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
         if mgr.find_model(name) is not None:
@@ -1240,7 +1657,7 @@ def create_app(
 
     @app.post("/admin/stop/{name}")
     async def admin_stop(
-        name: str, request: Request, _auth: None = Depends(_require_admin)
+        name: str, request: Request, force: bool = False, _auth: None = Depends(_require_admin)
     ) -> Any:
         rt: Router = request.app.state.router
         mgr: UpstreamManager = request.app.state.upstream_mgr
@@ -1251,18 +1668,24 @@ def create_app(
         if name not in {m.name for m in rt.all_models()}:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
         try:
-            was_running = await rt.stop_one(name)
+            was_running = await rt.stop_one(name, force=force)
         except StartupFailureError as exc:
-            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
+            return JSONResponse(
+                status_code=exc.http_status, content=exc.to_dict(include_details=True)
+            )
         return {"name": name, "was_running": was_running, "loaded": False}
 
     @app.post("/admin/stop-all")
-    async def admin_stop_all(request: Request, _auth: None = Depends(_require_admin)) -> Any:
+    async def admin_stop_all(
+        request: Request, force: bool = False, _auth: None = Depends(_require_admin)
+    ) -> Any:
         rt: Router = request.app.state.router
         try:
-            stopped = await rt.stop_all()
+            stopped = await rt.stop_all(force=force)
         except StartupFailureError as exc:
-            return JSONResponse(status_code=exc.http_status, content=exc.to_dict(include_details=True))
+            return JSONResponse(
+                status_code=exc.http_status, content=exc.to_dict(include_details=True)
+            )
         return {"stopped": stopped}
 
     @app.get("/admin/tune/status")
@@ -1363,8 +1786,10 @@ def create_app(
 
         Body is a partial recipe dict — only provided fields change. Recognised
         fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
-        `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `ubatch_size`,
-        `batch_size`, `flash_attn` (null clears),
+        `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `spec_draft_p_min`,
+        `spec_draft_model`, `spec_draft_ngl`, `ubatch_size`,
+        `batch_size`, `flash_attn` (null clears), `llama_server` (empty inherits
+        the global executable), `env` (model-only string variables; empty clears),
         `n_cpu_moe` (null or 0 clears), `override_tensor` (list of regex
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
         cleared and vice versa: the two flags are alternative means to the
@@ -1372,7 +1797,7 @@ def create_app(
         If the model is currently loaded, the server is stopped first; callers
         decide whether to reload it afterwards via /admin/load.
         """
-        from arc_llama.config import default_config_path
+        from arc_llama.config import default_config_path, validate_model_runtime
         from arc_llama.gguf_meta import validate_override_patterns, weight_tensor_table
         from arc_llama.recipes import FLASH_ATTN_VALUES, KVCacheType
 
@@ -1406,6 +1831,16 @@ def create_app(
         }
         recipe = dict(model.recipe or {})
         changed: list[str] = []
+        runtime_binary = body.get("llama_server", model.llama_server)
+        runtime_env = body.get("env", model.env)
+        try:
+            validate_model_runtime(runtime_binary, runtime_env)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if "llama_server" in body:
+            changed.append("llama_server")
+        if "env" in body:
+            changed.append("env")
         if "ctx" in body:
             try:
                 ctx = int(body["ctx"])
@@ -1488,6 +1923,41 @@ def create_app(
                     raise HTTPException(status_code=400, detail="spec_draft_n_max must be 1..16")
                 recipe["spec_draft_n_max"] = draft_n
             changed.append("spec_draft_n_max")
+        if "spec_draft_p_min" in body:
+            from arc_llama.speculation import confidence_value
+
+            v = body["spec_draft_p_min"]
+            if v is None:
+                recipe.pop("spec_draft_p_min", None)
+            else:
+                try:
+                    recipe["spec_draft_p_min"] = confidence_value(v)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e)) from e
+            changed.append("spec_draft_p_min")
+        if "spec_draft_model" in body:
+            v = body["spec_draft_model"]
+            if v is None:
+                recipe.pop("spec_draft_model", None)
+            elif isinstance(v, str) and Path(v).suffix.lower() == ".gguf" and Path(v).is_file():
+                recipe["spec_draft_model"] = v
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="spec_draft_model must be an existing .gguf path or null",
+                )
+            changed.append("spec_draft_model")
+        if "spec_draft_ngl" in body:
+            v = body["spec_draft_ngl"]
+            if v is None:
+                recipe.pop("spec_draft_ngl", None)
+            elif isinstance(v, int) and not isinstance(v, bool) and -1 <= v <= 999:
+                recipe["spec_draft_ngl"] = v
+            else:
+                raise HTTPException(
+                    status_code=400, detail="spec_draft_ngl must be -1..999 or null"
+                )
+            changed.append("spec_draft_ngl")
         if "speculation_result" in body:
             v = body["speculation_result"]
             if v is None or v == "":
@@ -1652,7 +2122,9 @@ def create_app(
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe = model.recipe
+        previous_runtime = model.llama_server, model.env
         model.recipe = recipe
+        model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
             c.save(config_path or default_config_path())
         except OSError as e:
@@ -1664,6 +2136,7 @@ def create_app(
             # and fail loudly instead: a rejected edit is recoverable, an edit
             # that silently un-applies later is not.
             model.recipe = previous_recipe
+            model.llama_server, model.env = previous_runtime
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(
                 status_code=500,
@@ -1674,6 +2147,8 @@ def create_app(
             "name": name,
             "changed": changed,
             "recipe": recipe,
+            "llama_server": model.llama_server,
+            "env": model.env,
             "kv_class": model.kv_class,
             "stopped_running_instance": was_running,
             "rebuilt": rebuilt,
@@ -1727,6 +2202,14 @@ def create_app(
     # ------------------------------------------------------------------
     static_dir = Path(__file__).parent / "static"
 
+    @app.get("/work")
+    async def work_page() -> Response:
+        return FileResponse(static_dir / "chat.html")
+
+    @app.get("/workbench")
+    async def workbench_page() -> Response:
+        return FileResponse(static_dir / "work.html")
+
     @app.get("/chat")
     async def chat_page() -> Response:
         return FileResponse(static_dir / "chat.html")
@@ -1750,8 +2233,16 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
 def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any]) -> dict[str, Any]:
     raw_options = body.get("options")
     options: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
-    payload: dict[str, Any] = {"model": body.get("model", ""), "messages": messages, "stream": bool(body.get("stream", True))}
-    for ollama_key, openai_key in (("temperature", "temperature"), ("top_p", "top_p"), ("stop", "stop")):
+    payload: dict[str, Any] = {
+        "model": body.get("model", ""),
+        "messages": messages,
+        "stream": bool(body.get("stream", True)),
+    }
+    for ollama_key, openai_key in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("stop", "stop"),
+    ):
         if ollama_key in options:
             payload[openai_key] = options[ollama_key]
     if "num_predict" in options:
@@ -1778,6 +2269,7 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
             detail = "Upstream request failed"
         return JSONResponse({"error": str(detail)}, status_code=response.status_code)
     if isinstance(response, StreamingResponse):
+
         async def stream() -> AsyncIterator[bytes]:
             buffer = b""
             async for chunk in response.body_iterator:  # type: ignore[attr-defined]
@@ -1798,9 +2290,35 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
                         delta = choice.get("delta") or {}
                         value = delta.get("content") if not generate else choice.get("text", "")
                         if value:
-                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "message": {"role": "assistant", "content": value}, "response": value if generate else "", "done": False}) + "\n").encode()
+                            yield (
+                                json.dumps(
+                                    {
+                                        "model": model,
+                                        "created_at": time.strftime(
+                                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                                        ),
+                                        "message": {"role": "assistant", "content": value},
+                                        "response": value if generate else "",
+                                        "done": False,
+                                    }
+                                )
+                                + "\n"
+                            ).encode()
                         if choice.get("finish_reason"):
-                            yield (json.dumps({"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice["finish_reason"]}) + "\n").encode()
+                            yield (
+                                json.dumps(
+                                    {
+                                        "model": model,
+                                        "created_at": time.strftime(
+                                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                                        ),
+                                        "done": True,
+                                        "done_reason": choice["finish_reason"],
+                                    }
+                                )
+                                + "\n"
+                            ).encode()
+
         return StreamingResponse(stream(), media_type="application/x-ndjson")
     try:
         obj = json.loads(bytes(response.body))
@@ -1809,7 +2327,12 @@ def _openai_response_as_ollama(response: Response, model: str, *, generate: bool
     choice = (obj.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content = choice.get("text", "") if generate else message.get("content", "")
-    result: dict[str, Any] = {"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": True, "done_reason": choice.get("finish_reason")}
+    result: dict[str, Any] = {
+        "model": model,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "done": True,
+        "done_reason": choice.get("finish_reason"),
+    }
     if generate:
         result["response"] = content
     else:
@@ -1837,13 +2360,24 @@ def request_has_images(body: dict[str, Any]) -> bool:
     return False
 
 
+WORK_TYPES = ("code", "documents")
+
+
+async def _upstream_models(request: Request) -> list[Any]:
+    try:
+        return list(await request.app.state.upstream_mgr.models())
+    except Exception:
+        return []
+
+
 def model_capabilities(model: Any) -> list[str]:
     """Capability tags advertised in /v1/models and used for validation."""
     recipe = getattr(model, "recipe", None) or {}
     if recipe.get("reranking"):
         return ["rerank"]
     caps = ["chat", "completion", "embedding"]
-    if recipe.get("mmproj"):
+    flags = [str(f) for f in recipe.get("extra_flags") or []]
+    if recipe.get("mmproj") or any(f in ("--mmproj", "-mm") or f.startswith("--mmproj=") for f in flags):
         caps.append("vision")
     return caps
 
@@ -1974,7 +2508,9 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     # under the user.
     request_entered_at = time.monotonic()
     resources = getattr(request.app.state, "resources", None)
-    lease_context = resources.acquire("local-inference", exclusive=False) if resources is not None else None
+    lease_context = (
+        resources.acquire("local-inference", exclusive=False) if resources is not None else None
+    )
     if lease_context is not None:
         await lease_context.__aenter__()
     rt.inflight += 1
@@ -2027,7 +2563,11 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
             rt.last_activity = time.time()
 
         if want_stream:
-            client = httpx.AsyncClient(timeout=None)
+            policy = request.app.state.cfg.server
+            first_timeout = policy.inference_first_response_seconds
+            idle_timeout = policy.inference_stream_idle_seconds
+            first_deadline = time.monotonic() + first_timeout if first_timeout else None
+            client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10.0))
             try:
                 req = client.build_request(
                     "POST",
@@ -2035,7 +2575,21 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                     content=body_bytes,
                     headers=fwd_headers,
                 )
-                upstream = await client.send(req, stream=True)
+                upstream = await asyncio.wait_for(
+                    client.send(req, stream=True), first_timeout or None
+                )
+            except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+                await client.aclose()
+                raise HTTPException(
+                    status_code=504,
+                    detail="The model did not respond in time. Retry, or increase server.inference_first_response_seconds for long prefills.",
+                ) from exc
+            except httpx.HTTPError as exc:
+                await client.aclose()
+                raise HTTPException(
+                    status_code=502,
+                    detail="The model backend disconnected before responding. Retry the request.",
+                ) from exc
             except BaseException:
                 # Nothing was handed to Starlette, so streaming_response_started
                 # stays False and the outer finally does the decrement. Close the
@@ -2063,34 +2617,23 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                     return
                 released = True
 
-                # Drop the counter before awaiting anything. There is no await
-                # between the guard above and this decrement, so once we are
-                # here nothing can stop it -- not a client disconnect, not a
-                # cancellation delivered during shutdown. Closing the socket
-                # below is best effort; a leaked connection is recovered when
-                # the process exits, whereas a leaked count is permanent and
-                # silently disables auto-tune for the life of the process.
-                if rt.inflight > 0:
-                    rt.inflight -= 1
-                else:
-                    # Unreachable unless a future change double-releases. Say so
-                    # rather than letting the counter go negative, which would
-                    # wedge _deferred_restore's "wait for zero" loop.
-                    log.warning("streaming proxy: inflight already 0 at release; not decrementing")
-                if acquired_model is not None:
-                    rt.release_model(acquired_model)
-                rt.last_activity = time.time()
-                if lease_context is not None:
-                    await lease_context.__aexit__(None, None, None)
-
-                try:
-                    await upstream.aclose()
-                except Exception:
-                    log.debug("streaming proxy: upstream close failed", exc_info=True)
-                try:
-                    await client.aclose()
-                except Exception:
-                    log.debug("streaming proxy: client close failed", exc_info=True)
+                # Keep admission through connection cleanup. Shield normal
+                # ASGI cancellation, and settle bookkeeping even if close fails.
+                with anyio.CancelScope(shield=True):
+                    try:
+                        try:
+                            await upstream.aclose()
+                        finally:
+                            await client.aclose()
+                    except Exception:
+                        log.debug("streaming proxy: connection cleanup failed", exc_info=True)
+                    finally:
+                        rt.inflight -= 1
+                        if acquired_model is not None:
+                            rt.release_model(acquired_model)
+                        rt.last_activity = time.time()
+                        if lease_context is not None:
+                            await lease_context.__aexit__(None, None, None)
 
             observer = StreamMetricsObserver()
             ttft_recorded = False
@@ -2099,12 +2642,33 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                 nonlocal ttft_recorded
                 timings = getattr(rt, "timings", None)
                 try:
-                    async for chunk in _iter_sse_body(upstream):
+                    require_done = (
+                        upstream.status_code < 400
+                        and "text/event-stream" in upstream.headers.get("content-type", "")
+                    )
+                    iterator = _iter_sse_body(upstream, require_done=require_done).__aiter__()
+                    first = True
+                    while True:
+                        if first:
+                            timeout = (
+                                max(0.001, first_deadline - time.monotonic())
+                                if first_deadline is not None
+                                else None
+                            )
+                        else:
+                            timeout = idle_timeout or None
+                        try:
+                            chunk = await asyncio.wait_for(iterator.__anext__(), timeout)
+                        except StopAsyncIteration:
+                            break
+                        first = False
                         if timings is not None and upstream.status_code < 400:
                             try:
                                 observer.feed(chunk, time.monotonic())
                                 if not ttft_recorded and observer.first_token_at is not None:
-                                    timings.record_ttft(model.name, observer.first_token_at - request_entered_at)
+                                    timings.record_ttft(
+                                        model.name, observer.first_token_at - request_entered_at
+                                    )
                                     ttft_recorded = True
                             except Exception:
                                 log.debug("stream metrics observation failed", exc_info=True)
@@ -2113,11 +2677,20 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
                         yield chunk
                     if timings is not None and observer.generation_tok_s is not None:
                         timings.record_generation_tok_s(model.name, observer.generation_tok_s)
+                except (asyncio.TimeoutError, httpx.HTTPError):
+                    error = {
+                        "error": {
+                            "message": "Generation was interrupted. The model stalled or disconnected; retry to continue.",
+                            "type": "server_error",
+                            "code": "inference_interrupted",
+                        }
+                    }
+                    yield ("data: " + json.dumps(error) + "\n\n").encode()
                 finally:
                     await _release()
 
             streaming_response_started = True
-            return StreamingResponse(
+            return _LocalStreamingResponse(
                 body_iter(),
                 status_code=upstream.status_code,
                 headers=_strip_response_headers(dict(upstream.headers)),

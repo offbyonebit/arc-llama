@@ -116,7 +116,7 @@ class ModelTimings:
         bucket = store.setdefault(name, [])
         bucket.append(value)
         if len(bucket) > self._cap:
-            del bucket[:- self._cap]
+            del bucket[: -self._cap]
 
     def record_cold_start(self, name: str, seconds: float) -> None:
         self._append(self.cold_starts, name, seconds)
@@ -148,7 +148,12 @@ class ModelTimings:
         exist. Never invents values: absent samples mean absent keys.
         """
         per_model: dict[str, Any] = {}
-        names = set(self.cold_starts) | set(self.ttft) | set(self.generation_tok_s) | set(self.model_wait)
+        names = (
+            set(self.cold_starts)
+            | set(self.ttft)
+            | set(self.generation_tok_s)
+            | set(self.model_wait)
+        )
         for name in sorted(names):
             entry: dict[str, Any] = {}
             cold = summarise_seconds(self.cold_starts.get(name, []))
@@ -162,8 +167,7 @@ class ModelTimings:
                 summary = summarise_seconds(gen)
                 assert summary is not None
                 entry["generation_tok_s"] = {
-                    key.replace("_s", "_tok_s"): value
-                    for key, value in summary.items()
+                    key.replace("_s", "_tok_s"): value for key, value in summary.items()
                 }
             wait = summarise_seconds(self.model_wait.get(name, []))
             if wait:
@@ -207,8 +211,11 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         // mib
     )
     return (
-        weight_mb + kv_mb + mmproj_vram_mb(recipe)
-        + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+        weight_mb
+        + kv_mb
+        + mmproj_vram_mb(recipe)
+        + _VRAM_COMPUTE_BUFFER_MB
+        + _VRAM_SAFETY_MARGIN_MB
     )
 
 
@@ -705,9 +712,15 @@ class Router:
             # File and runtime checks are blocking filesystem operations, and
             # the fit estimate may scan GGUF metadata, so keep both off-loop.
             await asyncio.to_thread(
-                preflight_launch, target_model, target_gpu, target_srv.plan,
-                {proc.pid for srv in self._servers.values()
-                 if (proc := getattr(srv, "process", None)) is not None},
+                preflight_launch,
+                target_model,
+                target_gpu,
+                target_srv.plan,
+                {
+                    proc.pid
+                    for srv in self._servers.values()
+                    if (proc := getattr(srv, "process", None)) is not None
+                },
             )
             # Configuration-only/test routes often use missing or tiny
             # placeholder GGUFs.  Keep those fast paths inline; malformed
@@ -735,7 +748,11 @@ class Router:
                 try:
                     target_srv.start(log_dir=self.log_dir)
                 except OSError as exc:
-                    category = "runtime_missing" if isinstance(exc, FileNotFoundError) else "process_exited"
+                    category = (
+                        "runtime_missing"
+                        if isinstance(exc, FileNotFoundError)
+                        else "process_exited"
+                    )
                     raise StartupFailureError(
                         category,
                         f"llama-server could not start for {target_model.name}: {exc}.",
@@ -1031,12 +1048,27 @@ class Router:
             # this model through the fast path.
             self._stopping.discard(name)
 
-    async def stop_one(self, name: str) -> bool:
-        """Stop a single model's llama-server. Returns True if it was running."""
+    def _refuse_if_busy(self, names: list[str]) -> None:
+        busy = {n: self.model_inflight.get(n, 0) for n in names if self.model_inflight.get(n, 0) > 0}
+        if busy:
+            listed = ", ".join(f"{n} ({c})" for n, c in busy.items())
+            raise StartupFailureError(
+                "model_busy",
+                f"Still serving requests: {listed}.",
+                "Wait for them to finish, or stop with force=true (the server still gets a graceful SIGTERM first).",
+                details={"inflight": busy},
+            )
+
+    async def stop_one(self, name: str, *, force: bool = False) -> bool:
+        """Stop a single model's llama-server. Returns True if it was running.
+
+        Refuses with ``model_busy`` while the model is serving requests, unless ``force``."""
         async with self._lock:
             srv = self._servers.get(name)
             if srv is None:
                 return False
+            if not force and srv.is_running:
+                self._refuse_if_busy([name])
             if not srv.is_running:
                 if getattr(srv, "process", None) is not None:
                     await srv.astop()
@@ -1046,9 +1078,13 @@ class Router:
             self._emit("model_stopped", model=name, reason="stopped")
             return True
 
-    async def stop_all(self) -> int:
-        """Stop every running llama-server. Returns the count stopped."""
+    async def stop_all(self, *, force: bool = False) -> int:
+        """Stop every running llama-server. Returns the count stopped.
+
+        Refuses with ``model_busy`` (stopping nothing) while any model is serving, unless ``force``."""
         async with self._lock:
+            if not force:
+                self._refuse_if_busy([n for n, s in self._servers.items() if s.is_running])
             stopped = 0
             failure = None
             for name, srv in self._servers.items():
@@ -1067,7 +1103,9 @@ class Router:
                 raise failure
             return stopped
 
-    async def rebuild_model(self, name: str, drain_seconds: float | None = None) -> tuple[bool, bool]:
+    async def rebuild_model(
+        self, name: str, drain_seconds: float | None = None
+    ) -> tuple[bool, bool]:
         """Drop and rebuild the LlamaServer for one model after a config edit.
 
         If the model is currently loaded, it's stopped first — the recipe is
@@ -1085,9 +1123,7 @@ class Router:
             was_running = bool(old and old.is_running)
             if old is not None and old.is_running:
                 drain = (
-                    self.cfg.server.switch_drain_seconds
-                    if drain_seconds is None
-                    else drain_seconds
+                    self.cfg.server.switch_drain_seconds if drain_seconds is None else drain_seconds
                 )
                 # Mark draining before the first await so concurrent arrivals
                 # cannot prolong the drain; always clean the mark on the way

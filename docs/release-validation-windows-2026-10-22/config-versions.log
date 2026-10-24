@@ -1,0 +1,20 @@
+WARN Retry attempt #0. Sleeping 1.354215s before the next attempt
+WARN Retry attempt #1. Sleeping 3.0862284s before the next attempt
+WARN Retry attempt #2. Sleeping 7.7948579s before the next attempt
+  × Request failed after 3 retries in 12.5s
+  ├─▶ Failed to fetch: `https://pypi.org/simple/arc-llama/`
+  ├─▶ error sending request for url (https://pypi.org/simple/arc-llama/)
+  ├─▶ client error (Connect)
+  ╰─▶ invalid peer certificate: UnknownIssuer
+  help: Consider enabling use of system TLS certificates with the
+        `--system-certs` command-line flag
+Traceback (most recent call last):
+  File "C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\arc-llama\scripts\check_config_versions.py", line 202, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\arc-llama\scripts\check_config_versions.py", line 153, in main
+    subprocess.run(["uv", "pip", "install", "-q", "--python", str(python), f"arc-llama=={version}"], check=True)
+  File "C:\Users\user\AppData\Local\Programs\Python\Python312\Lib\subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['uv', 'pip', 'install', '-q', '--python', 'C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\temp\\arc-llama-config-versions-r0gog374\\venv-0.9.1.2\\Scripts\\python.exe', 'arc-llama==0.9.1.2']' returned non-zero exit status 1.
+EXIT_CODE=1

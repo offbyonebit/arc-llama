@@ -81,7 +81,7 @@ async def _diagnostics(stream: asyncio.StreamReader | None) -> bytes:
     return bytes(data)
 
 
-async def probe_output(binary: str, architecture: str) -> tuple[int, str]:
+async def probe_output(binary: str, architecture: str, *, env: dict[str, str] | None = None) -> tuple[int, str]:
     with tempfile.TemporaryDirectory(prefix="arc-architecture-") as folder:
         fixture = Path(folder) / "architecture.gguf"
         fixture.write_bytes(_fixture(architecture))
@@ -98,6 +98,7 @@ async def probe_output(binary: str, architecture: str) -> tuple[int, str]:
             "0",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout = asyncio.create_task(_diagnostics(process.stdout))
         stderr = asyncio.create_task(_diagnostics(process.stderr))

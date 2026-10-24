@@ -1,4 +1,5 @@
 """Tests for repo map and semantic search helpers."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,9 +34,9 @@ def test_semantic_search_requires_optional_dependency(
     monkeypatch.setattr(
         repo_map_mod.importlib.util,
         "find_spec",
-        lambda name, *args, **kwargs: None
-        if name == "fastembed"
-        else real_find_spec(name, *args, **kwargs),
+        lambda name, *args, **kwargs: (
+            None if name == "fastembed" else real_find_spec(name, *args, **kwargs)
+        ),
     )
     index = SemanticIndex(tmp_path / "idx")
     with pytest.raises(RuntimeError, match="semantic"):
@@ -137,13 +138,14 @@ def test_semantic_search_reuses_normalized_matrix_and_refreshes_after_reindex(
 
 def test_repo_map_prunes_ignored_trees_before_traversal(tmp_path, monkeypatch):
     import os
-    root = tmp_path / 'project'
+
+    root = tmp_path / "project"
     root.mkdir()
-    (root / 'visible.py').write_text('def visible():\n    pass\n')
-    for name in ['node_modules', '.venv-310', 'package.egg-info']:
-        directory = root / name / 'nested'
+    (root / "visible.py").write_text("def visible():\n    pass\n")
+    for name in ["node_modules", ".venv-310", "package.egg-info"]:
+        directory = root / name / "nested"
         directory.mkdir(parents=True)
-        (directory / 'ignored.py').write_text('def ignored():\n    pass\n')
+        (directory / "ignored.py").write_text("def ignored():\n    pass\n")
     visited = []
     original_walk = os.walk
 
@@ -152,14 +154,14 @@ def test_repo_map_prunes_ignored_trees_before_traversal(tmp_path, monkeypatch):
             visited.append(Path(item[0]))
             yield item
 
-    monkeypatch.setattr('arc_llama.agent.repo_map.os.walk', counted_walk)
-    assert build_repo_map(root) == 'visible.py: visible'
+    monkeypatch.setattr("arc_llama.agent.repo_map.os.walk", counted_walk)
+    assert build_repo_map(root) == "visible.py: visible"
     assert visited == [root]
 
 
 def test_repo_map_handles_file_disappearing_during_scan(tmp_path, monkeypatch):
-    source = tmp_path / 'deleted.py'
-    source.write_text('def removed():\n    pass\n')
+    source = tmp_path / "deleted.py"
+    source.write_text("def removed():\n    pass\n")
     original_is_text = repo_map_mod._is_text_file
 
     def removing_is_text(path):
@@ -167,5 +169,5 @@ def test_repo_map_handles_file_disappearing_during_scan(tmp_path, monkeypatch):
         path.unlink()
         return result
 
-    monkeypatch.setattr('arc_llama.agent.repo_map._is_text_file', removing_is_text)
-    assert build_repo_map(tmp_path) == '(empty project)'
+    monkeypatch.setattr("arc_llama.agent.repo_map._is_text_file", removing_is_text)
+    assert build_repo_map(tmp_path) == "(empty project)"

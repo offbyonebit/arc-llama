@@ -1,0 +1,7 @@
+upgrade  0.9.1.2 -> this checkout: ok (53 values)
+rollback this checkout -> 0.9.1.2 -> this checkout: 4 setting(s) reset after 0.9.1.2 saves
+    models[0].env.PROBE_KEY: 'probe-value' -> '<default>'
+    models[0].llama_server: 'probe-llama_server' -> ''
+    server.inference_first_response_seconds: 601.5 -> 600.0
+    server.inference_stream_idle_seconds: 121.5 -> 120.0
+EXIT_CODE=0

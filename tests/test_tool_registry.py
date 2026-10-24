@@ -1,4 +1,5 @@
 """Tests for the dynamic agent tool registry."""
+
 from __future__ import annotations
 
 from pathlib import Path

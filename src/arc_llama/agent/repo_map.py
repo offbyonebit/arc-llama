@@ -3,6 +3,7 @@
 The repo map needs no extra dependencies. Semantic search is opt-in via the
 ``semantic`` extra (fastembed + numpy) so the core package stays light.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -19,8 +20,19 @@ log = logging.getLogger("arc_llama.agent.repo_map")
 
 
 IGNORE_DIRS = {
-    ".git", "node_modules", "__pycache__", ".venv*", "venv", "build", "dist",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".eggs", "*.egg-info",
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv*",
+    "venv",
+    "build",
+    "dist",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".eggs",
+    "*.egg-info",
 }
 
 MAX_FILE_SIZE = 512 * 1024  # 512 KiB
@@ -52,7 +64,9 @@ SYMBOL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
         re.compile(r"^(?:pub\s+)?enum\s+(\w+)"),
     ],
     ".java": [
-        re.compile(r"^(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:final\s+)?[\w<>,\s]+\s+(\w+)\s*\("),
+        re.compile(
+            r"^(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:final\s+)?[\w<>,\s]+\s+(\w+)\s*\("
+        ),
         re.compile(r"^(?:public\s+|private\s+|protected\s+)?class\s+(\w+)"),
     ],
     ".c": [re.compile(r"^[\w\s*]+\s+(\w+)\s*\([^)]*\)\s*\{")],
@@ -67,9 +81,33 @@ SYMBOL_PATTERNS[".h"] = SYMBOL_PATTERNS[".c"]
 SYMBOL_PATTERNS[".hpp"] = SYMBOL_PATTERNS[".cpp"]
 
 TEXT_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".c", ".cpp",
-    ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt", ".scala", ".sh",
-    ".yaml", ".yml", ".json", ".toml", ".md", ".txt", ".html", ".css",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".scala",
+    ".sh",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".toml",
+    ".md",
+    ".txt",
+    ".html",
+    ".css",
 }
 
 
@@ -86,8 +124,11 @@ def _project_files(root: Path) -> list[Path]:
     paths: list[Path] = []
     for directory, dirs, files in os.walk(root, followlinks=False):
         base = Path(directory)
-        dirs[:] = [name for name in dirs
-                   if not _is_ignored(base / name, root) and not (base / name).is_symlink()]
+        dirs[:] = [
+            name
+            for name in dirs
+            if not _is_ignored(base / name, root) and not (base / name).is_symlink()
+        ]
         paths.extend(base / name for name in files if not _is_ignored(base / name, root))
     return sorted(paths)
 
@@ -142,7 +183,7 @@ def _chunk_file(path: Path, root: Path) -> list[CodeChunk]:
         # Generic chunked fallback.
         chunks: list[CodeChunk] = []
         for i in range(0, len(lines), 40):
-            chunk_text = "\n".join(lines[i:i + 80])
+            chunk_text = "\n".join(lines[i : i + 80])
             chunks.append(CodeChunk(rel, chunk_text, i + 1))
         return chunks
 
@@ -219,6 +260,7 @@ class SemanticIndex:
     def _embedder_instance(self) -> Any:
         if self._embedder is None:
             from fastembed import TextEmbedding  # type: ignore[import-not-found]
+
             self._embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
         return self._embedder
 
@@ -288,11 +330,13 @@ class SemanticIndex:
                 continue
             file_chunks = _chunk_file(path, root)
             chunks.extend(file_chunks)
-            files.append({
-                "path": path.relative_to(root).as_posix(),
-                "mtime": file_stat.st_mtime,
-                "size": file_stat.st_size,
-            })
+            files.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "mtime": file_stat.st_mtime,
+                    "size": file_stat.st_size,
+                }
+            )
 
         if not chunks:
             manifest = {"files": files, "chunk_count": 0}
@@ -307,6 +351,7 @@ class SemanticIndex:
         embeddings = list(embedder.embed([c.text for c in chunks]))
 
         import numpy as np
+
         matrix = np.vstack(embeddings).astype(np.float32)
         self._clear_embedding_cache()
         np.save(self._embeddings_path(), matrix)
@@ -314,10 +359,9 @@ class SemanticIndex:
         manifest = {"files": files, "chunk_count": len(chunks)}
         self._manifest_path().write_text(json.dumps(manifest), encoding="utf-8")
         self._chunks_path().write_text(
-            json.dumps([
-                {"path": c.path, "start_line": c.start_line, "text": c.text[:500]}
-                for c in chunks
-            ]),
+            json.dumps(
+                [{"path": c.path, "start_line": c.start_line, "text": c.text[:500]} for c in chunks]
+            ),
             encoding="utf-8",
         )
         return {"indexed_files": len(files), "chunks": len(chunks)}
@@ -352,6 +396,7 @@ class SemanticIndex:
         query_embedding = list(embedder.embed([query]))[0]
 
         import numpy as np
+
         # Cosine similarity on normalized vectors. The corpus matrix is
         # unchanged across queries, so keep its normalized form in memory.
         unit_matrix = self._load_normalized_embeddings()
@@ -363,10 +408,12 @@ class SemanticIndex:
         results = []
         for idx in top_indices:
             chunk = chunks[int(idx)]
-            results.append({
-                "path": chunk["path"],
-                "start_line": chunk["start_line"],
-                "score": round(float(scores[int(idx)]), 4),
-                "snippet": chunk["text"],
-            })
+            results.append(
+                {
+                    "path": chunk["path"],
+                    "start_line": chunk["start_line"],
+                    "score": round(float(scores[int(idx)]), 4),
+                    "snippet": chunk["text"],
+                }
+            )
         return results
