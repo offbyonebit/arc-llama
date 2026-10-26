@@ -358,6 +358,9 @@ def create_app(
             if app.state.perf_history is not None:
                 app.state.perf_history.flush()
             await app.state.compatibility_checks.shutdown()
+            first_answer = getattr(app.state, "first_answer", None)
+            if first_answer is not None:
+                await first_answer.shutdown()
             downloads = getattr(app.state, "downloads", None)
             if downloads is not None:
                 await downloads.shutdown()
@@ -1595,6 +1598,7 @@ def create_app(
                 "vram_mb": g.vram_mb,
                 "name": g.name,
                 "enabled": g.enabled,
+                "backend": g.backend,
             }
             for g in c.gpus
         ]
@@ -1620,6 +1624,10 @@ def create_app(
         }
 
     register_work_routes(app, require_admin=_require_admin, read_json_body=_read_json_body)
+    from arc_llama.api.onboarding import register_onboarding_routes
+    register_onboarding_routes(app, require_admin=_require_admin,
+                               read_json_body=_read_json_body,
+                               config_path=config_path or default_config_path())
     register_context_budget_route(app)
     register_integration_route(app, require_admin=_require_admin)
 

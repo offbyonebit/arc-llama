@@ -968,6 +968,7 @@ def download_from_hf(
     target_dir: Path,
     token: str | None = None,
     progress: bool = True,
+    revision: str | None = None,
 ) -> Path:
     """Resolve a HFModelSpec to a concrete file path under `target_dir`.
 
@@ -986,8 +987,14 @@ def download_from_hf(
         ) from e
 
     api = HfApi(token=token)
-    info = api.model_info(spec.repo, files_metadata=True)
+    accepted_revision = revision
+    if revision is not None and not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", revision):
+        raise ValueError("Invalid immutable model revision")
+    info = (api.model_info(spec.repo, files_metadata=True, revision=revision)
+            if revision is not None else api.model_info(spec.repo, files_metadata=True))
     revision = info.sha
+    if accepted_revision is not None and revision != accepted_revision:
+        raise ValueError("The model hub returned a different revision than the accepted model")
     if not isinstance(revision, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", revision):
         raise ValueError("The model hub did not provide an immutable repository revision")
     # Listing, metadata and every companion belong to one immutable commit.

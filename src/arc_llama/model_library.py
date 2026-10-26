@@ -165,6 +165,7 @@ class DownloadJob:
     registered: list[str] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    revision: str | None = None
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
@@ -200,7 +201,8 @@ class DownloadManager:
         self._worker: asyncio.Task[None] | None = None
 
     def submit(
-        self, repo: str, file: str, bytes_total: int | None, dest_dir: str | None = None
+        self, repo: str, file: str, bytes_total: int | None, dest_dir: str | None = None,
+        *, revision: str | None = None,
     ) -> DownloadJob:
         if not _REPO_RE.match(repo) or not file.lower().endswith(".gguf") or ".." in file:
             raise ValueError("invalid repo or file")
@@ -234,6 +236,7 @@ class DownloadManager:
             file=file,
             target_dir=str(target),
             bytes_total=bytes_total,
+            revision=revision,
         )
         self.jobs[job.id] = job
         self._queue.put_nowait(job)
@@ -270,7 +273,8 @@ class DownloadManager:
 
                 await asyncio.to_thread(check_space)
             task = asyncio.create_task(
-                asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False)
+                asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False,
+                                  **({"revision": job.revision} if job.revision else {}))
             )
             while not task.done():
                 job.bytes_done = max(0, _dir_bytes(target) - baseline)

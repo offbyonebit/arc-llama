@@ -7,7 +7,22 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Added
+- Guided first-answer setup: `arc-llama start` opens the local browser after
+  listening, detects hardware, and discovers a starter from the current public
+  model catalog with estimated fit. No model shortlist or fallback is shipped.
+  Accepted downloads pin the discovered commit, show the publisher’s license,
+  and check runtime architecture recognition before downloading weights.
+  An explicit action prepares a missing runtime, downloads/verifies/registers
+  the model, and loads it before Chat. Setup shows stages and byte progress,
+  supports safe pause/retry, and preserves existing installs and running models.
+  Optional starter prompts fill the composer without sending automatically.
+
 ### Fixed
+
+- Both built-in agents validate model replies before approvals or tool execution, including planning. Malformed
+  choices/messages/call lists produce a controlled error; refusals and incomplete replies cannot report success.
+  Tool arguments reject duplicate keys and non-finite values, and generated call ids stay consistent in history.
 
 - Built-in code search excludes file symlinks and rechecks all indexed content for equal-size, same-timestamp edits; invalid embeddings are rejected before publication.
 - Model-hub downloads pin all shards and projectors to one commit and verify LFS SHA-256 or git blob hashes in private staging before publishing new files.

@@ -1,3 +1,4 @@
+import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
@@ -94,6 +95,12 @@ import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudg
 import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./workbench-cases.mjs";
 
 const TESTS = [
+  ["guided-dynamic-catalog", testGuidedDynamicCatalogStates],
+  ["guided-first-answer", testGuidedFirstAnswer],
+  ["guided-pause-retry-errors", testGuidedPauseRetryAndErrors],
+  ["guided-hardware-small-screen", testGuidedHardwareAndSmallScreen],
+  ["welcome-preserves-draft-failure", testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess],
+  ["welcome-complete-nonempty", testWelcomeNeedsCompleteNonemptyReply],
   ["chat-sse-framing", testChatSseFraming],
   ["chat-sse-errors-keep-partial", testChatSseErrorsKeepPartial],
   ["work-hermes-harness", testWorkHermesHarness],

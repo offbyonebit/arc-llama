@@ -1,5 +1,30 @@
 # Testing and diagnosing stalls
 
+
+## Guided first answer
+
+`tests/test_onboarding.py` covers read-only recommendations, fit boundaries,
+explicit download consent, duplicate starts, runtime preservation, pause/resume,
+retry, registration/loading failures, and refusal to evict another running model.
+`tests/test_cli_start.py` covers fresh launches, missing hardware, existing
+configuration, local binding, and browser readiness. Browser cases cover the
+setup card, stage/byte progress, reload, failed reads, pause/retry and exact-model
+Chat handoff. Welcome prompts fill the composer without auto-sending; first-answer
+confirmation requires a successful nonempty reply.
+
+The deterministic suite uses fake hardware, temporary state, fake downloads and
+synthetic model replies. It does not establish native GPU/Windows behavior or
+that memory fit guarantees loading. Catalog discovery uses current public metadata, with no built-in model names.
+`tests/test_starter_discovery.py` supplies changing synthetic catalogs, incomplete
+shards, unknown sizes, unsupported architectures, connection errors, and changed
+hardware. It checks single-flight discovery, caching, cancellation, immutable
+revision consent and the absence of a fixed fallback. The downloader tests verify
+that accepted revisions survive a changed upstream HEAD. Browser cases cover
+searching, unavailable/no-match, retry and publisher-specific license display.
+Live catalog checks read metadata and a bounded header; they do not validate
+model quality or GPU inference.
+No actual user conversations are read.
+
 Run the core checks from the repository environment:
 
 ```bash
@@ -296,3 +321,24 @@ refresh task outside the SDK receive loop, removes stale registrations and
 invalidates previously obtained handlers. Failed or continuously changing
 catalogs remain unavailable instead of exposing old definitions. Shutdown
 cancels refresh work before unwinding SDK session contexts.
+
+
+## Built-in agent model-response boundaries
+
+`tests/test_agent_response_boundaries.py` runs synthetic replies through both
+`run_agent` and `InteractiveAgent`, covering planning as well as execution.
+The cases include null/empty/wrong-type envelopes and choices, malformed
+messages and call lists, a bad second call after a valid first call, duplicate
+call ids, refusals, unknown completion states and token-limit truncation.
+Assertions check the emitted error and prove that tool handlers and approval
+callbacks did not run. Diagnostics omit the response payload.
+
+Argument tests cover invalid JSON, non-object arguments, duplicate keys,
+non-finite values and an explicit empty object. Valid plans, ordinary text,
+confirmation denial and tool execution remain covered. Generated ids are
+checked in the next actual request's assistant and tool messages, including
+a collision with a model-supplied id. Independent choices are not combined.
+
+This validates the agent's response boundary, not backend JSON Schema
+enforcement, model quality or GPU performance. HTTP transport is mocked;
+all conversations, tools and project files are test-owned.

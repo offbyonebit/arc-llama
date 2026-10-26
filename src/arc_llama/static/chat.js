@@ -721,6 +721,9 @@ async function fetchStatus() {
         m.llama_server = s.llama_server || "";
         m.effective_llama_server = s.effective_llama_server || "";
         m.env = s.env || {};
+        const device = (data.gpus || []).find(g => g.pci_slot === s.gpu_pci_slot);
+        m.configuredDevice = device?.name || null;
+        m.configuredBackend = device?.backend || null;
       }
       return m;
     });
@@ -1208,7 +1211,8 @@ async function runSend() {
   lastAssistantDiv = assistantMsg.div;
   const live = document.createElement("div"); live.className = "live-activity"; live.dataset.phase = needsLoad ? "loading" : "generating";
   const liveDot = document.createElement("span"); liveDot.className = "live-activity-dot"; liveDot.setAttribute("aria-hidden", "true");
-  const liveLabel = document.createElement("span"); liveLabel.setAttribute("role", "status"); liveLabel.setAttribute("aria-live", "polite"); liveLabel.textContent = needsLoad ? "Starting model" : "Generating";
+  const generationLabel = window.ArcFirstAnswer?.model === selectedModel ? "Processing your question" : "Generating";
+  const liveLabel = document.createElement("span"); liveLabel.setAttribute("role", "status"); liveLabel.setAttribute("aria-live", "polite"); liveLabel.textContent = needsLoad ? "Starting model" : generationLabel;
   const liveTime = document.createElement("span"); liveTime.setAttribute("aria-hidden", "true");
   live.append(liveDot, liveLabel, liveTime); assistantMsg.div.querySelector(".role").appendChild(live);
   const liveStarted = Date.now(); const liveTimer = setInterval(() => { liveTime.textContent = `${Math.floor((Date.now() - liveStarted) / 1000)} s`; }, 1000);
@@ -1231,7 +1235,7 @@ async function runSend() {
     return;
   }
   assistantMsg.div.classList.remove("load-wait-card");
-  live.dataset.phase = "generating"; liveLabel.textContent = "Generating"; live.removeAttribute("title");
+  live.dataset.phase = "generating"; liveLabel.textContent = generationLabel; live.removeAttribute("title");
   clearTimeout(budgetTimer);
   const budget = await countBudget(effectiveConversation());
   if (budget?.exact && budget.over_budget) {
@@ -1251,6 +1255,7 @@ async function runSend() {
   let streamRaw = "";
   let lastDisplayedContent = "";
   let currentThinking = "";
+  let replyFinished = false;
 
   try {
     const r = await fetch("/v1/chat/completions", {
@@ -1277,6 +1282,7 @@ async function runSend() {
       throw new Error(`${r.status} ${t}`);
     }
     const stream = window.ArcChat.createCompletionStream(event => {
+      if (event.choices?.[0]?.finish_reason != null) replyFinished = event.choices[0].finish_reason === "stop";
       if (event.usage) lastUsage = event.usage;
       const delta = event.choices?.[0]?.delta;
       if (!delta) return;
@@ -1344,6 +1350,7 @@ async function runSend() {
     await serverAppendMessages(currentChatId, [{ role: "assistant", content: conversation[convoIndex].content }]);
     await saveCurrentChat();
     renderTurnActions();
+    if (replyFinished) window.ArcFirstAnswer?.completed(selectedModel, finalParsed.content, m);
   } catch (e) {
     const partial = parseThinking(streamRaw);
     if (partial.content.trim() || partial.thinking.trim()) {
@@ -1825,5 +1832,6 @@ function restoreDraft() {
   await loadFolders();
   await syncChatsFromServer();
   restoreDraft();
+  window.ArcFirstAnswer?.begin({ input, selectedModel });
   statusPoller = setInterval(fetchStatus, 3000);
 })();

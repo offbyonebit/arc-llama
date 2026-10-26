@@ -46,7 +46,8 @@ async function fixture(page, origin, { messages, ctx = 8192, respond, failSave =
   });
   await openChat(page, origin);
   await page.click("#history-toggle");
-  await page.locator(".h-card").filter({ hasText: "Compaction test" }).click();
+  // The card center can land on its Move dropdown; select its title instead.
+  await page.locator(".h-card-title").filter({ hasText: "Compaction test" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".message.user").length >= 2);
   return { initial, requests, saves, chat: () => chat };
 }
@@ -101,7 +102,7 @@ export async function testCompactionReloadAndClear({ page, origin }) {
   await page.reload();
   await page.waitForFunction(() => document.querySelector("#model-select").options.length > 0);
   await page.click("#history-toggle");
-  await page.locator(".h-card").filter({ hasText: "Compaction test" }).click();
+  await page.locator(".h-card-title").filter({ hasText: "Compaction test" }).click();
   await page.waitForFunction(() => !document.querySelector("#compact-undo").hidden);
   assert.equal(await page.locator(".message.user").count(), 4);
   await send(page, "After reload");

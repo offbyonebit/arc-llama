@@ -975,3 +975,36 @@ def test_register_discovered_skips_mtp_for_hybrid_ssm(tmp_path):
     assert added, "model was not registered at all"
     recipe = added[0].recipe or {}
     assert recipe.get("spec_type") != "draft-mtp"
+
+
+
+def test_download_honors_accepted_revision_even_when_head_changes(mock_hf_module, tmp_path):
+    mock, api = mock_hf_module
+    original = api.model_info.side_effect
+    accepted = "a" * 40
+    def info(repo, **kwargs):
+        result = original(repo, **kwargs)
+        result.sha = accepted if kwargs.get("revision") == accepted else "b" * 40
+        return result
+    api.model_info.side_effect = info
+    with _make_download_from_hf_test_env(mock_hf_module):
+        result = download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision=accepted)
+    assert result.is_file()
+    api.model_info.assert_called_once_with("org/repo", files_metadata=True, revision=accepted)
+    assert mock.hf_hub_download.call_args.kwargs["revision"] == accepted
+
+
+def test_download_rejects_server_revision_substitution(mock_hf_module, tmp_path):
+    mock, _ = mock_hf_module
+    with _make_download_from_hf_test_env(mock_hf_module), pytest.raises(ValueError, match="different revision"):
+        download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision="b" * 40)
+    mock.hf_hub_download.assert_not_called()
+
+
+@pytest.mark.parametrize("revision", ["main", "../bad", "a" * 41])
+def test_download_rejects_mutable_or_invalid_accepted_revision(mock_hf_module, tmp_path, revision):
+    mock, api = mock_hf_module
+    with _make_download_from_hf_test_env(mock_hf_module), pytest.raises(ValueError, match="Invalid immutable"):
+        download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision=revision)
+    api.model_info.assert_not_called()
+    mock.hf_hub_download.assert_not_called()

@@ -23,36 +23,13 @@ from arc_llama.agent.prompts import (
     USER_INSTRUCTIONS,
     format_tool_result,
 )
+from arc_llama.agent.responses import ModelResponseError, completion_message, completion_problem
+from arc_llama.agent.responses import parse_tool_call as parse_tool_call
 from arc_llama.agent.tools import TOOLS, ToolContext, ToolResult
 from arc_llama.chat_store import ChatStore
 from arc_llama.stream_metrics import generation_rate
 
 log = logging.getLogger("arc_llama.agent.loop")
-
-
-def parse_tool_call(tc: dict[str, Any], finish_reason: Any) -> tuple[dict[str, Any], str | None]:
-    """A tool call's arguments, and why it must not run (or None).
-
-    A reply cut off by the token limit can end mid-call, and arguments that do
-    not parse to a JSON object are unknown, not empty. Running either with
-    guessed arguments ({}) would execute something the model never asked for,
-    so the tool is skipped and the model is told to send the call again.
-    """
-    raw_args = tc.get("function", {}).get("arguments", "{}")
-    if raw_args in (None, ""):
-        raw_args = "{}"
-    try:
-        arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-    except json.JSONDecodeError:
-        arguments = None
-    if finish_reason == "length":
-        return arguments if isinstance(arguments, dict) else {}, (
-            "Not executed: the reply hit the token limit before this tool call was complete. "
-            "Send the complete call again."
-        )
-    if not isinstance(arguments, dict):
-        return {}, "Not executed: the tool arguments were not a valid JSON object. Send the call again."
-    return arguments, None
 
 
 async def run_agent(
@@ -143,15 +120,21 @@ async def run_agent(
                     json={"model": model, "messages": plan_messages},
                 )
                 plan_response.raise_for_status()
-                plan_data = plan_response.json()
-                plan_content = (
-                    plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
+                plan_choice, plan_message = completion_message(plan_response.json())
+                problem = completion_problem(plan_choice.get("finish_reason"))
+                if problem:
+                    raise ModelResponseError("Incomplete model plan: " + problem)
+                if plan_message.get("tool_calls"):
+                    raise ModelResponseError("The model returned tool calls instead of a plan. Retry the request.")
+                plan_content = plan_message.get("content")
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM while planning: {e}"}
+                return
+            except ModelResponseError as e:
+                yield {"type": "error", "message": str(e)}
                 return
 
             if not plan_content:
@@ -210,18 +193,23 @@ async def run_agent(
                 )
                 response.raise_for_status()
                 data = response.json()
+                choice, message = completion_message(data, call_prefix=f"turn-{turn}-call")
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed: {e}"}
                 return
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM: {e}"}
                 return
+            except ModelResponseError as e:
+                yield {"type": "error", "message": str(e)}
+                return
 
             rate = generation_rate(data)
             if rate is not None:
                 yield {"type": "performance", "generation_tok_s": rate}
 
-            usage = data.get("usage") or {}
+            usage = data.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
             prompt_tokens = usage.get("prompt_tokens")
             completion_tokens = usage.get("completion_tokens")
             if (type(prompt_tokens) is int and prompt_tokens >= 0
@@ -229,8 +217,6 @@ async def run_agent(
                 yield {"type": "usage", "prompt_tokens": prompt_tokens,
                        "completion_tokens": completion_tokens}
 
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
             content = message.get("content")
             tool_calls = message.get("tool_calls") or []
 
@@ -240,6 +226,10 @@ async def run_agent(
                 yield {"type": "assistant", "content": content}
 
             if not tool_calls:
+                problem = completion_problem(choice.get("finish_reason"))
+                if problem or not content:
+                    yield {"type": "error", "message": problem or "The model returned an empty response. Retry the request."}
+                    return
                 yield {"type": "done"}
                 return
 

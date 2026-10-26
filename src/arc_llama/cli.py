@@ -2,6 +2,7 @@
 
 Top-level commands:
 
+  arc-llama start      Open the browser and get your first answer.
   arc-llama run        One-command setup: detect, runtime, model, fit, serve.
   arc-llama init       Auto-detect GPUs and write an initial config.
   arc-llama doctor     Diagnose the local environment (drivers, oneAPI, perms).
@@ -990,6 +991,34 @@ def setup_cmd(
     )
 
 
+@cli.command("start")
+@click.option("--port", type=click.IntRange(1, 65535), default=None, help="Local web UI port.")
+@click.option("--open/--no-open", "open_browser", default=True, help="Open the browser when ready.")
+@click.pass_context
+def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
+    """Open Arc Llama locally, with guided setup if no models are installed.
+
+    No model or runtime is downloaded until you choose Download and start in
+    the browser. Existing configuration and model choices are preserved.
+    """
+    path = ctx.obj["config_path"]
+    cfg = load_config(path)
+    if not cfg.gpus:
+        try:
+            detected = detect_gpus()
+            cfg.gpus = init_config_from_detection(detected).gpus
+        except Exception as exc:
+            console.print(f"[yellow]Hardware detection needs attention: {exc}[/yellow]")
+    _save_or_die(cfg, path)
+    browser_path = "/chat" if cfg.models else "/"
+    url = f"http://127.0.0.1:{port or cfg.server.port}{browser_path}"
+    console.print(f"[bold]Open Arc Llama:[/bold] [cyan]{url}[/cyan]")
+    console.print("[dim]Keep this terminal open. Press Ctrl+C to stop.[/dim]")
+    ctx.obj["open_browser_path"] = browser_path if open_browser else None
+    ctx.invoke(serve, host="127.0.0.1", port=port, profile=None, admin_token=None,
+               scan=True, auto_tune=None, lan=False, assume_yes=False)
+
+
 @cli.command("serve")
 @click.option(
     "--host",
@@ -1151,7 +1180,12 @@ def serve(
         except (OSError, ValueError):
             pass
 
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
+    browser_path = ctx.obj.pop("open_browser_path", None)
+    if browser_path is not None:
+        from arc_llama.browser_launch import serve_in_browser
+        serve_in_browser(app, host=cfg.server.host, port=cfg.server.port, path=browser_path)
+    else:
+        uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
 
 
 def _lan_addresses() -> list[str]:

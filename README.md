@@ -1,6 +1,6 @@
-# arc-llama
+# Your hardware deserves better software
 
-> Plug-and-play `llama.cpp` runtime for Intel Arc GPUs.
+> **Arc Llama** — plug-and-play `llama.cpp` runtime for Intel Arc GPUs.
 
 `arc-llama` is a single command-line tool that detects your Intel Arc card,
 applies the right SYCL/oneAPI environment for your generation, downloads or
@@ -148,8 +148,43 @@ multi-GPU tensor split.
 
 ## Quick start
 
-The polished path is one command. `SOURCE` may be a registered model name, a
-local GGUF, or an explicit Hugging Face GGUF/quant specification:
+The guided launcher is new in the 1.1 development branch. On 1.0, use the
+`run` examples below. With 1.1 installed, open the guided browser setup:
+
+```bash
+pip install arc-llama
+arc-llama start
+```
+
+Keep the terminal open while you use it. The browser shows your detected GPU,
+searches the current public Hugging Face catalog for a chat model with known
+GGUF file sizes and estimated memory fit,
+and offers **Download and start**. It prepares a missing portable runtime,
+downloads and verifies the model, shows real setup stages, and loads it before
+opening Chat. Suggestions fill the message box; nothing is sent until you
+press Send. **Choose another model** opens Discover.
+
+There is no built-in model shortlist or fallback. Discovery considers up to 32
+popular public, ungated text-generation repositories, filters for chat/instruction
+metadata and complete standard 4–8-bit GGUF files, and checks a bounded model
+header. It shows the publisher’s license and pins the accepted repository commit.
+The runtime must recognize its architecture before downloading weights; this
+does not guarantee GPU execution or answer quality. Recommendations cache for
+five minutes; an unavailable catalog or no suitable match offers retry and
+manual discovery. Catalog popularity orders candidates; it is not a benchmark.
+
+**Pause after this step** lets the current download or load finish safely;
+continue later without repeating completed steps. Refreshing the browser
+preserves an active setup. Interrupted server sessions can retry using completed
+files; partial-download reuse depends on the download cache. Memory fit remains
+an estimate, and driver or runtime failures show a retryable setup error.
+
+Later launches open Chat when models are already registered. Use
+`arc-llama start --no-open` on a machine without a browser, or `--port 11438`
+if the default port is occupied. The launcher binds to this machine only.
+
+If you already know which model you want, `run` still accepts a registered
+model name, local GGUF, or explicit Hugging Face GGUF/quant specification:
 
 ```bash
 pip install arc-llama
@@ -869,6 +904,10 @@ This project is free and I don't ask for anything. If it's useful to you,
 a star on the repo is appreciated, and if you want to follow along with
 other things I'm building, you can find them under
 [@offbyonebit](https://github.com/offbyonebit).
+
+Follow [@OffByOneBit01](https://x.com/OffByOneBit01) on X (Twitter) for
+development updates. Share feedback there, including how Arc Llama works on
+your hardware.
 
 If you'd like to support development, you can [sponsor me on GitHub](https://github.com/sponsors/offbyonebit).
 

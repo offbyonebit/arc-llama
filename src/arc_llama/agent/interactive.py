@@ -16,12 +16,17 @@ from typing import Any
 import httpx
 
 from arc_llama.agent.checkpoints import CheckpointStore
-from arc_llama.agent.loop import parse_tool_call
 from arc_llama.agent.prompts import (
     PLANNING_INSTRUCTIONS,
     SYSTEM_PROMPT,
     USER_INSTRUCTIONS,
     format_tool_result,
+)
+from arc_llama.agent.responses import (
+    ModelResponseError,
+    completion_message,
+    completion_problem,
+    parse_tool_call,
 )
 from arc_llama.agent.tools import TOOLS, ToolContext, ToolResult
 from arc_llama.chat_store import ChatStore
@@ -121,15 +126,21 @@ class InteractiveAgent:
                     json={"model": self.model, "messages": plan_messages},
                 )
                 plan_response.raise_for_status()
-                plan_data = plan_response.json()
-                plan_content = (
-                    plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
+                plan_choice, plan_message = completion_message(plan_response.json())
+                problem = completion_problem(plan_choice.get("finish_reason"))
+                if problem:
+                    raise ModelResponseError("Incomplete model plan: " + problem)
+                if plan_message.get("tool_calls"):
+                    raise ModelResponseError("The model returned tool calls instead of a plan. Retry the request.")
+                plan_content = plan_message.get("content")
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM while planning: {e}"}
+                return
+            except ModelResponseError as e:
+                yield {"type": "error", "message": str(e)}
                 return
 
             if not plan_content:
@@ -177,15 +188,17 @@ class InteractiveAgent:
                 )
                 response.raise_for_status()
                 data = response.json()
+                choice, message = completion_message(data, call_prefix=f"turn-{turn}-call")
             except httpx.HTTPError as e:
                 yield {"type": "error", "message": f"LLM request failed: {e}"}
                 return
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM: {e}"}
                 return
+            except ModelResponseError as e:
+                yield {"type": "error", "message": str(e)}
+                return
 
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
             content = message.get("content")
             tool_calls = message.get("tool_calls") or []
 
@@ -195,6 +208,10 @@ class InteractiveAgent:
                 yield {"type": "assistant", "content": content}
 
             if not tool_calls:
+                problem = completion_problem(choice.get("finish_reason"))
+                if problem or not content:
+                    yield {"type": "error", "message": problem or "The model returned an empty response. Retry the request."}
+                    return
                 yield {"type": "done"}
                 return
 

@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/paper-tokens.css?v=paper-3" />
 <link rel="stylesheet" href="/paper.css?v=paper-6" />
 <link rel="stylesheet" href="/harnesses.css?v=harness-1" />
+<link rel="stylesheet" href="/onboarding.css?v=first-answer-1" />
 </head>
 <body>
 <header class="app-header">
@@ -36,6 +37,33 @@
       <p class="eyebrow">LOCAL INFERENCE</p>
       <h2 id="page-title">Models</h2>
       <p>Find a model, choose it from your library, and open chat.</p>
+    </div>
+  </section>
+
+  <section class="flow-section first-answer-section" data-area="models" hidden aria-labelledby="first-answer-title">
+    <div id="first-answer" class="first-answer-card">
+      <p class="eyebrow">WELCOME TO ARC LLAMA</p>
+      <h2 id="first-answer-title" data-setup="title">Let’s get your first answer</h2>
+      <p data-setup="hardware"></p>
+      <h3 data-setup="model"></h3>
+      <p data-setup="description"></p>
+      <a data-setup="source" target="_blank" rel="noopener noreferrer" hidden></a>
+      <ol class="first-answer-steps" data-setup="steps" aria-label="Setup stages">
+        <li data-phase="runtime">Prepare runtime</li><li data-phase="downloading">Download model</li>
+        <li data-phase="loading">Load model</li><li data-phase="ready">Ask a question</li>
+      </ol>
+      <p data-setup="status" role="status" aria-live="polite"></p>
+      <progress data-setup="progress" aria-label="Download progress" hidden></progress>
+      <p data-setup="bytes"></p>
+      <p data-setup="error" class="setup-error" role="alert" hidden></p>
+      <p data-setup="consent" class="setup-consent">Downloads the model from Hugging Face and, if needed, a verified portable runtime from GitHub. Then loads the model and opens Chat. No question is sent automatically.</p>
+      <div class="first-answer-actions">
+        <button data-setup="start" class="primary">Download and start</button>
+        <button data-setup="pause" class="secondary" hidden>Pause after this step</button>
+        <a data-setup="chat" class="primary-cta" hidden>Open Chat</a>
+        <button data-setup="another" class="ghost">Choose another model</button>
+        <button data-setup="scan" class="ghost">Use a model already on disk</button>
+      </div>
     </div>
   </section>
 
@@ -231,6 +259,7 @@
     <script src="/dashboard/integration.js?v=ui-0.21"></script>
     <script src="/harnesses.js?v=harness-1"></script>
     <script src="/paper.js?v=paper-5"></script>
-    <script src="/app.js?v=paper-6"></script>
+    <script src="/dashboard/onboarding.js?v=dynamic-starter-1"></script>
+    <script src="/app.js?v=first-answer-1"></script>
 </body>
 </html>

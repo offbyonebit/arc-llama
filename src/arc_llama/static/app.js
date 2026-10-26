@@ -722,6 +722,11 @@ const integrationController = window.ArcDashboard.createIntegrationController({
 });
 function openFrontendDialog() { return integrationController.open(); }
 
+const onboardingController = window.ArcDashboard.createOnboardingController?.({
+  document, request: (...args) => fetch(...args), authHeaders,
+  chooseAnother: () => showModelsView("#library-title"), scanExisting: () => scanModels(), refreshStatus: () => fetchStatus(true),
+}) || { update() {} };
+
 function render() {
   window.ArcPaper?.syncModels(snapshot?.models || [], selectedModel, name => { selectedModel = name; sessionStorage.setItem(SELECTED_MODEL_KEY, name); render(); });
   libraryController.invalidateCompatibility();
@@ -734,6 +739,7 @@ function render() {
   renderSystemReadiness();
   renderStart();
   renderNextStep();
+  onboardingController.update(snapshot, statusOnline);
   renderPlugins();
 }
 
@@ -798,6 +804,7 @@ async function fetchStatusRequest() {
       $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach arc-llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
     }
     renderSystemReadinessOffline();
+    onboardingController.update(snapshot, false);
     setFooter(error.message, true);
     return false;
   }
