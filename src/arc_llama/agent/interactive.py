@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from arc_llama.agent.checkpoints import CheckpointStore
+from arc_llama.agent.loop import parse_tool_call
 from arc_llama.agent.prompts import (
     PLANNING_INSTRUCTIONS,
     SYSTEM_PROMPT,
@@ -199,17 +200,15 @@ class InteractiveAgent:
 
             for call_index, tc in enumerate(tool_calls):
                 name = tc.get("function", {}).get("name")
-                raw_args = tc.get("function", {}).get("arguments", "{}")
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except json.JSONDecodeError:
-                    arguments = {}
+                arguments, problem = parse_tool_call(tc, choice.get("finish_reason"))
 
                 call_id = tc.get("id") or f"turn-{turn}-call-{call_index}"
 
                 yield {"type": "tool_call", "id": call_id, "name": name, "arguments": arguments}
 
-                if TOOLS.requires_confirmation(name) and not self.auto_confirm:
+                if problem is not None:
+                    result = ToolResult(problem, error=True)
+                elif TOOLS.requires_confirmation(name) and not self.auto_confirm:
                     yield {
                         "type": "confirm_required",
                         "id": call_id,

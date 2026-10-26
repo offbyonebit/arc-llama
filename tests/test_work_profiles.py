@@ -155,10 +155,10 @@ def test_a_run_gets_its_profile_and_an_unknown_one_is_refused(client, tmp_path, 
 
 
 def test_capabilities_and_commands_follow_the_profile(client, tmp_path, monkeypatch):
-    async def fake_caps(folder):
+    async def fake_caps(folder, **_kw):
         return {"mcp": ["searxng", "github"], "skills": [{"name": "pdf", "description": "d"}], "web": ["webfetch"]}
 
-    async def fake_list(folder, model):
+    async def fake_list(folder, model, **_kw):
         return [{"name": "pdf", "description": "", "source": "skill", "takes_arguments": False},
                 {"name": "docs", "description": "", "source": "skill", "takes_arguments": False}]
 

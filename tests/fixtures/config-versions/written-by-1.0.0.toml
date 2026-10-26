@@ -1,0 +1,90 @@
+version = 1
+upstreams = [
+    { url = "probe-url", name = "probe-name" },
+]
+
+[server]
+host = "127.0.0.1"
+port = 11444
+single_resident = false
+admin_token = "probe-admin_token"
+switch_drain_seconds = 31.5
+switch_interrupt_policy = "reject_new"
+inference_first_response_seconds = 601.5
+inference_stream_idle_seconds = 121.5
+
+[paths]
+llama_server = "llama-server"
+models_dir = "/mnt/storage/tmp/upg/cfgver/home/.local/share/arc-llama/models"
+state_dir = "/mnt/storage/tmp/upg/cfgver/home/.local/state/arc-llama"
+skills_dir = "/mnt/storage/tmp/upg/cfgver/home/.config/arc-llama/skills"
+scan_paths = [
+    "probe-scan_paths",
+]
+oneapi_setvars = "probe-oneapi_setvars"
+
+[tune]
+auto = false
+idle_seconds = 127
+target = "balanced"
+prompt_tokens = 1031
+gen_tokens = 135
+min_uses = 8
+retune_on_fingerprint_change = false
+
+[workload]
+context_length = "probe-context_length"
+style = "probe-style"
+priority = "probe-priority"
+
+[agent]
+root = "."
+profile = "probe-profile"
+
+[[gpus]]
+pci_slot = "probe-pci_slot"
+sycl_index = 14
+arch = "probe-arch"
+vram_mb = 7
+enabled = false
+name = "probe-name"
+backend = "sycl"
+vulkan_index = 7
+
+[[models]]
+name = "probe-name"
+path = "probe-path"
+port = 14
+gpu_pci_slot = "probe-gpu_pci_slot"
+display_name = "probe-display_name"
+kv_class = "default"
+aliases = [
+    "probe-aliases",
+]
+tune_state = "untuned"
+tuned_at = 1.5
+tune_fingerprint = "probe-tune_fingerprint"
+tune_error = "probe-tune_error"
+llama_server = "probe-llama_server"
+
+[models.recipe]
+PROBE_KEY = "probe-value"
+
+[models.env]
+PROBE_KEY = "probe-value"
+
+[[mcp_servers]]
+name = "probe-name"
+command = "probe-command"
+args = [
+    "probe-args",
+]
+
+[mcp_servers.env]
+PROBE_KEY = "probe-value"
+
+[[profiles]]
+name = "probe-name"
+mcp_servers = [
+    "probe-mcp_servers",
+]

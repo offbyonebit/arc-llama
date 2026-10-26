@@ -43,6 +43,7 @@ from arc_llama.arch import Arch, Backend, aot_arch_for
 from arc_llama.binary import detect_backends, detect_llama_server_backend
 from arc_llama.cli_agent import register_agent_commands
 from arc_llama.cli_diagnostics import register_diagnostic_commands
+from arc_llama.cli_harness import register_harness_commands
 from arc_llama.cli_models import register_model_commands
 from arc_llama.cli_performance import register_performance_commands
 from arc_llama.cli_recipes import register_recipe_commands
@@ -1330,6 +1331,7 @@ _runtime_command_exports = register_runtime_commands(
     save_or_die=lambda cfg, path: _save_or_die(cfg, path),
 )
 runtime_group = _runtime_command_exports["runtime_group"]
+register_harness_commands(cli, console=console, load_config=lambda path: load_config(path))
 _installed_runtimes = _runtime_command_exports["_installed_runtimes"]
 runtime_list_cmd = _runtime_command_exports["runtime_list_cmd"]
 runtime_use_cmd = _runtime_command_exports["runtime_use_cmd"]

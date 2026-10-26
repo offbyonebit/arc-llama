@@ -11,7 +11,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
-  await page.goto(origin + "/work");
+  await page.goto(origin + "/workbench");
   await page.waitForSelector("#workspace-model option", { state: "attached" });
   await page.evaluate(() => { document.querySelector("#project-editor").open = true; });
   await page.click("#new-workspace");

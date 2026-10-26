@@ -139,8 +139,10 @@ class TestOneapiRuntimeEnvNeeded:
     def test_no_oneapi_dirs_returns_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setenv("ONEAPI_ROOT", str(tmp_path / "no-such-oneapi"))
         monkeypatch.setenv("CMPLR_ROOT", "")
-        # Ensure PATH doesn't accidentally find libs on this test runner.
+        # Isolate every loader search path from the developer's oneAPI install.
         monkeypatch.setenv("PATH", "")
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
+        monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files"))
         # Ensure ldconfig doesn't accidentally find libs on this test runner.
         monkeypatch.setattr("arc_llama.platform_checks.shutil.which", lambda _x: None)
         assert oneapi_runtime_env_needed() is True

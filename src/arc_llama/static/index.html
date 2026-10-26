@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/style.css?v=ui-0.29" />
 <link rel="stylesheet" href="/paper-tokens.css?v=paper-3" />
 <link rel="stylesheet" href="/paper.css?v=paper-6" />
+<link rel="stylesheet" href="/harnesses.css?v=harness-1" />
 </head>
 <body>
 <header class="app-header">
@@ -95,6 +96,16 @@
       <summary>Disk usage</summary>
       <div id="library-disk" class="library-disk"></div>
     </details>
+  </section>
+
+  <section class="flow-section harnesses-section" data-area="system" aria-labelledby="harnesses-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="harnesses-title">Agents for Work</h2>
+        <p class="section-copy">OpenCode and Hermes can run Work tasks. Arc Llama can install a tested copy of each for you.</p>
+      </div>
+    </div>
+    <div id="harness-list" class="harness-list" aria-live="polite"></div>
   </section>
 
   <section class="flow-section plugins-section" data-area="system" aria-labelledby="plugins-title">
@@ -218,7 +229,8 @@
     <script src="/dashboard/measurements.js?v=ui-0.25"></script>
     <script src="/dashboard/plugins.js?v=ui-0.21"></script>
     <script src="/dashboard/integration.js?v=ui-0.21"></script>
+    <script src="/harnesses.js?v=harness-1"></script>
     <script src="/paper.js?v=paper-5"></script>
-    <script src="/app.js?v=paper-5"></script>
+    <script src="/app.js?v=paper-6"></script>
 </body>
 </html>

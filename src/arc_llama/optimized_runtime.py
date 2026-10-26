@@ -35,6 +35,7 @@ from arc_llama.runtime import (
     _auth_headers,
     _find_llama_server,
     _publish_install,
+    _recover_interrupted_publish,
     _runtime_ssl_context,
     download_asset,
     extract_archive,
@@ -162,6 +163,7 @@ def install_optimized_runtime(
     if dest is None:
         dest = Path(cfg.paths.state_dir).expanduser() / "runtime" if cfg.paths.state_dir else default_state_dir() / "runtime"
     dest.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_publish(dest)
 
     work = Path(tempfile.mkdtemp(prefix=".arc-llama-runtime-dl-", dir=dest))
     own_client = False

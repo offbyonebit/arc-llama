@@ -1,6 +1,6 @@
 """Upgrade and rollback of config files between released versions (issue #78).
 
-The fixtures in ``fixtures/config-versions`` were written by the published 0.8.0, 0.9.0 and 0.9.1.2
+The fixtures in ``fixtures/config-versions`` were written by the published 0.8.0, 0.9.0, 0.9.1.2 and 1.0.0
 packages themselves (every field set to a non-default value), not hand-written. ``loaded-by-*.json``
 is what each release read back from its own file; ``rollback-resaved-by-*`` is what each release
 saved after loading a config from this version. ``scripts/check_config_versions.py`` regenerates
@@ -27,7 +27,7 @@ except ImportError:  # Python 3.10
     import tomli as tomllib  # type: ignore[no-redef]
 
 FIXTURES = Path(__file__).parent / "fixtures" / "config-versions"
-RELEASES = ["0.8.0", "0.9.0", "0.9.1.2"]
+RELEASES = ["0.8.0", "0.9.0", "0.9.1.2", "1.0.0"]
 CURRENT_FIXTURE = "written-by-0.9.2.dev0.toml"
 
 # What a rollback to each release costs once that release saves the file: settings it does not
@@ -43,6 +43,11 @@ LOST_ON_ROLLBACK = {
 }
 LOST_ON_ROLLBACK["0.9.0"] = LOST_ON_ROLLBACK["0.9.1.2"]
 LOST_ON_ROLLBACK["0.8.0"] = LOST_ON_ROLLBACK["0.9.1.2"] | {"server.switch_drain_seconds"}
+# 1.0.0 keeps settings it does not know, so rolling back from 1.1 (agent.opencode_bin and
+# agent.hermes_bin included) costs nothing.
+LOST_ON_ROLLBACK["1.0.0"] = set()
+# The config each release's rollback fixture was resaved from (the checkout of the day).
+ROLLBACK_SOURCE = {"1.0.0": "written-by-1.1.0.dev0.toml"}
 
 
 def _flat(value: Any, prefix: str = "") -> dict[str, Any]:
@@ -97,7 +102,7 @@ def test_upgraded_config_survives_saving_with_this_version(release, tmp_path):
 
 @pytest.mark.parametrize("release", RELEASES)
 def test_rollback_loses_only_the_documented_settings(release, tmp_path):
-    original = _load_flat(_copy(CURRENT_FIXTURE, tmp_path))
+    original = _load_flat(_copy(ROLLBACK_SOURCE.get(release, CURRENT_FIXTURE), tmp_path))
     after = _load_flat(_copy(f"rollback-resaved-by-{release}.toml", tmp_path))
     changed = {k for k in original if after.get(k) != original[k]}
     assert changed == LOST_ON_ROLLBACK[release]

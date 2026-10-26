@@ -20,6 +20,7 @@ ships with the install.
 from __future__ import annotations
 
 import asyncio
+import collections
 import io
 import json
 import logging
@@ -75,9 +76,16 @@ from arc_llama.api.library import register_library_routes
 from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
-from arc_llama.config import Config, load_config
+from arc_llama.config import Config, default_config_path, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
+from arc_llama.harness_install import (
+    HarnessInstallManager,
+    is_managed,
+    managed_installs,
+    remove_harness,
+)
+from arc_llama.harness_install import offer as harness_offer
 from arc_llama.model_compatibility import CompatibilityChecks
 from arc_llama.model_library import (
     DownloadManager,
@@ -307,6 +315,8 @@ def create_app(
         app.state.pending_confirmations = pending_confirmations
         app.state.pending_plan_approvals = pending_plan_approvals
         app.state.work_runs = {}
+        app.state.active_harness_runs = collections.Counter()
+        app.state.harness_installs = HarnessInstallManager(cfg, config_path or default_config_path())
         app.state.work_profiles = ProfileStore((state_dir / "work-profiles.json") if state_dir else Path(".arc_llama_work_profiles.json"))
         app.state.work_sessions = SessionStore((state_dir / "work-sessions") if state_dir else Path(".arc_llama_work_sessions"))
         app.state.work_undo_dir = (state_dir / "work-undo") if state_dir else Path(".arc_llama_work_undo")
@@ -326,7 +336,6 @@ def create_app(
         tuner: Any | None = None
         if getattr(cfg, "tune", None) and cfg.tune.auto:
             from arc_llama.autotune import start_autotuner
-            from arc_llama.config import default_config_path
 
             save_path = config_path or default_config_path()
 
@@ -896,12 +905,13 @@ def create_app(
                     arguments=command_arguments,
                     tool_profile=tool_profile,
                     session_title=task,
+                    binary=cfg.agent.opencode_bin,
                 )
             elif harness == "hermes":
                 runner = run_hermes(
                     task=prompt, model=model, base_url=base_url, root=root,
                     auto_confirm=auto_confirm, confirm_callback=confirm_callback,
-                    local_only=local_only,
+                    local_only=local_only, binary=cfg.agent.hermes_bin,
                 )
             else:
                 runner = run_agent(
@@ -922,6 +932,8 @@ def create_app(
                     work_type=work_type,
                 )
             streamed_message: ChatMessage | None = None
+            active_harness_runs = request.app.state.active_harness_runs
+            active_harness_runs[harness] += 1
             try:
                 async for event in runner:
                     if event.get("type") == "harness_session" and work_session_id:
@@ -972,6 +984,7 @@ def create_app(
                     close_runner = getattr(runner, "aclose", None)
                     if close_runner is not None:
                         await close_runner()
+                active_harness_runs[harness] -= 1
                 if tracker is not None and not kept:
                     tracker.discard()
                 pending.pop(run_id, None)
@@ -1012,7 +1025,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
         try:
             profile = request.app.state.work_profiles.get(profile_id) if profile_id else None
-            return {"commands": filter_commands(await list_commands(folder, model), profile)}
+            return {"commands": filter_commands(await list_commands(folder, model, binary=cfg.agent.opencode_bin), profile)}
         except OpenCodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -1028,7 +1041,7 @@ def create_app(
         if not folder.is_dir():
             raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
         try:
-            return await list_capabilities(folder)
+            return await list_capabilities(folder, binary=cfg.agent.opencode_bin)
         except OpenCodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -1107,6 +1120,70 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"deleted": removed}
 
+    def _harness_status(name: str) -> dict[str, Any]:
+        """Where the harness Work will use comes from, plus what the app can install."""
+        configured = getattr(cfg.agent, f"{name}_bin")
+        env_value = os.environ.get("ARC_LLAMA_OPENCODE_BIN" if name == "opencode" else "ARC_LLAMA_HERMES_BIN")
+        found = (find_binary if name == "opencode" else find_hermes_binary)(configured)
+        if found is None:
+            source = "missing"
+        elif configured and is_managed(cfg, found):
+            source = "managed"
+        elif configured:
+            source = "config"
+        elif env_value:
+            source = "env"
+        else:
+            source = "path"
+        managed = managed_installs(cfg, name)
+        return {
+            "available": found is not None,
+            "source": source,
+            "path": found,
+            "managed": [{k: m.get(k) for k in ("version", "tested", "path", "installed_at")} for m in managed],
+            "install": harness_offer(cfg, name),
+        }
+
+    @app.get("/admin/harnesses/jobs")
+    async def harness_install_jobs(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        manager: HarnessInstallManager = request.app.state.harness_installs
+        return {"jobs": [job.public() for job in manager.jobs.values()]}
+
+    @app.post("/admin/harnesses/{name}/install")
+    async def harness_install_start(name: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if not experimental_enabled():
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        version = body.get("version", "pinned") if isinstance(body, dict) else "pinned"
+        manager: HarnessInstallManager = request.app.state.harness_installs
+        try:
+            job = manager.submit(name, version)
+        except ValueError as exc:
+            raise HTTPException(status_code=409 if "already running" in str(exc) else 400, detail=str(exc)) from exc
+        return job.public()
+
+    @app.post("/admin/harnesses/jobs/{job_id}/cancel")
+    async def harness_install_cancel(job_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if not request.app.state.harness_installs.cancel(job_id):
+            raise HTTPException(status_code=404, detail="No running install with that id")
+        return {"cancelling": job_id}
+
+    @app.delete("/admin/harnesses/{name}/{version}")
+    async def harness_remove(name: str, version: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if name not in ("opencode", "hermes"):
+            raise HTTPException(status_code=400, detail="Unknown harness")
+        if request.app.state.active_harness_runs[name] > 0:
+            raise HTTPException(status_code=409, detail=f"A Work task is using {name}. Wait for it to finish.")
+        if request.app.state.harness_installs.active() is not None:
+            raise HTTPException(status_code=409, detail="An agent install is running. Wait for it to finish.")
+        removed = await asyncio.to_thread(remove_harness, cfg, name, version, config_path=config_path or default_config_path())
+        if not removed:
+            raise HTTPException(status_code=404, detail="That version is not installed by Arc Llama")
+        return {"removed": version}
+
     @app.get("/v1/agent/info")
     async def agent_info(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         """What the Work view can offer on this server."""
@@ -1127,8 +1204,8 @@ def create_app(
             ),
             "harnesses": [
                 {"id": "builtin", "label": "Built-in", "available": True},
-                {"id": "opencode", "label": "OpenCode", "available": find_binary() is not None},
-                {"id": "hermes", "label": "Hermes", "available": find_hermes_binary() is not None,
+                {"id": "opencode", "label": "OpenCode", **_harness_status("opencode")},
+                {"id": "hermes", "label": "Hermes", **_harness_status("hermes"),
                  "auto_approve": False,
                  "approval_note": "Hermes asks before file edits and commands flagged by its own checks. Auto-approve is unavailable."},
             ],
@@ -1797,7 +1874,7 @@ def create_app(
         If the model is currently loaded, the server is stopped first; callers
         decide whether to reload it afterwards via /admin/load.
         """
-        from arc_llama.config import default_config_path, validate_model_runtime
+        from arc_llama.config import validate_model_runtime
         from arc_llama.gguf_meta import validate_override_patterns, weight_tensor_table
         from arc_llama.recipes import FLASH_ATTN_VALUES, KVCacheType
 
@@ -2162,7 +2239,6 @@ def create_app(
         restarts see the same registry. New models become loadable via
         `/admin/load/{name}` immediately — the router rebuilds its server map.
         """
-        from arc_llama.config import default_config_path
         from arc_llama.models import discover_ggufs, register_discovered
 
         c: Config = request.app.state.cfg

@@ -254,6 +254,10 @@ class AgentConfig:
     only the MCP servers listed in that profile are loaded. If unset, all
     configured MCP servers are loaded.
     """
+    opencode_bin: str | None = None
+    """OpenCode executable for Work. Set by ``arc-llama install-harness``; PATH when unset."""
+    hermes_bin: str | None = None
+    """Hermes executable for Work. Set by ``arc-llama install-harness``; PATH when unset."""
 
 
 @dataclass
@@ -385,6 +389,9 @@ class Config:
     # Keys from the file that this version does not know (written by a newer
     # arc-llama); kept so saving does not drop them. See _unknown_keys.
     unknown_keys: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    file_admin_token: str | None = field(default=None, repr=False, compare=False)
+    """The file's own admin_token while ARC_LLAMA_ADMIN_TOKEN overrides it; saved instead of the env value."""
+    admin_token_from_env: bool = field(default=False, repr=False, compare=False)
 
     # ------------------------------------------------------------------
     # Lookup helpers
@@ -485,7 +492,7 @@ class Config:
     def to_toml_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "version": self.version,
-            "server": asdict(self.server),
+            "server": {**asdict(self.server), **({"admin_token": self.file_admin_token} if self.admin_token_from_env else {})},
             "paths": asdict(self.paths),
             "tune": asdict(self.tune),
             "workload": asdict(self.workload),
@@ -812,6 +819,9 @@ def _resolve_admin_token(cfg: Config, path: Path, *, persist: bool) -> None:
     """
     env_token = os.environ.get("ARC_LLAMA_ADMIN_TOKEN")
     if env_token:
+        if not cfg.admin_token_from_env:
+            cfg.file_admin_token = cfg.server.admin_token
+            cfg.admin_token_from_env = True
         cfg.server.admin_token = env_token
         return
     if cfg.server.admin_token:

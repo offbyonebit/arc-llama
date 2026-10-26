@@ -258,6 +258,17 @@ def _validate_tar_members(tf: tarfile.TarFile, dest_dir: Path) -> list[tarfile.T
 
 def extract_archive(archive: Path, dest_dir: Path) -> Path:
     """Safely extract *archive* and return its llama-server binary."""
+    extract_archive_files(archive, dest_dir)
+    found = _find_llama_server(dest_dir)
+    if found is None:
+        raise RuntimeInstallError(f"no llama-server binary found in {archive.name}")
+    if os.name == "posix":
+        os.chmod(found, 0o755)
+    return found
+
+
+def extract_archive_files(archive: Path, dest_dir: Path) -> None:
+    """Safely extract a .tar.gz/.tgz or .zip *archive* into *dest_dir*."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
     if name.endswith(".tar.gz") or name.endswith(".tgz"):
@@ -285,22 +296,85 @@ def extract_archive(archive: Path, dest_dir: Path) -> Path:
             zf.extractall(dest_dir)
     else:
         raise RuntimeInstallError(f"Unknown archive type: {archive.name}")
-    found = _find_llama_server(dest_dir)
-    if found is None:
-        raise RuntimeInstallError(f"no llama-server binary found in {archive.name}")
-    if os.name == "posix":
-        os.chmod(found, 0o755)
-    return found
+
+
+# Publication leaves only these hidden siblings behind if the process dies.
+# A ``.backup-`` directory is always a complete former install: it is created
+# by renaming the install aside and removed only by renaming it to ``.trash-``
+# before deleting, so a half-deleted tree never carries the backup name.
+_BACKUP_RE = re.compile(r"^\.(?P<name>.+)\.backup-[a-z0-9_]+$")
+_TRASH_RE = re.compile(r"^\..+\.trash-[a-z0-9_]+$")
+
+
+def _unused_sibling(install_dir: Path, kind: str) -> Path:
+    path = Path(tempfile.mkdtemp(prefix=f".{install_dir.name}.{kind}-", dir=install_dir.parent))
+    path.rmdir()
+    return path
+
+
+def _discard_dir(path: Path, install_dir: Path) -> None:
+    """Rename *path* out of the backup namespace, then delete it."""
+    trash = _unused_sibling(install_dir, "trash")
+    try:
+        os.replace(path, trash)
+    except FileNotFoundError:
+        return  # another installer already retired it
+    except OSError as exc:
+        log.warning("Could not remove old runtime backup %s: %s", path, exc)
+        return
+    shutil.rmtree(trash, ignore_errors=True)
+
+
+def _recover_interrupted_publish(
+    dest: Path, find_binary: Callable[[Path], Path | None] = _find_llama_server
+) -> list[Path]:
+    """Repair runtime installs left mid-replacement by a killed installer.
+
+    An install that is missing while its backup exists is restored from the
+    backup. Backups of installs that are present, and trash directories, are
+    deleted. Staging directories are never promoted. Returns restored paths.
+    """
+    try:
+        entries = sorted(dest.iterdir())
+    except OSError:
+        return []
+    restored: list[Path] = []
+    for entry in entries:
+        match = _BACKUP_RE.match(entry.name)
+        if match is None or entry.is_symlink() or not entry.is_dir():
+            continue
+        install_dir = dest / match.group("name")
+        if not install_dir.exists() and not install_dir.is_symlink():
+            if find_binary(entry) is None:
+                log.warning("Leaving %s in place: it has no executable to restore", entry)
+                continue
+            try:
+                os.replace(entry, install_dir)
+            except OSError as exc:
+                if not install_dir.exists():
+                    log.warning("Could not restore runtime %s from %s: %s", install_dir, entry, exc)
+                    continue
+            else:
+                log.warning("Restored runtime %s after an interrupted install", install_dir)
+                restored.append(install_dir)
+                continue
+        if install_dir.is_dir() and not install_dir.is_symlink():
+            _discard_dir(entry, install_dir)
+    for entry in entries:
+        if _TRASH_RE.match(entry.name) and entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+    return restored
 
 
 def _publish_install(staging_dir: Path, install_dir: Path) -> None:
-    """Atomically publish a staged runtime, restoring the old one on failure."""
+    """Atomically publish a staged runtime, restoring the old one on failure.
+
+    If the process dies between the two renames, the old install survives as
+    a backup that the next ``_recover_interrupted_publish`` restores.
+    """
     backup_dir: Path | None = None
     if install_dir.exists():
-        backup_dir = Path(
-            tempfile.mkdtemp(prefix=f".{install_dir.name}.backup-", dir=install_dir.parent)
-        )
-        backup_dir.rmdir()
+        backup_dir = _unused_sibling(install_dir, "backup")
         os.replace(install_dir, backup_dir)
     try:
         os.replace(staging_dir, install_dir)
@@ -309,7 +383,7 @@ def _publish_install(staging_dir: Path, install_dir: Path) -> None:
             os.replace(backup_dir, install_dir)
         raise
     if backup_dir is not None:
-        shutil.rmtree(backup_dir, ignore_errors=True)
+        _discard_dir(backup_dir, install_dir)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -376,6 +450,10 @@ def install_runtime(
         else:
             base = default_state_dir()
         dest = base / "runtime"
+
+    # Before any network access, so an offline retry still restores the
+    # previous install that a killed replacement left aside.
+    _recover_interrupted_publish(dest)
 
     own_client = client is None
     if own_client:

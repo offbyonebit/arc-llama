@@ -1276,60 +1276,56 @@ async function runSend() {
       const t = await r.text();
       throw new Error(`${r.status} ${t}`);
     }
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let streamFinished = false;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        if (!streamFinished) throw new Error("The stream ended before completion. Your partial answer was kept.");
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (line.trim() === "data: [DONE]") streamFinished = true;
-        if (line.startsWith("data:")) {
-          let event;
-          try { event = JSON.parse(line.slice(5)); } catch { /* non-JSON SSE */ }
-          if (event?.error) throw new Error(event.error.message || "Generation was interrupted.");
-        }
-        const chunkText = processSseLine(line);
-        if (chunkText != null) {
-          let reasoning = false;
-          try { reasoning = !!JSON.parse(line.slice(5)).choices?.[0]?.delta?.reasoning_content; } catch (_) {}
-          if (streamStartTime === null) streamStartTime = Date.now();
-          streamTokenCount += Math.max(1, Math.round(chunkText.length / 4));
-          streamRaw += chunkText;
-          const parsed = parseThinking(streamRaw);
-          if (!parsed.hasPartialTag) {
-            const phase = reasoning || (parsed.thinking && !parsed.content.trim()) ? "thinking" : "answering";
-            live.dataset.phase = phase; liveLabel.textContent = phase === "thinking" ? "Thinking" : "Writing answer";
-            const newContent = parsed.content.slice(lastDisplayedContent.length);
-            lastDisplayedContent = parsed.content;
-            currentThinking = parsed.thinking;
-            if (newContent) {
-              conversation[convoIndex].content = parsed.content;
-              appendChunk(assistantMsg.content, newContent);
-              if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
-            }
-            const thinkingBlock = assistantMsg.div.querySelector(".thinking-block");
-            const thinkingContent = assistantMsg.div.querySelector(".thinking-content");
-            if (thinkingBlock && thinkingContent) {
-              const trimmedThinking = currentThinking.trim();
-              if (trimmedThinking) {
-                thinkingBlock.style.display = "";
-                thinkingContent.textContent = trimmedThinking;
-              } else {
-                thinkingBlock.style.display = "none";
-                thinkingContent.textContent = "";
-              }
+    const stream = window.ArcChat.createCompletionStream(event => {
+      if (event.usage) lastUsage = event.usage;
+      const delta = event.choices?.[0]?.delta;
+      if (!delta) return;
+      const thinking = delta.reasoning_content ?? delta.reasoning;
+      const reasoning = !!thinking;
+      const chunkText = (thinking ? "<think>" + thinking + "</think>" : "") + (delta.content || "");
+      if (chunkText) {
+        if (streamStartTime === null) streamStartTime = Date.now();
+        streamTokenCount += Math.max(1, Math.round(chunkText.length / 4));
+        streamRaw += chunkText;
+        const parsed = parseThinking(streamRaw);
+        if (!parsed.hasPartialTag) {
+          const phase = reasoning || (parsed.thinking && !parsed.content.trim()) ? "thinking" : "answering";
+          live.dataset.phase = phase; liveLabel.textContent = phase === "thinking" ? "Thinking" : "Writing answer";
+          const newContent = parsed.content.slice(lastDisplayedContent.length);
+          lastDisplayedContent = parsed.content;
+          currentThinking = parsed.thinking;
+          if (newContent) {
+            conversation[convoIndex].content = parsed.content;
+            appendChunk(assistantMsg.content, newContent);
+            if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
+          }
+          const thinkingBlock = assistantMsg.div.querySelector(".thinking-block");
+          const thinkingContent = assistantMsg.div.querySelector(".thinking-content");
+          if (thinkingBlock && thinkingContent) {
+            const trimmedThinking = currentThinking.trim();
+            if (trimmedThinking) {
+              thinkingBlock.style.display = "";
+              thinkingContent.textContent = trimmedThinking;
+            } else {
+              thinkingBlock.style.display = "none";
+              thinkingContent.textContent = "";
             }
           }
         }
       }
+    });
+    const reader = r.body.getReader();
+    try {
+      while (!stream.done) {
+        const { done, value } = await reader.read();
+        if (done) { stream.end(); break; }
+        stream.push(value);
+      }
+    } finally {
+      // Completion, malformed frames and Stop all close the response body.
+      // A server need not close its connection after sending [DONE].
+      try { await reader.cancel(); } catch (_) {}
+      reader.releaseLock();
     }
     const finalParsed = parseThinking(streamRaw);
     conversation[convoIndex].content = finalParsed.content;
@@ -1391,30 +1387,6 @@ function renderResponseStatus(div, status) {
   note.textContent = status === "stopped" ? "Stopped" : "Interrupted: partial answer";
   div.appendChild(note);
 }
-
-function processSseLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed || !trimmed.startsWith("data:")) return null;
-  const payload = trimmed.slice(5).trim();
-  if (payload === "[DONE]") return null;
-  try {
-    const obj = JSON.parse(payload);
-    if (obj.usage) lastUsage = obj.usage;
-    const delta = obj.choices?.[0]?.delta;
-    if (!delta) return null;
-    let text = "";
-    if (delta.reasoning_content) {
-      text += "<think>" + delta.reasoning_content + "</think>";
-    }
-    if (delta.content != null) {
-      text += delta.content;
-    }
-    return text || null;
-  } catch (e) {
-    return null;
-  }
-}
-
 
 function finishGeneration() {
   generating = false;

@@ -30,7 +30,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "config-versions"
-DEFAULT_VERSIONS = ["0.8.0", "0.9.0", "0.9.1.2"]
+DEFAULT_VERSIONS = ["0.8.0", "0.9.0", "0.9.1.2", "1.0.0"]
 
 # Run by each version's own interpreter: write a config with every field non-default, or
 # load one (dumping the values that version sees) and optionally save it again.

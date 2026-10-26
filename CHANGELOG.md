@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## [Unreleased]
+
+### Fixed
+
+- Built-in code search excludes file symlinks and rechecks all indexed content for equal-size, same-timestamp edits; invalid embeddings are rejected before publication.
+- Model-hub downloads pin all shards and projectors to one commit and verify LFS SHA-256 or git blob hashes in private staging before publishing new files.
+- The built-in agent no longer runs a tool call cut off by the token limit (`finish_reason: length`) or one whose
+  arguments are not a JSON object. It used to run the tool with `{}`; the model is now told to send the call again.
+- An MCP tool's plain return value is no longer sent to the model twice (FastMCP's `{"result": ...}` structured copy
+  of a text result is recognised).
+- `docs/upgrading.md` now describes a backup that also covers chats and Work jobs (config folder plus state
+  directory), and the 1.0 and 1.1 compatibility of configuration versus chat and job data.
+- The sdist no longer picks up local-only notes hidden through `.git/info/exclude` (`CLAUDE.md`,
+  `LOCAL_REPO_BOUNDARIES.md`) or the Windows validation screenshots folder.
+- MCP structured values survive text summaries; changed tool catalogs are refreshed with old proxies invalidated. The optional MCP extra now requires the tested 1.30 API or later in the 1.x series.
+
+- Chat accepts fragmented UTF-8, CR/LF SSE line endings, multiline data events,
+  and completion markers with no space after the colon. Malformed or oversized
+  events interrupt the response while preserving partial text and reasoning.
+  Completed streams close promptly even when the backend keeps the body open.
+- An `install-runtime` replacement killed between moving the old runtime aside
+  and publishing the new one no longer leaves the configured runtime missing:
+  the next install, even offline, restores the previous install and removes
+  leftover backups.
+- A corrupt or hostile `.gguf` whose header claims more data than the file holds is now rejected in milliseconds.
+  Before, a 69-byte file could make a model scan take 17 s and 3.6 GB of RAM.
+- Built-in agent code search (`semantic_search`) finds files added after indexing, never cites text from a file that
+  changed with the same size and timestamp, and survives an indexing run killed partway. The index is now one file
+  replaced atomically, and it is rebuilt automatically from the older three-file layout.
+- On Linux, the built-in agent's shell commands can no longer create, change or delete files outside the project
+  folder and temp folders (Landlock, kernel 5.13+). Reads, the network and permission changes are not restricted.
+  `ARC_LLAMA_COMMAND_SANDBOX=off` turns it off.
+- MCP servers for the built-in agent: every page of a server's tools is registered (repeated cursors stop the walk),
+  tool errors stay errors, images are passed as images and audio or binary resources are summarised instead of
+  dumped as text, startup/discovery and tool calls time out instead of hanging, and duplicate or empty tool names are
+  skipped. OpenCode and Hermes use their own MCP clients and are unaffected.
+- `ARC_LLAMA_ADMIN_TOKEN` is no longer written into `config.toml` when Arc Llama saves the config (for example after
+  `install-runtime`). The environment token overrides the file's token as documented, and the file keeps its own.
+
+### Added
+
+- Install OpenCode or Hermes for Work from inside Arc Llama: Work's Agent menu, System → Agents for Work, or
+  `arc-llama install-harness`. Arc Llama installs the tested versions by default, verifies each download by SHA-256,
+  and keeps each harness in its own folder under the state directory without touching your own installation.
+- Synthetic runtime replacement fault tests, native Linux launcher lifecycle
+  stress tests, and generated configuration migration/preservation checks.
+
 ## [1.0.0] - 2026-10-23
 
 Arc Llama 1.0: the stable single-GPU release. Validated natively on Linux and Windows 11

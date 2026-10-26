@@ -30,6 +30,31 @@ from arc_llama.stream_metrics import generation_rate
 log = logging.getLogger("arc_llama.agent.loop")
 
 
+def parse_tool_call(tc: dict[str, Any], finish_reason: Any) -> tuple[dict[str, Any], str | None]:
+    """A tool call's arguments, and why it must not run (or None).
+
+    A reply cut off by the token limit can end mid-call, and arguments that do
+    not parse to a JSON object are unknown, not empty. Running either with
+    guessed arguments ({}) would execute something the model never asked for,
+    so the tool is skipped and the model is told to send the call again.
+    """
+    raw_args = tc.get("function", {}).get("arguments", "{}")
+    if raw_args in (None, ""):
+        raw_args = "{}"
+    try:
+        arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except json.JSONDecodeError:
+        arguments = None
+    if finish_reason == "length":
+        return arguments if isinstance(arguments, dict) else {}, (
+            "Not executed: the reply hit the token limit before this tool call was complete. "
+            "Send the complete call again."
+        )
+    if not isinstance(arguments, dict):
+        return {}, "Not executed: the tool arguments were not a valid JSON object. Send the call again."
+    return arguments, None
+
+
 async def run_agent(
     task: str,
     model: str,
@@ -221,17 +246,15 @@ async def run_agent(
             # Process tool calls
             for call_index, tc in enumerate(tool_calls):
                 name = tc.get("function", {}).get("name")
-                raw_args = tc.get("function", {}).get("arguments", "{}")
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except json.JSONDecodeError:
-                    arguments = {}
+                arguments, problem = parse_tool_call(tc, choice.get("finish_reason"))
 
                 call_id = tc.get("id") or f"turn-{turn}-call-{call_index}"
 
                 yield {"type": "tool_call", "id": call_id, "name": name, "arguments": arguments}
 
-                if tools.requires_confirmation(name) and not auto_confirm:
+                if problem is not None:
+                    result = ToolResult(problem, error=True)
+                elif tools.requires_confirmation(name) and not auto_confirm:
                     yield {
                         "type": "confirm_required",
                         "id": call_id,

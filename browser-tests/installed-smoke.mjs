@@ -32,6 +32,10 @@ const messages = [
 await api("/v1/chats", { id: chatId, title: "Installed wheel compaction" });
 await api(`/v1/chats/${chatId}`, { messages, compaction: null }, "PUT");
 const launch = { headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] };
+// Compaction controls live in the Context popover of the current UI.
+async function openContext(page) {
+  if (await page.locator("#paper-context-pop").isHidden()) await page.locator("#paper-context-toggle").click();
+}
 const browser = await chromium.launch({ ...launch, channel: "chrome" }).catch(() => chromium.launch(launch));
 try {
   const page = await browser.newPage();
@@ -42,6 +46,7 @@ try {
   await page.click("#history-toggle");
   await page.locator(`.h-card[data-id="${chatId}"]`).click();
   await page.locator(".message.user").last().waitFor();
+  await openContext(page);
   await page.click("#compact-button");
   await page.waitForFunction(() => !document.querySelector("#compact-undo").hidden, null, { timeout: 120000 });
   const compacted = await api(`/v1/chats/${chatId}`, null, "GET");
@@ -55,6 +60,7 @@ try {
   assert.equal(continued.messages.length, messages.length + 2);
   assert(continued.messages.at(-1).content.trim());
   assert.equal(continued.messages.at(-1).status || "completed", "completed");
+  await openContext(page);
   await page.click("#compact-undo");
   await page.waitForFunction(() => document.querySelector("#compact-undo").hidden);
   const restored = await api(`/v1/chats/${chatId}`, null, "GET");

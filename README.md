@@ -360,8 +360,14 @@ Conversational Work operates in the selected project folder. Review the file
 changes after a task and use **Undo** while the run's backup is available.
 Undo refuses to overwrite later independent edits and may be unavailable for
 large projects or files. Reopened sessions retain change history, but cannot
-restore the original run's Undo backup. This mode is not an OS command sandbox;
-connected tools may access external services according to the harness setup.
+restore the original run's Undo backup. On Linux, the built-in agent's shell
+commands run under Landlock (kernel 5.13+): they can only create, change or
+delete files inside the project folder and temp folders, and get "Permission
+denied" elsewhere. They can still read anything you can read, use the network
+and change file permissions, so this limits accidents, not a determined attacker.
+Set `ARC_LLAMA_COMMAND_SANDBOX=off` to turn it off. OpenCode and Hermes run
+commands under their own policies, and Windows has no command sandbox.
+Connected tools may access external services according to the harness setup.
 
 ### Copy-based project jobs
 

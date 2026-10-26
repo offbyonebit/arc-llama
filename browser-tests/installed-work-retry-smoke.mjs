@@ -28,7 +28,7 @@ try {
     assert.equal(response.ok(), true, `${route}: ${await response.text()}`);
     return response.json();
   };
-  await page.goto(origin + '/work');
+  await page.goto(origin + '/workbench');
   await page.waitForSelector('#workspace-model option', {state:'attached'});
   await page.locator('#project-editor').evaluate(node => { node.open = true; });
   await page.click('#new-workspace');

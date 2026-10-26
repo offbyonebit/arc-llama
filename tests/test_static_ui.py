@@ -341,6 +341,7 @@ def test_marked_renderer_handles_safe_and_hostile_markdown():
 
 def test_chat_loads_safety_policy_before_renderer():
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
+    assert html.index("/chat/streaming.js") < html.index("/chat.js")
     assert html.index("markdown_safety.js") < html.index("chat/rendering.js")
     assert (
         html.index("chat/rendering.js")

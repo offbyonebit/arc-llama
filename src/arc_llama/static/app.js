@@ -708,6 +708,12 @@ const pluginsController = window.ArcDashboard.createPluginsController({
 function fetchPlugins() { return pluginsController.poll(); }
 function renderPlugins() { return pluginsController.render(); }
 
+const harnessPanel = window.ArcHarnesses?.createPanel({
+  document,
+  request: (url, options = {}) => fetch(url, { ...options, headers: authHeaders(options.headers || {}) }),
+  container: $("#harness-list"),
+});
+
 const integrationController = window.ArcDashboard.createIntegrationController({
   document,
   request: (...args) => fetch(...args),
@@ -929,6 +935,7 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
   await fetchStatus(true);
   await pluginsController.start();
   pluginsController.bind();
+  harnessPanel?.refresh();
   await fetchMeasurements();
   libraryController.start();
   measurementsController.start();

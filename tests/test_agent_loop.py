@@ -422,3 +422,36 @@ async def test_agent_reports_only_backend_measured_generation_speed(tmp_root, ti
     events = await collect_events("Synthetic task", [response], tmp_root)
     measured = [event for event in events if event["type"] == "performance"]
     assert measured == ([] if expected is None else [{"type": "performance", "generation_tok_s": expected}])
+
+
+def _call(arguments, finish_reason="tool_calls"):
+    return {"choices": [{"finish_reason": finish_reason, "message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": arguments}}]}}]}
+
+
+DONE = {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments,finish_reason,why",
+    [
+        ('{"path": "notes.txt", "content": "half writ', "length", "token limit"),  # cut off mid-call
+        ('{"path": "notes.txt", "content": "complete"}', "length", "token limit"),  # parses, still cut off
+        ('{"path": "notes.txt", "content": ', "tool_calls", "valid JSON object"),  # malformed
+        ('["notes.txt"]', "tool_calls", "valid JSON object"),  # JSON, but not an object
+    ],
+)
+async def test_cut_off_or_malformed_tool_calls_are_not_executed(tmp_root: Path, arguments, finish_reason, why) -> None:
+    events = await collect_events("t", [_call(arguments, finish_reason), DONE], tmp_root, auto_confirm=True)
+    [result] = [e for e in events if e["type"] == "tool_result"]
+    assert result["error"] is True and why in result["content"] and "Not executed" in result["content"]
+    assert not (tmp_root / "notes.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_complete_tool_call_still_runs(tmp_root: Path) -> None:
+    events = await collect_events("t", [_call('{"path": "notes.txt", "content": "complete"}'), DONE], tmp_root, auto_confirm=True)
+    [result] = [e for e in events if e["type"] == "tool_result"]
+    assert result["error"] is False
+    assert (tmp_root / "notes.txt").read_text() == "complete"

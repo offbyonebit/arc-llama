@@ -207,3 +207,92 @@ for malformed model calls; these are recorded, never presented as an unattended
 pass. A model that still cannot complete the case fails the harness. The native
 record for October 18 includes the 0.5B failure and successful 1.5B runs without
 admin resumes. These are opt-in tests, not additions to the default unit suite.
+
+
+## Synthetic protocol and lifecycle regressions
+
+The browser cases `chat-sse-framing` and `chat-sse-errors-keep-partial` send
+synthetic streams through the actual Chat UI. They cover byte-fragmented UTF-8,
+CR/LF and split CRLF, BOM, comments, multiline data, literal completion-marker
+text, usage-only events, malformed event shapes, bounded line/event size,
+premature EOF and response-body cancellation. A malformed response preserves
+partial text and reasoning, records an interruption, and permits a new request
+without automatically replaying the failed request. The parser caps individual
+lines and accumulated event data at 1 Mi UTF-16 code units. Complete events are
+required; a model finish reason alone is not transport completion.
+
+`tests/test_runtime_faults.py` uses a synthetic archive and httpx MockTransport
+to inject interrupted downloads, size/hash mismatches, extraction failures and
+cancellation, backend mismatches, marker-write failures and publication failures.
+Each case verifies the previous install/config survive, temporary files are
+cleaned, and a clean retry succeeds. These are exception/cancellation tests,
+not a power-loss durability claim or certification of concurrent installers.
+
+`tests/test_runtime_interruption.py` runs a synthetic installer in a child
+interpreter that calls `os._exit` (no exception handlers or `finally` blocks
+run) at each publication boundary: after the old install is renamed to a backup,
+after the new install is published, after the backup is renamed for deletion,
+and partway through deleting it. Before this was fixed, a kill after the first
+rename left the configured runtime path missing; a later offline retry did not
+bring it back, and even a successful retry leaked the old install as a hidden
+backup. The installer now repairs these states before any network access: an
+install that is missing while its backup exists is restored from the backup,
+and backups of installs that are present are deleted. A backup is renamed to a
+trash name before deletion, so a half-deleted tree never looks like a
+restorable backup. Recovery never promotes a staging directory, a backup with
+no `llama-server`, or a symlink, and a failed restore or failed cleanup leaves
+the backup in place. The tests check offline recovery, a later successful
+retry, and both kinds of failed recovery.
+
+Two overlapping installers are tested at two fixed interleavings: one paused
+with its install moved aside, and one paused before deleting its backup. In
+both, a complete install and a matching configuration remain, and the paused
+installer either finishes or fails without replacing it. There is no installer
+lock, and other interleavings are untested. The killed run's partial download
+and staging directory are not reclaimed (they can be large); they are never
+used. A backup half-deleted by Arc Llama 1.0.0 or earlier, before the trash
+rename existed, could still be restored if its `llama-server` file survived.
+These are Linux process-exit tests. They make no power-loss claim (nothing is
+fsynced), and the Windows behavior of directory renames during overlap is not
+verified natively.
+
+`tests/test_launcher_stress.py` starts bounded native Linux fixture processes
+through the real launcher in an isolated helper interpreter. Repeated graceful,
+forced, partial-startup, crash, concurrent-stop and cancelled-stop cases check
+process reaping, port rebinding, log retention and resident-lock release. Nested
+children are synthetic and reaped; no installed harness or model is started.
+The helper has outer test deadlines and child expiry alarms. Windows retains
+its separate mocked lifecycle coverage; this suite does not certify Windows
+process-tree behavior.
+
+`tests/test_config_properties.py` generates deterministic nested TOML values
+and checks migration idempotence and preservation of unknown fields through
+repeated edits across supported schema versions. It adds no test dependency
+or alternative configuration store. All fixtures remain separate from user
+configuration and native harness conversation history.
+
+
+## Research-derived search, MCP and download regressions
+
+`tests/test_research_gaps.py` covers out-of-root file links, scan/read link swaps,
+equal-stat edits that become newly relevant, invalid embeddings preserving the
+previous index, structured MCP content, catalog refresh and shutdown, immutable
+shard revisions, missing integrity metadata and checksum failure preserving an
+existing model. Fixtures are synthetic and require no model downloads.
+
+Search now hashes every eligible file before ranking; freshness checking grows
+with repository content size. On POSIX, source opens pin parent directories and
+refuse symlink traversal. Native Windows race behavior has not been certified.
+
+Model downloads require immutable revision and file integrity metadata. They
+verify the complete requested set in private staging before exposing new files.
+Publication of an existing multi-file set remains per-file, not crash-atomic;
+concurrent readers and interrupted replacement need a versioned-bundle protocol
+for stronger guarantees. Failed transfers can be retried; partial-byte resume is
+not promised. Hash verification adds one sequential read of downloaded content.
+
+The MCP extra targets `mcp>=1.30,<2`. Notification handling starts a bounded
+refresh task outside the SDK receive loop, removes stale registrations and
+invalidates previously obtained handlers. Failed or continuously changing
+catalogs remain unavailable instead of exposing old definitions. Shutdown
+cancels refresh work before unwinding SDK session contexts.

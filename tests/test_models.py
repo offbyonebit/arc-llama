@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -86,12 +88,27 @@ def test_parse_hf_spec_empty_after_colon():
 
 @pytest.fixture
 def mock_hf_module():
-    """Return a mock huggingface_hub module with HfApi and hf_hub_download."""
+    """Pinned synthetic hub metadata and a real temporary-file transfer."""
     mock = MagicMock()
-    mock_api_instance = MagicMock()
-    mock.HfApi.return_value = mock_api_instance
-    mock.hf_hub_download = MagicMock(return_value="/mock/download/model.gguf")
-    return mock, mock_api_instance
+    api = mock.HfApi.return_value
+    api.list_repo_files.return_value = ["model.gguf", "model-Q4_K_M.gguf"]
+    data = b"GGUFsynthetic fixture"
+    digest = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+    def info(*args, **kwargs):
+        return SimpleNamespace(sha="a" * 40, siblings=[
+            SimpleNamespace(rfilename=name, size=len(data), lfs=None, blob_id=digest)
+            for name in api.list_repo_files.return_value])
+
+    def transfer(**kwargs):
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    api.model_info.side_effect = info
+    mock.hf_hub_download.side_effect = transfer
+    return mock, api
 
 
 def _make_download_from_hf_test_env(mock_hf_module):
@@ -107,14 +124,15 @@ def test_download_from_hf_explicit_filename(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         result = download_from_hf(spec, target_dir=tmp_path)
 
-    assert result == Path("/mock/download/model.gguf")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
     # The listing finds split shards and projectors; with none, only the
     # named file downloads.
-    mock_api.list_repo_files.assert_called_once_with("org/repo")
+    mock_api.list_repo_files.assert_called_once_with("org/repo", revision="a" * 40)
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -131,12 +149,13 @@ def test_download_from_hf_quant_hint_single_match(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         result = download_from_hf(spec, target_dir=tmp_path)
 
-    assert result == Path("/mock/download/model.gguf")
-    mock_api.list_repo_files.assert_called_once_with("org/repo")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
+    mock_api.list_repo_files.assert_called_once_with("org/repo", revision="a" * 40)
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -155,11 +174,12 @@ def test_download_from_hf_quant_hint_prefers_uniform(mock_hf_module, tmp_path):
         result = download_from_hf(spec, target_dir=tmp_path)
 
     # Should pick the uniform quant (not UD- or _XL)
-    assert result == Path("/mock/download/model.gguf")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -201,11 +221,12 @@ def test_download_from_hf_single_gguf_auto_picks(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         result = download_from_hf(spec, target_dir=tmp_path)
 
-    assert result == Path("/mock/download/model.gguf")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -229,17 +250,15 @@ def test_download_from_hf_missing_huggingface_hub(tmp_path, monkeypatch):
         download_from_hf(spec, target_dir=tmp_path)
 
 
-def test_download_from_hf_returns_correct_path(mock_hf_module, tmp_path):
-    """Verify the returned path matches what hf_hub_download returns."""
+def test_download_from_hf_refuses_unexpected_destination(mock_hf_module, tmp_path):
     mock_module, _ = mock_hf_module
-    custom_path = "/custom/path/to/model.gguf"
-    mock_module.hf_hub_download.return_value = custom_path
+    mock_module.hf_hub_download.side_effect = None
+    mock_module.hf_hub_download.return_value = "/unexpected/model.gguf"
     spec = HFModelSpec(repo="org/repo", file="model.gguf", quant=None)
-
     with _make_download_from_hf_test_env(mock_hf_module):
-        result = download_from_hf(spec, target_dir=tmp_path)
-
-    assert result == Path(custom_path)
+        with pytest.raises(ValueError, match="unexpected destination"):
+            download_from_hf(spec, target_dir=tmp_path)
+    assert not (tmp_path / "model.gguf").exists()
 
 
 def test_download_from_hf_passes_token(mock_hf_module, tmp_path):
@@ -250,11 +269,12 @@ def test_download_from_hf_passes_token(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         download_from_hf(spec, target_dir=tmp_path, token="hf_12345")
 
-    mock_api.list_repo_files.assert_called_once_with("org/repo")
+    mock_api.list_repo_files.assert_called_once_with("org/repo", revision="a" * 40)
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token="hf_12345",
     )
 

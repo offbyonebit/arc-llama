@@ -1,3 +1,5 @@
+import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
+import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
@@ -92,6 +94,8 @@ import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudg
 import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./workbench-cases.mjs";
 
 const TESTS = [
+  ["chat-sse-framing", testChatSseFraming],
+  ["chat-sse-errors-keep-partial", testChatSseErrorsKeepPartial],
   ["work-hermes-harness", testWorkHermesHarness],
   ["work-hermes-unavailable", testWorkHermesUnavailable],
   ["work-live-activity-full-prompt", testWorkLiveActivityAndFullPrompt],
@@ -181,6 +185,10 @@ const TESTS = [
   ["work-tool-profiles-limit-a-run", testWorkToolProfilesLimitWhatARunCanUse],
   ["work-profiles-discovery-recovery", testWorkProfilesRecoverFromDiscoveryFailure],
   ["work-profiles-stale-discovery", testWorkProfilesIgnoreClosedDiscovery],
+  ["work-agent-install-flow", testWorkAgentInstallFlow],
+  ["work-agent-install-cancel", testWorkAgentInstallCancelKeepsSelection],
+  ["system-agents-panel", testSystemAgentsPanel],
+  ["system-agents-off-without-experimental", testSystemAgentsOffWithoutExperimental],
 ];
 
 // ---------------------------------------------------------------------------

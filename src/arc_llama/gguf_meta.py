@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import mmap
 import re
+import struct
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
@@ -44,6 +46,84 @@ _KV_METADATA_SUFFIXES = (
     "attention.value_length",
     "attention.sliding_window",
 )
+
+
+# Fixed sizes of GGUF metadata value types; 8 = string, 9 = array.
+_GGUF_SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+
+def check_gguf_header(path: Path | str) -> None:
+    """Raise ValueError unless every count and length in the GGUF header fits in the file.
+
+    gguf-py trusts declared lengths: a 69-byte file declaring a 2**32-element
+    array took 17 s and 3.6 GB in ``GGUFReader``. This walks the metadata table
+    once, reading only the size fields, so a hostile header costs time and
+    memory proportional to the real file size.
+    """
+    with open(path, "rb") as f:
+        size = f.seek(0, 2)
+        f.seek(0)
+        if size < 24 or f.read(4) != b"GGUF":
+            return  # not GGUF at all: the reader rejects it on its own
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            order = "<"
+            if struct.unpack_from("<I", m, 4)[0] not in (2, 3):
+                order = ">"
+                if struct.unpack_from(">I", m, 4)[0] not in (2, 3):
+                    return  # unknown version: let the reader report it
+            u32, u64 = struct.Struct(order + "I"), struct.Struct(order + "Q")
+            n_tensors, n_kv = struct.unpack_from(order + "QQ", m, 8)
+            pos = 24
+
+            def need(n: int) -> None:
+                if n < 0 or pos + n > size:
+                    raise ValueError(f"GGUF header declares {n} bytes at offset {pos}, past the end of the file")
+
+            def skip_string() -> None:
+                nonlocal pos
+                need(8)
+                length = u64.unpack_from(m, pos)[0]
+                pos += 8
+                need(length)
+                pos += length
+
+            def skip_value(kind: int, depth: int = 0) -> None:
+                nonlocal pos
+                if kind in _GGUF_SCALAR_SIZES:
+                    need(_GGUF_SCALAR_SIZES[kind])
+                    pos += _GGUF_SCALAR_SIZES[kind]
+                elif kind == 8:
+                    skip_string()
+                elif kind == 9:
+                    if depth > 4:
+                        raise ValueError("GGUF arrays nested too deeply")
+                    need(12)
+                    inner = u32.unpack_from(m, pos)[0]
+                    count = u64.unpack_from(m, pos + 4)[0]
+                    pos += 12
+                    if inner in _GGUF_SCALAR_SIZES:
+                        need(count * _GGUF_SCALAR_SIZES[inner])
+                        pos += count * _GGUF_SCALAR_SIZES[inner]
+                        return
+                    need(count * (8 if inner == 8 else 12))  # every element needs at least its own header
+                    for _ in range(count):
+                        skip_value(inner, depth + 1)
+                else:
+                    raise ValueError(f"unknown GGUF metadata type {kind}")
+
+            need(n_kv * 12)
+            for _ in range(n_kv):
+                skip_string()
+                need(4)
+                kind = u32.unpack_from(m, pos)[0]
+                pos += 4
+                skip_value(kind)
+            need(n_tensors * 24)  # name length, dimension count, type and offset at minimum
+
+
+def _gguf_reader(path: Path | str) -> Any:
+    check_gguf_header(path)
+    return gguf.GGUFReader(path)
 
 
 def _integer_metadata_value(value: Any) -> int | list[int] | None:
@@ -87,7 +167,7 @@ def _read_gguf_meta(path: Path | str) -> dict[str, Any]:
     if not p.exists():
         return {}
     try:
-        reader = gguf.GGUFReader(p)
+        reader = _gguf_reader(p)
     except Exception as exc:
         log.debug("gguf read failed for %s: %s", p, exc)
         return {}
@@ -289,7 +369,7 @@ def tokenizer_fingerprint(path: Path | str) -> str | None:
     if not p.exists():
         return None
     try:
-        reader = gguf.GGUFReader(p)
+        reader = _gguf_reader(p)
     except Exception as exc:
         log.debug("gguf tokenizer read failed for %s: %s", p, exc)
         return None
@@ -724,7 +804,7 @@ def scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
     tensors: list[Any] = []
     for shard in gguf_shards(p):
         try:
-            tensors.extend(gguf.GGUFReader(shard).tensors)
+            tensors.extend(_gguf_reader(shard).tensors)
         except Exception as exc:
             log.debug("gguf weight scan failed for %s: %s", shard, exc)
             return None
@@ -822,7 +902,7 @@ def weight_tensor_table(path: Path | str) -> dict[str, int] | None:
     table: dict[str, int] = {}
     for shard in gguf_shards(p):
         try:
-            reader = gguf.GGUFReader(shard)
+            reader = _gguf_reader(shard)
         except Exception as exc:
             log.debug("gguf weight table read failed for %s: %s", shard, exc)
             return None

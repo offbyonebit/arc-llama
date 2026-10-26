@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from arc_llama.agent import landlock
+
 GIT_MUTATION_COMMANDS = frozenset(
     {
         "git commit",
@@ -668,11 +670,15 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
     env = os.environ.copy()
     if sys.platform != "win32":
         env.update({"PS1": "", "TERM": "dumb"})
-    shell_command = _prepare_windows_command(command)
+    shell_command: str | list[str] = _prepare_windows_command(command)
+    use_shell = True
+    sandboxed = sys.platform != "win32" and landlock.enabled()
+    if sandboxed:
+        shell_command, use_shell = landlock.wrap(["/bin/sh", "-c", command], root), False
     try:
         result = subprocess.run(
             shell_command,
-            shell=True,
+            shell=use_shell,
             cwd=root,
             capture_output=True,
             text=True,
@@ -696,6 +702,8 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
         output += f"[stderr]\n{result.stderr}"
     if result.returncode != 0:
         output += f"\n[exit code {result.returncode}]"
+        if sandboxed and ("Permission denied" in output or "Read-only file system" in output):
+            output += "\n[sandbox: commands can only write inside the project folder and temp folders]"
     return ToolResult(output.strip(), error=result.returncode != 0)
 
 

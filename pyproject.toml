@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arc-llama"
-version = "1.0.0"
+version = "1.1.0.dev0"
 description = "Plug-and-play llama.cpp runtime for Intel Arc GPUs. Auto-detects your card, picks safe SYCL defaults, and exposes an OpenAI-compatible API."
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,7 +47,7 @@ documents = [
     "python-pptx>=1.0",
 ]
 mcp = [
-    "mcp>=1.0,<2",
+    "mcp>=1.30,<2",
 ]
 dev = [
     "distlib>=0.3.8; sys_platform=='win32'",
@@ -94,7 +94,12 @@ exclude = [
     "arc-llama-vision/",
     "docs/release-prep-*.md",
     "docs/release-validation-*.md",
+    "docs/release-validation-*/",
     "docs/incidents/",
+    # Local-only agent notes, hidden through .git/info/exclude (which hatchling
+    # does not read) rather than .gitignore.
+    "CLAUDE.md",
+    "LOCAL_REPO_BOUNDARIES.md",
 ]
 
 [tool.ruff]

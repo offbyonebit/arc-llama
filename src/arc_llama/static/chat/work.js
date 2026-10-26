@@ -920,8 +920,8 @@
         sessionId = record.id;
         sessionOrigin = record.origin || "";
         if (record.folder || record.native) $("#work-root").value = record.folder || "";
-        if (record.harness && [...$("#work-harness").options].some((o) => o.value === record.harness && !o.disabled)) $("#work-harness").value = record.harness;
-        else if (record.native) $("#work-harness").value = "builtin";
+        if (record.harness && info?.harnesses?.some((h) => h.id === record.harness && h.available)) $("#work-harness").value = lastHarness = record.harness;
+        else if (record.native) $("#work-harness").value = lastHarness = "builtin";
         commandsKey = "";
         updateHarnessControls();
         problem("");
@@ -1278,7 +1278,12 @@
       const task = $("#work-task");
       task.addEventListener("input", () => { refreshWorkContext(); autosize(); problem(""); notice(""); menuIndex = 0; if (typedCommand() !== null) loadCommands(); renderMenu(); });
       task.addEventListener("blur", () => { $("#work-commands").hidden = true; });
-      $("#work-harness").addEventListener("change", () => { commandsKey = ""; updateHarnessControls(); refreshWorkContext(); });
+      $("#work-harness").addEventListener("change", () => {
+        const chosen = info?.harnesses?.find((h) => h.id === $("#work-harness").value);
+        if (chosen && !chosen.available) { offerInstall(chosen); return; }
+        lastHarness = $("#work-harness").value;
+        commandsKey = ""; updateHarnessControls(); refreshWorkContext();
+      });
       $("#work-profile").addEventListener("change", (e) => {
         if (e.target.value === "__manage") { e.target.value = profileId; openManager(!profiles.length); return; }
         chooseProfile(e.target.value);
@@ -1317,6 +1322,33 @@
       });
     }
 
+    // ---- installing a missing agent: its menu entry opens the shared installer instead of selecting it
+    let harnessInstaller = null, lastHarness = "builtin";
+    function renderHarnessOptions() {
+      $("#work-harness").replaceChildren(...info.harnesses.map((h) => {
+        const installable = !h.available && h.install?.installable;
+        return el("option", { value: h.id, disabled: !h.available && !installable }, h.label + (h.available ? "" : installable ? " (install…)" : " (not installed)"));
+      }));
+    }
+    async function harnessInstalled(name) {
+      try {
+        const r = await ctx.request("/v1/agent/info");
+        if (r.ok) info = await r.json();
+      } catch (_) { return; }
+      renderHarnessOptions();
+      if (info.harnesses.find((h) => h.id === name)?.available) {
+        $("#work-harness").value = lastHarness = name;
+        store(HARNESS_KEY, name);
+      } else $("#work-harness").value = lastHarness;
+      commandsKey = ""; updateHarnessControls(); refreshWorkContext();
+    }
+    function offerInstall(harness) {
+      $("#work-harness").value = lastHarness;
+      harnessInstaller ||= window.ArcHarnesses?.createInstaller({ document, request: ctx.request, onInstalled: harnessInstalled });
+      if (harnessInstaller) harnessInstaller.open(harness);
+      else problem(`${harness.label} is not installed.`);
+    }
+
     const onWorkPage = () => location.pathname === "/work" || location.hash === "#work";
     function workUnavailable(reason) {
       if (!onWorkPage()) return;
@@ -1342,16 +1374,16 @@
         $("#work-type-label").hidden = false;
         types.addEventListener("change", () => {
           // Documents runs on the built-in agent only.
-          if (workType() === "documents") $("#work-harness").value = "builtin";
+          if (workType() === "documents") $("#work-harness").value = lastHarness = "builtin";
           $("#work-harness").disabled = workType() === "documents";
           commandsKey = ""; updateHarnessControls(); modelPicked = false; syncModels();
         });
       }
       const harness = $("#work-harness");
-      harness.replaceChildren(...info.harnesses.map((h) => el("option", { value: h.id, disabled: !h.available }, h.label + (h.available ? "" : " (not installed)"))));
+      renderHarnessOptions();
       const saved = recall(HARNESS_KEY);
       const pick = info.harnesses.find((h) => h.id === saved && h.available) || info.harnesses.find((h) => h.id === "opencode" && h.available) || info.harnesses[0];
-      harness.value = pick.id;
+      harness.value = lastHarness = pick.id;
       updateHarnessControls();
       // Default to the user's home folder (never the server's own working directory), then remember their choice.
       $("#work-root").value = recall(ROOT_KEY) || info.home || "";

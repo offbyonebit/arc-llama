@@ -260,3 +260,64 @@ def test_apply_patch_missing_old_string(tmp_root: Path) -> None:
     res = apply_patch("src/main.py", "notfound", "xxx", tmp_root)
     assert res.error
     assert "old_string not found" in res.content
+
+
+# ---------------------------------------------------------------------------
+# Landlock confinement of run_command (Linux with Landlock only)
+# ---------------------------------------------------------------------------
+
+
+def _landlock_dirs():
+    import tempfile
+
+    from arc_llama.agent import landlock
+
+    if landlock.abi_version() == 0:
+        pytest.skip("Landlock is not available on this kernel")
+    # Both folders must live outside the always-writable temp folders.
+    base = Path(tempfile.mkdtemp(prefix="landlock-test-", dir=Path(__file__).resolve().parent))
+    (base / "project").mkdir()
+    (base / "outside").mkdir()
+    (base / "outside" / "keep.txt").write_text("original")
+    return base
+
+
+@pytest.fixture
+def landlock_dirs(monkeypatch):
+    import shutil
+
+    monkeypatch.delenv("ARC_LLAMA_COMMAND_SANDBOX", raising=False)
+    base = _landlock_dirs()
+    yield base / "project", base / "outside"
+    shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+def test_run_command_writes_only_inside_the_project(landlock_dirs):
+    from arc_llama.agent.tools import run_command
+
+    project, outside = landlock_dirs
+    inside = run_command("echo made > made.txt && cat made.txt", project)
+    assert not inside.error and inside.content == "made"
+    assert not run_command(f"cat {outside / 'keep.txt'}", project).error  # reads stay allowed
+    for attempt in (
+        f"echo changed > {outside / 'keep.txt'}",
+        f"rm {outside / 'keep.txt'}",
+        f"mv {outside / 'keep.txt'} stolen.txt",
+        f"ln -s {outside / 'keep.txt'} link && echo changed > link",
+        f"echo new > {outside / 'new.txt'}",
+    ):
+        result = run_command(attempt, project)
+        assert result.error, attempt
+    assert "only write inside the project" in run_command(f"touch {outside / 'x'}", project).content
+    assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"]
+    assert (outside / "keep.txt").read_text() == "original"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+def test_command_sandbox_can_be_turned_off(landlock_dirs, monkeypatch):
+    from arc_llama.agent.tools import run_command
+
+    project, outside = landlock_dirs
+    monkeypatch.setenv("ARC_LLAMA_COMMAND_SANDBOX", "off")
+    assert not run_command(f"echo new > {outside / 'new.txt'}", project).error
