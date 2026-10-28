@@ -13,11 +13,14 @@ from __future__ import annotations
 import difflib
 import hashlib
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from arc_llama.workbench.store import WorkOwner, WorkOwnerError
 
 SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
@@ -26,8 +29,53 @@ SKIP_DIRS = frozenset({
 MAX_FILES = 5000
 MAX_FILE_BYTES = 1 << 20          # files larger than this are tracked but cannot be restored
 MAX_BACKUP_BYTES = 64 << 20       # total budget for the pre-run copies
+ORPHAN_MIN_AGE_S = 6 * 3600       # retention delay, never evidence that a run is dead
+_RUN_DIR = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_OWNER_MARKER = b"0arc-llama-undo-v1\n"
 PREVIEW_BYTES = 64 << 10
 PREVIEW_LINES = 12
+
+
+def sweep_orphans(base: Path, *, min_age_s: float = ORPHAN_MIN_AGE_S, now: float | None = None) -> int:
+    """Delete run folders left behind by earlier server processes; returns how many were removed.
+
+    Only reclaim marked backups whose OS ownership lock can be acquired. A live
+    tracker holds that lock even after completion, while Undo remains available.
+    Legacy/unmarked folders are retained because their ownership is unknown.
+    """
+    cutoff = (time.time() if now is None else now) - min_age_s
+    removed = 0
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.is_symlink() or not entry.is_dir() or not _RUN_DIR.match(entry.name):
+                continue
+            if entry.stat().st_mtime > cutoff:
+                continue
+            owner_path = base / f".{entry.name}.owner"
+            if owner_path.is_symlink() or not owner_path.is_file():
+                continue
+            owner = WorkOwner(owner_path)
+            try:
+                owner.acquire()
+            except WorkOwnerError:
+                continue
+            try:
+                owner.stream.seek(0)
+                if owner.stream.read(len(_OWNER_MARKER) + 1) != _OWNER_MARKER:
+                    continue
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                shutil.rmtree(entry)
+                removed += 1
+            finally:
+                owner.release()
+        except OSError:
+            continue
+    return removed
 
 
 def _sha(path: Path) -> str | None:
@@ -62,6 +110,7 @@ class ChangeTracker:
     after_hash: dict[str, str | None] = field(default_factory=dict)
     changes: list[dict[str, Any]] = field(default_factory=list)
     created: float = field(default_factory=time.time)
+    _owner: WorkOwner | None = field(default=None, init=False, repr=False)
 
     def _walk(self) -> tuple[dict[str, _Entry], bool]:
         found: dict[str, _Entry] = {}
@@ -83,6 +132,22 @@ class ChangeTracker:
 
     def begin(self) -> None:
         """Record the tree and copy small files aside. Blocking; call from a thread."""
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        if self.store.is_symlink():
+            raise OSError("Undo backup folder must not be a symlink")
+        owner_path = self.store.parent / f".{self.store.name}.owner"
+        if owner_path.is_symlink():
+            raise OSError("Undo ownership file must not be a symlink")
+        if self._owner is None:
+            owner = WorkOwner(owner_path)
+            owner.acquire()
+            self._owner = owner
+            owner.stream.seek(0)
+            # WorkOwner opens in append mode; on Windows it also seeds the
+            # locked byte. Clear it first so the ownership marker stays exact.
+            owner.stream.truncate(0)
+            owner.stream.write(_OWNER_MARKER)
+            owner.stream.flush()
         self.before, self.complete = self._walk()
         spent = 0
         self.store.mkdir(parents=True, exist_ok=True)
@@ -216,3 +281,14 @@ class ChangeTracker:
 
     def discard(self) -> None:
         shutil.rmtree(self.store, ignore_errors=True)
+        self.close()
+
+    def close(self) -> None:
+        """Release ownership when this process can no longer offer Undo."""
+        owner = getattr(self, "_owner", None)
+        if owner is not None:
+            owner.release()
+            self._owner = None
+
+    def __del__(self) -> None:
+        self.close()

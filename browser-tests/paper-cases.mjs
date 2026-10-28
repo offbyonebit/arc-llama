@@ -175,3 +175,33 @@ export async function testPaperPickerListVisibility({page,origin}) {
   await page.waitForFunction(()=>document.querySelector('#paper-model-scroll-hint').hidden);
   assert.equal(await page.locator('.paper-model-options').getAttribute('aria-describedby'),null);
 }
+
+export async function testPaperModelDelete({page,origin}) {
+  const calls=[];const dialogs=[];
+  await page.route('**/admin/library/disk',route=>route.fulfill(json({models_dir:'/m',free_mb:1,total_mb:2,models:[{name:'qwen',size_mb:2048,files:1,missing:false,managed:true},{name:'gemma',size_mb:100,files:1,missing:false,managed:false}]})));
+  await page.route('**/admin/library/models/*',route=>{calls.push({url:route.request().url().replace(/^https?:\/\/[^/]+/,''),method:route.request().method(),auth:route.request().headers().authorization});return route.fulfill(json({removed:'x',deleted_files:1,freed_mb:2048,failed:[]}));});
+  page.on('dialog',d=>{dialogs.push(d.message());return d.dismiss();});
+  await page.goto(origin);await page.waitForSelector('.model-card');
+  await page.getByRole('button',{name:'Delete model Qwen 3',exact:true}).click();
+  await page.waitForTimeout(300);
+  assert.equal(calls.length,0);                       // cancelling the confirmation deletes nothing
+  assert.match(dialogs[0],/Delete Qwen 3.*2\.0 GB.*cannot be undone/s);
+  page.removeAllListeners('dialog');page.on('dialog',d=>{dialogs.push(d.message());return d.accept();});
+  await page.getByRole('button',{name:'Delete model Qwen 3',exact:true}).click();
+  await page.waitForTimeout(300);
+  assert.deepEqual(calls,[{url:'/admin/library/models/qwen?delete_files=true',method:'DELETE',auth:'Bearer browser-test-token'}]);
+  await page.getByRole('button',{name:'Delete model Gemma',exact:true}).click();
+  await page.waitForTimeout(300);
+  assert.match(dialogs.at(-1),/Remove .* from your list.*stays where it is/s);
+  assert.equal(calls.at(-1).url,'/admin/library/models/gemma?delete_files=false');
+}
+
+export async function testPaperSystemSectionsAligned({page,origin}) {
+  await page.setViewportSize({width:1500,height:900});
+  await page.goto(origin);await page.waitForSelector('.model-card');
+  await rail(page).getByRole('link',{name:'System',exact:true}).click();
+  await page.waitForSelector('.harnesses-section',{state:'visible'});
+  const boxes=await page.locator('section[data-area="system"]').evaluateAll(s=>s.filter(n=>n.getBoundingClientRect().width>0).map(n=>{const r=n.getBoundingClientRect();return [Math.round(r.x),Math.round(r.width)];}));
+  assert.ok(boxes.length>=4);
+  for(const b of boxes) assert.deepEqual(b,boxes[0]);        // Agents for Work is as wide as the other System sections
+}

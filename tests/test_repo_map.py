@@ -100,7 +100,7 @@ def test_semantic_search_reuses_normalized_matrix_and_refreshes_after_reindex(
     monkeypatch.setattr(index, "_embedder_instance", lambda: embedder)
 
     stat_calls = 0
-    original_stat = Path.stat
+    original_stat = Path.lstat
 
     def counted_stat(path: Path, *args, **kwargs):
         nonlocal stat_calls
@@ -108,11 +108,11 @@ def test_semantic_search_reuses_normalized_matrix_and_refreshes_after_reindex(
             stat_calls += 1
         return original_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "stat", counted_stat)
+    monkeypatch.setattr(Path, "lstat", counted_stat)
     index.index(root)
     # The explicit metadata capture is shared by size and manifest.
-    # Path.is_file may use os.stat directly (Python 3.14) rather than
-    # Path.stat, so its call need not appear in this counter.
+    # Observe the explicit lstat boundary; Path.stat is no longer called by
+    # Path.lstat on Python 3.14.
     assert 1 <= stat_calls <= 2
 
     loads = 0

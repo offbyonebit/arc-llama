@@ -309,6 +309,34 @@ def test_translator_reports_thinking_and_answering_without_reasoning_text():
     assert tr.feed(text) == [{"type":"activity", "phase":"answering"}, {"type":"assistant", "content":"Public answer"}]
 
 
+def test_translator_streams_answer_words_as_they_arrive():
+    tr = OpenCodeTranslator("s")
+    tr.feed({"type":"message.updated", "properties":{"sessionID":"s", "info":{"id":"m","role":"assistant"}}})
+    start = {"type":"message.part.updated", "properties":{"sessionID":"s", "part":{"id":"a", "messageID":"m", "type":"text", "text":"", "time":{"start":1}}}}
+    tr.feed(start)
+    got = []
+    for word in ("Hello ", "there"):
+        got += tr.feed({"type":"message.part.delta", "properties":{"sessionID":"s", "partID":"a", "delta":word}})
+    assert [e["content"] for e in got if e["type"] == "assistant_delta"] == ["Hello ", "there"]
+    done = {"type":"message.part.updated", "properties":{"sessionID":"s", "part":{"id":"a", "messageID":"m", "type":"text", "text":"Hello there!", "time":{"end":2}}}}
+    out = tr.feed(done)
+    assert not any(e["type"] == "assistant" for e in out)         # not repeated after streaming
+    assert [e["content"] for e in out if e["type"] == "assistant_delta"] == ["!"]
+    assert not any(e["type"] == "assistant_delta" for e in tr.feed(
+        {"type":"message.part.delta", "properties":{"sessionID":"s", "partID":"a", "delta":"duplicate"}}
+    ))
+
+
+def test_translator_rejects_completed_answer_that_rewrites_streamed_words():
+    tr = OpenCodeTranslator("s")
+    tr.feed({"type":"message.updated", "properties":{"sessionID":"s", "info":{"id":"m", "role":"assistant"}}})
+    tr.feed({"type":"message.part.updated", "properties":{"part":{"id":"a", "messageID":"m", "type":"text", "text":"", "time":{"start":1}}}})
+    tr.feed({"type":"message.part.delta", "properties":{"partID":"a", "delta":"Partial answer"}})
+    events = tr.feed({"type":"message.part.updated", "properties":{"part":{"id":"a", "messageID":"m", "type":"text", "text":"Different final answer", "time":{"end":2}}}})
+    assert [e["type"] for e in events] == ["error"]
+    assert "differs" in events[0]["message"]
+
+
 async def test_generated_session_reports_id_and_uses_task_title(tmp_path, monkeypatch):
     events, log = await _run(tmp_path, monkeypatch, auto_confirm=True, session_title="Synthetic user title")
     created = next(e for e in log if e.get("path", "").split("?")[0] == "/session")

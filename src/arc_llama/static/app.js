@@ -240,6 +240,13 @@ function createModelCard(model) {
   review.setAttribute("aria-label", `Review model ${displayName(model)}`);
   review.title = `Review ${displayName(model)} and open its selected-model details`;
   side.appendChild(review);
+  const remove = button("Delete", "delete-button danger", (event) => {
+    event.stopPropagation();
+    deleteModel(model);
+  });
+  remove.setAttribute("aria-label", `Delete model ${displayName(model)}`);
+  remove.title = `Delete ${displayName(model)} from this computer`;
+  side.appendChild(remove);
   const memory = document.createElement("div");
   memory.className = "paper-model-fit";
   memory.textContent = model.vram_estimate?.estimated_mb != null ? `~${fmtGiB(model.vram_estimate.estimated_mb)}` : "Unavailable";
@@ -873,6 +880,40 @@ async function stopAll() {
     setFooter(error.message, true);
   } finally {
     buttonNode.disabled = false;
+  }
+}
+
+// Delete a model from the card. Files inside the models folder are deleted; a model the
+// user keeps elsewhere is only taken off the list, and the confirmation says which.
+async function deleteModel(model) {
+  const label = displayName(model);
+  let managed = false;
+  let sizeText = "";
+  try {
+    const disk = await fetch("/admin/library/disk", { headers: authHeaders() });
+    if (disk.ok) {
+      const row = (await disk.json()).models.find((m) => m.name === model.name);
+      managed = !!row?.managed;
+      if (row && row.size_mb > 0) sizeText = ` (${fmtMb(row.size_mb)})`;
+    }
+  } catch (_) { /* fall back to the safer wording: files stay */ }
+  const question = managed
+    ? `Delete ${label}${sizeText} from this computer?\n\nThe model files are removed and the space is freed. This cannot be undone; you would need to download it again.`
+    : `Remove ${label} from your list?\n\nThe file is not in the Arc Llama models folder, so it stays where it is on disk.`;
+  if (!confirm(question)) return;
+  try {
+    const response = await fetch(`/admin/library/models/${encodeURIComponent(model.name)}?delete_files=${managed}`, {
+      method: "DELETE", headers: authHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || data.detail || `Delete failed (${response.status})`);
+    if (selectedModel === model.name) { selectedModel = null; sessionStorage.removeItem(SELECTED_MODEL_KEY); }
+    const failed = data.failed?.length ? ` ${data.failed.length} file(s) could not be deleted.` : "";
+    setFooter(managed ? `Deleted ${label}; freed ${fmtMb(data.freed_mb)}.${failed}` : `Removed ${label} from the list.`, !!failed);
+  } catch (error) {
+    setFooter(error.message, true);
+  } finally {
+    await fetchStatus(true);
   }
 }
 

@@ -151,6 +151,7 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-dashboard .status-pill.error { color:var(--bd); border-color:var(--bdl); background:var(--bdb); }
 .paper-dashboard .status-pill.warn { color:var(--wn); background:var(--wnb); border-color:var(--wnl); }
 .paper-dashboard .choose-button { background:transparent; border:0; font-size:12px; color:var(--ac); }
+ .paper-dashboard .delete-button { background:transparent; border:0; font-size:12px; color:var(--bd); }
 .paper-dashboard .readiness-section { background:var(--pn); border-left:1px solid var(--ln); margin:-8px -32px -30px 0; padding:18px 22px; min-width:0; }
 .paper-dashboard .readiness-section .section-head { margin-bottom:14px; }
 .paper-dashboard .readiness-card { background:none; border:0; padding:0; box-shadow:none; }
@@ -177,7 +178,7 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-dashboard :is(.library-card,.library-job,.library-result,.plugin-card,.system-readiness,.measurement-card,.measure-card) { background:var(--pn); border-color:var(--ln); border-radius:12px; box-shadow:none; }
 .paper-dashboard .system-readiness-section { max-width:980px; margin:0 auto; }
 .paper-dashboard .system-readiness { padding:18px; }
-.paper-dashboard .plugins-section, .paper-dashboard .measurements-section { max-width:980px; margin:0 auto; }
+.paper-dashboard :is(.plugins-section,.measurements-section,.harnesses-section) { max-width:980px; margin:0 auto; }
 .paper-dashboard #status-footer { background:var(--bg); border-color:var(--ln); color:var(--t3); margin:0 32px 16px; padding:8px 0; font-size:11px; }
 .paper-dashboard .frontend-dialog { background:var(--pn); color:var(--tx); border:1px solid var(--ln); border-radius:12px; }
 /* Work: existing event/permission handlers, paper step timeline and optional review. */
@@ -189,10 +190,8 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-chat #work-intro p { color:var(--t3); font-size:13px; }
 .paper-chat .work-title { font-size:20px; font-weight:600; }
 .paper-chat .work-sub, .paper-chat .work-say { font-size:15.5px; line-height:1.68; }
-.paper-chat .work-steps { border-left:2px solid var(--ln); margin:22px 0 14px 8px; padding-left:17px; }
-.paper-chat .work-step { position:relative; padding:5px 0; gap:10px; }
-.paper-chat .work-mark { width:10px; height:10px; position:absolute; left:-23px; top:10px; font-size:0; border:2px solid var(--bg); }
-.paper-chat .work-mark.running { border-color:var(--ac); border-top-color:transparent; }
+.paper-chat .work-steps { margin:22px 0 14px; padding-left:34px; }
+.paper-chat .work-step { padding:5px 0; gap:10px; --arc-node:15px; }
 .paper-chat .work-step-title { font-size:13px; }
 .paper-chat .work-step-sub, .paper-chat .work-time { font-size:12px; }
 .paper-chat .work-sheet { border:1px solid var(--wnl); background:var(--pw); border-radius:12px; padding:16px 18px; margin:12px 0; box-shadow:none; }

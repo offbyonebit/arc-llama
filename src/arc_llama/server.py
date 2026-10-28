@@ -45,7 +45,7 @@ from starlette.types import Receive, Scope, Send
 
 from arc_llama import __version__
 from arc_llama.agent import run_agent
-from arc_llama.agent.changes import ChangeTracker
+from arc_llama.agent.changes import ChangeTracker, sweep_orphans
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.harness import (
     HARNESSES,
@@ -321,6 +321,10 @@ def create_app(
         app.state.work_sessions = SessionStore((state_dir / "work-sessions") if state_dir else Path(".arc_llama_work_sessions"))
         app.state.work_undo_dir = (state_dir / "work-undo") if state_dir else Path(".arc_llama_work_undo")
         if state_dir:
+            swept = sweep_orphans(app.state.work_undo_dir)
+            if swept:
+                log.info("removed %d leftover work-undo folder(s) from earlier runs", swept)
+        if state_dir:
             app.state.chat_store = ChatStore(state_dir / "chats")
             app.state.checkpoint_store = CheckpointStore(state_dir / "checkpoints")
             app.state.semantic_index = SemanticIndex(state_dir / "semantic_index")
@@ -351,6 +355,8 @@ def create_app(
             await startup_plugins(app_plugins, app)
             yield
         finally:
+            for tracker in app.state.work_runs.values():
+                tracker.close()
             if getattr(app.state, "work", None) is not None:
                 await app.state.work.shutdown()
             if app.state.api_keys is not None:

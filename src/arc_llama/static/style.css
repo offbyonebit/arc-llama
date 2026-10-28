@@ -99,7 +99,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .status-pill::before { content: ""; width: 7px; height: 7px; border: 1px solid currentColor; border-radius: 50%; }
 .status-pill.ready { color: var(--text-muted); }
 .status-pill.ready::before { background: transparent; border-color: var(--text-faint); }
-.choose-button { padding: 6px 10px; font-size: 12px; }
+.choose-button, .delete-button { padding: 6px 10px; font-size: 12px; }
 .advanced-details { grid-column: 1 / -1; color: var(--text-muted); font-size: 12px; }
 .advanced-details summary { width: max-content; cursor: pointer; color: var(--text-muted); font-weight: 650; list-style: none; }
 .advanced-details summary::-webkit-details-marker { display: none; }

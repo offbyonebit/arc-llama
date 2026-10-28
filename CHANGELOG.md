@@ -20,6 +20,11 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ### Fixed
 
+- Paused guided setup stays visible after reload when the downloaded model has already been registered, so Continue remains available.
+- Work Undo backups are reclaimed only after their owning process releases its OS lock; an old but still-live run keeps its backups. Legacy folders without ownership evidence are retained.
+- Work disconnects observers for discarded step views. Streaming harness answers avoid duplicate completed text and report inconsistent final text as an error.
+- The development lockfile now matches the tested MCP dependency, and the command sandbox uses an explicit ctypes layout on Python 3.14.
+
 - Both built-in agents validate model replies before approvals or tool execution, including planning. Malformed
   choices/messages/call lists produce a controlled error; refusals and incomplete replies cannot report success.
   Tool arguments reject duplicate keys and non-finite values, and generated call ids stay consistent in history.

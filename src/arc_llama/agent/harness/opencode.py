@@ -170,6 +170,7 @@ class OpenCodeTranslator:
         self._called: set[str] = set()
         self._finished: set[str] = set()
         self._said: set[str] = set()
+        self._streamed: dict[str, str] = {}
         self._usage: dict[str, tuple[int, int]] = {}
         self._activity: str | None = None
         self._part_types: dict[str, str] = {}
@@ -205,7 +206,14 @@ class OpenCodeTranslator:
         if kind == "message.part.delta":
             part_type = self._part_types.get(str(props.get("partID") or ""))
             if part_type in ("reasoning", "text"):
-                return self._phase("thinking" if part_type == "reasoning" else "answering")
+                out = self._phase("thinking" if part_type == "reasoning" else "answering")
+                text = props.get("delta")
+                if (part_type == "text" and isinstance(text, str) and text
+                        and str(props.get("partID") or "") not in self._said):
+                    pid = str(props.get("partID") or "")
+                    self._streamed[pid] = self._streamed.get(pid, "") + text
+                    out.append({"type": "assistant_delta", "content": text})
+                return out
             return []
         if kind == "message.part.updated":
             return self._part(props.get("part") or {})
@@ -250,7 +258,14 @@ class OpenCodeTranslator:
             pid = str(part.get("id") or "")
             if (part.get("time") or {}).get("end") and pid not in self._said and part.get("text"):
                 self._said.add(pid)
-                return [*self._phase("answering"), {"type": "assistant", "content": part["text"]}]
+                full, streamed = part["text"], self._streamed.pop(pid, "")
+                if streamed:
+                    if not full.startswith(streamed):
+                        return [{"type": "error", "message": "OpenCode's completed answer differs from its streamed text; retry the request."}]
+                    # The words already reached the page as deltas; send only what was missed.
+                    tail = full[len(streamed):] if full.startswith(streamed) else ""
+                    return [*self._phase("answering"), *([{"type": "assistant_delta", "content": tail}] if tail else [])]
+                return [*self._phase("answering"), {"type": "assistant", "content": full}]
             if not (part.get("time") or {}).get("end"):
                 return self._phase("answering")
         return []

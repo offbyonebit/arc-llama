@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -139,3 +141,103 @@ def test_discard_removes_backups(project, tmp_path):
     assert (tmp_path / "store").exists()
     t.discard()
     assert not (tmp_path / "store").exists()
+
+
+def _run_dir(base: Path, name: str, age_s: float) -> Path:
+    folder = base / name
+    folder.mkdir(parents=True)
+    (folder / "a.txt").write_text("saved copy")
+    stamp = 2_000_000_000 - age_s
+    os.utime(folder, (stamp, stamp))
+    (base / f".{name}.owner").write_bytes(ch._OWNER_MARKER)
+    return folder
+
+
+def test_sweep_orphans_removes_only_old_run_folders(tmp_path):
+    base = tmp_path / "work-undo"
+    old = _run_dir(base, "0b9f2a64-1c3d-4e5f-8a7b-9c0d1e2f3a4b", 7 * 3600)
+    recent = _run_dir(base, "1c0a3b75-2d4e-4f60-9b8c-0d1e2f3a4b5c", 600)
+    stranger = _run_dir(base, "notes", 30 * 3600)           # not named like a run id
+    (base / "stray.txt").write_text("file")
+    assert ch.sweep_orphans(base, now=2_000_000_000) == 1
+
+    assert not old.exists()
+    assert recent.exists() and stranger.exists() and (base / "stray.txt").exists()
+
+
+def test_sweep_does_not_follow_directory_symlinks(tmp_path):
+    base = tmp_path / "undo"
+    base.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    _run_dir(elsewhere, "2d1b4c86-3e5f-4071-8c9d-1e2f3a4b5c6d", 30 * 3600)
+    link = base / "3e2c5d97-4f60-4182-9dae-2f3a4b5c6d7e"
+    try:
+        link.symlink_to(elsewhere, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks the privilege to create symlinks")
+        raise
+    assert ch.sweep_orphans(base, now=2_000_000_000) == 0
+    assert link.is_symlink()
+    assert (elsewhere / "2d1b4c86-3e5f-4071-8c9d-1e2f3a4b5c6d" / "a.txt").exists()
+
+
+def test_sweep_orphans_missing_folder_is_fine(tmp_path):
+    assert ch.sweep_orphans(tmp_path / "does-not-exist") == 0
+
+
+def test_sweep_preserves_unowned_or_invalidly_marked_backups(tmp_path):
+    base = tmp_path / "undo"
+    legacy = _run_dir(base, "0b9f2a64-1c3d-4e5f-8a7b-9c0d1e2f3a4b", 99_999)
+    (base / f".{legacy.name}.owner").unlink()
+    invalid = _run_dir(base, "1c0a3b75-2d4e-4f60-9b8c-0d1e2f3a4b5c", 99_999)
+    (base / f".{invalid.name}.owner").write_bytes(b"unknown owner")
+    assert ch.sweep_orphans(base, now=2_000_000_000) == 0
+    assert legacy.exists() and invalid.exists()
+
+
+def test_live_completed_run_keeps_undo_until_owner_process_exits(tmp_path):
+    """A second process may not reclaim even very old, completed Undo backups."""
+    base = tmp_path / "undo"
+    store = base / "0b9f2a64-1c3d-4e5f-8a7b-9c0d1e2f3a4b"
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "note.txt").write_text("before")
+    code = """
+import os,sys
+from pathlib import Path
+from arc_llama.agent.changes import ChangeTracker
+t=ChangeTracker(Path(sys.argv[1]),Path(sys.argv[2]))
+t.begin()
+(t.root/'note.txt').write_text('after')
+t.finish()
+os.utime(t.store,(1,1))
+print('ready',flush=True)
+sys.stdin.readline()
+os._exit(77)
+"""
+    child = subprocess.Popen([sys.executable, "-u", "-c", code, str(source), str(store)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout is not None and child.stdout.readline().strip() == "ready"
+        assert ch.sweep_orphans(base) == 0
+        assert (store / "note.txt").read_text() == "before"
+    finally:
+        child.communicate("exit\n", timeout=10)
+    assert child.returncode == 77
+    assert ch.sweep_orphans(base) == 1
+    assert not store.exists()
+
+
+def test_begin_replaces_preexisting_owner_byte(project, tmp_path):
+    base = tmp_path / "undo"
+    base.mkdir()
+    store = base / "0b9f2a64-1c3d-4e5f-8a7b-9c0d1e2f3a4b"
+    owner_path = base / f".{store.name}.owner"
+    owner_path.write_bytes(b"0")  # WorkOwner seeds this byte on Windows.
+    tracker = ch.ChangeTracker(project, store)
+    tracker.begin()
+    tracker.close()
+    assert owner_path.read_bytes() == ch._OWNER_MARKER
+    os.utime(store, (1, 1))
+    assert ch.sweep_orphans(base) == 1

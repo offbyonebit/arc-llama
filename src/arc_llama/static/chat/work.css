@@ -22,15 +22,54 @@ body.work-mode #chat-log, body.work-mode .ctx-meter, body.work-mode .input-area,
 .work-eyebrow { color: var(--fg-mute); font-size: 13px; margin-bottom: 6px; }
 .work-title { font-size: 30px; line-height: 1.15; letter-spacing: -.022em; font-weight: 700; margin: 0 0 6px; }
 .work-sub { color: var(--fg-dim); font-size: 15px; margin: 0; white-space: pre-wrap; }
-.work-steps { margin-top: 26px; }
-.work-step { display: flex; gap: 14px; align-items: flex-start; padding: 9px 0; }
-.work-mark { flex: none; width: 22px; height: 22px; margin-top: 2px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; color: var(--fg-inverse); }
-.work-mark.done { background: var(--w-ok); color: #fff; }
-.work-mark.failed { background: var(--w-bad); color: #fff; }
-.work-mark.waiting { background: var(--w-wait); color: #fff; }
-.work-mark.running { border: 2px solid var(--accent); border-top-color: transparent; animation: work-spin .9s linear infinite; }
-@keyframes work-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .work-mark.running { animation: none; border-top-color: var(--accent); } }
+.work-steps { margin-top: 26px; position: relative; padding-left: 34px; }
+.work-step { position: relative; display: flex; gap: 14px; align-items: flex-start; padding: 9px 0; --arc-node: 21px; }
+
+/* The step thread: an electric arc, one bolt per command (see arcLayout() in work.js). */
+#work-view { --arc-ink: var(--fg-dim, #666); --bolt: var(--accent); --bolt-core: var(--accent); }
+[data-theme="dark"] #work-view { --bolt-core: color-mix(in oklab, var(--accent) 55%, #fff); }
+.work-arc { position: absolute; left: 0; width: 32px; pointer-events: none; overflow: visible; }
+.work-arc path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.work-arc .glow { stroke: var(--bolt); stroke-width: 6px; opacity: .26; --rest: .26; }
+.work-arc .core { stroke: var(--bolt-core); stroke-width: 1.4px; opacity: .78; --rest: .78; }
+.work-arc .fork { stroke: var(--bolt-core); stroke-width: .9px; opacity: .4; --rest: .4; }
+.work-arc .running.glow { opacity: .6; --rest: .6; }
+.work-arc .running.core { opacity: 1; --rest: 1; stroke-width: 1.5px; }
+.work-arc .crackle.core { filter: url(#work-arc-crackle); }
+.work-arc .waiting.glow { stroke: var(--w-wait); opacity: .3; --rest: .3; }
+.work-arc .waiting.core { stroke: var(--w-wait); opacity: .85; --rest: .85; }
+.work-arc .failed.glow { stroke: var(--w-bad); opacity: .3; --rest: .3; }
+.work-arc .failed.core { stroke: var(--w-bad); opacity: .9; --rest: .9; stroke-dasharray: .55 .15 .3; }
+.work-arc .strike { animation: bolt-strike .8s ease-out var(--strike-delay, 0ms) both; }
+/* Growth: the bolt is revealed from the previous node down to its own; the fork sprouts after the main stroke. */
+.work-arc .grow { clip-path: inset(-12px -12px 100% -12px); animation: bolt-grow var(--grow-ms, 520ms) cubic-bezier(.35,.1,.45,1) var(--grow-delay, 0ms) both; }
+.work-arc .fork.grow { animation-delay: calc(var(--grow-delay, 0ms) + 300ms); }
+.work-arc .grow.strike { animation: bolt-grow var(--grow-ms, 520ms) cubic-bezier(.35,.1,.45,1) var(--grow-delay, 0ms) both,
+  bolt-strike .8s ease-out var(--strike-delay, 0ms) both; }
+@keyframes bolt-grow { from { clip-path: inset(-12px -12px 100% -12px); } to { clip-path: inset(-12px -12px -12px -12px); } }
+.work-arc .head { fill: #fff; opacity: 0; offset-rotate: 0deg; filter: drop-shadow(0 0 4px var(--bolt)) drop-shadow(0 0 8px var(--bolt));
+  animation: bolt-head var(--grow-ms, 520ms) cubic-bezier(.35,.1,.45,1) var(--grow-delay, 0ms) both; }
+@keyframes bolt-head { from { offset-distance: 0%; opacity: 1; } 85% { opacity: 1; } to { offset-distance: 100%; opacity: 0; } }
+@keyframes bolt-strike {
+  0% { opacity: 0; } 7% { opacity: 1; stroke-width: 2.6px; } 15% { opacity: .15; } 24% { opacity: 1; stroke-width: 2px; }
+  38% { opacity: .35; } 100% { opacity: var(--rest); } }
+.work-arc-node { position: absolute; left: calc(-34px + 16px - 4.5px); top: calc(var(--arc-node) - 4.5px); width: 9px; height: 9px;
+  border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--arc-ink); background: var(--bg, #fff); box-shadow: 0 0 0 3px var(--bg, #fff); }
+.work-arc-node.done::after { content: ""; position: absolute; inset: 1.5px; border-radius: 50%; background: var(--arc-ink); }
+.work-arc-node.running { border-color: var(--bolt); background: var(--bolt); animation: arc-node-pulse 1.4s ease-in-out infinite; }
+.work-arc-node.waiting { border-color: var(--w-wait); background: var(--w-wait); box-shadow: 0 0 0 3px var(--bg, #fff), 0 0 9px var(--w-wait); }
+.work-arc-node.failed { width: 11px; height: 11px; margin: -1px 0 0 -1px; border: 0; background: var(--w-bad); }
+.work-arc-node.failed::before, .work-arc-node.failed::after { content: ""; position: absolute; left: 50%; top: 50%; width: 5px; height: 1.6px;
+  background: var(--bg, #fff); border-radius: 1px; transform: translate(-50%, -50%) rotate(45deg); }
+.work-arc-node.failed::after { transform: translate(-50%, -50%) rotate(-45deg); }
+@keyframes arc-node-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--bg, #fff), 0 0 4px var(--bolt); }
+  50% { box-shadow: 0 0 0 3px var(--bg, #fff), 0 0 12px 2px var(--bolt); } }
+.work-arc-node.born { animation: arc-node-arrive .28s cubic-bezier(.2,.9,.3,1.4) var(--arrive-delay, 0ms) both; }
+.work-arc-node.born.running { animation: arc-node-arrive .28s cubic-bezier(.2,.9,.3,1.4) var(--arrive-delay, 0ms) both, arc-node-pulse 1.4s ease-in-out infinite; }
+@keyframes arc-node-arrive { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .work-arc .strike, .work-arc .grow, .work-arc .head, .work-arc-node.running, .work-arc-node.born { animation: none; } .work-arc .grow { clip-path: none; } .work-arc .head { display: none; } }
+.work-steps > .work-sheet { position: relative; margin-left: 0; }
 .work-step-body { flex: 1; min-width: 0; }
 .work-step-title { font-size: 16px; }
 .work-step-sub { color: var(--fg-mute); font-size: 13px; margin-top: 2px; }

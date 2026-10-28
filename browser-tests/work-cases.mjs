@@ -48,6 +48,23 @@ export async function testWorkViewHiddenUnlessExperimental({ page, origin }) {
 
 export async function testWorkModeApprovalAndUndo({ page, origin }) {
   const calls = [];
+  await page.addInitScript(() => {
+    const NativeObserver = window.ResizeObserver;
+    window.__workObserved = new Set();
+    window.ResizeObserver = class extends NativeObserver {
+      targets = new Set();
+      observe(target, options) {
+        if (target.classList.contains("work-steps")) {
+          this.targets.add(target); window.__workObserved.add(target);
+        }
+        super.observe(target, options);
+      }
+      disconnect() {
+        for (const target of this.targets) window.__workObserved.delete(target);
+        this.targets.clear(); super.disconnect();
+      }
+    };
+  });
   await installAgentStream(page);
   await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
   await page.route("**/v1/agent/run-1/confirm", route => {
@@ -118,6 +135,9 @@ export async function testWorkModeApprovalAndUndo({ page, origin }) {
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await page.waitForFunction(() => document.querySelector(".work-result")?.textContent.includes("Undone: 1 file restored."));
   if (!calls.some(c => c.kind === "undo")) throw new Error("undo was not requested");
+  if (await page.evaluate(() => [...window.__workObserved].some(target => !target.isConnected))) {
+    throw new Error("Work updates retained observers on removed step trees");
+  }
 }
 
 export async function testWorkModeDeniedAndStopped({ page, origin }) {

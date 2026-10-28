@@ -64,6 +64,9 @@ libc = ctypes.CDLL(None, use_errno=True)
 class Ruleset(ctypes.Structure):
     _fields_ = [("handled_access_fs", ctypes.c_uint64)]
 class PathBeneath(ctypes.Structure):
+    # Explicit packed ctypes layout: the kernel ABI has offsets 0/8 and size 12.
+    # Python 3.14 deprecates choosing this implicitly through _pack_.
+    _layout_ = "ms"
     _pack_ = 1
     _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
 def fail(what):

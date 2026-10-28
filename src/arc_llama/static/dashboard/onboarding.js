@@ -117,9 +117,11 @@ window.ArcDashboard.createOnboardingController = function ({ document: doc, requ
   return {
     update(value, connected) {
       snapshot = value; online = connected;
-      // No setup polling for established installs until a setup was started.
-      if ((!value?.models?.length || remembered() || (data && data.phase !== "idle")) && online) {
-        poll();
+      // Read once after a reload even if registration already finished: the
+      // live server can still have a paused or failed setup awaiting Continue.
+      const ongoing = !value?.models?.length || remembered() || (data && data.phase !== "idle");
+      if (online && (ongoing || !data)) poll();
+      if (ongoing && online) {
         if (!timer) timer = setInterval(() => { if (online && !document.hidden) poll(); }, 2000);
       } else if (timer) { clearInterval(timer); timer = null; }
       render();

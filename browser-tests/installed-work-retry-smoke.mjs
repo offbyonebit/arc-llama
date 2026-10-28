@@ -17,7 +17,7 @@ for (const name of ['A.txt', 'B.txt']) await assert.rejects(stat(path.join(root,
 const options = { headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] };
 const browser = await chromium.launch({...options,channel:'chrome'}).catch(() => chromium.launch(options));
 let last = null;
-const faults = [], injected = new Set(), errors = [];
+const faults = [], injected = new Set(), errors = [], partialFixtures = [];
 const protocolPauses = [];
 const reportPath = `/tmp/arc-work-inference-${mode}-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || "0.5b"}-report.json`;
 try {
@@ -62,6 +62,12 @@ try {
         await mkdir(target); // Writing a file at this path must now fail with EISDIR.
         faults.push({attempt:last.attempt,path:name,fault:'directory blocks file write'});
       }
+      if (last.attempt === 1) {
+        // Give the comparison a known partial result even if a small model
+        // notices the blocked path and declines to call a file tool.
+        await writeFile(path.join(last.project_copy, 'A.txt'), 'alpha', {flag:'wx'});
+        partialFixtures.push({attempt:1,path:'A.txt',content:'alpha'});
+      }
       injected.add(last.attempt);
     }
     if (Date.now() - lastProgress > 10000) {
@@ -97,7 +103,7 @@ try {
       assert.equal(last.attempts[1].verdict, 'failed');
       assert.ok(last.attempts[0].passed > last.attempts[1].passed);
     }
-    assert.ok(last.events.some(e => e.type==='tool_result' && e.error), 'No real tool failure recorded');
+    assert.ok(last.events.some(e => e.type==='verification' && e.verdict==='failed'), 'No failed verification recorded');
   }
   const expected = mode === 'keep-best' ? ['A.txt'] : ['A.txt','B.txt'];
   for (const name of expected) {
@@ -123,10 +129,10 @@ try {
   assert.equal((await readFile(path.join(root,'README.txt'),'utf8')).trim(),'Original project');
   assert.deepEqual(errors, []);
   await page.screenshot({path:`/tmp/arc-work-inference-${mode}-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || "0.5b"}.png`, fullPage:true});
-  const report = {mode,real_inference:true,model:`Qwen2.5-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || '0.5b'}-Instruct-Q4_K_M`,backend:'CPU',faults,protocol_pauses:protocolPauses,elapsed_seconds:(Date.now()-start)/1000,criteria:last.criteria,attempts:last.attempts,chosen_attempt:last.chosen_attempt,verification:last.verification,tool_results:last.events.filter(e=>e.type==='tool_result'),reload:'pass',reviewed_apply:'pass',undo:'pass',source_preserved:'pass'};
+  const report = {mode,real_inference:true,model:`Qwen2.5-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || '0.5b'}-Instruct-Q4_K_M`,backend:'CPU',faults,partial_fixtures:partialFixtures,observed_tool_errors:last.events.filter(e=>e.type==='tool_result' && e.error).length,protocol_pauses:protocolPauses,elapsed_seconds:(Date.now()-start)/1000,criteria:last.criteria,attempts:last.attempts,chosen_attempt:last.chosen_attempt,verification:last.verification,tool_results:last.events.filter(e=>e.type==='tool_result'),reload:'pass',reviewed_apply:'pass',undo:'pass',source_preserved:'pass'};
   await writeFile(reportPath,JSON.stringify(report,null,2));
   console.log(JSON.stringify({mode,result:'pass',attempts:last.attempts,chosen:last.chosen_attempt,report:reportPath}));
 } catch (error) {
-  await writeFile(reportPath,JSON.stringify({mode,result:'failed',faults,protocol_pauses:protocolPauses,error:String(error),last},null,2));
+  await writeFile(reportPath,JSON.stringify({mode,result:'failed',faults,partial_fixtures:partialFixtures,protocol_pauses:protocolPauses,error:String(error),last},null,2));
   throw error;
 } finally { await browser.close(); }

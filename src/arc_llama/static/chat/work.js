@@ -321,10 +321,92 @@
     const measuredSpeed = (value) => Number.isFinite(value) && value > 0 ? `${value.toFixed(1)} tok/s` : "";
 
     // ---- rendering
-    function stepRow(step) {
+    // The step thread is an electric arc: every command grows a bolt from the previous node to its own, a bright
+    // spark at its head, and the node lights when it arrives. A finished step's bolt flashes once and settles into
+    // a dim filament, the live one crackles, a step
+    // waiting for approval holds amber, and a failed one is a broken wire. Step heights vary, so the bolts
+    // are laid out after the rows are in the page (arcLayout). Bolt shapes come from a seeded generator,
+    // so the same step always gets the same bolt, and each animation is keyed to the time it started,
+    // because render() rebuilds the DOM on every update.
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    function svg(tag, attrs, ...kids) {
+      const n = document.createElementNS(SVG_NS, tag);
+      for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+      n.append(...kids);
+      return n;
+    }
+    const ARC_STRIKE_MS = 800;
+    const ARC_GROW_MS = 520;   // a new step's bolt grows from the previous node, a spark at its head, then the node lights
+    const calmMotion = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    function arcDefs() {
+      if (document.getElementById("work-arc-defs")) return;
+      const crackle = svg("feTurbulence", { type: "fractalNoise", baseFrequency: "0.05 0.14", numOctaves: "2", seed: "1", result: "n" },
+        svg("animate", { attributeName: "seed", values: "1;4;2;7;3;9", dur: "0.6s", calcMode: "discrete", repeatCount: "indefinite" }));
+      document.body.append(svg("svg", { id: "work-arc-defs", width: "0", height: "0", "aria-hidden": "true", style: "position:absolute" },
+        svg("defs", {},
+          svg("filter", { id: "work-arc-glow", x: "-300%", y: "-2%", width: "700%", height: "104%" }, svg("feGaussianBlur", { stdDeviation: "3" })),
+          svg("filter", { id: "work-arc-crackle", x: "-150%", y: "-10%", width: "400%", height: "120%" }, crackle,
+            svg("feDisplacementMap", { in: "SourceGraphic", in2: "n", scale: "5", xChannelSelector: "R", yChannelSelector: "G" })))));
+    }
+    function boltRandom(seed) {   // mulberry32
+      let a = seed >>> 0;
+      return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    }
+    function bolt(y0, y1, seed) {
+      const rnd = boltRandom(seed * 7919 + 17), n = Math.max(2, Math.round((y1 - y0) / 10)), pts = [[16, y0]];
+      for (let k = 1; k < n; k++) pts.push([16 + (rnd() * 2 - 1) * 5 * Math.pow(Math.sin(Math.PI * k / n), 0.6), y0 + (y1 - y0) * k / n]);
+      pts.push([16, y1]);
+      const d = (list) => "M" + list.map((q) => `${q[0].toFixed(1)} ${q[1].toFixed(1)}`).join(" L");
+      let fork = null;
+      if (n >= 6 && seed % 3 === 0) {
+        const [x, y] = pts[Math.floor(n / 2)], side = rnd() < 0.5 ? -1 : 1;
+        fork = d([[x, y], [x + side * (6 + rnd() * 5), y + 7], [x + side * (10 + rnd() * 5), y + 14]]);
+      }
+      return { main: d(pts), fork };
+    }
+    function arcNode(state, step, index) {
+      const node = el("span", { class: "work-arc-node " + state, "aria-hidden": "true" });
+      const age = step && step.bornAt && index > 0 ? Date.now() - step.bornAt : Infinity;
+      if (!calmMotion() && age < ARC_GROW_MS + 300) {   // lights up when the bolt reaches it
+        node.classList.add("born");
+        node.style.setProperty("--arrive-delay", `${ARC_GROW_MS - age}ms`);
+      }
+      return node;
+    }
+    function arcLayout(stepsEl, r) {
+      const rows = [...stepsEl.querySelectorAll(":scope > .work-step")];
+      stepsEl.querySelector(":scope > .work-arc")?.remove();
+      if (rows.length < 2) return;
+      arcDefs();
+      const nodeY = (row) => row.offsetTop + (parseFloat(getComputedStyle(row).getPropertyValue("--arc-node")) || 12);
+      const ys = rows.map(nodeY), top = ys[0], calm = calmMotion(), now = Date.now();
+      const glows = svg("g", { class: "glows", filter: "url(#work-arc-glow)" }), cores = svg("g", { class: "cores" }), heads = svg("g", { class: "heads" });
+      for (let i = 1; i < rows.length; i++) {
+        const step = r && r.steps ? r.steps[i] : null;
+        const state = (step && step.state) || "done";
+        // First sight of a step is not a state change (a reopened run must not replay its flashes).
+        if (step && step.arcSeen !== state) { step.arcAt = step.arcSeen === undefined ? 0 : now; step.arcSeen = state; }
+        const strikeAge = step && step.arcAt ? now - step.arcAt : Infinity;
+        const growAge = step && step.bornAt ? now - step.bornAt : Infinity;
+        const strike = !calm && strikeAge < ARC_STRIKE_MS, grow = !calm && growAge < ARC_GROW_MS + 400;
+        const cls = `${state}${strike ? " strike" : ""}${grow ? " grow" : ""}${!calm && state === "running" ? " crackle" : ""}`;
+        const style = `--strike-delay:-${Math.min(strikeAge, 9e6)}ms;--grow-delay:-${Math.min(growAge, 9e6)}ms;--grow-ms:${ARC_GROW_MS}ms`;
+        const shape = bolt(ys[i - 1] - top, ys[i] - top, i);
+        const mk = (kind, d, extra) => svg("path", { class: `${kind} ${cls}`, d, style, ...extra });
+        glows.append(mk("glow", shape.main));
+        cores.append(mk("core", shape.main, { pathLength: "1" }));
+        if (shape.fork && state === "done") cores.append(mk("fork", shape.fork));
+        if (grow && growAge < ARC_GROW_MS) heads.append(svg("circle", { class: "head", r: "2.4", style: `${style};offset-path:path('${shape.main}')` }));
+      }
+      const arc = svg("svg", { class: "work-arc", width: "32", height: String(ys[ys.length - 1] - top), focusable: "false", "aria-hidden": "true" }, glows, cores, heads);
+      arc.style.top = `${top}px`;
+      stepsEl.prepend(arc);
+    }
+
+    function stepRow(step, index = 0) {
       const human = step.human;
       const state = step.state;
-      const mark = el("span", { class: "work-mark " + state, "aria-hidden": "true" }, state === "done" ? "✓" : state === "failed" ? "!" : state === "waiting" ? "!" : "");
+      const mark = arcNode(state, step, index);
       const title = state === "done" || state === "failed" ? human.done : human.pending;
       const body = el("div", { class: "work-step-body" }, el("div", { class: "work-step-title" }, title));
       if (state === "waiting") body.append(el("div", { class: "work-step-sub" }, "Needs your OK before it changes anything"));
@@ -423,10 +505,13 @@
       return block;
     }
 
+    let stepObservers = [];
     function draw() {
       const host = $("#work-run");
       const intro = $("#work-intro");
       if (!host) return;
+      for (const observer of stepObservers) observer.disconnect();
+      stepObservers = [];
       intro.hidden = runs.length > 0;
       host.hidden = runs.length === 0;
       host.replaceChildren();
@@ -481,12 +566,13 @@
           onclick: () => { r.showSteps = true; render(); } }, `Show ${r.steps.length} step${r.steps.length === 1 ? "" : "s"}`));
       } else {
         const steps = el("div", { class: "work-steps", "aria-live": current ? "polite" : "off" });
-        for (const step of r.steps) {
-          steps.append(stepRow(step));
+        const placeholder = r.status === "running" && !r.steps.length && !r.pending && !r.answer.length;
+        r.steps.forEach((step, i) => {
+          steps.append(stepRow(step, i));
           if (r.pending && !r.pending.answered && r.pending.stepId === step.id) steps.append(approvalSheet(r.pending, step));
-        }
+        });
         if (r.pending && !r.pending.answered && !r.steps.some((x) => x.id === r.pending.stepId)) steps.append(approvalSheet(r.pending, null));
-        if (r.status === "running" && !r.steps.length && !r.pending && !r.answer.length) {
+        if (placeholder) {
           const waited = (Date.now() - r.startedAt) / 1000;
           const livePhases = { thinking: "Thinking", answering: "Writing answer", generating: "Generating" };
           const phase = livePhases[r.activity] || (/starting/i.test(r.statusText || "") ? (r.harness === "hermes" ? "Starting Hermes" : r.harness === "opencode" ? "Starting OpenCode" : "Starting agent")
@@ -496,11 +582,18 @@
             ? `${r.model} was not in memory, so it is being loaded first. This usually takes a minute or two.`
             : waited > 8 ? "Still working. The first request also has to read the agent's instructions, which takes a moment."
             : "";
-          steps.append(el("div", { class: "work-step running" }, el("span", { class: "work-mark running", "aria-hidden": "true" }),
+          steps.append(el("div", { class: "work-step running" }, arcNode("running"),
             el("div", { class: "work-step-body" }, el("div", { class: "work-step-title" }, phase),
               sub ? el("div", { class: "work-step-sub" }, sub) : null)));
         }
         turn.append(steps);
+        requestAnimationFrame(() => arcLayout(steps, r));
+        if (typeof ResizeObserver === "function") {
+          let first = true;   // the observer reports once on attach; that layout is already done above
+          const observer = new ResizeObserver(() => { if (first) { first = false; return; } arcLayout(steps, r); });
+          observer.observe(steps);
+          stepObservers.push(observer);
+        }
         if (!current && r.showSteps && r.steps.length) {
           turn.append(el("button", { class: "work-link", type: "button", "aria-expanded": "true",
             onclick: () => { r.showSteps = false; render(); } }, "Hide steps"));
@@ -1085,7 +1178,7 @@
           run.activity = "tools";
           if (step(event.id)) break;
           const human = humanizeStep(event.name, event.arguments);
-          run.steps.push({ id: event.id, human, state: "running", time: elapsedText(Date.now() - run.startedAt), open: human.kind === "other" ? false : false });
+          run.steps.push({ id: event.id, human, state: "running", time: elapsedText(Date.now() - run.startedAt), open: false, bornAt: Date.now() });
           break;
         }
         case "confirm_required": {

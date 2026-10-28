@@ -73,6 +73,9 @@ export async function testGuidedPauseRetryAndErrors({ page, origin }) {
   assert.equal(await page.locator(field("pause")).isDisabled(), true);
   await f.state({ phase: "paused" });
   assert.equal(await page.locator(field("start")).innerText(), "Continue setup");
+  f.registry([{ ...ADMIN_STATUS.models[0], name: "qwen", loaded: false }]);
+  await page.reload();
+  await page.getByRole("button", { name: "Continue setup", exact: true }).waitFor();
   await page.locator(field("start")).click();
   await f.state({ phase: "error", error: "Synthetic network interruption" });
   assert.match(await page.locator(field("error")).innerText(), /network interruption/);

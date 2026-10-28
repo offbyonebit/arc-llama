@@ -1,5 +1,7 @@
 # Arc Llama 1.1 candidate: installed-product readiness
 
+> Historical record from October 25. See [October 28 validation](release-validation-1.1-2026-10-28.md) for the later candidate, hardware evidence and remaining gates.
+
 Date: 2026-10-25. Validated by Claude on the canonical checkout. Nothing was committed, pushed or published, and the
 running `arc-llama.service` was not touched.
 

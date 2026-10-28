@@ -1,7 +1,7 @@
 import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
-import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
@@ -116,6 +116,8 @@ const TESTS = [
   ["paper-mobile-sheets", testPaperMobileSheets],
   ["paper-claims-context", testPaperRealClaimsAndContext],
   ["paper-model-load-stop", testPaperModelLoadStop],
+  ["paper-model-delete", testPaperModelDelete],
+  ["paper-system-sections-aligned", testPaperSystemSectionsAligned],
   ["paper-work-model-picker", testPaperWorkModelPicker],
   ["work-attempt-settings-and-results", testWorkAttemptSettingsAndResults],
   ["work-projects-jobs-and-review", testWorkProjectsJobsAndReview],
