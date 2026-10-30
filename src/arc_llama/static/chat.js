@@ -745,7 +745,7 @@ async function fetchStatus() {
     });
     updatePickerStatus();
     window.dispatchEvent(new Event("arc-paper-models"));
-    if (settingsPanel.classList.contains("open")) renderSettingsPanel();
+    if (settingsPanel.classList.contains("open")) renderSettingsPanel({ poll: true });
   } catch (e) {
     // silent: the chat endpoint will surface real errors
   }
@@ -1003,10 +1003,15 @@ function displayBudget(budget) {
   ctxMeter.title = budget.reason + (over ? " Compact older turns, lower the reply limit in settings, or increase context." : "");
 }
 
+function budgetKey(payload) {
+  const model = models.find(m => m.id === selectedModel);
+  return JSON.stringify([payload, model?.loaded, model?.ctx]);
+}
+
 async function countBudget(entries) {
   const payload = budgetPayload(entries);
   const model = models.find(m => m.id === selectedModel);
-  const key = JSON.stringify([payload, model?.loaded, model?.ctx]);
+  const key = budgetKey(payload);
   if (countedBudget?.key === key && Date.now() - countedBudget.at < 1000) return countedBudget.value;
   const mine = ++budgetSequence;
   budgetAbort?.abort();
@@ -1032,6 +1037,13 @@ function refreshBudget() {
   budgetAbort?.abort();
   budgetSequence++;
   if (!selectedModel || generating) return;
+  // The status poll calls this every few seconds. When nothing that affects the
+  // count changed, keep the exact figure instead of flashing back to an estimate
+  // and asking the server to tokenize the whole conversation again.
+  if (countedBudget && countedBudget.key === budgetKey(budgetPayload(draftEntries()))) {
+    displayBudget(countedBudget.value);
+    return;
+  }
   const estimate = estimateBudget(input.value);
   const reply = presetFor(selectedModel).max_tokens;
   displayBudget({ total_tokens: estimate.tokens + reply, reserved_tokens: reply, exact: false, reason: "Estimated context budget; checking the resident model when available." });
@@ -1856,5 +1868,6 @@ function restoreDraft() {
   await syncChatsFromServer();
   restoreDraft();
   window.ArcFirstAnswer?.begin({ input, selectedModel });
-  statusPoller = setInterval(fetchStatus, 3000);
+  statusPoller = setInterval(() => { if (!document.hidden) fetchStatus(); }, 3000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) fetchStatus(); });
 })();

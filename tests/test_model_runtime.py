@@ -225,3 +225,35 @@ async def test_canary_tests_candidate_even_when_model_is_pinned(runtime_cfg, mon
     await run_canary(cfg, candidate, model)
     assert captured[0].argv[0] == str(candidate)
     assert model.llama_server == "/old/patched"
+
+
+def test_rejected_or_unsaved_edit_leaves_kv_class_alone(runtime_cfg, monkeypatch, tmp_path):
+    cfg = runtime_cfg
+    cfg.server.admin_token = "test-token"
+    app = create_app(cfg, config_path=tmp_path / "config.toml", plugins=[])
+    auth = {"Authorization": "Bearer test-token"}
+    original = cfg.models[0].kv_class
+    new = "phi4" if original != "phi4" else "llama3"
+    with TestClient(app) as client:
+        # kv_class is valid but a later field is not: nothing may change.
+        bad = client.post("/admin/models/ornith/edit", json={"kv_class": new, "split_mode": "nope"}, headers=auth)
+        assert bad.status_code == 400
+        assert cfg.models[0].kv_class == original
+        monkeypatch.setattr(cfg, "save", lambda *_a: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        unsaved = client.post("/admin/models/ornith/edit", json={"kv_class": new}, headers=auth)
+        assert unsaved.status_code == 500
+        assert cfg.models[0].kv_class == original
+        monkeypatch.undo()
+        ok = client.post("/admin/models/ornith/edit", json={"kv_class": new}, headers=auth)
+        assert ok.status_code == 200 and ok.json()["kv_class"] == new
+        assert cfg.models[0].kv_class == new
+
+
+def test_ui_layout_rejects_invalid_json_with_400(runtime_cfg, tmp_path):
+    cfg = runtime_cfg
+    cfg.server.admin_token = "test-token"
+    app = create_app(cfg, config_path=tmp_path / "config.toml", plugins=[])
+    auth = {"Authorization": "Bearer test-token", "Content-Type": "application/json"}
+    with TestClient(app) as client:
+        assert client.put("/admin/ui/layout", content=b"{not json", headers=auth).status_code == 400
+        assert client.put("/admin/ui/layout", content=b"[]", headers=auth).status_code == 400

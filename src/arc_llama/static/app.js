@@ -79,7 +79,12 @@ function setServerState(kind, text) {
   }
 }
 
-function setFooter(text, isError = false) {
+// An action's result stays readable for a while; the next status poll used to
+// replace "Delete failed" or "Freed 4 GiB" with "Updated <time>" at once.
+let footerHoldUntil = 0;
+function setFooter(text, isError = false, { poll = false } = {}) {
+  if (poll && Date.now() < footerHoldUntil) return;
+  if (!poll) footerHoldUntil = Date.now() + 10000;
   $("#last-updated").textContent = text;
   $("#status-footer").classList.toggle("error", isError);
   $("#status-footer").classList.toggle("online", !isError);
@@ -286,14 +291,22 @@ function renderModels() {
   renderedModelsSignature = signature;
 }
 
+// Returns whether the panel was rebuilt. Rebuilding on every status poll
+// dropped keyboard focus (Load, Use in Work, compatibility) every 5 seconds
+// and made screen readers re-read the live panel.
+let renderedReadinessSignature = null;
 function renderReadiness() {
   const container = $("#readiness-card");
   const model = selected();
+  // The runtime identity is server-wide; a new runtime must reset the compatibility result shown here.
+  const signature = JSON.stringify([model || null, model ? gpuFor(model) || null : null, snapshot?.runtime_compatibility_identity ?? null]);
+  if (signature === renderedReadinessSignature) return false;
+  renderedReadinessSignature = signature;
   container.replaceChildren();
   if (!model) {
     container.className = "readiness-card empty";
     container.innerHTML = "<div class=\"readiness-icon\" aria-hidden=\"true\"></div><div><h3>Select a model to see its launch settings.</h3><p>We will show its configured GPU, context, and memory capacity before you start.</p></div>";
-    return;
+    return true;
   }
   container.className = "readiness-card";
   const gpu = gpuFor(model);
@@ -367,6 +380,7 @@ function renderReadiness() {
   }
   if (fileState.available !== false) container.appendChild(libraryController.compatibilityControl({ name: model.name }));
   container.appendChild(createDetails(model, gpu));
+  return true;
 }
 
 function metricRow(label, value, tone) {
@@ -741,8 +755,7 @@ function render() {
   $("#stop-all").disabled = loadedCount === 0;
   setServerState("online", loadedCount ? `${loadedCount} model${loadedCount === 1 ? "" : "s"} loaded` : "Server ready");
   renderModels();
-  renderReadiness();
-  window.ArcPaper?.inspector(selected(), name => paperModelAction("load", name), name => paperModelAction("stop", name));
+  if (renderReadiness()) window.ArcPaper?.inspector(selected(), name => paperModelAction("load", name), name => paperModelAction("stop", name));
   renderSystemReadiness();
   renderStart();
   renderNextStep();
@@ -795,7 +808,7 @@ async function fetchStatusRequest() {
     const focusedModelControl = modelListFocusTarget();
     render();
     restoreModelListFocus(focusedModelControl);
-    setFooter(`Updated ${new Date().toLocaleTimeString()}`);
+    setFooter(`Updated ${new Date().toLocaleTimeString()}`, false, { poll: true });
     return true;
   } catch (error) {
     statusOnline = false;
@@ -885,7 +898,15 @@ async function stopAll() {
 
 // Delete a model from the card. Files inside the models folder are deleted; a model the
 // user keeps elsewhere is only taken off the list, and the confirmation says which.
+const deletingModels = new Set();
 async function deleteModel(model) {
+  // A double-click used to open two confirmation dialogs.
+  if (deletingModels.has(model.name)) return;
+  deletingModels.add(model.name);
+  try { await deleteModelOnce(model); } finally { deletingModels.delete(model.name); }
+}
+
+async function deleteModelOnce(model) {
   const label = displayName(model);
   let managed = false;
   let sizeText = "";
@@ -909,9 +930,12 @@ async function deleteModel(model) {
     if (!response.ok) throw new Error(data.error?.message || data.detail || `Delete failed (${response.status})`);
     if (selectedModel === model.name) { selectedModel = null; sessionStorage.removeItem(SELECTED_MODEL_KEY); }
     const failed = data.failed?.length ? ` ${data.failed.length} file(s) could not be deleted.` : "";
-    setFooter(managed ? `Deleted ${label}; freed ${fmtMb(data.freed_mb)}.${failed}` : `Removed ${label} from the list.`, !!failed);
+    const message = managed ? `Deleted ${label}; freed ${fmtMb(data.freed_mb)}.${failed}` : `Removed ${label} from the list.`;
+    setFooter(message, !!failed);
+    setReviewMessage(message);
   } catch (error) {
     setFooter(error.message, true);
+    setReviewMessage(error.message);
   } finally {
     await fetchStatus(true);
   }

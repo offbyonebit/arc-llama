@@ -1754,11 +1754,11 @@ def create_app(
     async def put_ui_layout(
         request: Request, _auth: None = Depends(_require_admin)
     ) -> dict[str, Any]:
-        body = await request.json()
+        body = await _read_json_body(request)
         actions = _ui_actions()
         ids = {a["id"] for a in actions}
-        layout = body.get("layout", {}) if isinstance(body, dict) else {}
-        hidden = body.get("hidden", []) if isinstance(body, dict) else []
+        layout = body.get("layout", {})
+        hidden = body.get("hidden", [])
         if not isinstance(layout, dict) or not isinstance(hidden, list):
             raise HTTPException(status_code=400, detail="Invalid UI layout")
         values = [x for p in ("toolbar", "plugins", "chat") for x in layout.get(p, [])]
@@ -2012,6 +2012,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail="parallel must be 1..32")
             recipe["parallel"] = par
             changed.append("parallel")
+        kv_class = model.kv_class
         if "kv_class" in body:
             v = str(body["kv_class"])
             if v not in valid_classes:
@@ -2019,7 +2020,7 @@ def create_app(
                     status_code=400,
                     detail=f"kv_class must be one of {sorted(valid_classes)}",
                 )
-            model.kv_class = v
+            kv_class = v  # applied with the recipe below, so a later 400 leaves the model untouched
             changed.append("kv_class")
         if "spec_type" in body:
             v = body["spec_type"]
@@ -2264,9 +2265,9 @@ def create_app(
             changed.append("split_mode")
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
-        previous_recipe = model.recipe
+        previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
-        model.recipe = recipe
+        model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
             c.save(config_path or default_config_path())
@@ -2278,7 +2279,7 @@ def create_app(
             # disagreed until the next restart quietly reverted the edit. Undo
             # and fail loudly instead: a rejected edit is recoverable, an edit
             # that silently un-applies later is not.
-            model.recipe = previous_recipe
+            model.recipe, model.kv_class = previous_recipe, previous_kv_class
             model.llama_server, model.env = previous_runtime
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(

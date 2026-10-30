@@ -2,6 +2,7 @@ import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseR
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
@@ -98,6 +99,11 @@ const TESTS = [
   ["guided-dynamic-catalog", testGuidedDynamicCatalogStates],
   ["guided-first-answer", testGuidedFirstAnswer],
   ["guided-hides-empty-library", testGuidedHidesEmptyLibraryUntilSetupAnswers],
+  ["smooth-chat-budget-poll", testChatPollKeepsExactBudget],
+  ["smooth-chat-settings-poll", testChatPollKeepsSettingsOpen],
+  ["smooth-model-panel-focus", testModelPanelKeepsFocusAcrossPolls],
+  ["smooth-action-result-poll", testActionResultSurvivesNextPoll],
+  ["smooth-work-clock-focus", testWorkClockKeepsApprovalFocus],
   ["guided-library-on-status-failure", testGuidedLibraryReturnsWhenSetupStatusFails],
   ["chat-without-models-points-to-setup", testChatWithoutModelsPointsToSetup],
   ["work-nav-hidden-when-off", testWorkNavHiddenWhenWorkIsOff],

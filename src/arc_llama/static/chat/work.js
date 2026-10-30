@@ -530,6 +530,13 @@
           ? `Latest measured model call${run?.model ? ` (${run.model})` : ""}; excludes loading, prompt processing, tools, and approvals. Updates when the backend reports generation timing.`
           : "Waiting for backend generation timing. No speed is estimated from response text or total task duration.";
       }
+      updateActivity(busy);
+      currentEyebrow = null;
+      for (const turn of runs) host.append(drawTurn(turn, turn === run));
+      window.ArcPaper?.workState({ pending: !!run?.pending && !run.pending.answered, result: host.querySelector(".work-turn:last-child .work-result"), recentTasks: $("#work-recent") });
+    }
+
+    function updateActivity(busy) {
       const activity = $("#work-activity");
       if (activity) {
         const waiting = busy && run.pending && !run.pending.answered;
@@ -543,22 +550,39 @@
         if ($("#work-activity-label").textContent !== text) $("#work-activity-label").textContent = text;
         $("#work-activity-time").textContent = busy ? elapsedText(Date.now() - run.startedAt) : "";
       }
-      for (const turn of runs) host.append(drawTurn(turn, turn === run));
-      window.ArcPaper?.workState({ pending: !!run?.pending && !run.pending.answered, result: host.querySelector(".work-turn:last-child .work-result"), recentTasks: $("#work-recent") });
     }
 
-    // One message and everything that came of it. Earlier turns are compact; the latest is in full.
-    function drawTurn(r, current) {
-      const turn = el("section", { class: "work-turn" + (current ? "" : " prev"), "aria-label": "Task" });
+    // The once-a-second clock only refreshes elapsed-time text. A full redraw
+    // here dropped text selection and focus (Allow / Don't Allow) every second
+    // and pulled the page back to a waiting approval.
+    let currentEyebrow = null;
+    function tickClock() {
+      if (!run || run.status !== "running") return;
+      // Before the first step the placeholder's own wording depends on elapsed
+      // time, and there is nothing on screen to select or focus yet.
+      if (!run.steps.length && !run.answer.length && !run.pending) { render(); return; }
+      updateActivity(true);
+      if (currentEyebrow) currentEyebrow.textContent = eyebrowText(run);
+    }
+
+    function eyebrowText(r) {
       const mode = (r.auto ? " · auto-approve" : "") + (r.profileName ? ` · ${r.profileName}` : "");
       const eyebrow = r.status === "running" ? `${r.folderName}${mode} · working for ${elapsedText(Date.now() - r.startedAt)}`
         : r.status === "stopped" ? `${r.folderName}${mode} · stopped`
         : r.status === "error" ? `${r.folderName}${mode} · stopped by an error`
         : r.imported ? `${r.folderName} · imported conversation`
         : `${r.folderName}${mode} · finished in ${elapsedText((r.endedAt || Date.now()) - r.startedAt)}`;
-      const heading = splitTask(r.task);
       const speed = measuredSpeed(r.generationTokS);
-      turn.append(el("div", { class: "work-eyebrow" }, eyebrow + (speed ? ` · ${speed}` : "")), el("h1", { class: "work-title" }, heading.title));
+      return eyebrow + (speed ? ` · ${speed}` : "");
+    }
+
+    // One message and everything that came of it. Earlier turns are compact; the latest is in full.
+    function drawTurn(r, current) {
+      const turn = el("section", { class: "work-turn" + (current ? "" : " prev"), "aria-label": "Task" });
+      const heading = splitTask(r.task);
+      const eyebrow = el("div", { class: "work-eyebrow" }, eyebrowText(r));
+      if (current) currentEyebrow = eyebrow;
+      turn.append(eyebrow, el("h1", { class: "work-title" }, heading.title));
       if (heading.rest) turn.append(el("p", { class: "work-sub" }, heading.rest));
 
       // Steps: always shown while a turn is live or waiting on you; folded away once it is history.
@@ -1262,7 +1286,7 @@
       $("#work-task").value = "";
       autosize();
       clearInterval(tick);
-      tick = setInterval(() => { if (run && run.status === "running") render(); }, 1000);
+      tick = setInterval(tickClock, 1000);
       render();
       controller = new AbortController();
       try {

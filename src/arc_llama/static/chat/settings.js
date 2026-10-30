@@ -46,9 +46,19 @@
       });
     }
 
-    function renderSettingsPanel() {
-      renderPresetPanel();
+    // A status poll passes { poll: true }. It used to rebuild the open panel
+    // every 3 seconds, closing "Runtime for this model" and discarding preset
+    // text typed but not yet saved once focus moved away.
+    let renderedSettingsSignature = null;
+    function renderSettingsPanel({ poll = false } = {}) {
       const m = ctx.models.find(m => m.id === ctx.selectedModel);
+      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
+      if (poll && signature === renderedSettingsSignature) {
+        const fitLine = ctx.$("#s-fit");
+        if (fitLine && !settingsDirty) fitLine.textContent = vramFitText(m || {});
+        return;
+      }
+      renderPresetPanel();
       if (settingsDraftModel === ctx.selectedModel && (settingsDirty || ctx.sFields.contains(document.activeElement))) {
         const fitLine = ctx.$("#s-fit");
         if (fitLine) fitLine.textContent = settingsDirty
@@ -57,6 +67,7 @@
         return;
       }
       settingsDraftModel = ctx.selectedModel;
+      renderedSettingsSignature = signature;
       settingsDirty = false;
       runtimeBinaryDirty = false; runtimeEnvDirty = false;
       ctx.sModelName.textContent = ctx.selectedModel || "Not selected";
