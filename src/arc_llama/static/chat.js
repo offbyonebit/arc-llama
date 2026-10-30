@@ -649,10 +649,26 @@ async function fetchModels() {
   }
 }
 
+// With no models there is nothing to pick, so point to setup instead.
+function renderNoModelsHint(empty) {
+  const title = emptyState?.querySelector(".title"), hint = emptyState?.querySelector(".hint");
+  if (!title || !hint) return;
+  title.textContent = empty ? "No models yet" : "Start a conversation";
+  hint.textContent = empty ? "" : "Select a model and send a message to begin chatting with arc-llama.";
+  if (empty) {
+    hint.append("Chat needs a model. ");
+    const link = document.createElement("a");
+    link.href = "/";
+    link.textContent = "Get your first model";
+    hint.append(link, ".");
+  }
+}
+
 function renderModelPicker() {
   const requested = new URLSearchParams(window.location.search).get("model");
   const current = requested || selectedModel || sessionStorage.getItem("arc-llama-selected-model") || modelSelect.value;
   modelSelect.innerHTML = "";
+  renderNoModelsHint(models.length === 0);
   if (models.length === 0) {
     const opt = document.createElement("option");
     opt.textContent = "No models available";
@@ -1137,9 +1153,16 @@ function renderUserImages(div, images) {
 async function sendMessage() {
   if (compacting) return;
   if (isComposerActionActive()) { sendComposerAction(); return; }
-  if (chatBusy() || !selectedModel) return;
+  if (chatBusy()) return;
   const text = input.value.trim();
   if (!text && !hasReadyAttachments()) return;
+  if (!selectedModel) {
+    // The message stays in the composer for when a model is ready.
+    const note = models.length ? "Choose a model first." : "No models yet. Open Models to get your first one.";
+    const last = chatLog.lastElementChild;
+    if (!(last?.classList.contains("error-card") && last.textContent.includes(note))) showError(note);
+    return;
+  }
   if (hasProcessingAttachments()) {
     showError("Please wait for attachments to finish processing.");
     return;

@@ -2344,6 +2344,17 @@ def create_app(
     # ------------------------------------------------------------------
     static_dir = Path(__file__).parent / "static"
 
+    @app.get("/ui-flags.js")
+    async def ui_flags() -> Response:
+        # Read synchronously before the page shell builds its navigation, so
+        # a disabled feature never flashes into view and then disappears.
+        flags = {"work": experimental_enabled()}
+        return Response(
+            f"window.ARC_UI_FLAGS = {json.dumps(flags)};\n",
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/work")
     async def work_page() -> Response:
         return FileResponse(static_dir / "chat.html")

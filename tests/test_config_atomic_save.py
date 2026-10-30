@@ -229,7 +229,7 @@ def test_missing_config_does_not_claim_token_was_saved(tmp_path, caplog):
     import logging
 
     missing = tmp_path / "nope" / "config.toml"
-    with caplog.at_level(logging.WARNING, logger="arc_llama.config"):
+    with caplog.at_level(logging.DEBUG, logger="arc_llama.config"):
         cfg = load_config(missing)
 
     assert cfg.server.admin_token, "no token generated at all"

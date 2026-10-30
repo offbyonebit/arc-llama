@@ -125,3 +125,49 @@ def test_start_scan_save_keeps_saved_lan_host_and_port(tmp_path, monkeypatch):
     saved = load_config(path)
     assert (saved.server.host, saved.server.port) == ("0.0.0.0", cfg.server.port)
     assert [m.name for m in saved.models] == ["new"]
+
+
+def _serve_output(tmp_path, monkeypatch, args, *, models=False, write_config=True):
+    cfg = Config()
+    cfg.paths.models_dir = str(tmp_path / "models")
+    cfg.paths.state_dir = str(tmp_path / "state")
+    cfg.gpus = [GPUConfig("gpu", 0, "battlemage", vram_mb=24576, name="Arc Pro B60")]
+    if models:
+        cfg.models = [ModelConfig("mine", "/synthetic/model.gguf", 1, "gpu")]
+    path = tmp_path / "config.toml"
+    if write_config:
+        cfg.save(path)
+    else:
+        monkeypatch.setattr("arc_llama.cli.load_config", lambda p: cfg)
+    monkeypatch.delenv("ARC_LLAMA_ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr("arc_llama.cli.detect_gpus", lambda **kw: [])
+    monkeypatch.setattr(
+        "arc_llama.server.create_app", lambda *a, **kw: SimpleNamespace(state=SimpleNamespace(router=None))
+    )
+    monkeypatch.setattr("arc_llama.browser_launch.serve_in_browser", Mock())
+    monkeypatch.setattr("uvicorn.run", Mock())
+    with patch("signal.signal"), patch("atexit.register"):
+        result = CliRunner().invoke(cli, ["--config", str(path), *args], terminal_width=200)
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_guided_start_without_models_points_to_the_browser_not_the_cli(tmp_path, monkeypatch):
+    out = _serve_output(tmp_path, monkeypatch, ["start", "--no-open"])
+    assert "Download and start" in out
+    assert "Using Arc Pro B60 · 24.0 GiB" in out
+    # Contradicting the browser's one-click setup confused first-run users.
+    for noise in ("arc-llama add", "AOT", "JIT", "Admin token", "Auto-tune", "no eligible models"):
+        assert noise not in out, out
+
+
+def test_plain_serve_without_models_mentions_guided_setup(tmp_path, monkeypatch):
+    out = _serve_output(tmp_path, monkeypatch, ["serve"])
+    assert "arc-llama start" in out and "arc-llama add" in out
+    assert "Admin token: saved in" in out
+
+
+def test_serve_without_a_config_file_says_the_token_is_temporary(tmp_path, monkeypatch):
+    out = _serve_output(tmp_path, monkeypatch, ["serve"], write_config=False)
+    assert "temporary for this run" in out
+    assert "saved in" not in out

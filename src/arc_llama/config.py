@@ -832,7 +832,9 @@ def _resolve_admin_token(cfg: Config, path: Path, *, persist: bool) -> None:
         # message claimed the token was "saved to <path>" on this branch too,
         # sending users hunting for a file that was never written -- and hiding
         # that the token rotates on every restart until one is configured.
-        logging.getLogger("arc_llama.config").warning(
+        # Debug only: read-only commands (list, doctor) hit this on every
+        # fresh machine, and `serve` states the token's lifetime itself.
+        logging.getLogger("arc_llama.config").debug(
             "No admin_token was configured -- generated an in-memory one for "
             "this run only (no config file exists at %s, so nothing was "
             "saved). Admin endpoints and auto_confirm agent runs require an "

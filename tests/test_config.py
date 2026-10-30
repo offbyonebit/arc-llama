@@ -210,7 +210,7 @@ def test_default_config_path_is_isolated(tmp_path):
 def test_resolve_admin_token_warning_omits_secret(caplog, tmp_path):
     cfg = Config()
     path = tmp_path / "config.toml"
-    with caplog.at_level(logging.WARNING, logger="arc_llama.config"):
+    with caplog.at_level(logging.DEBUG, logger="arc_llama.config"):
         _resolve_admin_token(cfg, path, persist=False)
     assert cfg.server.admin_token is not None
     assert len(cfg.server.admin_token) > 16

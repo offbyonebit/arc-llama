@@ -74,7 +74,7 @@ def register_model_commands(
         cfg = load_config(ctx.obj["config_path"])
         if not cfg.models:
             console.print(
-                "[yellow]No models registered. Run [bold]arc-llama add ...[/bold].[/yellow]"
+                "[yellow]No models registered. Run [bold]arc-llama start[/bold] for guided setup, or [bold]arc-llama add[/bold].[/yellow]"
             )
             return
 

@@ -500,6 +500,16 @@ def _print_serve_banner(cfg: Config) -> None:
         console.print("  [dim]no models registered — `arc-llama add` something first[/dim]")
 
 
+def _print_guided_banner(cfg: Config) -> None:
+    """Short startup summary for `arc-llama start`: devices only, no build hints."""
+    for gpu in cfg.gpus:
+        if gpu.enabled:
+            vram = f" · {gpu.vram_mb / 1024:.1f} GiB" if gpu.vram_mb else ""
+            console.print(f"[dim]Using {gpu.name or gpu.arch}{vram}[/dim]")
+    for m in cfg.models:
+        console.print(f"[dim]Model: {m.name}[/dim]")
+
+
 def _bootstrap_run_config(config_path: Path) -> Config:
     """Load a usable config, detecting Arc GPUs when first-run state is absent."""
     created = not config_path.exists()
@@ -1017,6 +1027,7 @@ def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
     console.print(f"[bold]Open Arc Llama:[/bold] [cyan]{url}[/cyan]")
     console.print("[dim]Keep this terminal open. Press Ctrl+C to stop.[/dim]")
     ctx.obj["open_browser_path"] = browser_path if open_browser else None
+    ctx.obj["guided_start"] = True
     ctx.invoke(serve, host="127.0.0.1", port=port, profile=None, admin_token=None,
                scan=True, auto_tune=None, lan=False, assume_yes=False)
 
@@ -1122,28 +1133,45 @@ def serve(
     if lan:
         _prepare_lan(cfg, port or cfg.server.port, assume_yes)
 
-    _print_autotune_banner(cfg)
+    guided = bool(ctx.obj.get("guided_start"))
+    if not guided or cfg.models:
+        _print_autotune_banner(cfg)
     if not cfg.models:
-        console.print(
-            "[yellow]No models registered yet — drop a GGUF in "
-            f"{cfg.paths.models_dir} or run `arc-llama add`.[/yellow]"
-        )
+        if guided:
+            # `start` already printed the address; the browser offers the
+            # download, so CLI registration hints would contradict it.
+            console.print(
+                "[yellow]No models yet — open the address above and choose "
+                "[bold]Download and start[/bold].[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]No models registered yet — run `arc-llama start` for "
+                f"guided setup, drop a GGUF in {cfg.paths.models_dir}, or run "
+                "`arc-llama add`.[/yellow]"
+            )
     if cfg.server.host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
             f"[yellow]Binding to {cfg.server.host!r}, not loopback -- make sure "
             "admin_token is set to something you control (it was auto-generated "
             "if you never set one).[/yellow]"
         )
-    token_source = (
-        "ARC_LLAMA_ADMIN_TOKEN environment variable"
-        if os.environ.get("ARC_LLAMA_ADMIN_TOKEN")
-        else f"config file ({ctx.obj['config_path']})"
-    )
-    console.print(
-        f"[dim]Admin authentication is enabled via {token_source}. "
-        "Admin endpoints require 'Authorization: Bearer <token>'.[/dim]"
-    )
-    _print_serve_banner(cfg)
+    if guided:
+        # The local browser UI authenticates itself, so token details would
+        # only distract here; they matter to API callers of plain `serve`.
+        _print_guided_banner(cfg)
+    else:
+        if os.environ.get("ARC_LLAMA_ADMIN_TOKEN"):
+            token_note = "Admin token: from the ARC_LLAMA_ADMIN_TOKEN environment variable."
+        elif Path(ctx.obj["config_path"]).exists():
+            token_note = f"Admin token: saved in {ctx.obj['config_path']}."
+        else:
+            token_note = (
+                "Admin token: temporary for this run (no config file yet). "
+                "Run `arc-llama init` or set ARC_LLAMA_ADMIN_TOKEN to keep one."
+            )
+        console.print(f"[dim]{token_note} Admin API calls need 'Authorization: Bearer <token>'.[/dim]")
+        _print_serve_banner(cfg)
     try:
         import uvicorn
     except ImportError:

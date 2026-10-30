@@ -385,3 +385,14 @@ def test_work_run_uses_the_configured_harness_binary(tmp_path, monkeypatch):
         client.post("/v1/agent", json={**BODY, "root": str(tmp_path)})
         assert app.state.active_harness_runs["opencode"] == 0
     assert seen["binary"] == "/managed/opencode"
+
+
+@pytest.mark.parametrize("env,expected", [("", False), ("1", True)])
+def test_ui_flags_tell_the_page_shell_whether_work_is_on(tmp_path, monkeypatch, env, expected):
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", env)
+    with TestClient(_app(tmp_path, monkeypatch)) as client:
+        response = client.get("/ui-flags.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/javascript")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.text == f"window.ARC_UI_FLAGS = {json.dumps({'work': expected})};\n"

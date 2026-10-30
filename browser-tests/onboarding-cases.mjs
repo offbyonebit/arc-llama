@@ -162,3 +162,63 @@ export async function testGuidedDynamicCatalogStates({ page, origin }) {
   assert.deepEqual(f.actions.at(-1), { action: "start", starter: "brand-new-id" });
   assert.equal(f.inference.length, 0);
 }
+
+// A new install must not flash "No models found" while the first setup read is
+// in flight; the library returns only if setup status cannot be read.
+export async function testGuidedHidesEmptyLibraryUntilSetupAnswers({ page, origin }) {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  await page.route("**/admin/status", route => route.fulfill({ json: { ...ADMIN_STATUS, models: [] } }));
+  await page.route("**/admin/library/jobs", route => route.fulfill({ json: { jobs: [] } }));
+  await page.route("**/admin/onboarding", async route => {
+    calls += 1;
+    await held;
+    return route.fulfill({ json: initial() });
+  });
+  await page.goto(`${origin}/`);
+  await page.waitForFunction(() => document.querySelector("#model-list")?.closest("section")?.classList.contains("setup-coordinated"));
+  assert.equal(await page.getByText("No models found").isVisible(), false, "empty library flashed before setup");
+  assert.equal(await page.locator(".first-answer-section").isVisible(), false);
+  release();
+  await page.locator("#first-answer").waitFor();
+  assert.equal(await page.getByText("No models found").isVisible(), false);
+  assert.ok(calls >= 1);
+}
+
+export async function testGuidedLibraryReturnsWhenSetupStatusFails({ page, origin }) {
+  await page.route("**/admin/status", route => route.fulfill({ json: { ...ADMIN_STATUS, models: [] } }));
+  await page.route("**/admin/library/jobs", route => route.fulfill({ json: { jobs: [] } }));
+  await page.route("**/admin/onboarding", route => route.fulfill({ status: 503, json: { detail: "offline" } }));
+  await page.goto(`${origin}/`);
+  await page.getByText("No models found").waitFor();
+}
+
+export async function testChatWithoutModelsPointsToSetup({ page, origin }) {
+  await page.route("**/v1/models", route => route.fulfill({ json: { object: "list", data: [] } }));
+  await page.goto(`${origin}/chat`);
+  await page.locator("#empty-state .title", { hasText: "No models yet" }).waitFor();
+  assert.equal(await page.locator("#empty-state .hint a").getAttribute("href"), "/");
+  await page.locator("#message-input").fill("hello");
+  await page.locator("#message-input").press("Enter");
+  await page.locator(".error-card", { hasText: "No models yet" }).waitFor();
+  await page.locator("#message-input").press("Enter");
+  assert.equal(await page.locator(".error-card").count(), 1, "repeated Enter stacked errors");
+  assert.equal(await page.locator("#message-input").inputValue(), "hello", "message was discarded");
+}
+
+export async function testWorkNavHiddenWhenWorkIsOff({ page, origin }) {
+  await page.route("**/ui-flags.js", route => route.fulfill({ contentType: "text/javascript", body: "window.ARC_UI_FLAGS = {\"work\": false};" }));
+  for (const path of ["/chat", "/"]) {
+    await page.goto(`${origin}${path}`);
+    await page.locator(".paper-rail").waitFor();
+    assert.equal(await page.locator('a[href="/work"]').count(), 0, `Work link shown on ${path}`);
+    assert.equal(await page.locator('.paper-rail .app-nav a[href="/chat"]').count(), 1);
+  }
+}
+
+export async function testWorkNavShownWhenWorkIsOn({ page, origin }) {
+  await page.route("**/ui-flags.js", route => route.fulfill({ contentType: "text/javascript", body: "window.ARC_UI_FLAGS = {\"work\": true};" }));
+  await page.goto(`${origin}/chat`);
+  await page.locator('.paper-rail a[href="/work"]').waitFor();
+}

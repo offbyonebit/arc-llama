@@ -16,10 +16,14 @@ window.ArcDashboard.createOnboardingController = function ({ document: doc, requ
   function remembered() { try { return sessionStorage.getItem(key); } catch { return null; } }
   function render() {
     if (!host) return;
-    const show = !unavailable && data && (!snapshot?.models?.length || data.phase !== "idle");
+    const noModels = !snapshot?.models?.length;
+    const show = !unavailable && data && (noModels || data.phase !== "idle");
+    // Until the first setup read answers, keep the empty library hidden so a
+    // new install never flashes "No models found" before the guided card.
+    const awaiting = !unavailable && !data && !localError && online && noModels;
     section.hidden = !show;
-    if (next) next.classList.toggle("setup-coordinated", !!show);
-    doc.querySelector("#choose-title")?.closest("section")?.classList.toggle("setup-coordinated", !!show && !snapshot?.models?.length);
+    if (next) next.classList.toggle("setup-coordinated", !!show || awaiting);
+    doc.querySelector("#choose-title")?.closest("section")?.classList.toggle("setup-coordinated", (!!show || awaiting) && noModels);
     if (!show) return;
     const gpu = data.gpu, starter = data.starter;
     const discovering = data.discovery?.status === "searching";
@@ -115,6 +119,9 @@ window.ArcDashboard.createOnboardingController = function ({ document: doc, requ
   $("pause")?.addEventListener("click", () => act("pause"));
   $("another")?.addEventListener("click", chooseAnother);
   $("scan")?.addEventListener("click", scanExisting);
+  // A browser opened by `arc-llama start` may load in a background tab, where
+  // polling pauses; read setup as soon as the tab is shown.
+  doc.addEventListener("visibilitychange", () => { if (!doc.hidden && online && (timer || !data)) poll(true); });
   return {
     update(value, connected) {
       snapshot = value; online = connected;

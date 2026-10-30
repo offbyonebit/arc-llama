@@ -1,4 +1,4 @@
-import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply } from "./onboarding-cases.mjs";
+import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply, testGuidedHidesEmptyLibraryUntilSetupAnswers, testGuidedLibraryReturnsWhenSetupStatusFails, testChatWithoutModelsPointsToSetup, testWorkNavHiddenWhenWorkIsOff, testWorkNavShownWhenWorkIsOn } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
@@ -97,6 +97,11 @@ import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWork
 const TESTS = [
   ["guided-dynamic-catalog", testGuidedDynamicCatalogStates],
   ["guided-first-answer", testGuidedFirstAnswer],
+  ["guided-hides-empty-library", testGuidedHidesEmptyLibraryUntilSetupAnswers],
+  ["guided-library-on-status-failure", testGuidedLibraryReturnsWhenSetupStatusFails],
+  ["chat-without-models-points-to-setup", testChatWithoutModelsPointsToSetup],
+  ["work-nav-hidden-when-off", testWorkNavHiddenWhenWorkIsOff],
+  ["work-nav-shown-when-on", testWorkNavShownWhenWorkIsOn],
   ["guided-pause-retry-errors", testGuidedPauseRetryAndErrors],
   ["guided-hardware-small-screen", testGuidedHardwareAndSmallScreen],
   ["welcome-preserves-draft-failure", testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess],
