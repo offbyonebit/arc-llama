@@ -58,7 +58,13 @@ function authHeaders(headers = {}) {
   return adminToken ? { ...headers, Authorization: `Bearer ${adminToken}` } : headers;
 }
 
+let adminTokenReady = null;
 async function initAdminToken() {
+  adminTokenReady ??= loadAdminToken();
+  return adminTokenReady;
+}
+
+async function loadAdminToken() {
   try {
     const response = await fetch("/admin/session-token");
     if (response.ok) adminToken = (await response.json()).admin_token || null;
@@ -627,6 +633,7 @@ function updateDashboardView() {
   const label = system ? "System" : discover ? "Discover" : "Models";
   window.ArcPaper?.view(view);
   dashboard.dataset.dashboardView = view;
+  if (view === "discover") window.ArcDashboard.discoverOpened?.();
   for (const link of document.querySelectorAll("[data-view-link]")) {
     const active = link.dataset.viewLink === view;
     link.classList.toggle("active", active);
@@ -716,6 +723,8 @@ const libraryController = window.ArcDashboard.createLibraryController({
     renderNextStep();
   },
 });
+// Opening the page on #discover runs before the token request finishes.
+window.ArcDashboard.discoverOpened = () => initAdminToken().then(() => libraryController.loadFeatured());
 function pollLibraryJobs(options) { return libraryController.poll(options); }
 function loadLibraryDisk() { return libraryController.loadDisk(); }
 

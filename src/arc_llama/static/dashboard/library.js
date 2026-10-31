@@ -8,12 +8,18 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
   // Model library. Every string from Hugging Face is set with textContent.
   // ---------------------------------------------------------------------------
 
-  const FIT_LABELS = {
-    fits: ["Likely to fit", "ready", "Estimated room for the model and conversation memory."],
-    tight: ["Limited memory headroom", "warn", "A shorter conversation limit may be needed to leave enough memory."],
-    too_big: ["Likely too large", "error", "The estimate exceeds this GPU's capacity. More memory or CPU offloading may be needed."],
-    unknown: ["Fit unknown", "warn", "An estimate needs both the file size and GPU memory capacity."],
-  };
+  // Badge text states the memory figure itself; option.need_mb is the file plus
+  // the conversation that fit promises (model_library.memory_need_mb).
+  function fitLabel(option, vramMb) {
+    const need = option.need_mb > 0 ? `${Math.max(1, Math.round(option.need_mb / 1024))} GB` : null;
+    const card = vramMb > 0 ? `${Math.round(vramMb / 1024)} GB` : null;
+    switch (option.fit) {
+      case "fits": return [need && card ? `Needs about ${need} of ${card}` : "Should fit in graphics memory", "ready", "Leaves room for a long conversation."];
+      case "tight": return [need && card ? `Needs about ${need} of ${card} · short chats only` : "Short chats only", "warn", "Only a short conversation fits beside this file."];
+      case "too_big": return [need && card ? `Needs about ${need} · more than this card's ${card}` : "More than this card's memory", "error", "Needs more graphics memory, or part of the model running on the CPU."];
+      default: return ["Graphics memory unknown", "warn", "The file size or the card's memory isn't reported, so fit can't be worked out."];
+    }
+  }
 
   function compressionDescription(quant) {
     // Strip Unsloth's "UD-" (dynamic) prefix: UD-Q5_K_M is still a 5-bit copy.
@@ -132,52 +138,303 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
       host.replaceChildren();
       if (!data.results.length) { writeMessage(host, "No GGUF repositories matched."); return; }
-      for (const item of data.results) {
-        const card = doc.createElement("article");
-        card.className = "plugin-card library-repo";
-        const main = doc.createElement("div");
-        const title = doc.createElement("h3");
-        title.textContent = item.repo;
-        const meta = doc.createElement("p");
-        meta.className = "plugin-meta";
-        meta.textContent = `${(item.downloads ?? 0).toLocaleString()} downloads · ${(item.likes ?? 0).toLocaleString()} likes`;
-        const options = doc.createElement("div");
-        options.className = "library-options";
-        const identity = doc.createElement("div");
-        identity.className = "library-repo-identity";
-        const publisher = String(item.repo || "").split("/")[0];
-        const avatar = doc.createElement("span");
-        avatar.className = "library-publisher-avatar";
-        avatar.setAttribute("aria-hidden", "true");
-        avatar.textContent = publisher.slice(0, 2).toUpperCase() || "HF";
-        // Derive a fixed HF URL from a namespace, never accept an arbitrary image URL.
-        if (/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(publisher)) {
-          const image = doc.createElement("img");
-          image.alt = "";
-          image.width = 36;
-          image.height = 36;
-          image.loading = "lazy";
-          image.referrerPolicy = "no-referrer";
-          image.addEventListener("error", () => image.remove(), { once: true });
-          image.src = `https://huggingface.co/api/avatars/${encodeURIComponent(publisher)}`;
-          avatar.appendChild(image);
-        }
-        const heading = doc.createElement("div");
-        const byline = doc.createElement("p");
-        byline.className = "plugin-meta library-publisher";
-        byline.textContent = `Published by ${publisher || "an unknown account"} on Hugging Face`;
-        byline.title = "The repository publisher may differ from the original model developer.";
-        heading.append(title, byline);
-        identity.append(avatar, heading);
-        main.append(identity, meta, options);
-        const side = doc.createElement("div");
-        side.appendChild(makeButton("Compare versions", "secondary", () => libraryShowRepo(item.repo, options)));
-        card.append(main, side);
-        host.appendChild(card);
-      }
+      for (const item of data.results) host.appendChild(repoCard(item).card);
     } catch (e) {
       writeMessage(host, `Search failed: ${e.message}`, "library-note error");
     }
+  }
+
+  // Derive a fixed HF URL from a namespace, never accept an arbitrary image URL.
+  function avatarUrl(namespace) {
+    return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(namespace) ? `https://huggingface.co/api/avatars/${encodeURIComponent(namespace)}` : null;
+  }
+
+  function repoCard(item) {
+    const card = doc.createElement("article");
+    card.className = "plugin-card library-repo";
+    const main = doc.createElement("div");
+    const title = doc.createElement("h3");
+    title.textContent = item.repo;
+    const meta = doc.createElement("p");
+    meta.className = "plugin-meta";
+    meta.textContent = `${(item.downloads ?? 0).toLocaleString()} downloads · ${(item.likes ?? 0).toLocaleString()} likes`;
+    const options = doc.createElement("div");
+    options.className = "library-options";
+    const identity = doc.createElement("div");
+    identity.className = "library-repo-identity";
+    const publisher = String(item.repo || "").split("/")[0];
+    const avatar = doc.createElement("span");
+    avatar.className = "library-publisher-avatar";
+    avatar.setAttribute("aria-hidden", "true");
+    avatar.textContent = publisher.slice(0, 2).toUpperCase() || "HF";
+    if (avatarUrl(publisher)) {
+      const image = doc.createElement("img");
+      image.alt = "";
+      image.width = 36;
+      image.height = 36;
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      image.addEventListener("error", () => image.remove(), { once: true });
+      image.src = avatarUrl(publisher);
+      avatar.appendChild(image);
+    }
+    const heading = doc.createElement("div");
+    const byline = doc.createElement("p");
+    byline.className = "plugin-meta library-publisher";
+    byline.textContent = `Published by ${publisher || "an unknown account"} on Hugging Face`;
+    byline.title = "The repository publisher may differ from the original model developer.";
+    heading.append(title, byline);
+    identity.append(avatar, heading);
+    main.append(identity, meta, options);
+    const side = doc.createElement("div");
+    side.appendChild(makeButton("Compare versions", "secondary", () => libraryShowRepo(item.repo, options)));
+    card.append(main, side);
+    return { card, options };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Discover shelves: hand-picked models sized for this GPU (server: discover.py).
+  // Curated text is ours; every Hub figure is still set with textContent.
+  // ---------------------------------------------------------------------------
+
+  const LICENSES = { "apache-2.0": "Apache 2.0", mit: "MIT", gemma: "Gemma license", other: "Custom license" };
+  const gb = (mb) => mb >= 10240 ? `${Math.round(mb / 1024)} GB` : `${(mb / 1024).toFixed(1)} GB`;
+  const compact = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n);
+  function node(tag, className, text) {
+    const element = doc.createElement(tag);
+    if (className) element.className = className;
+    if (text != null) element.textContent = text;
+    return element;
+  }
+
+  let featured = null;
+  let featuredLoad = null;
+  let publisherFilter = null;
+  const featuredButtons = new Map();
+
+  function avatarImage(namespace, className) {
+    const url = avatarUrl(namespace);
+    if (!url) return null;
+    const image = node("img", className);
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.addEventListener("error", () => image.remove(), { once: true });
+    image.src = url;
+    return image;
+  }
+
+  function memoryLine(pick, vram) {
+    const line = node("div", "discover-mem");
+    const text = node("div", "discover-mem-text");
+    if (!vram || !pick.need_mb) {
+      text.append(node("span", null, `${gb(pick.size_mb)} download`), node("span", null, "Graphics memory unknown"));
+      line.append(text);
+      return line;
+    }
+    const need = node("span");
+    need.append("Needs about ", node("b", null, `${Math.max(1, Math.round(pick.need_mb / 1024))} GB`), ` of ${Math.round(vram / 1024)} GB`);
+    const spare = vram - pick.need_mb;
+    const right = pick.fit === "tight"
+      ? node("span", "discover-mem-warn", "Room for short chats only")
+      : pick.fit === "too_big" ? node("span", "discover-mem-warn", "More than this card has")
+      : node("span", null, `${Math.max(0, Math.floor(spare / 1024))} GB to spare`);
+    text.append(need, right);
+    const meter = node("div", "discover-meter");
+    meter.setAttribute("aria-hidden", "true");
+    const file = node("i", "discover-meter-file");
+    file.style.width = `${Math.min(100, pick.size_mb / vram * 100)}%`;
+    const chat = node("i", "discover-meter-chat");
+    chat.style.left = file.style.width;
+    chat.style.width = `${Math.max(0, Math.min(100 - pick.size_mb / vram * 100, (pick.need_mb - pick.size_mb) / vram * 100))}%`;
+    meter.append(file, chat);
+    line.append(text, meter);
+    return line;
+  }
+
+  function showOtherVersions(repo) {
+    const host = doc.querySelector("#library-results");
+    if (!host) return;
+    const { card, options } = repoCard({ repo });
+    host.replaceChildren(card);
+    libraryShowRepo(repo, options);
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function featuredCard(entry, vram) {
+    const pick = entry.pick;
+    const card = node("article", "discover-card");
+    card.setAttribute("aria-label", `${entry.name} by ${entry.author_name}`);
+    const cover = node("div", "discover-cover");
+    cover.setAttribute("aria-hidden", "true");
+    const wash = avatarImage(entry.author, "discover-wash");
+    const sleeve = avatarImage(entry.author, "discover-sleeve");
+    const initial = node("span", "discover-sleeve discover-sleeve-initial", entry.author_name.slice(0, 1));
+    if (sleeve) sleeve.addEventListener("error", () => cover.append(initial), { once: true });
+    cover.append(...[wash, sleeve || initial].filter(Boolean));
+    const params = node("span", "discover-params", entry.params);
+    params.append(node("small", null, " parameters"));
+    cover.append(params);
+
+    const body = node("div", "discover-body");
+    const by = node("p", "discover-by");
+    by.append(node("b", null, entry.author_name));
+    if (entry.converter) by.append(node("span", null, ` · file by ${entry.converter}`));
+    const name = node("h4", "discover-name", entry.name);
+    const description = node("p", "discover-desc", entry.description);
+    const facts = node("div", "discover-facts");
+    if (entry.license) facts.append(node("span", null, LICENSES[entry.license] || entry.license));
+    if (Number.isFinite(entry.downloads)) facts.append(node("span", null, `${compact(entry.downloads)} downloads`));
+    if (entry.vision) facts.append(node("span", null, "Reads images"));
+    const foot = node("div", "discover-foot");
+    const get = makeButton(`Get · ${gb(pick.size_mb)}`, "primary", async () => {
+      get.disabled = true;
+      get.textContent = "Starting…";
+      try {
+        const response = await request("/admin/library/download", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ repo: entry.repo, file: pick.file, size_mb: pick.size_mb }),
+        });
+        const job = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(job.detail || `HTTP ${response.status}`);
+        poll({ force: true });
+      } catch (e) {
+        get.disabled = false;
+        get.textContent = `Get · ${gb(pick.size_mb)}`;
+        get.title = `Download did not start: ${e.message}`;
+        status.textContent = `Download did not start: ${e.message}`;
+      }
+    });
+    get.setAttribute("aria-label", `Download ${entry.name}, ${gb(pick.size_mb)}`);
+    featuredButtons.set(JSON.stringify([entry.repo, pick.file]), { button: get, label: `Get · ${gb(pick.size_mb)}` });
+    const other = makeButton("Other versions", "ghost", () => showOtherVersions(entry.repo));
+    other.setAttribute("aria-label", `Other versions of ${entry.name}`);
+    const status = node("p", "discover-status");
+    status.setAttribute("role", "status");
+    foot.append(other, get);
+    body.append(by, name, description, memoryLine(pick, vram), facts, foot, status);
+    card.append(cover, body);
+    return card;
+  }
+
+  function updateFeaturedButtons() {
+    for (const [key, { button, label }] of featuredButtons) {
+      if (!button.isConnected) { featuredButtons.delete(key); continue; }
+      const [repo, file] = JSON.parse(key);
+      const job = [...knownJobs].reverse().find((item) => item.repo === repo && item.file === file && !supersededFailures.has(item.id));
+      if (job && ["queued", "downloading", "registering"].includes(job.status)) {
+        const pct = job.bytes_total ? Math.min(99, Math.round(job.bytes_done / job.bytes_total * 100)) : null;
+        button.textContent = job.status === "downloading" && pct != null ? `Downloading ${pct}%` : job.status === "registering" ? "Adding…" : "Queued…";
+        button.disabled = true;
+      } else if (job?.status === "done") {
+        button.textContent = "Downloaded";
+        button.disabled = true;
+      } else if (button.textContent !== "Starting…") {
+        button.textContent = label;
+        button.disabled = false;
+      }
+    }
+  }
+
+  function renderFeatured() {
+    const host = doc.querySelector("#discover-featured");
+    if (!host || !featured) return;
+    featuredButtons.clear();
+    const vram = featured.vram_mb;
+    const head = node("div", "discover-head");
+    const hardware = node("p", "discover-hardware");
+    if (vram) {
+      hardware.append("Picked for your ", node("b", null, featured.gpu_name || "graphics card"), " · ", node("b", null, `${Math.round(vram / 1024)} GB`), " graphics memory");
+    } else {
+      hardware.textContent = "Graphics memory is unknown, so sizes aren't checked against your card.";
+    }
+    head.append(hardware);
+
+    const usable = featured.entries.filter((entry) => !entry.error && entry.pick && entry.pick.fit !== "too_big");
+    const byId = new Map(usable.map((entry) => [entry.id, entry]));
+    const publishers = node("div", "discover-publishers");
+    publishers.setAttribute("role", "group");
+    publishers.setAttribute("aria-label", "Show models from one publisher");
+    for (const publisher of featured.publishers) {
+      if (!usable.some((entry) => entry.author === publisher.id)) continue;
+      const button = node("button", "discover-publisher");
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(publisherFilter === publisher.id));
+      const glow = avatarImage(publisher.id, "discover-publisher-wash");
+      const face = avatarImage(publisher.id, "discover-publisher-avatar") || node("span", "discover-publisher-avatar", publisher.name.slice(0, 1));
+      const label = node("span", "discover-publisher-label");
+      label.append(node("b", null, publisher.name), node("span", null, publisher.families));
+      button.append(...[glow, face, label].filter(Boolean));
+      button.addEventListener("click", () => {
+        publisherFilter = publisherFilter === publisher.id ? null : publisher.id;
+        renderFeatured();
+        doc.querySelector(`.discover-publisher[aria-pressed="true"]`)?.focus();
+      });
+      publishers.append(button);
+    }
+
+    const shelves = node("div", "discover-shelves");
+    const shelf = (title, subtitle, entries) => {
+      const section = node("section", "discover-shelf");
+      const heading = node("div", "discover-shelf-head");
+      heading.append(node("h3", null, title), node("p", null, subtitle));
+      const cards = node("div", "discover-cards");
+      for (const entry of entries) cards.append(featuredCard(entry, vram));
+      section.append(heading, cards);
+      return section;
+    };
+    if (publisherFilter) {
+      const publisher = featured.publishers.find((item) => item.id === publisherFilter);
+      const entries = usable.filter((entry) => entry.author === publisherFilter);
+      const section = shelf(`From ${publisher.name}`, `${publisher.families} models that run on this card`, entries);
+      const more = makeButton(`Search Hugging Face for more ${publisher.families.split(",")[0]} models`, "ghost", () => {
+        const input = doc.querySelector("#library-query");
+        input.value = publisher.families.split(",")[0];
+        doc.querySelector("#library-search")?.requestSubmit();
+      });
+      section.append(more);
+      shelves.append(section);
+    } else {
+      for (const item of featured.shelves) {
+        const entries = item.entries.map((id) => byId.get(id)).filter(Boolean);
+        if (entries.length) shelves.append(shelf(item.title, item.subtitle, entries));
+      }
+    }
+    if (!shelves.childElementCount) {
+      shelves.append(node("p", "library-note", featured.offline
+        ? "Recommendations need a connection to Hugging Face. Check your connection, or search when you're back online."
+        : "None of the recommended models fit this card. Search for smaller models above."));
+      if (featured.offline) shelves.append(makeButton("Try again", "secondary", () => loadFeatured({ force: true })));
+    }
+    host.replaceChildren(head, publishers, shelves);
+    if (!publishers.childElementCount) publishers.remove();
+    updateFeaturedButtons();
+  }
+
+  function loadFeatured({ force = false } = {}) {
+    const host = doc.querySelector("#discover-featured");
+    if (!host) return Promise.resolve();
+    if (featuredLoad) return featuredLoad;
+    if (featured && !featured.offline && !force) return Promise.resolve();
+    if (!featured) writeMessage(host, "Finding models for your graphics card…");
+    featuredLoad = (async () => {
+      try {
+        const response = await request("/admin/library/featured", { headers: authHeaders() });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !Array.isArray(data.entries)) throw new Error(data.detail || `HTTP ${response.status}`);
+        featured = data;
+        renderFeatured();
+      } catch (e) {
+        featured = null;
+        writeMessage(host, `Recommendations are unavailable: ${e.message}. Search still works.`, "library-note error");
+        host.appendChild(makeButton("Try again", "secondary", () => loadFeatured({ force: true })));
+      } finally {
+        featuredLoad = null;
+      }
+    })();
+    return featuredLoad;
   }
 
   // Folder the next download goes to. Remembered per browser; blank means the
@@ -268,13 +525,13 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         const size = doc.createElement("p");
         size.className = "library-option-size";
         size.textContent = `Download: ${modelSize(option.size_mb)}${option.shards > 1 ? ` total across ${option.shards} files` : ""}`;
-        const [label, tone, fitExplanation] = FIT_LABELS[option.fit] || FIT_LABELS.unknown;
+        const [label, tone, fitExplanation] = fitLabel(option, data.vram_mb);
         const badge = doc.createElement("span");
         badge.className = `status-pill ${tone}`;
         badge.textContent = label;
         const fit = doc.createElement("p");
         fit.className = "plugin-meta";
-        fit.textContent = `${fitExplanation} This is an estimate, not verified inference.`;
+        fit.textContent = fitExplanation;
         const details = doc.createElement("details");
         details.className = "library-technical";
         const detailLabel = doc.createElement("summary");
@@ -410,6 +667,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       return;
     }
     knownJobs = jobs;
+    updateFeaturedButtons();
     for (const job of jobs) {
       if (!retriedJobs.has(job.id) || !["done", "error"].includes(job.status)) continue;
       retriedJobs.delete(job.id);
@@ -559,6 +817,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       poll();
     },
     poll,
+    loadFeatured,
     retry: retryDownload,
     loadDisk: loadLibraryDisk,
   };

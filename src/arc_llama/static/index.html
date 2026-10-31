@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="/paper.css?v=paper-10" />
 <link rel="stylesheet" href="/harnesses.css?v=harness-1" />
 <link rel="stylesheet" href="/onboarding.css?v=first-answer-1" />
+<link rel="stylesheet" href="/discover.css?v=discover-1" />
 </head>
 <body>
 <header class="app-header">
@@ -90,15 +91,15 @@
     <div class="section-head compact">
       <div>
         <h2 id="library-title" tabindex="-1">Find models on Hugging Face</h2>
-        <p class="section-copy">Search Hugging Face to download a model. It will appear in Your models when added.</p>
+        <p class="section-copy">Pick a model below, or search Hugging Face if you know what you want. Downloads appear in Your models.</p>
       </div>
     </div>
     <form id="library-search" class="library-search" role="search">
       <input id="library-query" type="search" minlength="2" maxlength="100" placeholder="Search, e.g. qwen3 8b" aria-label="Search Hugging Face GGUF models">
       <button type="submit" class="secondary">Search</button>
     </form>
-    <p class="section-copy">Memory fit is an estimate. Review the downloaded model before chatting.</p>
     <div id="library-results" class="library-results" aria-live="polite"></div>
+    <div id="discover-featured" class="discover-featured" aria-live="polite"></div>
     <p id="library-recovery-status" class="section-copy" role="status" tabindex="-1" hidden></p>
     <div id="library-jobs" class="library-jobs" aria-live="polite"></div>
 
@@ -270,7 +271,7 @@
   <p class="frontend-hint">Prefer to type it yourself? The API listens on OpenAI paths under <span id="frontend-port-hint" class="frontend-port">…</span>.</p>
 </dialog>
 
-    <script src="/dashboard/library.js?v=ui-0.29"></script>
+    <script src="/dashboard/library.js?v=discover-1"></script>
     <script src="/dashboard/measurements.js?v=ui-0.25"></script>
     <script src="/dashboard/plugins.js?v=ui-0.21"></script>
     <script src="/dashboard/integration.js?v=ui-0.21"></script>
@@ -279,6 +280,6 @@
     <script src="/ui-flags.js"></script>
     <script src="/paper.js?v=paper-6"></script>
     <script src="/dashboard/onboarding.js?v=first-run-3"></script>
-    <script src="/app.js?v=smooth-2"></script>
+    <script src="/app.js?v=discover-1"></script>
 </body>
 </html>

@@ -76,6 +76,9 @@ import {
   testModelChoiceExplanations,
   testDownloadRecovery,
   testMissingFileRecovery,
+  testDiscoverShelves,
+  testDiscoverShelvesOffline,
+  testDiscoverWaitsForAdminToken,
 } from "./library-cases.mjs";
 
 import {
@@ -175,6 +178,9 @@ const TESTS = [
   ["runtime-compatibility-guidance", testRuntimeCompatibilityGuidance],
   ["library-publisher-avatars", testLibraryPublisherAvatars],
   ["library-search-and-download", testLibrarySearchAndDownload],
+  ["discover-shelves", testDiscoverShelves],
+  ["discover-shelves-offline", testDiscoverShelvesOffline],
+  ["discover-waits-for-admin-token", testDiscoverWaitsForAdminToken],
   ["dashboard-plugin-layout-controller", testDashboardPluginLayoutController],
   ["frontend-integration-controller", testFrontendIntegrationController],
   ["regenerate-and-edit", testRegenerateAndEdit],
