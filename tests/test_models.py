@@ -384,6 +384,20 @@ def test_add_local_model_missing_file(tmp_path, mock_recipe_and_mtp):
         )
 
 
+def test_add_local_model_registers_a_later_shard_as_its_first(tmp_path, mock_recipe_and_mtp):
+    cfg = _make_config_with_gpu(tmp_path)
+    for i in (1, 2):
+        (tmp_path / f"big-0000{i}-of-00002.gguf").write_bytes(b"fake")
+
+    model = add_local_model(
+        cfg,
+        name="big",
+        path=str(tmp_path / "big-00002-of-00002.gguf"),
+        gpu_pci_slot="0000:03:00.0",
+    )
+    assert Path(model.path).name == "big-00001-of-00002.gguf"
+
+
 def test_add_local_model_missing_gpu(tmp_path, mock_recipe_and_mtp):
     cfg = _make_config_with_gpu(tmp_path)
     model_file = tmp_path / "model.gguf"

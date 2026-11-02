@@ -146,7 +146,8 @@ def add_local_model(
     """
     if not NAME_RE.match(name):
         raise ValueError(f"Model name '{name}' must match [a-z0-9][a-z0-9._-]*")
-    p = Path(path).expanduser().resolve()
+    # llama.cpp loads a split model only from its first shard, which also holds the metadata.
+    p = gguf_shards(Path(path).expanduser().resolve())[0]
     if not p.exists():
         raise FileNotFoundError(f"Model file not found: {p}")
     gpu = cfg.find_gpu(gpu_pci_slot)
