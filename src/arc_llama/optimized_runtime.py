@@ -120,7 +120,11 @@ def _release(client: httpx.Client, version: str) -> dict:
         url = f"{GITHUB_API}/repos/{RUNTIME_REPO}/releases/tags/{version}"
     r = client.get(url, headers={"Accept": "application/vnd.github+json"})
     if r.status_code == 404:
-        raise OptimizedRuntimeError(f"No Arc Llama Runtime release '{version}' found.")
+        # GitHub answers 404 both for a missing release and for a private repository.
+        raise OptimizedRuntimeError(
+            f"Arc Llama Runtime release '{version or 'latest'}' isn't available: it isn't published yet, "
+            "or its release repository isn't public. Nothing was installed."
+        )
     r.raise_for_status()
     return r.json()
 
