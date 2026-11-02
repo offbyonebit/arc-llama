@@ -7,7 +7,7 @@
   --tx: #12151C;      /* primary text */
   --t2: #444C5C;      /* secondary text */
   --t3: #5A6376;      /* tertiary text, captions */
-  --ac: #1E6BE6;      /* accent */
+  --ac: #1A63D6;      /* accent; 4.5:1 or better on --sel and --acb */
   --acf: #FFFFFF;     /* text on accent */
   --ok: #17794F;  --okb: #EAF6F0;  --okl: #B7DFCB;
   --wn: #A35A06;  --wnb: #FBF3E3;  --wnl: #EBD3A8;
