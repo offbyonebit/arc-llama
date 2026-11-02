@@ -1017,7 +1017,11 @@ def download_from_hf(
         for name in names:
             source = Path(hf_hub_download(repo_id=spec.repo, filename=name,
                 revision=revision, local_dir=str(staging), token=token))
-            if source.absolute() != (staging / name).absolute():
+            # The hub SDK resolves local_dir, so a models_dir reached through a
+            # symlink (or a mapped drive on Windows) comes back as its real path.
+            # Resolve only the folder: the file itself may be a cache symlink.
+            expected = staging / name
+            if (source.parent.resolve() / source.name) != (expected.parent.resolve() / expected.name):
                 raise ValueError("The model hub downloader returned an unexpected destination")
             if source.is_symlink():
                 # Older SDKs may link a local-dir file into their shared cache.

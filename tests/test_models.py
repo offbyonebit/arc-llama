@@ -261,6 +261,32 @@ def test_download_from_hf_refuses_unexpected_destination(mock_hf_module, tmp_pat
     assert not (tmp_path / "model.gguf").exists()
 
 
+def test_download_from_hf_accepts_symlinked_models_dir(mock_hf_module, tmp_path):
+    """The hub SDK resolves local_dir, so a symlinked models_dir returns real paths."""
+    mock_module, _ = mock_hf_module
+    data = b"GGUFsynthetic fixture"
+
+    def resolving_transfer(**kwargs):
+        path = Path(kwargs["local_dir"]).resolve() / kwargs["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    mock_module.hf_hub_download.side_effect = resolving_transfer
+    real = tmp_path / "big-disk"
+    real.mkdir()
+    linked = tmp_path / "models"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or admin on Windows")
+    spec = HFModelSpec(repo="org/repo", file="model-Q4_K_M.gguf", quant=None)
+    with _make_download_from_hf_test_env(mock_hf_module):
+        result = download_from_hf(spec, target_dir=linked)
+    assert result == linked / "model-Q4_K_M.gguf"
+    assert (real / "model-Q4_K_M.gguf").read_bytes() == data
+
+
 def test_download_from_hf_passes_token(mock_hf_module, tmp_path):
     mock_module, mock_api = mock_hf_module
     mock_api.list_repo_files.return_value = ["model.gguf"]
