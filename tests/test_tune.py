@@ -101,6 +101,10 @@ class TestBuildStages:
         stages = build_stages({}, safe_kv_q8=False)
         assert [s.label for s in stages[0]] == ["kv=f16"]
 
+    def test_max_ubatch_drops_larger_candidates(self):
+        stages = build_stages({"ubatch_size": 1024}, vram_mb=24 * 1024, max_ubatch=1024)
+        assert [s.label for s in stages[1]] == ["ubatch=1024", "ubatch=512"]
+
     def test_ubatch_stage_keeps_batch_above_ubatch(self):
         stages = build_stages({}, vram_mb=24 * 1024)
         for step in stages[1]:

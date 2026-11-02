@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -152,6 +153,7 @@ def build_stages(
     fa_takes_value: bool = True,
     vram_mb: int | None = None,
     kv_candidates: list[str] | None = None,
+    max_ubatch: int | None = None,
 ) -> list[list[TuneStep]]:
     """The staged candidate grid for one model, given its current recipe.
 
@@ -180,6 +182,7 @@ def build_stages(
         [
             TuneStep(label=f"ubatch={u}", edits={"ubatch_size": u, "batch_size": max(2048, u)})
             for u in _ubatch_candidates(recipe.get("ubatch_size"), vram_mb)
+            if max_ubatch is None or u <= max_ubatch
         ]
     )
 
@@ -510,6 +513,11 @@ async def tune_model(
         fa_takes_value=caps.flash_attn_takes_value,
         vram_mb=gpu.vram_mb if gpu else None,
         kv_candidates=kv_candidates,
+        # Mesa on Battlemage has lost the device on ~20k prompts at -ub 2048,
+        # while 1024 held (llama.cpp issue 27638). A short tune prompt can't see that.
+        max_ubatch=(
+            1024 if gpu and gpu.backend == "vulkan" and sys.platform.startswith("linux") else None
+        ),
     )
 
     # Partition the static stages. The MoE offload stage sits between KV and
