@@ -268,7 +268,7 @@ function renderModels() {
   if (!models.length) {
     const empty = document.createElement("div");
     empty.className = "empty-panel";
-    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Download a model above, or scan for files already on disk.</p>";
+    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Find one in Discover, or scan for files already on disk.</p>";
     empty.appendChild(button("Scan for models", "secondary", scanModels));
     empty.appendChild(button("Browse model library", "secondary", () => {
       if (location.hash !== "#library-title") history.pushState(null, "", "#library-title");
@@ -502,7 +502,7 @@ function renderSystemReadinessOffline() {
   container.appendChild(metrics);
   setSystemReadinessAction(
     container,
-    "Could not reach arc-llama. Make sure the server is running, then check again.",
+    "Could not reach Arc Llama. Make sure the server is running, then check again.",
     button("Check again", "secondary", () => fetchStatus(true)),
   );
 }
@@ -804,11 +804,11 @@ async function fetchStatusRequest() {
       : "Could not reach Arc Llama. Check that the server is running, then try again.";
     renderStart();
     renderNextStep();
-    setServerState("error", "Could not reach arc-llama");
+    setServerState("error", "Could not reach Arc Llama");
     $("#model-list").setAttribute("aria-busy", "false");
     if (!snapshot) {
       renderedModelsSignature = null;
-      $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach arc-llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
+      $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach Arc Llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
     }
     renderSystemReadinessOffline();
     onboardingController.update(snapshot, false);
