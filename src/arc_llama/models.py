@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -1012,32 +1011,51 @@ def download_from_hf(
     # Do not expose new model files to discovery until the entire requested set
     # has downloaded and passed its pinned integrity checks. Publication is per
     # file; this is not a crash-atomic replacement of an existing multi-file set.
-    with tempfile.TemporaryDirectory(prefix=".arc-download-", dir=target_dir) as temp:
-        staging = Path(temp)
-        for name in names:
-            source = Path(hf_hub_download(repo_id=spec.repo, filename=name,
-                revision=revision, local_dir=str(staging), token=token))
-            # The hub SDK resolves local_dir, so a models_dir reached through a
-            # symlink (or a mapped drive on Windows) comes back as its real path.
-            # Resolve only the folder: the file itself may be a cache symlink.
-            expected = staging / name
-            if (source.parent.resolve() / source.name) != (expected.parent.resolve() / expected.name):
-                raise ValueError("The model hub downloader returned an unexpected destination")
-            if source.is_symlink():
-                # Older SDKs may link a local-dir file into their shared cache.
-                # Materialize and verify private bytes before publishing them.
-                copy = source.with_name(source.name + ".verified-copy")
-                shutil.copyfile(source, copy)
-                source.unlink()
-                copy.replace(source)
+    # The staging folder is named for the repo and commit so a retry after a
+    # dropped connection or a restart resumes partial files and keeps finished
+    # shards; every file is verified again before it is published.
+    key = hashlib.sha256(f"{spec.repo}@{revision}".encode()).hexdigest()[:16]
+    staging = target_dir / f".arc-download-{key}"
+    staging.mkdir(parents=True, exist_ok=True)
+    published: set[str] = set()
+    for name in names:
+        existing = target_dir / name
+        if existing.is_file() and not existing.is_symlink():
+            try:  # already published by an earlier attempt that failed later
+                _verify_hf_download(existing, siblings[name])
+                published.add(name)
+                continue
+            except Exception:  # noqa: BLE001 - mismatched or partial: fetch it again
+                pass
+        source = Path(hf_hub_download(repo_id=spec.repo, filename=name,
+            revision=revision, local_dir=str(staging), token=token))
+        # The hub SDK resolves local_dir, so a models_dir reached through a
+        # symlink (or a mapped drive on Windows) comes back as its real path.
+        # Resolve only the folder: the file itself may be a cache symlink.
+        expected = staging / name
+        if (source.parent.resolve() / source.name) != (expected.parent.resolve() / expected.name):
+            raise ValueError("The model hub downloader returned an unexpected destination")
+        if source.is_symlink():
+            # Older SDKs may link a local-dir file into their shared cache.
+            # Materialize and verify private bytes before publishing them.
+            copy = source.with_name(source.name + ".verified-copy")
+            shutil.copyfile(source, copy)
+            source.unlink()
+            copy.replace(source)
+        try:
             _verify_hf_download(source, siblings[name])
-        root = target_dir.resolve()
-        for name in names:
-            dest = target_dir / name
-            if not dest.parent.resolve().is_relative_to(root):
-                raise ValueError("Model destination escapes the download directory")
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staging / name, dest)
+        except Exception:
+            # Bad bytes: drop the staging folder so a retry starts clean.
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    root = target_dir.resolve()
+    for name in (n for n in names if n not in published):
+        dest = target_dir / name
+        if not dest.parent.resolve().is_relative_to(root):
+            raise ValueError("Model destination escapes the download directory")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging / name, dest)
+    shutil.rmtree(staging, ignore_errors=True)
     return target_dir / main_file
 
 

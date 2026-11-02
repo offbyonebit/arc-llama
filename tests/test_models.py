@@ -1034,3 +1034,39 @@ def test_download_rejects_mutable_or_invalid_accepted_revision(mock_hf_module, t
         download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision=revision)
     api.model_info.assert_not_called()
     mock.hf_hub_download.assert_not_called()
+
+
+def test_download_from_hf_resumes_and_skips_verified_files(mock_hf_module, tmp_path):
+    """A retry keeps finished shards and skips files an earlier attempt published."""
+    mock_module, mock_api = mock_hf_module
+    names = ["m-Q4_K_M-00001-of-00002.gguf", "m-Q4_K_M-00002-of-00002.gguf"]
+    mock_api.list_repo_files.return_value = names
+    data = b"GGUFsynthetic fixture"
+    fetched: list[str] = []
+    fail = {names[1]}
+
+    def transfer(**kwargs):
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        if path.exists():  # the hub SDK skips files it already finished
+            return str(path)
+        fetched.append(kwargs["filename"])
+        if kwargs["filename"] in fail:
+            raise ConnectionError("network dropped")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    mock_module.hf_hub_download.side_effect = transfer
+    spec = HFModelSpec(repo="org/repo", file=names[0], quant=None)
+    with _make_download_from_hf_test_env(mock_hf_module):
+        with pytest.raises(ConnectionError):
+            download_from_hf(spec, target_dir=tmp_path)
+        fail.clear()
+        download_from_hf(spec, target_dir=tmp_path)
+        assert fetched == names + [names[1]]  # shard 1 was not fetched twice
+        assert not list(tmp_path.glob(".arc-download-*"))
+        fetched.clear()
+        mock_module.hf_hub_download.reset_mock()
+        download_from_hf(spec, target_dir=tmp_path)
+    mock_module.hf_hub_download.assert_not_called()
+    assert all((tmp_path / n).read_bytes() == data for n in names)
