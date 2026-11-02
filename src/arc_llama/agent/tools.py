@@ -702,8 +702,9 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
         output += f"[stderr]\n{result.stderr}"
     if result.returncode != 0:
         output += f"\n[exit code {result.returncode}]"
-        if sandboxed and ("Permission denied" in output or "Read-only file system" in output):
-            output += "\n[sandbox: commands can only write inside the project folder and temp folders]"
+        lowered = output.lower()
+        if sandboxed and ("permission denied" in lowered or "read-only file system" in lowered):
+            output += "\n[sandbox: commands can only write inside the project folder, temp folders and the user cache folder]"
     return ToolResult(output.strip(), error=result.returncode != 0)
 
 

@@ -349,3 +349,18 @@ def test_run_command_cannot_reach_protected_port(landlock_dirs, monkeypatch):
     finally:
         for s in servers:
             s.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+def test_run_command_can_write_the_user_cache(landlock_dirs, monkeypatch):
+    """Go, uv and pip need a writable cache; denials are explained in any case."""
+    from arc_llama.agent.tools import run_command
+
+    project, outside = landlock_dirs
+    cache = outside / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    result = run_command(f"echo ok > {cache}/probe && cat {cache}/probe", project)
+    assert result.content == "ok"
+    denied = run_command(f"sh -c 'echo x > {outside}/keep.txt' 2>&1 | tr A-Z a-z; exit 1", project)
+    assert "user cache folder" in denied.content

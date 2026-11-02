@@ -3,7 +3,8 @@
 Landlock (Linux 5.13+) lets an unprivileged process give up filesystem rights
 for itself and its children. Commands start through a tiny launcher that
 restricts *writes* (create, delete, rename, modify, link, special files) to
-the project folder, the temp folders and ``/dev``, then execs the shell.
+the project folder, the temp folders, the user cache folder and ``/dev``, then
+execs the shell.
 Reading files, running programs and network access are unchanged, so builds,
 tests and package installs into the project still work.
 
@@ -60,7 +61,10 @@ def enabled() -> bool:
 
 
 def writable_roots(root: Path) -> list[str]:
-    paths = [str(root), tempfile.gettempdir(), "/tmp", "/var/tmp", "/dev"]
+    # The per-user cache folder too: Go, uv, pip and others refuse to run
+    # without a writable build or download cache.
+    cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    paths = [str(root), tempfile.gettempdir(), "/tmp", "/var/tmp", "/dev", cache]
     return list(dict.fromkeys(p for p in paths if os.path.isdir(p)))
 
 
