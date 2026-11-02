@@ -359,3 +359,11 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 /* Discover has its own navigation destination and uses the full content width. */
 .paper-dashboard .dashboard[data-dashboard-view="discover"] .paper-model-layout { grid-template-columns:minmax(0,1fr); }
 .paper-dashboard .dashboard[data-dashboard-view="discover"] .paper-inspector { display:none; }
+
+/* Code highlighting from the Paper tokens; the older dark-only colors were near-invisible on light code blocks. */
+.paper-chat :is(.hljs,.hljs-subst,.hljs-emphasis,.hljs-strong,.hljs-operator) { color:var(--tx) !important; }
+.paper-chat :is(.hljs-keyword,.hljs-doctag,.hljs-template-tag,.hljs-type,.hljs-built_in,.hljs-selector-tag) { color:var(--kw) !important; }
+.paper-chat :is(.hljs-string,.hljs-regexp,.hljs-attr,.hljs-addition) { color:var(--ae) !important; }
+.paper-chat :is(.hljs-number,.hljs-literal,.hljs-variable,.hljs-template-variable,.hljs-meta,.hljs-symbol,.hljs-name,.hljs-title,.hljs-section,.hljs-attribute,.hljs-selector-attr,.hljs-selector-class,.hljs-selector-id,.hljs-selector-pseudo) { color:var(--ac) !important; }
+.paper-chat :is(.hljs-comment,.hljs-quote,.hljs-code,.hljs-formula) { color:var(--t3) !important; }
+.paper-chat .hljs-bullet { color:var(--wn) !important; } .paper-chat .hljs-deletion { color:var(--de) !important; }
