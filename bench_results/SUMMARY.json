@@ -266,6 +266,6 @@
   "methodology_notes": {
     "repeats_used_in_table": "best-of-2 (too low for gen ranking)",
     "recommended_repeats": 5,
-    "gen_noise_same_config_5runs": "approx 19.4\u201323.8 tok/s production config (Claude verification)"
+    "gen_noise_same_config_5runs": "approx 19.4\u201323.8 tok/s production config (verification run)"
   }
 }

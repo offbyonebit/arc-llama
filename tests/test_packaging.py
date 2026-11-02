@@ -41,6 +41,7 @@ def test_sdist_excludes_local_notes_and_validation_artefacts():
         "LOCAL_REPO_BOUNDARIES.md",
         "docs/release-validation-windows-2026-10-22/windows-ui-first-failure.png",
         "docs/release-validation-linux-2026-10-03.md",
+        "docs/release-readiness-1.1.md",
         ".venv-test/bin/python",
     ):
         assert _excluded(path, patterns), path

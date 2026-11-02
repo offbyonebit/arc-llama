@@ -95,6 +95,7 @@ exclude = [
     "docs/release-prep-*.md",
     "docs/release-validation-*.md",
     "docs/release-validation-*/",
+    "docs/release-readiness-*.md",
     "docs/incidents/",
     # Local-only agent notes, hidden through .git/info/exclude (which hatchling
     # does not read) rather than .gitignore.

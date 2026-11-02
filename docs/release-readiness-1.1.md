@@ -2,7 +2,7 @@
 
 > Historical record from October 25. See [October 28 validation](release-validation-1.1-2026-10-28.md) for the later candidate, hardware evidence and remaining gates.
 
-Date: 2026-10-25. Validated by Claude on the canonical checkout. Nothing was committed, pushed or published, and the
+Date: 2026-10-25. Validated on the canonical checkout. Nothing was committed, pushed or published, and the
 running `arc-llama.service` was not touched.
 
 ## Candidate identity
@@ -142,7 +142,7 @@ and then damaging `work/work.sqlite3`.
    fixtures written by the real 1.0.0 wheel and by the candidate; `tests/test_config_versions.py` now covers 1.0.0
    (upgrade keeps every value, and rollback loses nothing). The script's default versions include 1.0.0.
 
-Already present in the candidate (Codex): model downloads pinned to one commit with LFS/blob hash verification, and
+Already present in the candidate: model downloads pinned to one commit with LFS/blob hash verification, and
 `mcp>=1.30,<2`.
 
 ## Skips
