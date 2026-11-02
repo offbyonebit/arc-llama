@@ -105,7 +105,7 @@ Actual HTTP results:
 
 The first short-budget pass generated reasoning but truncated before final content; it was followed by strict assertions requiring actual answer content with a 512-token allowance. Those stricter checks passed.
 
-The CPU-projector option was then saved only to the local Qwen recipe, with a private backup of the previous configuration. The idle Arc service was restarted to pick up that option and the current lifecycle fixes. Startup took roughly 74 seconds; the normal `/v1/models` endpoint then returned HTTP 200. Hard cgroup limits applied to temporary validation services only; no permanent systemd memory policy was installed. Evidence and the reproduction harness are saved in `/home/slowe/Documents/Codex/2026-09-28/l/arc-live-validation/`.
+The CPU-projector option was then saved only to the local Qwen recipe, with a private backup of the previous configuration. The idle Arc service was restarted to pick up that option and the current lifecycle fixes. Startup took roughly 74 seconds; the normal `/v1/models` endpoint then returned HTTP 200. Hard cgroup limits applied to temporary validation services only; no permanent systemd memory policy was installed. Evidence and the reproduction harness are saved in a local folder outside the repo.
 
 This establishes real load/generation/streaming/vision/swap success for the tested configuration. It does not validate the previous all-GPU projector configuration, all registered models, full-context saturation, or native Windows operation. No commits or pushes were made.
 
@@ -128,7 +128,7 @@ CPU-projector configuration. It does not identify the original allocation
 responsible, certify the old GPU projector recipe, or guarantee that every
 future workload/driver behaves identically. See the comprehensive Linux report
 in `../release-validation-linux-2026-10-03.md`. Evidence is retained under
-`/home/slowe/Documents/Codex/2026-09-28/l/arc-full-e2e/`.
+a local folder outside the repo.
 
 
 ## Final admission and image/text handoff retest

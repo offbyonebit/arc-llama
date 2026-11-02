@@ -9,7 +9,7 @@ running `arc-llama.service` was not touched.
 
 | Item | Value |
 |---|---|
-| Source | `/home/slowe/arc-llama`, branch `release/0.9.2-work-mode`, HEAD `a27f6ec4efcb` plus uncommitted work (55 changed/new paths at validation time, all preserved) |
+| Source | `~/arc-llama`, branch `release/0.9.2-work-mode`, HEAD `a27f6ec4efcb` plus uncommitted work (55 changed/new paths at validation time, all preserved) |
 | Version | `1.1.0.dev0` (raised from `1.0.0`; see defect 1) |
 | Wheel | `arc_llama-1.1.0.dev0-py3-none-any.whl`, SHA-256 `8f9bc164688e6604e563ae20ca249e0c7c6d8ccaea6b22a7395160e0b3c0869d` |
 | sdist | `arc_llama-1.1.0.dev0.tar.gz`, SHA-256 `81e5f7663a0df529320af2b5a16e845d77451a8b5f8a9f0fa008fedb5399439c` |
@@ -43,8 +43,8 @@ The smoke runs were made from `/tmp`, outside the checkout, each in a bounded sc
 ```bash
 systemd-run --user --scope --quiet -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=200% -p TasksMax=256 \
   env -u ARC_LLAMA_ADMIN_TOKEN timeout 600s /mnt/storage/tmp/rc11/core3.12/bin/python -I \
-  /home/slowe/arc-llama/scripts/published_smoke.py --work-dir /mnt/storage/tmp/rc11/smoke \
-  --expected-version 1.1.0.dev0 --ui-check /home/slowe/arc-llama/browser-tests/installed-smoke.mjs --ui-check-timeout 420
+  ~/arc-llama/scripts/published_smoke.py --work-dir /mnt/storage/tmp/rc11/smoke \
+  --expected-version 1.1.0.dev0 --ui-check ~/arc-llama/browser-tests/installed-smoke.mjs --ui-check-timeout 420
 ```
 
 - **Work smoke:** the same command with `ARC_WORK_SMOKE_ROOT=/tmp/arc-work-rc11-final` (containing `README.txt`)
@@ -158,7 +158,7 @@ Already present in the candidate (Codex): model downloads pinned to one commit w
 - **Intel GPU:** no B60, Alchemist or other GPU inference was run for this candidate. Every inference row above is
   CPU only.
 - **Windows:** nothing was run on Windows. Also untested there: in-app harness install (checklist in
-  `/home/slowe/codex-windows-harness-install-checklist.md`), Hermes on Windows (still marked experimental), and the
+  a local file outside the repo), Hermes on Windows (still marked experimental), and the
   command sandbox (Landlock is Linux-only).
 - **SYCL runtime and Arc Llama Runtime:** not exercised. The pinned smoke runtime is the upstream CPU build.
 - **Real harness installs from the candidate wheel:** not repeated here. OpenCode v1.19.4 and Hermes v0.22.5 were

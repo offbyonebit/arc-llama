@@ -94,8 +94,7 @@ building llama.cpp from source
 
   config:
     missing at 
-C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
-\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml — run 
+<work>\windows-validation-2026-10-22\appdata\arc-llama\config.toml — run 
 arc-llama init.
 
   plugins (API 1.0):
@@ -105,7 +104,6 @@ arc-llama init.
     warn  oneapi_setvars: setvars not found
         → Install Intel oneAPI Base Toolkit to build a SYCL llama-server.
     warn  config: missing at 
-C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
-\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml
+<work>\windows-validation-2026-10-22\appdata\arc-llama\config.toml
         → Run arc-llama init.
 EXIT_CODE=0

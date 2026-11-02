@@ -7,7 +7,7 @@ claiming a public candidate soak.
 
 ## Integrated local changes
 
-- Checkout: `/home/slowe/arc-llama`, branch `maintenance/rc1-local-follow-up`,
+- Checkout: `~/arc-llama`, branch `maintenance/rc1-local-follow-up`,
   base commit `4c2237d`.
 - PRs #64–#67 are integrated in the working tree; their original PRs remain
   separate. The prepared change was committed and pushed as

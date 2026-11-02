@@ -21,7 +21,7 @@ Installed CPU, final-wheel Vulkan/SYCL, Work normal/retry/keep-best, MCP and Her
 
 Artifact hashes and detailed results are recorded with the evidence, rather than embedded in the source distribution that they identify:
 
-- Evidence directory: `/home/slowe/Documents/Codex/2026-10-23/do-you-have-access-to-the/validation-1.1-2026-10-28`.
+- Evidence directory: a local folder outside the repo.
 - Local distributions, temporary environments and hardware logs: `/mnt/storage/tmp/arc-llama-1.1-validation-20261028`.
 - `artifact-manifest.json` identifies the final wheel/sdist; `final-results.json` records completed checks.
 

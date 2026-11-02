@@ -41,8 +41,10 @@ See [hardware.log](release-validation-windows-2026-10-22/hardware.log), [runtime
 Fresh checkout, venv, downloads and state are all under:
 
 ```text
-C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22
+<work>\windows-validation-2026-10-22
 ```
+
+`<work>` stands for a local working folder outside the repo; the logs below use it too.
 
 The checkout is `arc-llama\`, the new venv is `venv\`. Before any arc-llama command, `env.ps1` sets process-local variables:
 
