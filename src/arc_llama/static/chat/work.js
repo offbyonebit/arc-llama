@@ -444,9 +444,9 @@
         }).catch(() => {});
       };
       sheet.append(el("div", { class: "work-actions" },
-        el("button", { class: "work-btn", type: "button", disabled: answered, onclick: () => decide(false) }, "Don’t Allow"),
-        el("button", { class: "work-btn primary", type: "button", disabled: answered, onclick: () => decide(true) }, "Allow"),
-        code && !d.showCommand ? el("button", { class: "work-link", type: "button", onclick: () => { pending.showCommand = !pending.showCommand; render(); } }, pending.showCommand ? "Hide command" : "Show command") : null));
+        el("button", { class: "work-btn", type: "button", "data-focus-key": "deny", disabled: answered, onclick: () => decide(false) }, "Don’t Allow"),
+        el("button", { class: "work-btn primary", type: "button", "data-focus-key": "allow", disabled: answered, onclick: () => decide(true) }, "Allow"),
+        code && !d.showCommand ? el("button", { class: "work-link", type: "button", "data-focus-key": "command", onclick: () => { pending.showCommand = !pending.showCommand; render(); } }, pending.showCommand ? "Hide command" : "Show command") : null));
       return sheet;
     }
 
@@ -490,11 +490,13 @@
     function render() {
       const scroller = document.querySelector(".work-scroll");
       const stick = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+      const focusKey = document.activeElement?.dataset?.focusKey, hadSheet = !!document.querySelector(".work-sheet");
       draw();
+      if (focusKey) document.querySelector(`[data-focus-key="${focusKey}"]`)?.focus({ preventScroll: true });
       refreshWorkContext();
       if (!scroller || !run) return;
       const sheet = document.querySelector(".work-sheet");
-      if (sheet) sheet.scrollIntoView({ block: "nearest" });
+      if (sheet) { if (!hadSheet) sheet.scrollIntoView({ block: "nearest" }); }
       else if (stick) scroller.scrollTop = scroller.scrollHeight;
     }
 
