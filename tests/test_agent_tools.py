@@ -321,3 +321,31 @@ def test_command_sandbox_can_be_turned_off(landlock_dirs, monkeypatch):
     project, outside = landlock_dirs
     monkeypatch.setenv("ARC_LLAMA_COMMAND_SANDBOX", "off")
     assert not run_command(f"echo new > {outside / 'new.txt'}", project).error
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+def test_run_command_cannot_reach_protected_port(landlock_dirs, monkeypatch):
+    """A sandboxed command can't connect to Arc Llama's own API port (ABI 4+)."""
+    import socket
+
+    from arc_llama.agent import landlock
+    from arc_llama.agent.tools import run_command
+
+    if landlock.abi_version() < 4:
+        pytest.skip("Landlock network rules need ABI 4 (Linux 6.7+)")
+    project, _ = landlock_dirs
+    servers = [socket.create_server(("127.0.0.1", 0)) for _ in range(2)]
+    try:
+        blocked, other = (s.getsockname()[1] for s in servers)
+        monkeypatch.setattr(landlock, "_protected_ports", {blocked})
+        probe = (
+            f"{sys.executable} -c \"import socket,sys; "
+            "s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', int(sys.argv[1]))); print('ok')\""
+        )
+        assert run_command(f"{probe} {other}", project).content == "ok"
+        refused = run_command(f"{probe} {blocked}", project)
+        assert refused.error
+        assert "PermissionError" in refused.content
+    finally:
+        for s in servers:
+            s.close()

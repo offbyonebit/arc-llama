@@ -11,6 +11,10 @@ The launcher is a fresh ``python -I -S`` process rather than a ``preexec_fn``:
 the server is multi-threaded, and running ctypes code between fork and exec
 there is not safe.
 
+On Landlock ABI 4+ (Linux 6.7+) commands also can't open TCP connections to
+Arc Llama's own port (see :func:`protect_port`). Otherwise a command could read
+the admin token and start an unconfined run through the local API.
+
 This is not a VM boundary: a command can still read files the user can read and
 use the network. See docs/work.md.
 """
@@ -27,6 +31,13 @@ _SYS_CREATE_RULESET, _SYS_ADD_RULE, _SYS_RESTRICT_SELF = 444, 445, 446
 _CREATE_RULESET_VERSION = 1
 
 _abi_cache: int | None = None
+_protected_ports: set[int] = set()
+
+
+def protect_port(port: int) -> None:
+    """Block sandboxed commands from connecting to *port* (Arc Llama's API)."""
+    if 0 < port < 65536:
+        _protected_ports.add(port)
 
 
 def abi_version() -> int:
@@ -58,11 +69,14 @@ _LAUNCHER = r"""
 import ctypes, os, sys
 WRITE = (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12)
 abi = int(sys.argv[1]); sep = sys.argv.index("--")
-paths, argv = sys.argv[2:sep], sys.argv[sep + 1:]
+blocked = {int(p) for p in sys.argv[2].split(",") if p} if abi >= 4 else set()
+paths, argv = sys.argv[3:sep], sys.argv[sep + 1:]
 handled = WRITE | (1 << 13 if abi >= 2 else 0) | (1 << 14 if abi >= 3 else 0) | (1 << 15 if abi >= 5 else 0)
 libc = ctypes.CDLL(None, use_errno=True)
 class Ruleset(ctypes.Structure):
-    _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+    _fields_ = [("handled_access_fs", ctypes.c_uint64), ("handled_access_net", ctypes.c_uint64)]
+class NetPort(ctypes.Structure):
+    _fields_ = [("allowed_access", ctypes.c_uint64), ("port", ctypes.c_uint64)]
 class PathBeneath(ctypes.Structure):
     # Explicit packed ctypes layout: the kernel ABI has offsets 0/8 and size 12.
     # Python 3.14 deprecates choosing this implicitly through _pack_.
@@ -73,10 +87,18 @@ def fail(what):
     err = ctypes.get_errno()
     sys.stderr.write("arc-llama sandbox: %s failed: %s\n" % (what, os.strerror(err)))
     os._exit(126)
-attr = Ruleset(handled)
-fd = libc.syscall(444, ctypes.byref(attr), ctypes.c_size_t(ctypes.sizeof(attr)), 0)
+# Landlock has no deny rules: to block a few TCP ports, allow connect to all others.
+attr = Ruleset(handled, 2 if blocked else 0)
+size = ctypes.sizeof(attr) if blocked else 8
+fd = libc.syscall(444, ctypes.byref(attr), ctypes.c_size_t(size), 0)
 if fd < 0:
     fail("landlock_create_ruleset")
+port_rule = NetPort(2, 0)
+for port in range(65536) if blocked else ():
+    if port not in blocked:
+        port_rule.port = port
+        if libc.syscall(445, fd, 2, ctypes.byref(port_rule), 0) != 0:
+            fail("landlock_add_rule port %d" % port)
 for path in paths:
     try:
         pfd = os.open(path, os.O_PATH | os.O_CLOEXEC)
@@ -97,4 +119,5 @@ os.execv(argv[0], argv)
 
 def wrap(argv: list[str], root: Path) -> list[str]:
     """Return an argv that runs *argv* with writes confined to *root* and temp folders."""
-    return [sys.executable, "-I", "-S", "-c", _LAUNCHER, str(abi_version()), *writable_roots(root), "--", *argv]
+    ports = ",".join(str(p) for p in sorted(_protected_ports))
+    return [sys.executable, "-I", "-S", "-c", _LAUNCHER, str(abi_version()), ports, *writable_roots(root), "--", *argv]

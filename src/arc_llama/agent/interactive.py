@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from arc_llama.agent import landlock
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.prompts import (
     PLANNING_INSTRUCTIONS,
@@ -54,6 +55,9 @@ class InteractiveAgent:
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
+        port = httpx.URL(self.base_url).port
+        if port:
+            landlock.protect_port(port)
         self.root = Path(root).resolve()
         self.auto_confirm = auto_confirm
         self.plan_mode = plan_mode

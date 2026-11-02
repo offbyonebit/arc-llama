@@ -282,6 +282,10 @@ def create_app(
     plugins: list[Any] | None = None,
 ) -> FastAPI:
     cfg = cfg or load_config()
+    # Sandboxed agent commands must not reach this API (admin token, unconfined runs).
+    from arc_llama.agent import landlock
+
+    landlock.protect_port(cfg.server.port)
     state_dir = None
     if cfg.paths.state_dir:
         state_dir = Path(cfg.paths.state_dir).expanduser()
