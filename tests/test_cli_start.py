@@ -95,3 +95,33 @@ def test_failed_server_start_does_not_open_another_service(monkeypatch):
         threading.Event(),
     )
     opener.assert_not_called()
+
+
+def test_start_scan_save_keeps_saved_lan_host_and_port(tmp_path, monkeypatch):
+    """`start` binds 127.0.0.1 for this run only; a scan save must not persist it."""
+    cfg = Config()
+    cfg.paths.models_dir = str(tmp_path / "models")
+    cfg.paths.state_dir = str(tmp_path / "state")
+    cfg.server.host = "0.0.0.0"
+    cfg.gpus = [GPUConfig("gpu", 0, "battlemage", vram_mb=12288)]
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+
+    def fake_scan(c, paths):
+        model = ModelConfig("new", str(tmp_path / "models/new.gguf"), 1, "gpu")
+        c.models.append(model)
+        return [model]
+
+    monkeypatch.setattr("arc_llama.cli._do_scan", fake_scan)
+    monkeypatch.setattr(
+        "arc_llama.server.create_app",
+        lambda *a, **kw: SimpleNamespace(state=SimpleNamespace(router=None)),
+    )
+    monkeypatch.setattr("arc_llama.browser_launch.serve_in_browser", Mock())
+    with patch("signal.signal"), patch("atexit.register"):
+        result = CliRunner().invoke(cli, ["--config", str(path), "start", "--port", "11438"])
+
+    assert result.exit_code == 0, result.output
+    saved = load_config(path)
+    assert (saved.server.host, saved.server.port) == ("0.0.0.0", cfg.server.port)
+    assert [m.name for m in saved.models] == ["new"]

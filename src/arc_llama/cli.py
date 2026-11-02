@@ -25,6 +25,7 @@ A small static web UI is bundled and served at `/` on the same port as
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1078,6 +1079,11 @@ def serve(
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
+    # Command-line overrides apply to this run only. Remember the saved values
+    # so a startup-scan save doesn't write them to config.toml (``start``
+    # always passes host=127.0.0.1, which used to replace a saved LAN host).
+    saved_overridable = (cfg.server.host, cfg.server.port, cfg.agent.profile,
+                         cfg.server.admin_token, cfg.tune.auto)
     if lan:
         if host and host not in ("0.0.0.0", "::"):
             raise click.UsageError("--lan binds every interface; drop --host or use --host alone.")
@@ -1104,7 +1110,10 @@ def serve(
             added = []
             console.print(f"[yellow]Startup scan failed: {e}[/yellow]")
         if added:
-            _save_or_die(cfg, ctx.obj["config_path"])
+            to_save = copy.deepcopy(cfg)
+            (to_save.server.host, to_save.server.port, to_save.agent.profile,
+             to_save.server.admin_token, to_save.tune.auto) = saved_overridable
+            _save_or_die(to_save, ctx.obj["config_path"])
             console.print(
                 f"[green]Auto-registered {len(added)} new model(s):[/green] "
                 + ", ".join(m.name for m in added)
