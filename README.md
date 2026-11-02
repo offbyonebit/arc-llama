@@ -330,7 +330,8 @@ changes after a task and use **Undo** while the run's backup is available.
 Undo refuses to overwrite later independent edits and may be unavailable for
 large projects or files. Reopened sessions retain change history, but cannot
 restore the original run's Undo backup. On Linux, the built-in agent's shell
-commands run under Landlock (kernel 5.13+): they can only create, change or
+commands run under Landlock (kernel 5.19+; `arc-llama doctor` shows whether it
+is on, and each command's output says so when it isn't): they can only create, change or
 delete files inside the project folder, temp folders and your cache folder
 (`~/.cache`, which Go, uv and pip need), and get "Permission denied" elsewhere. They can still read anything you can read, use the network
 and change file permissions, so this limits accidents, not a determined attacker.

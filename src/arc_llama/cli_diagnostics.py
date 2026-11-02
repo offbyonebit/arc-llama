@@ -92,6 +92,18 @@ def register_diagnostic_commands(
                     f"xe={'yes' if has_xe else 'no'} i915={'yes' if has_i915 else 'no'}",
                 )
 
+            from arc_llama.agent import landlock
+
+            sandbox = landlock.status()
+            console.print(f"  cmd sandbox:   {sandbox} (Landlock ABI {landlock.abi_version()})")
+            report.add(
+                "command_sandbox",
+                sandbox != "unavailable",
+                f"built-in agent command sandbox is {sandbox}",
+                severity="warn",
+                hint="Linux 5.19+ with Landlock enabled confines the built-in agent's commands.",
+            )
+
         # GPU detection (enrich=True so clinfo populates VRAM where xe doesn't via sysfs)
         gpus = detect_gpus(enrich=True)
         if gpus:

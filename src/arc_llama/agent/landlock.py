@@ -56,8 +56,25 @@ def abi_version() -> int:
     return _abi_cache
 
 
+def status() -> str:
+    """``on``, ``off`` (switched off), ``unavailable`` (kernel lacks it) or ``unsupported`` (not Linux)."""
+    if not sys.platform.startswith("linux"):
+        return "unsupported"
+    if os.environ.get("ARC_LLAMA_COMMAND_SANDBOX", "landlock").lower() == "off":
+        return "off"
+    # ABI 1 (Linux 5.13-5.18) can't allow renames between folders, which
+    # breaks ordinary tools inside the project, so it counts as unavailable.
+    return "on" if abi_version() >= 2 else "unavailable"
+
+
+UNAVAILABLE_NOTE = (
+    "[sandbox unavailable: this kernel lacks Landlock ABI 2 (Linux 5.19+), so commands "
+    "can write anywhere you can]"
+)
+
+
 def enabled() -> bool:
-    return os.environ.get("ARC_LLAMA_COMMAND_SANDBOX", "landlock").lower() != "off" and abi_version() > 0
+    return status() == "on"
 
 
 def writable_roots(root: Path) -> list[str]:

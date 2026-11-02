@@ -364,3 +364,44 @@ def test_run_command_can_write_the_user_cache(landlock_dirs, monkeypatch):
     assert result.content == "ok"
     denied = run_command(f"sh -c 'echo x > {outside}/keep.txt' 2>&1 | tr A-Z a-z; exit 1", project)
     assert "user cache folder" in denied.content
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-only")
+@pytest.mark.parametrize("abi,expected", [(0, "unavailable"), (1, "unavailable"), (2, "on"), (7, "on")])
+def test_sandbox_status_needs_landlock_abi_2(monkeypatch, tmp_path, abi, expected):
+    from arc_llama.agent import landlock
+    from arc_llama.agent.tools import run_command
+
+    monkeypatch.delenv("ARC_LLAMA_COMMAND_SANDBOX", raising=False)
+    monkeypatch.setattr(landlock, "_abi_cache", abi)
+    assert landlock.status() == expected
+    if expected == "unavailable":
+        # Commands still run, and the note says they are not confined.
+        result = run_command("echo hi", tmp_path)
+        assert result.content.startswith("hi")
+        assert landlock.UNAVAILABLE_NOTE in result.content
+    monkeypatch.setenv("ARC_LLAMA_COMMAND_SANDBOX", "off")
+    assert landlock.status() == "off"
+    assert landlock.UNAVAILABLE_NOTE not in run_command("echo hi", tmp_path).content
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_sandbox_is_unsupported_off_linux(monkeypatch, platform):
+    """Windows and macOS have no command sandbox: no Landlock call, no 'unavailable' note."""
+    from arc_llama.agent import landlock
+
+    monkeypatch.delenv("ARC_LLAMA_COMMAND_SANDBOX", raising=False)
+    monkeypatch.setattr(landlock, "_abi_cache", 0)
+    monkeypatch.setattr(landlock.sys, "platform", platform)
+    assert landlock.status() == "unsupported"
+    assert not landlock.enabled()
+
+
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="checks the real non-Linux path")
+def test_run_command_has_no_sandbox_note_off_linux(tmp_path):
+    from arc_llama.agent import landlock
+    from arc_llama.agent.tools import run_command
+
+    result = run_command("echo hi", tmp_path)
+    assert result.content.startswith("hi")
+    assert landlock.UNAVAILABLE_NOTE not in result.content

@@ -705,6 +705,8 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
         lowered = output.lower()
         if sandboxed and ("permission denied" in lowered or "read-only file system" in lowered):
             output += "\n[sandbox: commands can only write inside the project folder, temp folders and the user cache folder]"
+    if not sandboxed and landlock.status() == "unavailable":
+        output += "\n" + landlock.UNAVAILABLE_NOTE
     return ToolResult(output.strip(), error=result.returncode != 0)
 
 
