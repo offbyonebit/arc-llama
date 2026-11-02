@@ -667,10 +667,18 @@ SYCL JIT recompile that plain `llama.cpp` pays on each fresh launch (see
 
 ## Why not just use Ollama / vLLM?
 
-- **Ollama (IPEX-LLM bundle):** the Intel-supported port has reproducible
-  inference bugs on Battlemage with Qwen2.5-class models , sequential calls
-  collapse to NaN-derived gibberish. arc-llama runs `llama-server` directly so
-  you avoid that path entirely.
+- **Ollama:** now runs on Arc through its Vulkan backend, which its
+  [GPU docs](https://docs.ollama.com/gpu) say is on by default. On Windows that
+  is one installer next to the Arc driver; Linux also needs the Vulkan driver
+  packages. For the fewest install steps, use Ollama: Arc Llama still needs
+  Python 3.10+ and `pip`. Arc Llama is built only for Arc. It picks a first
+  model that fits your VRAM, tunes and benchmarks launch settings on your card,
+  can run llama.cpp's SYCL build as well as Vulkan for each model, and has
+  experimental Work agents with MCP tools. Ollama clients can use it through
+  its [Ollama-compatible API](docs/compatibility.md).
+- **IPEX-LLM's Ollama and llama.cpp builds:** Intel archived IPEX-LLM in
+  January 2026 and no longer maintains it. Arc Llama runs current
+  `llama-server` builds instead.
 - **vLLM-XPU:** still maturing on Arc; weaker quant support. Worth trying for
   dense >30B if you want throughput, but not yet a one-command experience.
 - **Plain `llama-server` + scripts:** what most Arc owners do today. arc-llama
