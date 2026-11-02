@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
@@ -169,7 +169,8 @@ class MCPClientManager:
             self._registered_tools.append(prefixed)
             TOOLS.register(proxy)
 
-    def _message_handler(self, cfg: MCPServerConfig, holder: dict[str, Any]) -> Callable[[Any], Awaitable[None]]:
+    def _message_handler(self, cfg: MCPServerConfig, holder: dict[str, Any]) -> Any:
+        # Typed Any: the SDK wants its MessageHandlerFnT protocol, and mcp is optional.
         async def handle(message: Any) -> None:
             if self._closing or getattr(getattr(message, "root", None), "method", None) != "notifications/tools/list_changed":
                 return
