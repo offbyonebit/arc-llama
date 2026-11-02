@@ -1,8 +1,10 @@
-"""Bounded public catalog discovery: policy, never a built-in model inventory.
+"""Bounded public catalog discovery: policy, not a built-in model inventory.
 
 Popularity orders the search, not a quality benchmark. Fit is an estimate.
 Only public, ungated text chat candidates with complete sizes are suggested.
 The accepted commit is carried through to the integrity-checked downloader.
+One pinned model is the fallback when the catalog fails or finds nothing,
+and the only choice with ARC_LLAMA_STARTER_CATALOG=off, for repeatable runs.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -34,6 +37,9 @@ _CHAT = re.compile(
     r"(?:^|[^a-z])(instruct(?:ion)?|chat|conversational)(?:$|[^a-z])", re.I
 )
 _LIMIT = 32
+# Pinned to the commit used in the Windows 1.1 validation. It goes through the
+# same fit, license and architecture checks as a catalog pick.
+PINNED_STARTER = ("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "9217f5db79a29953eb74d5343926648285ec7e67")
 
 
 @dataclass(frozen=True)
@@ -229,7 +235,27 @@ async def discover(vram_mb: int, *, timeout: float = 25) -> Starter | None:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    return await asyncio.wait_for(search(), timeout=timeout)
+    async def pinned() -> Starter | None:
+        return await candidate(await metadata(*PINNED_STARTER), vram_mb)
+
+    if os.environ.get("ARC_LLAMA_STARTER_CATALOG", "on").lower() == "off":
+        return await asyncio.wait_for(pinned(), timeout=timeout)
+    try:
+        found = await asyncio.wait_for(search(), timeout=timeout)
+    except Exception as catalog_error:
+        try:
+            found = await asyncio.wait_for(pinned(), timeout=12)
+        except Exception:
+            found = None
+        if found is None:
+            raise catalog_error
+        return found
+    if found is None:
+        try:
+            found = await asyncio.wait_for(pinned(), timeout=12)
+        except Exception:
+            found = None
+    return found
 
 
 async def validate(starter: Starter, vram_mb: int) -> None:

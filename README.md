@@ -98,7 +98,10 @@ downloads and verifies the model, shows real setup stages, and loads it before
 opening Chat. Suggestions fill the message box; nothing is sent until you
 press Send. **Choose another model** opens Discover.
 
-There is no built-in model shortlist or fallback. Discovery considers up to 32
+If the catalog can't be read or finds nothing, setup falls back to one pinned
+model (Qwen2.5 0.5B Instruct at a fixed commit), checked the same way. Set
+`ARC_LLAMA_STARTER_CATALOG=off` to always get that model, for repeatable runs.
+Discovery considers up to 32
 popular public, ungated text-generation repositories, filters for chat/instruction
 metadata and complete standard 4–8-bit GGUF files, and checks a bounded model
 header. It shows the publisher’s license and pins the accepted repository commit.

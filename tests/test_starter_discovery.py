@@ -163,9 +163,51 @@ async def test_runtime_rejection_blocks_weights(hub, monkeypatch):
     await check_runtime(selected, "binary")
 
 
-async def test_empty_catalog_has_no_fallback(hub):
-    hub[0].clear()
-    assert await discover(12288) is None
+def _pinned_hub(monkeypatch, catalog_rows):
+    """A hub that knows only the pinned starter, at its pinned commit."""
+    import arc_llama.starter_discovery as module
+
+    repo, revision = module.PINNED_STARTER
+    pinned = {**info(repo), "sha": revision, "cardData": {"license": "apache-2.0"}}
+    urls = []
+
+    async def read(url, limit, **kw):
+        urls.append(url)
+        if "/api/models?" in url:
+            if catalog_rows is None:
+                raise OSError("catalog down")
+            return json.dumps(catalog_rows).encode()
+        if "/resolve/" in url:
+            assert revision in url
+            return _fixture("synthetic_arch")
+        assert f"/api/models/{repo}/revision/{revision}" in url
+        return json.dumps(pinned).encode()
+
+    monkeypatch.setattr(module, "_hub_read", read)
+    return repo, revision, urls
+
+
+@pytest.mark.parametrize("catalog_rows", [[], None], ids=["empty", "down"])
+async def test_pinned_starter_when_catalog_is_empty_or_down(monkeypatch, catalog_rows):
+    repo, revision, _ = _pinned_hub(monkeypatch, catalog_rows)
+    selected = await discover(12288)
+    assert selected and (selected.repo, selected.revision) == (repo, revision)
+
+
+async def test_catalog_off_uses_only_the_pinned_starter(monkeypatch):
+    monkeypatch.setenv("ARC_LLAMA_STARTER_CATALOG", "off")
+    repo, _, urls = _pinned_hub(monkeypatch, [info()])
+    first, second = await discover(12288), await discover(12288)
+    assert first == second and first is not None and first.repo == repo
+    assert not any("/api/models?" in url for url in urls)
+
+
+async def test_offline_still_reports_the_catalog_error(monkeypatch):
+    import arc_llama.starter_discovery as module
+
+    monkeypatch.setattr(module, "_hub_read", AsyncMock(side_effect=OSError("offline")))
+    with pytest.raises(OSError, match="offline"):
+        await discover(12288)
 
 
 async def test_discovery_is_single_flight_cached_retryable_and_discards_changed_gpu(
