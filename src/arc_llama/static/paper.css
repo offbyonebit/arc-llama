@@ -95,7 +95,7 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-chat .message .content :is(pre,code) { font-size:13px; }
 .paper-chat .input-area { width:100%; max-width:748px; margin:0 auto; padding:8px 24px 12px; background:transparent; border:0; flex:none; }
 .paper-chat .input-wrap { border:1px solid var(--ln); background:var(--pn); border-radius:18px; box-shadow:var(--shadow-md); padding:12px 14px 40px; display:flex; align-items:flex-start; gap:8px; min-height:108px; position:relative; }
-.paper-chat .input-wrap:focus-within { border-color:var(--acl); box-shadow:var(--shadow-md); }
+.paper-chat .input-wrap:focus-within, .paper-chat .work-composer-box:focus-within { border-color:var(--ac); box-shadow:var(--shadow-md); }
 .paper-chat #message-input { background:transparent; color:var(--tx); padding:4px; font-size:15px; min-height:28px; width:100%; line-height:1.5; }
 .paper-chat #attach-button { position:absolute; bottom:12px; left:14px; width:30px; height:30px; border:0; background:transparent; color:var(--t2); border-radius:8px; }
 .paper-chat #send-button { position:absolute; right:14px; bottom:12px; width:36px; height:36px; border-radius:10px; background:var(--ac); color:var(--acf); border:0; box-shadow:none; }
@@ -367,3 +367,7 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-chat :is(.hljs-number,.hljs-literal,.hljs-variable,.hljs-template-variable,.hljs-meta,.hljs-symbol,.hljs-name,.hljs-title,.hljs-section,.hljs-attribute,.hljs-selector-attr,.hljs-selector-class,.hljs-selector-id,.hljs-selector-pseudo) { color:var(--ac) !important; }
 .paper-chat :is(.hljs-comment,.hljs-quote,.hljs-code,.hljs-formula) { color:var(--t3) !important; }
 .paper-chat .hljs-bullet { color:var(--wn) !important; } .paper-chat .hljs-deletion { color:var(--de) !important; }
+
+/* Copy buttons on code stay hidden until hover; show them for keyboard focus and on touch screens. */
+.paper-chat .code-block-wrapper:focus-within .copy-code-btn { opacity:1; }
+@media (hover:none) { .paper-chat .code-block-wrapper .copy-code-btn { opacity:1; } }

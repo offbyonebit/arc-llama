@@ -1111,11 +1111,6 @@ main {
 #settings-toggle.open svg { transform: rotate(45deg); }
 #history-toggle.open { color: var(--accent-bright); }
 
-#settings-toggle:focus-visible,
-#history-toggle:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--accent-glow);
-}
 
 /* ------------------------------------------------------------------
    Side panels
