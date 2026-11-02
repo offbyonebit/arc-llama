@@ -1513,6 +1513,37 @@ def create_app(
     # Admin (used by the web UI / TUI)
     # ------------------------------------------------------------------
 
+    @app.get("/admin/report-link")
+    async def admin_report_link(
+        request: Request,
+        kind: str = "issue",
+        _auth: None = Depends(_require_admin),
+    ) -> dict:
+        """Return a prefilled GitHub report link for the web UI's Report button.
+
+        Built locally from config and the newest log; nothing is sent to
+        GitHub. The browser opens the link and the user submits it themselves.
+        """
+        from arc_llama.issue_report import build_report_link, collect_context
+
+        if kind not in {"issue", "discussion"}:
+            raise HTTPException(status_code=400, detail="kind must be issue or discussion")
+        c: Config = request.app.state.cfg
+        log_dir = getattr(request.app.state.router, "log_dir", None)
+        context = await asyncio.to_thread(collect_context, c, log_dir=log_dir)
+        link = build_report_link(context, kind=kind)
+        return {
+            "url": link.url,
+            "kind": link.kind,
+            "log_lines_included": link.log_lines_included,
+            "trimmed": link.trimmed,
+            "preview": {
+                "environment": context.environment_text(),
+                "gpu": context.gpu_text(),
+                "log": context.log_text(link.log_lines_included),
+            },
+        }
+
     @app.get("/admin/status")
     async def admin_status(request: Request, _auth: None = Depends(_require_admin)) -> dict:
         rt: Router = request.app.state.router

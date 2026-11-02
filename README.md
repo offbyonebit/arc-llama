@@ -1,107 +1,41 @@
-# Your hardware deserves better software
+# Arc Llama
 
-> **Arc Llama** — plug-and-play `llama.cpp` runtime for Intel Arc GPUs.
+> Run local LLMs on your Intel Arc GPU with one command.
 
-`arc-llama` is a single command-line tool that detects your Intel Arc card,
-applies the right SYCL/oneAPI environment for your generation, downloads or
-registers GGUF models, and runs an OpenAI-compatible server in front of them.
-It encodes the gotchas (SIGSEGVs in the persistent device-code cache, IPEX-LLM
-bundle env-var traps, KV-cache quant behaviour per architecture) so you don't
-have to discover them the hard way.
+Arc Llama detects your Arc card, installs a verified portable `llama.cpp`
+runtime (Vulkan by default, SYCL when you ask for it), downloads a model that
+fits your VRAM, and serves it with a web UI and OpenAI and Ollama compatible
+APIs. It handles the Arc specific gotchas so you don't have to find them the
+hard way.
 
-It's built for the day you unbox an Arc card, install drivers, and want
-something useful before lunch.
+```bash
+pip install arc-llama
+arc-llama start
+```
+
+That opens a browser page that walks you from "card detected" to your first
+answer. Prefer the terminal? `arc-llama run unsloth/Qwen3-8B-GGUF:Q4_K_M`
+does the same in one line. See [Quick start](#quick-start) for more.
+
+**Works with:** Arc B-series (Battlemage), A-series (Alchemist) and Lunar Lake,
+on Linux and Windows 11, Python 3.10 or newer. Validated hardware is listed in
+[Tested hardware](#tested-hardware).
+
+**Something broke?** Click **Report a problem** on the System page, or run
+`arc-llama report`. It opens a GitHub issue with your version, GPU, backend and
+log tail already filled in, and nothing is sent until you submit it yourself.
 
 ## See it in action
 
-[![Arc Llama development interface tour: models, discovery, runtime checks, chat, system status, and Work](docs/showcase/cover.png)](docs/showcase/01-models.md)
+[![Arc Llama interface tour: models, discovery, runtime checks, chat, system status, and Work](docs/showcase/cover.png)](docs/showcase/01-models.md)
 
-**[Click through the screenshot tour →](docs/showcase/01-models.md)** ·
+**[Click through the screenshot tour](docs/showcase/01-models.md)** ·
 [All screenshots and interactive gallery](docs/showcase/README.md)
 
-*Updated 2026-10-22: nine annotated views of the Work development UI, including
-pending local UI work. Captures use synthetic example data; no local inference
-was run. See the tour notes for scope and the original captures.*
+Release notes for every version are in the [changelog](CHANGELOG.md) and on the
+[releases page](https://github.com/offbyonebit/arc-llama/releases).
 
 > ⭐ If this saved you a few hours, a star on this repo keeps me building.
-
-> [!NOTE]
-> **Arc Llama 1.0 is available.** See the [release notes](https://github.com/offbyonebit/arc-llama/releases/tag/v1.0.0).
-
-## What's new in 1.0
-
-- **Per-model runtimes:** run a different llama-server executable and environment
-  per model. See [per-model runtimes](docs/per-model-runtimes.md).
-- **Safer upgrades and rollbacks:** settings written by newer versions are kept,
-  and upgrades from 0.8 and 0.9 are tested against configs written by those
-  releases. See [upgrading and rolling back](docs/upgrading.md).
-- **Redesigned web UI:** a shared icon sidebar for Chat, Work, Models, Discover,
-  and System, with light/dark themes and mobile navigation. Discover has its own
-  destination, and model details show download, memory-fit, and runtime state.
-- **Clearer chat controls:** a model picker with multiple visible rows, scroll
-  cues, and keyboard navigation; a single response entry from loading through
-  streaming; and live generation activity.
-- **Return to earlier conversations:** open **History** in Chat or **Sessions**
-  in Work to reopen saved conversations and continue with a follow-up.
-- **Visible context usage:** token counts, context limits, and compaction controls
-  in Chat and Work. Estimates are marked; Work updates its count from actual
-  model requests, including agent instructions and tools.
-- **Choose your Work agent:** the built-in agent, OpenCode, or Hermes Agent,
-  using a selected local model. Work shows streamed replies, thinking/tool
-  activity, approvals, file changes, and Undo when available. OpenCode also
-  supports tool profiles and its native slash commands.
-
-Work is experimental: enable it with `ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve`.
-See [Work below](#work-local-project-conversations) for setup and the differences
-between harnesses, or [Work harness details](docs/work-harnesses.md).
-
-## What's new in 0.9.1.2
-
-- **Find, download, and use a model in one place:** Hugging Face discovery sits
-  beside your library, with publisher avatars, memory-fit estimates, background
-  downloads, automatic registration, and a review step before chat.
-- **Check your runtime before downloading:** architecture checks explain when
-  your llama.cpp build explicitly rejects a model. Recognition is separate from
-  memory fit and does not guarantee that every model will load or run.
-- **More control over chat and access:** stop, regenerate, edit, per-model
-  presets, vision attachments, API keys, and LAN mode.
-- **Safer runtime updates and broader model support:** canary checks and rollback,
-  split GGUFs, vision projectors, rerankers, and a versioned plugin API.
-- **Better tuning and reliability:** depth benchmarks, driver-aware retuning,
-  performance history, and compatibility checks that cancel and clean up properly.
-- **See the interface first:** the screenshot tour above covers discovery,
-  compatibility, model review, chat, and system status.
-
-See the [changelog](CHANGELOG.md) for the full changes, including experimental
-multi-GPU tensor split.
-
-## Highlights from 0.9.1
-
-- **Compatibility with current llama.cpp builds:** recipes using `no_mmap` or
-  `mlock` now launch with `--load-mode` when the runtime supports it. Older
-  binaries continue to use the legacy flags.
-
-## Highlights from 0.9.0
-
-- **One-command setup and launch:** `arc-llama run` accepts a registered model,
-  local GGUF, or Hugging Face GGUF source; it prepares the runtime and model,
-  checks the launch plan, and starts the server. Use `--setup-only` to inspect
-  the plan without launching.
-- **Better model-fit and optimization decisions:** GGUF metadata informs
-  context and VRAM estimates, and oversized launch plans are rejected. Shared
-  recipes and speculative-decoding settings can be A/B tested locally and
-  rolled back unless they meet the configured improvement threshold.
-- **Ollama client compatibility:** `GET /api/tags`, `POST /api/chat`, and
-  `POST /api/generate` translate requests through Arc Llama's model router.
-- **Safer model switching and better runtime visibility:** configurable
-  in-flight request draining, per-model timing metrics, VRAM-fit information,
-  and structured startup failures are available through the server and UI.
-- **Extensible integrations:** installed plugins are discovered independently;
-  the admin UI shows their status, metadata, and declared API routes.
-- **Updated web interface:** the model manager now guides first-run readiness,
-  model selection, and launch settings, with scan progress and a customizable
-  plugin-action layout. Chat adds themes, plugin tools, and saved drafts; its
-  Markdown and code-highlighting assets are bundled for offline use.
 
 ## What you get
 
@@ -904,6 +838,10 @@ This project is free and I don't ask for anything. If it's useful to you,
 a star on the repo is appreciated, and if you want to follow along with
 other things I'm building, you can find them under
 [@offbyonebit](https://github.com/offbyonebit).
+
+If something fails, run `arc-llama report` or click **Report a problem** on
+the System page. Questions and setup stories are welcome in
+[Discussions](https://github.com/offbyonebit/arc-llama/discussions).
 
 Follow [@OffByOneBit01](https://x.com/OffByOneBit01) on X (Twitter) for
 development updates. Share feedback there, including how Arc Llama works on

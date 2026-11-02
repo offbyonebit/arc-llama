@@ -79,7 +79,7 @@
       <div>
         <h2 id="system-readiness-title">System status</h2>
       </div>
-      <div class="toolbar"><button id="connect-frontend" class="secondary">Connect a frontend</button><button id="customize-ui" class="secondary">Customize UI</button></div>
+      <div class="toolbar"><button id="connect-frontend" class="secondary">Connect a frontend</button><button id="customize-ui" class="secondary">Customize UI</button><button id="report-problem" class="secondary">Report a problem</button></div>
     </div>
     <div id="system-readiness" class="system-readiness pending" aria-live="polite">
       <p>Waiting for server status</p>
@@ -192,6 +192,23 @@
   <div class="toolbar"><button id="ui-layout-reset" class="ghost">Restore defaults</button><button id="ui-layout-cancel" class="ghost">Cancel</button><button id="ui-layout-save" class="primary">Save layout</button></div>
 </dialog>
 
+<dialog id="report-dialog" class="frontend-dialog" aria-labelledby="report-dialog-title">
+  <div class="frontend-dialog-head">
+    <div>
+      <p class="eyebrow">FEEDBACK</p>
+      <h2 id="report-dialog-title">Report a problem</h2>
+    </div>
+    <button id="report-close" class="ghost frontend-close" aria-label="Close">Close</button>
+  </div>
+  <p class="frontend-dialog-copy">This opens GitHub with the details below already filled in. Nothing is sent until you review it and submit it with your own GitHub account. Home folders and tokens are removed first.</p>
+  <p id="report-status" class="frontend-note" role="status" aria-live="polite">Collecting details…</p>
+  <pre id="report-preview" class="frontend-code" hidden><code></code></pre>
+  <div class="toolbar">
+    <a id="report-issue" class="primary-cta" target="_blank" rel="noopener noreferrer" href="https://github.com/offbyonebit/arc-llama/issues/new?template=bug-report.yml">Open a bug report</a>
+    <a id="report-discussion" class="secondary" target="_blank" rel="noopener noreferrer" href="https://github.com/offbyonebit/arc-llama/discussions/new?category=q-a">Ask a question instead</a>
+  </div>
+</dialog>
+
 <footer id="status-footer">
   <span class="status-dot"></span>
   <span id="last-updated">Waiting for server status</span>
@@ -257,6 +274,7 @@
     <script src="/dashboard/measurements.js?v=ui-0.25"></script>
     <script src="/dashboard/plugins.js?v=ui-0.21"></script>
     <script src="/dashboard/integration.js?v=ui-0.21"></script>
+    <script src="/dashboard/report.js?v=report-1"></script>
     <script src="/harnesses.js?v=harness-1"></script>
     <script src="/paper.js?v=paper-5"></script>
     <script src="/dashboard/onboarding.js?v=dynamic-starter-2"></script>

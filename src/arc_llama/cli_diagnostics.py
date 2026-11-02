@@ -363,6 +363,59 @@ def register_diagnostic_commands(
             # Non-zero so scripts/CI can gate on a healthy Arc host.
             sys.exit(2)
 
+    @cli.command("report")
+    @click.option(
+        "--discussion",
+        is_flag=True,
+        help="Start a GitHub Discussion instead of an issue.",
+    )
+    @click.option("--title", default="", help="Short summary of the problem.")
+    @click.option(
+        "--no-open",
+        is_flag=True,
+        help="Print the link instead of opening a browser.",
+    )
+    @click.pass_context
+    def report_cmd(ctx: click.Context, discussion: bool, title: str, no_open: bool) -> None:
+        """Open a prefilled GitHub problem report in your browser.
+
+        Version, OS, Python, GPU, backend, and the end of the newest
+        llama-server log are filled in after removing home paths and tokens.
+        Nothing is sent until you review it and submit it on GitHub.
+        """
+        import webbrowser
+
+        from arc_llama.issue_report import build_report_link, collect_context
+
+        config_path: Path = ctx.obj["config_path"]
+        try:
+            cfg = load_config(config_path) if config_path.exists() else None
+        except Exception:
+            cfg = None
+        try:
+            gpus = detect_gpus(enrich=False)
+        except Exception:
+            gpus = []
+        context = collect_context(cfg, detected_gpus=gpus)
+        link = build_report_link(context, kind="discussion" if discussion else "issue", title=title)
+        if link.trimmed:
+            console.print(
+                f"[dim]Kept the last {link.log_lines_included} log lines so the link "
+                "stays short. Attach `arc-llama support-bundle` for more.[/dim]"
+            )
+        opened = False
+        if not no_open:
+            try:
+                opened = webbrowser.open(link.url, new=2)
+            except Exception:
+                opened = False
+        if opened:
+            console.print("[green]Opened a prefilled report in your browser.[/green]")
+            console.print("[dim]Review every field before you submit it on GitHub.[/dim]")
+        else:
+            console.print("Open this link to review and submit your report:")
+            click.echo(link.url)
+
     @cli.command("support-bundle")
     @click.option(
         "--output",
@@ -403,4 +456,5 @@ def register_diagnostic_commands(
         "_doctor_marker": _doctor_marker,
         "doctor": doctor,
         "support_bundle_cmd": support_bundle_cmd,
+        "report_cmd": report_cmd,
     }

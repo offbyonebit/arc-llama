@@ -190,6 +190,7 @@ _diagnostic_command_exports = register_diagnostic_commands(
 )
 _doctor_marker = _diagnostic_command_exports["_doctor_marker"]
 doctor = _diagnostic_command_exports["doctor"]
+report_cmd = _diagnostic_command_exports["report_cmd"]
 support_bundle_cmd = _diagnostic_command_exports["support_bundle_cmd"]
 
 _do_scan: Any

@@ -8,6 +8,11 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [Unreleased]
 
 ### Added
+- Report a problem: a System page button and `arc-llama report` open a
+  GitHub issue (or a Q&A discussion with `--discussion`) prefilled with the
+  version, OS, Python, GPU, backend, and a redacted log tail. Nothing is sent
+  until the user submits it on GitHub; no token is stored or embedded.
+- Bug report issue form matching the prefilled fields.
 - Guided first-answer setup: `arc-llama start` opens the local browser after
   listening, detects hardware, and discovers a starter from the current public
   model catalog with estimated fit. No model shortlist or fallback is shipped.
