@@ -261,6 +261,9 @@ class OpenCodeTranslator:
                 full, streamed = part["text"], self._streamed.pop(pid, "")
                 if streamed:
                     if not full.startswith(streamed):
+                        if streamed.rstrip() == full.rstrip():
+                            # The final text dropped trailing whitespace already shown.
+                            return self._phase("answering")
                         return [{"type": "error", "message": "OpenCode's completed answer differs from its streamed text; retry the request."}]
                     # The words already reached the page as deltas; send only what was missed.
                     tail = full[len(streamed):] if full.startswith(streamed) else ""

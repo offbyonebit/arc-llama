@@ -343,3 +343,17 @@ async def test_generated_session_reports_id_and_uses_task_title(tmp_path, monkey
     assert created["body"]["title"] == "Synthetic user title"
     linked = next(e for e in events if e["type"] == "harness_session")
     assert linked["session_id"].startswith("oc-ses_")
+
+
+@pytest.mark.parametrize("final,ok", [("Done. All tests pass.", True), ("Done. Something else.", False)])
+def test_translator_accepts_final_text_without_trailing_whitespace(final, ok):
+    """Trimmed trailing whitespace is not a different answer; other changes still are."""
+    t = OpenCodeTranslator("s1")
+    out = t.feed({"type": "message.updated", "properties": {"sessionID": "s1", "info": {"id": "m1", "role": "assistant"}}})
+    out += t.feed({"type": "message.part.updated", "properties": {"sessionID": "s1", "part": {
+        "id": "p1", "messageID": "m1", "type": "text", "text": "", "time": {"start": 1}}}})
+    for delta in ["Done. ", "All tests pass.\n"]:
+        out += t.feed({"type": "message.part.delta", "properties": {"sessionID": "s1", "partID": "p1", "delta": delta}})
+    out += t.feed({"type": "message.part.updated", "properties": {"sessionID": "s1", "part": {
+        "id": "p1", "messageID": "m1", "type": "text", "text": final, "time": {"start": 1, "end": 2}}}})
+    assert any(e["type"] == "error" for e in out) is not ok
