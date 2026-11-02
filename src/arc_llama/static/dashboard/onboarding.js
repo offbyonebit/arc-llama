@@ -61,6 +61,7 @@ window.ArcDashboard.createOnboardingController = function ({ document: doc, requ
       const order = ["runtime", "downloading", "loading", "ready"];
       const current = phase === "registering" ? 1 : order.indexOf(phase);
       node.dataset.current = String(current === order.indexOf(node.dataset.phase));
+      if (node.dataset.current === "true") node.setAttribute("aria-current", "step"); else node.removeAttribute("aria-current");
     });
     const error = $("error"); error.textContent = localError || data.error || data.discovery?.error || ""; error.hidden = !error.textContent;
     const start = $("start");
