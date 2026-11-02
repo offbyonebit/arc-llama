@@ -219,6 +219,13 @@ def _is_cross_origin(request: Request) -> bool:
     return host is not None and host not in _LOOPBACK_HOSTS
 
 
+def _host_is_loopback(request: Request) -> bool:
+    """True when the Host header names a loopback address, not a DNS name."""
+    host = request.headers.get("host", "")
+    hostname = _origin_host(f"http://{host}") if host else None
+    return hostname is not None and hostname.lower() in _LOOPBACK_HOSTS
+
+
 async def _require_admin(request: Request) -> None:
     """Require the configured admin token in the Authorization header.
 
@@ -501,6 +508,12 @@ def create_app(
         # any request that carries a non-loopback Origin header.
         if _is_cross_origin(request):
             raise HTTPException(status_code=403, detail="Cross-origin requests are not allowed")
+        # DNS rebinding: a page on attacker.example can point its name at
+        # 127.0.0.1 and then make a *same-origin* fetch here, which carries no
+        # Origin header. The Host header still names the attacker's domain, so
+        # only hand the token out when the request was addressed to loopback.
+        if not _host_is_loopback(request):
+            raise HTTPException(status_code=403, detail="Use http://127.0.0.1 or http://localhost")
         c: Config = request.app.state.cfg
         return {"admin_token": c.server.admin_token}
 

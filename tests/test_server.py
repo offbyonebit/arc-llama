@@ -584,7 +584,7 @@ def test_session_token_served_to_loopback_peer(monkeypatch):
     cfg = Config(server=ServerConfig(admin_token="secret"))
     app = create_app(cfg)
 
-    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+    with TestClient(app, client=("127.0.0.1", 12345), base_url="http://127.0.0.1:11434") as client:
         r = client.get("/admin/session-token")
     assert r.status_code == 200
     assert r.json()["admin_token"] == "secret"
@@ -624,10 +624,42 @@ def test_session_token_allowed_for_same_origin_loopback_peer(monkeypatch):
     cfg = Config(server=ServerConfig(admin_token="secret"))
     app = create_app(cfg)
 
-    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+    with TestClient(app, client=("127.0.0.1", 12345), base_url="http://127.0.0.1:11434") as client:
         r = client.get("/admin/session-token")
     assert r.status_code == 200
     assert r.json()["admin_token"] == "secret"
+
+
+def test_session_token_refused_after_dns_rebinding(monkeypatch):
+    """A rebound attacker domain makes a same-origin request with no Origin header."""
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    cfg = Config(server=ServerConfig(admin_token="secret"))
+    app = create_app(cfg)
+
+    with TestClient(app, client=("127.0.0.1", 12345), base_url="http://attacker.example:11434") as client:
+        r = client.get("/admin/session-token")
+    assert r.status_code == 403
+    assert "secret" not in r.text
+
+
+def test_session_token_served_for_localhost_and_ipv6_hosts(monkeypatch):
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    cfg = Config(server=ServerConfig(admin_token="secret"))
+    app = create_app(cfg)
+
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+        for host in ("localhost:11434", "[::1]:11434", "LOCALHOST", "127.0.0.1"):
+            r = client.get("/admin/session-token", headers={"Host": host})
+            assert r.status_code == 200, host
+            assert r.json()["admin_token"] == "secret"
 
 
 def test_session_token_refused_for_non_loopback_peer(monkeypatch):
