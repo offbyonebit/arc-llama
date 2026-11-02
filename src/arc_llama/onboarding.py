@@ -309,6 +309,8 @@ class FirstAnswerSetup:
                         )
                     self.phase = "downloading"
                     while self.download.status not in {"done", "error"}:
+                        if self._paused():
+                            return  # shutdown or Pause; the download keeps its own state
                         if self.download.status == "registering":
                             self.phase = "registering"
                         await asyncio.sleep(0.2)
@@ -348,8 +350,9 @@ class FirstAnswerSetup:
             self.phase = "error"
 
     async def shutdown(self) -> None:
-        # Let the normal downloader finish its current integrity/publication
-        # step; cancelling a thread does not stop its filesystem writes.
+        # Stop waiting on the download (setup returns as paused) and let the
+        # download manager cancel its worker. A thread already writing a file
+        # finishes that write; publication only happens after verification.
         self.pause_requested = True
         if self.discovery_task:
             self.discovery_task.cancel()

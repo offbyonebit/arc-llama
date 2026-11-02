@@ -517,3 +517,31 @@ async def test_expired_recommendation_cannot_start(setup):
         manager.start("catalog-large")
     installer.assert_not_called()
     download.assert_not_called()
+
+
+async def test_shutdown_does_not_wait_for_whole_download(setup, monkeypatch):
+    import threading
+
+    import arc_llama.models as models
+
+    manager, *_ = setup
+    release = threading.Event()
+
+    def slow_download(spec, *, target_dir, progress, revision):
+        release.wait(30)  # stands in for a multi-GB transfer
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / spec.file).write_bytes(b"x")
+        return target_dir / spec.file
+
+    monkeypatch.setattr(models, "download_from_hf", slow_download)
+    manager.start("catalog-large")
+    for _ in range(100):
+        if manager.phase == "downloading":
+            break
+        await asyncio.sleep(0.05)
+    assert manager.phase == "downloading"
+    try:
+        await asyncio.wait_for(asyncio.shield(manager.shutdown()), timeout=3)
+    finally:
+        release.set()
+    assert manager.phase == "paused"
