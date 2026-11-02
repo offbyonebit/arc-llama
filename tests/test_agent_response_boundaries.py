@@ -269,3 +269,31 @@ async def test_unencodable_request_ends_the_run_with_an_error(monkeypatch, tmp_p
     events = [e async for e in run_agent("hi", "m", "http://synthetic.invalid", tmp_path, auto_confirm=True)]
     assert events[-1]["type"] == "error"
     assert "LLM request failed" in events[-1]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supports_vision", [True, False])
+async def test_tool_images_only_reach_vision_models(monkeypatch, tmp_path, supports_vision):
+    """An MCP screenshot must not end the run on a model without a vision projector."""
+    real_client = httpx.AsyncClient
+    sent: list[list[dict]] = []
+    replies = [
+        {"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}]}}]},
+        {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "done"}}]},
+    ]
+
+    def respond(request):
+        sent.append(json.loads(request.content)["messages"])
+        return httpx.Response(200, content=json.dumps(replies.pop(0)).encode(),
+                              headers={"content-type": "application/json"}, request=request)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(respond), **kw))
+    picture = ToolResult("took a screenshot", images=["data:image/png;base64,AAAA"])
+    monkeypatch.setattr(TOOLS, "execute", AsyncMock(return_value=picture))
+    events = [e async for e in run_agent("hi", "m", "http://synthetic.invalid", tmp_path,
+                                         auto_confirm=True, supports_vision=supports_vision)]
+    assert events[-1]["type"] != "error"
+    followup = json.dumps(sent[1])
+    assert ("image_url" in followup) is supports_vision
+    assert ("image(s) omitted" in followup) is not supports_vision

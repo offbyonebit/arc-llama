@@ -940,11 +940,15 @@ def create_app(
                     local_only=local_only, binary=cfg.agent.hermes_bin,
                 )
             else:
+                # Upstream models: unknown, so keep sending images as before.
+                local_model = cfg.find_model(model)
+                supports_vision = local_model is None or "vision" in model_capabilities(local_model)
                 runner = run_agent(
                     task=prompt,
                     model=model,
                     base_url=base_url,
                     root=root,
+                    supports_vision=supports_vision,
                     auto_confirm=auto_confirm,
                     confirm_callback=confirm_callback,
                     plan_mode=plan_mode,

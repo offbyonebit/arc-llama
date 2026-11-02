@@ -50,6 +50,7 @@ async def run_agent(
     chat_store: ChatStore | None = None,
     extra: dict[str, Any] | None = None,
     work_type: str = "code",
+    supports_vision: bool = True,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the agent loop and yield SSE-shaped events.
 
@@ -304,7 +305,10 @@ async def run_agent(
                         "content": result_text,
                     }
                 )
-                if result.images:
+                if result.images and not supports_vision:
+                    # llama-server refuses images without a vision projector; a note keeps the run going.
+                    conversation[-1]["content"] += f"\n[{len(result.images)} image(s) omitted: this model can't read images]"
+                elif result.images:
                     # Tool messages carry text only, so a page picture goes in as the next user turn.
                     conversation.append(
                         {
