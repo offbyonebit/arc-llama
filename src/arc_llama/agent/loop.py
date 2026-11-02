@@ -194,7 +194,7 @@ async def run_agent(
                 response.raise_for_status()
                 data = response.json()
                 choice, message = completion_message(data, call_prefix=f"turn-{turn}-call")
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, UnicodeEncodeError) as e:
                 yield {"type": "error", "message": f"LLM request failed: {e}"}
                 return
             except json.JSONDecodeError as e:

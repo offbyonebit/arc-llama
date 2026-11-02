@@ -137,7 +137,7 @@ class InteractiveAgent:
                 if plan_message.get("tool_calls"):
                     raise ModelResponseError("The model returned tool calls instead of a plan. Retry the request.")
                 plan_content = plan_message.get("content")
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, UnicodeEncodeError) as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
             except json.JSONDecodeError as e:
@@ -193,7 +193,7 @@ class InteractiveAgent:
                 response.raise_for_status()
                 data = response.json()
                 choice, message = completion_message(data, call_prefix=f"turn-{turn}-call")
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, UnicodeEncodeError) as e:
                 yield {"type": "error", "message": f"LLM request failed: {e}"}
                 return
             except json.JSONDecodeError as e:

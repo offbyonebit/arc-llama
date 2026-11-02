@@ -237,3 +237,35 @@ async def test_choices_are_never_merged_and_optional_usage_cannot_crash(harness,
     assert [e["content"] for e in events if e["type"] == "assistant"] == ["selected"]
     assert events[-1]["type"] == "done"
     execute.assert_not_awaited()
+
+
+def test_tool_arguments_with_lone_surrogates_are_not_executed():
+    """A lone surrogate would be echoed back and crash the next UTF-8 request."""
+    from arc_llama.agent.responses import parse_tool_call
+
+    call = {"function": {"name": "read_file", "arguments": '{"path": "\\udc80.txt"}'}}
+    arguments, problem = parse_tool_call(call, "tool_calls")
+    assert arguments == {}
+    assert problem and problem.startswith("Not executed")
+    ok, problem = parse_tool_call({"function": {"arguments": '{"path": "caf\\u00e9.txt"}'}}, "stop")
+    assert ok == {"path": "café.txt"} and problem is None
+
+
+@pytest.mark.asyncio
+async def test_unencodable_request_ends_the_run_with_an_error(monkeypatch, tmp_path):
+    """A lone surrogate in model text ends the run with an error instead of raising."""
+    real_client = httpx.AsyncClient
+    reply = {"choices": [{"finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": "bad \udc80 text",
+        "tool_calls": [{"id": "c1", "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"}}]}}]}
+
+    def respond(request):
+        return httpx.Response(200, content=json.dumps(reply).encode(),
+                              headers={"content-type": "application/json"}, request=request)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(respond), **kw))
+    monkeypatch.setattr(TOOLS, "execute", AsyncMock(return_value=ToolResult("fixture result")))
+    events = [e async for e in run_agent("hi", "m", "http://synthetic.invalid", tmp_path, auto_confirm=True)]
+    assert events[-1]["type"] == "error"
+    assert "LLM request failed" in events[-1]["message"]

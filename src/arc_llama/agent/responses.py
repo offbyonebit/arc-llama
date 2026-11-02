@@ -114,9 +114,10 @@ def parse_tool_call(tc: dict[str, Any], finish_reason: Any) -> tuple[dict[str, A
     raw = function.get("arguments") if isinstance(function, dict) else None
     try:
         arguments = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_nonfinite) if isinstance(raw, str) else raw
-        # Also reject non-finite values in object-valued local-server arguments.
+        # Also reject non-finite values in object-valued local-server arguments,
+        # and lone surrogates ("\udc80"), which can't be sent back as UTF-8.
         if isinstance(arguments, dict):
-            json.dumps(arguments, allow_nan=False)
+            json.dumps(arguments, allow_nan=False, ensure_ascii=False).encode("utf-8")
     except (ValueError, TypeError, RecursionError):
         arguments = None
     problem = completion_problem(finish_reason)
