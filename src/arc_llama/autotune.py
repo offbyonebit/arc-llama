@@ -184,10 +184,15 @@ def set_tune_failed_state(
     cfg: Config,
     model: ModelConfig,
     error: str,
+    fingerprint: str = "",
 ) -> None:
-    """Record a failed sweep so we do not retry in a tight loop."""
+    """Record a failed sweep so we do not retry in a tight loop.
+
+    The fingerprint lets a driver, runtime or model change retry it once.
+    """
     model.tune_state = "failed"
     model.tune_error = error[:2048]
+    model.tune_fingerprint = fingerprint
 
 
 def reset_tuned_state_if_stale(
@@ -195,10 +200,11 @@ def reset_tuned_state_if_stale(
     model: ModelConfig,
     arc_llama_version: str,
 ) -> None:
-    """If the model is tuned but the fingerprint changed, mark it untuned.
+    """If the model is tuned or failed but the fingerprint changed, mark it untuned.
 
-    Called once per loop iteration before picking a candidate. An upstream
-    model is always left untouched.
+    Called once per loop iteration before picking a candidate, and once at
+    startup even when auto-tuning is off. The tuned values stay in place until
+    a new sweep succeeds. An upstream model is always left untouched.
     """
     if not cfg.tune.retune_on_fingerprint_change:
         return
@@ -212,10 +218,12 @@ def reset_tuned_state_if_stale(
         arc_llama_version,
         workload.fingerprint_key(cfg.workload),
     )
-    if model.tune_state == "tuned" and not fingerprint_matches(model, fp):
+    if model.tune_state in ("tuned", "failed") and not fingerprint_matches(model, fp):
         log.info(
-            "autotune: fingerprint changed for %s; treating as untuned",
+            "autotune: driver, runtime, model or workload changed for %s since its %s tune; "
+            "treating as untuned",
             model.name,
+            model.tune_state,
         )
         model.tune_state = "untuned"
         model.tune_fingerprint = ""
@@ -284,6 +292,15 @@ class Autotuner:
         """
         if not self.cfg.tune.auto:
             log.debug("autotune: disabled by config")
+            # Still don't show a tune from an older driver or runtime as current.
+            before = [m.tune_state for m in self.cfg.models]
+            for m in self.cfg.models:
+                reset_tuned_state_if_stale(self.cfg, m, self.version)
+            if before != [m.tune_state for m in self.cfg.models] and self.on_save:
+                try:
+                    self.on_save()
+                except Exception:  # noqa: BLE001
+                    log.exception("autotune: could not save reset tune states")
             return
         async with self._lock:
             if self._task is not None and not self._task.done():
@@ -435,18 +452,20 @@ class Autotuner:
     def _use_count(self, name: str) -> int:
         return self._use_counts.get(name, 0)
 
-    def _fingerprint_outdated(self, model: ModelConfig) -> bool:
+    def _fingerprint(self, model: ModelConfig) -> str:
         from arc_llama import workload
 
         gpu = self.cfg.find_gpu(model.gpu_pci_slot)
-        fp = compute_fingerprint(
+        return compute_fingerprint(
             model,
             self.cfg.model_llama_server(model),
             gpu,
             self.version,
             workload.fingerprint_key(self.cfg.workload),
         )
-        return not fingerprint_matches(model, fp)
+
+    def _fingerprint_outdated(self, model: ModelConfig) -> bool:
+        return not fingerprint_matches(model, self._fingerprint(model))
 
     def _other_model_running(self, candidate_name: str) -> bool:
         # Router.running_models() is a lock-free snapshot (no await inside,
@@ -558,7 +577,7 @@ class Autotuner:
                 model.tune_error = ""
             elif report.error:
                 error = report.error
-                set_tune_failed_state(self.cfg, model, error)
+                set_tune_failed_state(self.cfg, model, error, self._fingerprint(model))
             else:
                 gpu = self.cfg.find_gpu(model.gpu_pci_slot)
                 fp = compute_fingerprint(
@@ -595,7 +614,11 @@ class Autotuner:
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
             log.exception("autotune: sweep of %s failed: %s", model.name, error)
-            set_tune_failed_state(self.cfg, model, error)
+            try:
+                fp = self._fingerprint(model)
+            except Exception:  # noqa: BLE001 - still record the failure
+                fp = ""
+            set_tune_failed_state(self.cfg, model, error, fp)
         finally:
             self.running_model = None
             self.running_stage = None
