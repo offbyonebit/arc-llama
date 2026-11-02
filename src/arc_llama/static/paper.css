@@ -164,6 +164,7 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-dashboard .start-section { border-top:1px solid var(--ln); padding-top:16px; display:flex; flex-direction:column; align-items:stretch; gap:12px; margin-top:20px; }
 .paper-dashboard .start-section h2 { font-size:14px; }
 .paper .primary-cta, .paper button.primary, .paper .primary-cta:hover:not(.is-disabled) { background:var(--ac); color:var(--acf); border:1px solid var(--ac); border-radius:8px; font-weight:500; box-shadow:none; }
+.paper :is(button.primary,.work-btn.primary,.harness-btn.primary):hover:not(:disabled) { background:var(--ac); border-color:var(--ac); color:var(--acf); filter:brightness(1.08); }
 .paper-dashboard .paper-model-actions { display:flex; gap:8px; margin:16px 0; flex-wrap:wrap; }
 .paper-dashboard .paper-model-actions button { padding:6px 12px; }
 .paper-dashboard .paper-model-actions a { text-decoration:none; color:var(--ac); padding:6px 12px; border:1px solid var(--ln); border-radius:8px; }
