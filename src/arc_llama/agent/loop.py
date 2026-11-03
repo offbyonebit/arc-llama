@@ -23,6 +23,7 @@ from arc_llama.agent.prompts import (
     USER_INSTRUCTIONS,
     format_tool_result,
 )
+from arc_llama.agent.questions import ASK_USER, clean_questions, format_answers
 from arc_llama.agent.responses import ModelResponseError, completion_message, completion_problem
 from arc_llama.agent.responses import parse_tool_call as parse_tool_call
 from arc_llama.agent.tools import TOOLS, ToolContext, ToolResult
@@ -42,6 +43,7 @@ async def run_agent(
     confirm_callback: Callable[[str, str, dict[str, Any]], Awaitable[bool]] | None = None,
     plan_mode: bool = False,
     plan_callback: Callable[[str], Awaitable[bool]] | None = None,
+    question_callback: Callable[[str, list[dict[str, Any]]], Awaitable[list[list[str]] | None]] | None = None,
     run_id: str | None = None,
     checkpoint_store: CheckpointStore | None = None,
     max_turns: int = 30,
@@ -63,6 +65,7 @@ async def run_agent(
         {"type": "tool_call", "id": str, "name": str, "arguments": dict}
         {"type": "tool_result", "id": str, "name": str, "content": str, "error": bool}
         {"type": "confirm_required", "id": str, "tool": str, "arguments": dict}
+        {"type": "question_required", "id": str, "call_id": str, "questions": list}
         {"type": "error", "message": str}
         {"type": "done"}
 
@@ -74,6 +77,11 @@ async def run_agent(
         plan_callback: Optional async callable invoked as
             `plan_callback(plan_text)` when plan_mode is enabled and
             auto_confirm is False.
+        question_callback: Optional async callable invoked as
+            `question_callback(call_id, questions)` when the model calls
+            ask_user. Returns one list of chosen labels or typed text per
+            question, or None when the user dismissed it. Without one the
+            model is not offered ask_user at all.
     """
     root = root.resolve()
     if work_type == "documents":
@@ -84,6 +92,10 @@ async def run_agent(
     else:
         tools = TOOLS
         instructions = USER_INSTRUCTIONS
+
+    def offered() -> list[dict[str, Any]]:
+        # Nobody can answer ask_user without a question callback, so the model is not told about it.
+        return [d for d in tools.definitions if question_callback is not None or d["function"]["name"] != ASK_USER]
     if plan_mode and not auto_confirm and plan_callback is None:
         yield {
             "type": "error",
@@ -175,7 +187,7 @@ async def run_agent(
             yield {"type": "activity", "phase": "generating"}
             if report_context:
                 try:
-                    counted = await client.post("/v1/chat/budget", json={"model": model, "messages": conversation, "tools": tools.definitions, "max_tokens": 1}, timeout=4.0)
+                    counted = await client.post("/v1/chat/budget", json={"model": model, "messages": conversation, "tools": offered(), "max_tokens": 1}, timeout=4.0)
                     counted.raise_for_status()
                     budget = counted.json()
                     if type(budget.get("prompt_tokens")) is int and budget["prompt_tokens"] >= 0:
@@ -188,7 +200,7 @@ async def run_agent(
                     json={
                         "model": model,
                         "messages": conversation,
-                        "tools": tools.definitions,
+                        "tools": offered(),
                         "tool_choice": "auto",
                     },
                 )
@@ -245,6 +257,17 @@ async def run_agent(
 
                 if problem is not None:
                     result = ToolResult(problem, error=True)
+                elif name == ASK_USER and question_callback is not None:
+                    questions = clean_questions([arguments])
+                    if not questions:
+                        result = ToolResult("ask_user needs a question.", error=True)
+                    else:
+                        yield {"type": "question_required", "id": call_id, "call_id": call_id, "questions": questions}
+                        try:
+                            answers = await asyncio.wait_for(question_callback(call_id, questions), timeout=timeout)
+                        except asyncio.TimeoutError:
+                            answers = None
+                        result = ToolResult(format_answers(questions, answers))
                 elif tools.requires_confirmation(name) and not auto_confirm:
                     yield {
                         "type": "confirm_required",

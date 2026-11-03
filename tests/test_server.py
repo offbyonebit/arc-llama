@@ -1503,7 +1503,7 @@ def test_proxy_rejects_invalid_json_shapes_before_routing(tmp_path, payload):
 
 
 @pytest.mark.parametrize(
-    "path", ["/v1/agent", "/v1/agent/missing/confirm", "/v1/agent/missing/plan"]
+    "path", ["/v1/agent", "/v1/agent/missing/confirm", "/v1/agent/missing/plan", "/v1/agent/missing/answer"]
 )
 @pytest.mark.parametrize("body", [[], None, "invalid"])
 def test_agent_endpoints_reject_nonobject_json(path, body):
@@ -1606,3 +1606,60 @@ def test_queue_metrics_include_resource_admission_wait(monkeypatch):
         response = client.post("/v1/chat/completions", json={"model": "qwen", "messages": []})
         assert response.status_code == 200
         assert app.state.router.timings.record_queue_wait.call_args.args[0] >= 0.04
+
+
+def test_agent_question_is_answered_through_the_answer_endpoint(monkeypatch, tmp_path):
+    import asyncio
+
+    import httpx
+
+    import arc_llama.server as server_mod
+
+    got = []
+    questions = [{"question": "Which?", "header": "", "options": [{"label": "A", "description": ""}], "multiple": False, "custom": True}]
+
+    async def fake_agent(**kwargs):
+        waiting = asyncio.ensure_future(kwargs["question_callback"]("q1", questions))
+        yield {"type": "question_required", "id": "q1", "call_id": "q1", "questions": questions}
+        while not app.state.pending_questions:
+            await asyncio.sleep(0)
+        run_id = next(iter(app.state.pending_questions))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as inner:
+            assert (await inner.post(f"/v1/agent/{run_id}/answer", json={"answers": [["A"], ["B"]]})).status_code == 400
+            assert (await inner.post(f"/v1/agent/{run_id}/answer", json={"answers": [[" A ", "typed"]]})).status_code == 200
+        got.append(await waiting)
+        yield {"type": "done"}
+
+    monkeypatch.setattr(server_mod, "run_agent", fake_agent)
+    cfg = Config()
+    cfg.paths.state_dir = str(tmp_path / "state")
+    app = create_app(cfg, plugins=[])
+    with TestClient(app) as client:
+        response = client.post("/v1/agent", json={"model": "test", "task": "ask me", "questions": True})
+        assert response.status_code == 200
+        asked = next(json.loads(line[6:]) for line in response.text.splitlines() if '"question_required"' in line)
+        assert asked["run_id"] and asked["questions"] == questions
+        assert client.post("/v1/agent/missing/answer", json={"answers": None}).status_code == 404
+    assert got == [[["A", "typed"]]]
+    assert not app.state.pending_questions
+
+
+def test_agent_offers_questions_only_to_a_client_that_answers_them(monkeypatch, tmp_path):
+    import arc_llama.server as server_mod
+
+    seen = []
+
+    async def fake_agent(**kwargs):
+        seen.append(kwargs["question_callback"])
+        yield {"type": "done"}
+
+    monkeypatch.setattr(server_mod, "run_agent", fake_agent)
+    cfg = Config()
+    cfg.paths.state_dir = str(tmp_path / "state")
+    app = create_app(cfg, plugins=[])
+    with TestClient(app) as client:
+        # A script with nobody to answer would leave the model waiting on a question.
+        assert client.post("/v1/agent", json={"model": "test", "task": "go"}).status_code == 200
+        assert client.post("/v1/agent", json={"model": "test", "task": "go", "questions": True}).status_code == 200
+        assert client.post("/v1/agent", json={"model": "test", "task": "go", "questions": "yes"}).status_code == 400
+    assert seen[0] is None and callable(seen[1]) and len(seen) == 2

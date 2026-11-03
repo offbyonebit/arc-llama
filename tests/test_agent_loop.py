@@ -455,3 +455,54 @@ async def test_complete_tool_call_still_runs(tmp_root: Path) -> None:
     [result] = [e for e in events if e["type"] == "tool_result"]
     assert result["error"] is False
     assert (tmp_root / "notes.txt").read_text() == "complete"
+
+
+def _ask_call(arguments):
+    return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "call_q", "type": "function", "function": {"name": "ask_user", "arguments": json.dumps(arguments)}}]}}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers,told", [([["Postgres"]], "Answer: Postgres"), (None, "dismissed")])
+async def test_ask_user_puts_the_question_to_the_user_and_returns_the_answer(tmp_root: Path, answers, told) -> None:
+    responses = [
+        _ask_call({"question": "Which database?", "options": [{"label": "SQLite"}, {"label": "Postgres", "description": "A server"}]}),
+        {"choices": [{"message": {"role": "assistant", "content": "Using it."}}]},
+    ]
+    callback = AsyncMock(return_value=answers)
+    events = await collect_events("set up storage", responses, tmp_root, question_callback=callback)
+
+    asked = next(e for e in events if e["type"] == "question_required")
+    assert asked["call_id"] == "call_q" and asked["questions"][0]["question"] == "Which database?"
+    assert [o["label"] for o in asked["questions"][0]["options"]] == ["SQLite", "Postgres"]
+    callback.assert_awaited_once()
+    result = next(e for e in events if e["type"] == "tool_result")
+    assert told in result["content"] and not result["error"]
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_is_not_offered_when_nobody_can_answer(tmp_root: Path) -> None:
+    sent = []
+
+    def make_response(data):
+        resp = MagicMock()
+        resp.json.return_value = data
+        resp.raise_for_status.return_value = None
+        return resp
+
+    async def post(url, json=None, **_kw):
+        sent.append(json)
+        return make_response({"choices": [{"message": {"role": "assistant", "content": "done"}}]})
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = post
+    for kwargs in ({}, {"question_callback": AsyncMock(return_value=None)}):
+        sent.clear()
+        with patch("arc_llama.agent.loop.httpx.AsyncClient", return_value=mock_client):
+            async for _ in run_agent(task="t", model="m", base_url="http://x", root=tmp_root, **kwargs):
+                pass
+        names = {t["function"]["name"] for t in sent[-1]["tools"]}
+        assert ("ask_user" in names) == bool(kwargs)

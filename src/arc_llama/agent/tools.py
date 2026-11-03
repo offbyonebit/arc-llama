@@ -777,6 +777,41 @@ def _search_files_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResul
     )
 
 
+@tool(
+    name="ask_user",
+    description=(
+        "Ask the user a question and wait for the answer. Use it when you are blocked on a choice only "
+        "the user can make (which approach, which file, what they meant), instead of guessing. Offer 2-4 "
+        "short options; the user can also type their own answer. Do not ask about things you can find out "
+        "by reading the project."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The complete question."},
+            "header": {"type": "string", "description": "Very short label for the question (max 30 chars)."},
+            "options": {
+                "type": "array",
+                "description": "The choices to offer.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "Choice text (1-5 words)."},
+                        "description": {"type": "string", "description": "What choosing it means."},
+                    },
+                    "required": ["label"],
+                },
+            },
+            "multiple": {"type": "boolean", "description": "Allow picking more than one option."},
+        },
+        "required": ["question"],
+    },
+)
+def _ask_user_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    # The agent loop answers this itself when someone can see the question; reaching here means nobody can.
+    return ToolResult("Nobody can answer questions here. Make a sensible choice and say which you made.", error=True)
+
+
 # ---------------------------------------------------------------------------
 # Chat-history tools (require chat_store in ToolContext.extra)
 # ---------------------------------------------------------------------------

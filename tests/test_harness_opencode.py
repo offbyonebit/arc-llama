@@ -124,7 +124,8 @@ def _stop_fake_without_signals(monkeypatch):
 async def _run(tmp_path, monkeypatch, **kwargs):
     monkeypatch.setenv("FAKE_OPENCODE_LOG", str(tmp_path / "log.jsonl"))
     events = []
-    async for e in run_opencode("run it", "m", "http://127.0.0.1:11435", tmp_path, binary=str(FAKE), timeout=30, **kwargs):
+    kwargs.setdefault("timeout", 30)
+    async for e in run_opencode("run it", "m", "http://127.0.0.1:11435", tmp_path, binary=str(FAKE), **kwargs):
         events.append(e)
     log = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
     return events, log
@@ -231,6 +232,67 @@ async def test_permission_is_seen_even_when_opencode_list_endpoint_fails(tmp_pat
     assert reply["body"] == {"reply": "reject"} and events[-1]["type"] == "done"
 
 
+@pytest.mark.parametrize("mode", ["event", "1"])
+@pytest.mark.parametrize("answer", [[["Postgres"]], None])
+async def test_a_question_goes_to_the_user_and_their_answer_back_to_opencode(tmp_path, monkeypatch, mode, answer):
+    monkeypatch.setenv("FAKE_OPENCODE_QUESTION", mode)
+    asked = []
+
+    async def ask(question_id, questions):
+        asked.append((question_id, questions))
+        return answer
+
+    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True, question_callback=ask)
+    need = [e for e in events if e["type"] == "question_required"]
+    assert len(need) == 1 and need[0]["call_id"] == "call_q"
+    assert need[0]["questions"] == [{"question": "Which database?", "header": "Database", "multiple": False, "custom": True,
+                                      "options": [{"label": "SQLite", "description": "One file"},
+                                                  {"label": "Postgres", "description": "A server"}]}]
+    assert len(asked) == 1 and asked[0][0] == "que_1"
+    replies = [e for e in log if "/question/" in e.get("path", "")]
+    assert len(replies) == 1
+    if answer is None:
+        assert replies[0]["path"] == "/question/que_1/reject"
+    else:
+        assert replies[0]["path"] == "/question/que_1/reply" and replies[0]["body"] == {"answers": answer}
+    assert log[0]["env"]["OPENCODE_ENABLE_QUESTION_TOOL"] == "1"
+    assert events[-1]["type"] == "done"
+
+
+async def test_an_unanswered_question_times_out_without_using_up_the_run(tmp_path, monkeypatch):
+    # The wait outlasts the whole run timeout: the question is rejected, and the time spent waiting
+    # on the user is not charged to the run, so OpenCode still gets to finish.
+    monkeypatch.setenv("FAKE_OPENCODE_QUESTION", "event")
+
+    async def never(question_id, questions):
+        await asyncio.Event().wait()
+
+    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True, question_callback=never, timeout=3)
+    assert [e["path"] for e in log if "/question/" in e.get("path", "")] == ["/question/que_1/reject"]
+    assert "error" not in [e["type"] for e in events] and events[-1]["type"] == "done"
+
+
+async def test_without_a_question_callback_the_question_tool_is_denied(tmp_path, monkeypatch):
+    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True)
+    assert json.loads(log[0]["env"]["OPENCODE_CONFIG_CONTENT"])["permission"]["question"] == "deny"
+    assert events[-1]["type"] == "done"
+    assert "question" not in build_config("http://x", "m", questions=True)["permission"]
+
+
+def test_clean_questions_drops_what_a_confused_model_sends():
+    from arc_llama.agent.questions import clean_answers, clean_questions
+
+    assert clean_questions("nope") == []
+    assert clean_questions([{"question": "  "}, {"header": "x"}, 5]) == []
+    got = clean_questions([{"question": "Pick", "options": ["A", {"label": "B"}, {"label": ""}, 3], "multiple": True, "custom": False}])
+    assert got == [{"question": "Pick", "header": "", "multiple": True, "custom": False,
+                    "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""}]}]
+    # With no options the user must be able to type, whatever the model said.
+    assert clean_questions([{"question": "Name?", "custom": False}])[0]["custom"] is True
+    assert clean_answers([["A", " "]], 1) == [["A"]]
+    assert clean_answers([["A"]], 2) is None and clean_answers([[1]], 1) is None and clean_answers("A", 1) is None
+
+
 def test_inherited_tools_ask_in_ask_mode_and_run_in_auto_mode(tmp_path):
     ask = build_config("http://x", "m", auto_confirm=False, mcp_servers=["github", "memory"])["permission"]
     keys = list(ask)
@@ -240,7 +302,7 @@ def test_inherited_tools_ask_in_ask_mode_and_run_in_auto_mode(tmp_path):
     assert ask["github_get*"] == "allow" and ask["memory_search*"] == "allow"
     assert "github_create*" not in ask and "github_delete*" not in ask          # mutating tools are not allowed through
     auto = build_config("http://x", "m", auto_confirm=True, mcp_servers=["github", "memory"])["permission"]
-    assert set(auto) == {"edit", "bash"}                                        # Auto-approve leaves inherited tools alone
+    assert set(auto) == {"edit", "bash", "question"}                            # Auto-approve leaves inherited tools alone
 
 
 def test_mcp_server_names_reads_only_the_keys(tmp_path, monkeypatch):

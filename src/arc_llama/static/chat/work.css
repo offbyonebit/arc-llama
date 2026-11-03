@@ -83,6 +83,17 @@ body.work-mode #chat-log, body.work-mode .ctx-meter, body.work-mode .input-area,
 .work-sheet { margin: 10px 0 6px 36px; padding: 20px 22px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow-lg); }
 .work-sheet h2 { margin: 0 0 4px; font-size: 18px; letter-spacing: -.01em; }
 .work-sheet p { margin: 0; color: var(--fg-dim); font-size: 14px; }
+.work-question-item + .work-question-item { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+.work-question-head { color: var(--fg-mute); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 4px; }
+.work-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.work-choice { display: flex; flex-direction: column; gap: 2px; text-align: left; border: 1px solid var(--border); background: var(--bg-sunk); color: var(--fg); font: inherit; padding: 10px 14px; border-radius: var(--radius-lg); cursor: pointer; }
+.work-choice b { font-size: 14.5px; font-weight: 600; }
+.work-choice span { color: var(--fg-dim); font-size: 13px; }
+.work-choice:hover:not(:disabled) { border-color: var(--fg-dim); }
+.work-choice.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.work-choice:disabled { opacity: .6; cursor: default; }
+.work-choice:focus-visible, .work-question-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.work-question-input { display: block; width: 100%; box-sizing: border-box; margin-top: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); color: var(--fg); font: inherit; font-size: 14px; }
 .work-file { display: flex; gap: 12px; align-items: center; margin: 14px 0 4px; padding: 10px 12px; background: var(--bg-sunk); border-radius: var(--radius-lg); }
 .work-file-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--bg-surface); color: var(--accent); border: 1px solid var(--border-subtle); }
 .work-file b { display: block; font-size: 14px; }
@@ -143,6 +154,8 @@ body.work-mode #chat-log, body.work-mode .ctx-meter, body.work-mode .input-area,
 /* The conversation: each message is a block you can scroll back to. */
 .work-turn { padding-bottom: 28px; margin-bottom: 30px; border-bottom: 1px solid var(--border-subtle); }
 .work-turn:last-child { border-bottom: 0; margin-bottom: 0; }
+/* Earlier turns off screen skip layout and paint, so a long session stays as quick as a short one. */
+.work-turn.prev { content-visibility: auto; contain-intrinsic-size: auto 480px; }
 .work-turn.prev .work-title { font-size: 19px; letter-spacing: -.01em; }
 .work-turn.prev .work-sub { font-size: 14px; }
 .work-turn.prev .work-say { font-size: 15px; color: var(--fg-dim); }
@@ -182,7 +195,9 @@ body.work-mode #chat-log, body.work-mode .ctx-meter, body.work-mode .input-area,
 .work-recent-row { display: flex; align-items: center; border-radius: 12px; }
 .work-recent-row:hover { background: rgba(127,127,127,.12); }
 .work-recent-item { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; text-align: left; border: 0; background: transparent; color: var(--fg); font: inherit; padding: 10px 12px; cursor: pointer; }
-.work-recent-item b { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-recent-head { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.work-recent-head time { flex: none; margin-left: auto; font-size: 13px; color: var(--fg-dim); }
+.work-recent-item b { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .work-recent-item span { font-size: 13px; color: var(--fg-dim); }
 .work-recent-remove { border: 0; background: transparent; color: var(--fg-dim); font-size: 20px; line-height: 1; padding: 6px 12px; cursor: pointer; opacity: 0; }
 .work-recent-row:hover .work-recent-remove, .work-recent-remove:focus-visible { opacity: 1; }

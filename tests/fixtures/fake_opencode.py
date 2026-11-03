@@ -3,7 +3,8 @@
 
 Replays tests/fixtures/opencode_events_bash.json when a prompt arrives. With
 FAKE_OPENCODE_PERMISSION=1 it first raises a permission request and only
-continues after a reply, which it records in FAKE_OPENCODE_LOG."""
+continues after a reply, which it records in FAKE_OPENCODE_LOG. FAKE_OPENCODE_QUESTION does the
+same with a question request ("event": only on the stream, "1": only through GET /question)."""
 import json
 import os
 import queue
@@ -18,9 +19,10 @@ SID = next(e["properties"]["sessionID"] for e in EVENTS if e["type"] == "session
 mode = os.environ.get("FAKE_OPENCODE_PERMISSION")
 want_permission = mode in ("1", "event")
 list_endpoint_broken = mode == "event"        # mirrors OpenCode 1.19.0: GET /permission answers 400 for a web fetch
+question_mode = os.environ.get("FAKE_OPENCODE_QUESTION")
 log_path = os.environ.get("FAKE_OPENCODE_LOG")
 subscribers: list[queue.Queue] = []
-state = {"permission": None, "replied": threading.Event(), "seen_env": {}}
+state = {"permission": None, "replied": threading.Event(), "question": None, "answered": threading.Event(), "seen_env": {}}
 
 
 def log(entry):
@@ -37,6 +39,15 @@ def replay():
             for q in list(subscribers):
                 q.put({"type": "permission.asked", "properties": state["permission"]})
         state["replied"].wait(10)
+    if question_mode:
+        state["question"] = {"id": "que_1", "sessionID": SID, "tool": {"messageID": "msg_1", "callID": "call_q"},
+                             "questions": [{"question": "Which database?", "header": "Database",
+                                            "options": [{"label": "SQLite", "description": "One file"},
+                                                        {"label": "Postgres", "description": "A server"}]}]}
+        if question_mode == "event":
+            for q in list(subscribers):
+                q.put({"type": "question.asked", "properties": state["question"]})
+        state["answered"].wait(10)
     for e in EVENTS:
         if e["type"] in ("session.created",):
             continue
@@ -78,6 +89,10 @@ class H(BaseHTTPRequestHandler):
                 {"name": "quota", "description": "Show quota", "source": "command", "template": "/quota", "hints": []},
                 {"name": "pdf", "description": "PDF skill", "source": "skill", "template": "x", "hints": []},
             ])
+        if self.path.startswith("/question"):
+            pending = state["question"] if question_mode == "1" and state["question"] and not state["answered"].is_set() else None
+            # A malformed entry first: the poller must skip it and still see the real request.
+            return self._json([{"sessionID": SID}, pending] if pending else [])
         if self.path.startswith("/permission"):
             if list_endpoint_broken and state["permission"] and not state["replied"].is_set():
                 return self._json({"name": "BadRequest", "data": {"message": "Expected JSON value, got undefined"}}, 400)
@@ -118,6 +133,9 @@ class H(BaseHTTPRequestHandler):
         if "/prompt_async" in self.path:
             threading.Thread(target=replay, daemon=True).start()
             return self._json({})
+        if "/question/" in self.path:
+            state["answered"].set()
+            return self._json(True)
         if "/permission/" in self.path:
             state["replied"].set()
             return self._json(True)
@@ -126,7 +144,8 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     log({"argv": sys.argv[1:], "env": {k: os.environ.get(k) for k in (
-        "OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_SERVER_PASSWORD")}, "cwd": os.getcwd()})
+        "OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_SERVER_PASSWORD",
+        "OPENCODE_ENABLE_QUESTION_TOOL")}, "cwd": os.getcwd()})
     threading.Timer(90, lambda: os._exit(0)).start()   # never outlive a crashed test run
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     print(f"opencode server listening on http://127.0.0.1:{srv.server_address[1]}", flush=True)

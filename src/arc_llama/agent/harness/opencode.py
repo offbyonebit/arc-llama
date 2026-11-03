@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from arc_llama.agent.questions import clean_questions
+
 log = logging.getLogger("arc_llama.agent.harness.opencode")
 
 PROVIDER_ID = "arc-llama"
@@ -100,8 +102,12 @@ def build_config(
     local_only: bool = True,
     mcp_servers: tuple[str, ...] | list[str] = (),
     profile: dict[str, Any] | None = None,
+    questions: bool = False,
 ) -> dict[str, Any]:
     """Inline OpenCode config that routes every request through arc-llama.
+
+    ``questions`` keeps OpenCode's ``question`` tool; without it the tool is denied, because a question
+    nobody relays to the user leaves the run waiting until it times out.
 
     A ``profile`` ({"mcp": [...], "skills": [...], "web": bool}) is an allow-list over what the user's
     own OpenCode setup offers. Servers it leaves out are not started at all (their tools never reach the
@@ -138,6 +144,8 @@ def build_config(
         if not profile.get("web"):
             for tool in WEB_TOOLS:
                 rules[tool] = "deny"
+    if not questions:
+        config["permission"]["question"] = "deny"
     if local_only:
         # Without this a session can still reach any cloud provider in the user's own config.
         config["enabled_providers"] = [PROVIDER_ID]
@@ -373,6 +381,7 @@ async def run_opencode(
     *,
     auto_confirm: bool = False,
     confirm_callback: Callable[[str, str, dict[str, Any]], Awaitable[bool]] | None = None,
+    question_callback: Callable[[str, list[dict[str, Any]]], Awaitable[list[list[str]] | None]] | None = None,
     local_only: bool = True,
     timeout: float = 600.0,
     binary: str | None = None,
@@ -385,7 +394,11 @@ async def run_opencode(
     """Drive OpenCode for one task, yielding ``run_agent``-shaped events.
 
     With ``command`` set, the harness's own slash command of that name runs (with ``arguments``)
-    instead of a plain prompt, so user commands, MCP prompts and skills behave as they do in OpenCode."""
+    instead of a plain prompt, so user commands, MCP prompts and skills behave as they do in OpenCode.
+
+    With ``question_callback`` set, each question OpenCode's ``question`` tool asks is yielded as
+    ``question_required`` and answered with what the callback returns (None dismisses it). Without one
+    the tool is denied, so the model cannot ask something nobody will see."""
     exe = find_binary(binary)
     if exe is None:
         yield {"type": "error", "message": "opencode was not found. Install OpenCode or set ARC_LLAMA_OPENCODE_BIN."}
@@ -405,12 +418,16 @@ async def run_opencode(
         "OPENCODE_SERVER_PASSWORD": password,
         "OPENCODE_CONFIG_CONTENT": json.dumps(
             build_config(inference.url, model, auto_confirm=auto_confirm, local_only=local_only,
-                         mcp_servers=mcp_server_names(root), profile=tool_profile)
+                         mcp_servers=mcp_server_names(root), profile=tool_profile,
+                         questions=question_callback is not None)
         ),
         "OPENCODE_DISABLE_AUTOUPDATE": "1",
         "OPENCODE_DISABLE_SHARE": "1",
         "OPENCODE_DISABLE_MODELS_FETCH": "1",
     }
+    # Some OpenCode clients only get the question tool with this set; build_config denies it when unanswerable.
+    if question_callback is not None:
+        env["OPENCODE_ENABLE_QUESTION_TOOL"] = "1"
     server = _Server(exe, root, env)
     yield {"type": "status", "message": "Starting OpenCode…"}
     try:
@@ -450,21 +467,23 @@ async def run_opencode(
             yield {"type": "harness_session", "session_id": "oc-" + session_id}
             translator = OpenCodeTranslator(session_id)
 
-            handled: set[str] = set()      # permission ids already put to the user (events and polling can both report one)
+            handled: set[str] = set()      # permission and question ids already put to the user (events and polling can both report one)
 
             async def poll_permissions() -> None:
                 seen: set[str] = set()
+                sources = [("/permission", "_permission")] + ([("/question", "_question")] if question_callback else [])
                 while True:
                     await asyncio.sleep(PERMISSION_POLL_SECONDS)
-                    try:
-                        pending = (await client.get("/permission")).json()
-                    except (httpx.HTTPError, ValueError):
-                        continue
-                    for req in pending if isinstance(pending, list) else []:
-                        if req.get("sessionID") != session_id or req["id"] in seen:
+                    for path, kind in sources:
+                        try:
+                            pending = (await client.get(path)).json()
+                        except (httpx.HTTPError, ValueError):
                             continue
-                        seen.add(req["id"])
-                        await queue.put({"type": "_permission", "request": req})
+                        for req in pending if isinstance(pending, list) else []:
+                            if not isinstance(req, dict) or req.get("sessionID") != session_id or not req.get("id") or req["id"] in seen:
+                                continue
+                            seen.add(req["id"])
+                            await queue.put({"type": kind, "request": req})
 
             poller = asyncio.create_task(poll_permissions())
             if command:
@@ -526,6 +545,32 @@ async def run_opencode(
                     req = event.get("properties") or {}
                     if req.get("sessionID") == session_id and req.get("id"):
                         event = {"type": "_permission", "request": req}
+                if event.get("type") == "question.asked":
+                    req = event.get("properties") or {}
+                    if req.get("sessionID") == session_id and req.get("id"):
+                        event = {"type": "_question", "request": req}
+                if event.get("type") == "_question":
+                    req = event["request"]
+                    if req.get("id") in handled or question_callback is None:
+                        continue
+                    handled.add(req["id"])
+                    questions = clean_questions(req.get("questions"))
+                    call_id = str((req.get("tool") or {}).get("callID") or "")
+                    answers = None
+                    if questions:
+                        yield {"type": "question_required", "id": req["id"], "call_id": call_id, "questions": questions}
+                        asked_at = loop.time()
+                        try:
+                            answers = await asyncio.wait_for(question_callback(req["id"], questions), timeout)
+                        except asyncio.TimeoutError:
+                            answers = None
+                        # Time the user spends answering is not run time.
+                        deadline += loop.time() - asked_at
+                    if answers is None:
+                        await client.post(f"/question/{req['id']}/reject")
+                    else:
+                        await client.post(f"/question/{req['id']}/reply", json={"answers": answers})
+                    continue
                 if event.get("type") == "_permission":
                     req = event["request"]
                     if req.get("id") in handled:
@@ -537,7 +582,9 @@ async def run_opencode(
                     # Whatever the harness still asks about is a decision for the user. Auto-approve only
                     # changes what the harness is configured to ask about (see build_config); it never
                     # answers a question the harness did raise.
+                    asked_at = loop.time()
                     approved = bool(await confirm_callback(req["id"], tool, ask_arguments)) if confirm_callback else auto_confirm
+                    deadline += loop.time() - asked_at
                     await client.post(
                         f"/permission/{req['id']}/reply",
                         json={"reply": "once" if approved else "reject"},

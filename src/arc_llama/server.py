@@ -68,6 +68,7 @@ from arc_llama.agent.harness_history import (
 )
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.profiles import PROFILE_ID, ProfileStore
+from arc_llama.agent.questions import clean_answers
 from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.agent.sessions import SESSION_ID, SessionStore
 from arc_llama.api.context_budget import register_context_budget_route
@@ -325,6 +326,8 @@ def create_app(
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
         app.state.pending_plan_approvals = pending_plan_approvals
+        # run_id -> (answered, {"questions": [...], "answers": [[...]] | None}) for a question the model is waiting on
+        app.state.pending_questions = {}
         app.state.work_runs = {}
         app.state.active_harness_runs = collections.Counter()
         app.state.harness_installs = HarnessInstallManager(cfg, config_path or default_config_path())
@@ -741,7 +744,9 @@ def create_app(
                 "profile": "optional-profile-name", // must match the server's active profile
                 "harness": "builtin" | "opencode" | "hermes",  // experimental; default "builtin"
                 "local_only": true,                 // opencode only: never reach cloud providers
-                "track_changes": false              // emit a final "changes" event and allow undo
+                "track_changes": false,             // emit a final "changes" event and allow undo
+                "questions": false                  // the client answers question_required (POST .../answer);
+                                                    // without it the model is never offered a way to ask
             }
 
         Returns a text/event-stream of JSON objects:
@@ -751,6 +756,7 @@ def create_app(
             {"type": "tool_call", "id": "...", "name": "...", "arguments": {...}}
             {"type": "tool_result", "id": "...", "name": "...", "content": "...", "error": false}
             {"type": "confirm_required", "id": "...", "run_id": "...", "tool": "...", "arguments": {...}}
+            {"type": "question_required", "id": "...", "run_id": "...", "call_id": "...", "questions": [...]}
             {"type": "error", "message": "..."}
             {"type": "done"}
         """
@@ -770,7 +776,7 @@ def create_app(
         for key in ("root", "folder", "profile"):
             if body.get(key) is not None and not isinstance(body[key], str):
                 raise HTTPException(status_code=400, detail=f"{key} must be a string")
-        for key in ("auto_confirm", "plan_mode", "track_changes"):
+        for key in ("auto_confirm", "plan_mode", "track_changes", "questions"):
             if key in body and not isinstance(body[key], bool):
                 raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
         max_turns = body.get("max_turns", 30)
@@ -845,6 +851,8 @@ def create_app(
         if auto_confirm:
             await _require_admin(request)
         plan_mode = bool(body.get("plan_mode", False))
+        # Only a client that shows questions may let the model ask; anyone else would leave it waiting.
+        answers_questions = bool(body.get("questions", False))
         folder = body.get("folder") or ""
         root_path = body.get("root") or cfg.agent.root
         root = Path(root_path).expanduser()
@@ -887,6 +895,8 @@ def create_app(
         if plan_mode:
             pending_plans[run_id] = (plan_event, plan_result)
 
+        pending_questions = request.app.state.pending_questions
+
         base_url = f"http://{cfg.server.host}:{cfg.server.port}"
         chat_store: ChatStore = request.app.state.chat_store
         checkpoint_store: CheckpointStore = request.app.state.checkpoint_store
@@ -909,6 +919,16 @@ def create_app(
             await plan_event.wait()
             return plan_result["approved"]
 
+        async def question_callback(question_id: str, questions: list[dict[str, Any]]) -> list[list[str]] | None:
+            answered = asyncio.Event()
+            slot: dict[str, Any] = {"questions": questions, "answers": None}
+            pending_questions[run_id] = (answered, slot)
+            try:
+                await answered.wait()
+            finally:
+                pending_questions.pop(run_id, None)
+            return slot["answers"]
+
         tracker: ChangeTracker | None = None
         if body.get("track_changes", False):
             tracker = ChangeTracker(root, request.app.state.work_undo_dir / run_id)
@@ -926,6 +946,7 @@ def create_app(
                     root=root,
                     auto_confirm=auto_confirm,
                     confirm_callback=confirm_callback,
+                    question_callback=question_callback if answers_questions else None,
                     local_only=local_only,
                     command=harness_command,
                     arguments=command_arguments,
@@ -953,6 +974,7 @@ def create_app(
                     confirm_callback=confirm_callback,
                     plan_mode=plan_mode,
                     plan_callback=plan_callback,
+                    question_callback=question_callback if answers_questions else None,
                     run_id=run_id,
                     checkpoint_store=checkpoint_store,
                     max_turns=max_turns,
@@ -977,7 +999,7 @@ def create_app(
                         confirm_event.clear()
                         confirm_result["approved"] = False
                         event = {**event, "run_id": run_id}
-                    if event.get("type") == "plan":
+                    if event.get("type") in ("plan", "question_required"):
                         event = {**event, "run_id": run_id}
                     if event.get("type") == "checkpoint":
                         event = {**event, "run_id": run_id}
@@ -1019,6 +1041,7 @@ def create_app(
                     tracker.discard()
                 pending.pop(run_id, None)
                 pending_plans.pop(run_id, None)
+                pending_questions.pop(run_id, None)
                 if agent_chat_id is not None:
                     try:
                         chat = chat_store.get(agent_chat_id)
@@ -1289,6 +1312,28 @@ def create_app(
         event, result = entry
         result["approved"] = bool(body.get("approved", False))
         event.set()
+        return {"ok": True}
+
+    @app.post("/v1/agent/{run_id}/answer")
+    async def answer_agent_question(
+        run_id: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, bool]:
+        """Answer the question a running agent is waiting on.
+
+        Request body: {"answers": [["chosen label or typed text", ...], ...]} with one list per
+        question, or {"answers": null} to dismiss the question.
+        """
+        body = await _read_json_body(request)
+        entry = request.app.state.pending_questions.get(run_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Run not found or not waiting on a question")
+        answered, slot = entry
+        raw = body.get("answers")
+        answers = None if raw is None else clean_answers(raw, len(slot["questions"]))
+        if raw is not None and answers is None:
+            raise HTTPException(status_code=400, detail="answers must hold one list of strings per question")
+        slot["answers"] = answers
+        answered.set()
         return {"ok": True}
 
     @app.post("/v1/agent/{run_id}/plan")
