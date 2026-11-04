@@ -266,7 +266,7 @@ def test_hermes_install_uses_locked_sync_and_isolated_dirs(cfg, monkeypatch, tmp
     with mock_client(hermes_routes(payload, "v0.22.5")) as client:
         result = hi.install_harness(config, "hermes", config_path=path, client=client,
                                     runner=runner_for(calls, effect=effect))
-    assert calls[0][:3] == ["/usr/bin/uv", "sync", "--frozen"] and "--extra" in calls[0] and "acp" in calls[0]
+    assert calls[0][:3] == [str(Path("/usr/bin/uv")), "sync", "--frozen"] and "--extra" in calls[0] and "acp" in calls[0]
     assert "--no-dev" in calls[0] and calls[0][-2:] == ["--python", hi.HERMES_PYTHON]
     assert calls[1][1:] == ["acp", "--check"]
     root = hi.harness_root(config)
