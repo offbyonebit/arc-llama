@@ -6,7 +6,9 @@ endpoint, and translates its event stream into the vocabulary used by
 ``run_agent``. The harness keeps its own tools, MCP servers, skills and
 ``AGENTS.md``; arc-llama only supplies the model and the surface.
 
-Verified against OpenCode 1.19.0.
+OpenCode 2 replaced the 1.x HTTP API and event stream, so each server is asked which one it speaks
+(``_V1Api`` / ``_V2Api``) and runs are translated by the matching translator. The inline config and
+its permission rules are read the same way by both. Verified against OpenCode 1.19.5 and 2.2.5.
 """
 from __future__ import annotations
 
@@ -32,6 +34,10 @@ PROVIDER_ID = "arc-llama"
 LISTEN_RE = re.compile(r"listening on (https?://[^\s]+)")
 STARTUP_TIMEOUT = 45.0
 PERMISSION_POLL_SECONDS = 0.75
+# OpenCode 2 loads commands in the background after it starts listening; wait this long for them.
+COMMAND_LOAD_SECONDS = 10.0
+# OpenCode 2 names permissions after its own tools; Work's approval sheet speaks the 1.x names.
+V2_PERMISSION_NAMES = {"shell": "bash"}
 # Tools that change the machine; everything else (read, grep, ...) stays at the harness default.
 GUARDED_PERMISSIONS = ("edit", "bash")
 # Commands that still ask when auto-approve is on. Patterns are matched against the whole command line.
@@ -90,6 +96,11 @@ def mcp_server_names(root: Path | str | None = None, extra_files: tuple[Path, ..
             continue
         servers = data.get("mcp") if isinstance(data, dict) else None
         if isinstance(servers, dict):
+            # OpenCode 2 nests servers under "servers" beside its own settings; 1.x lists them directly.
+            if isinstance(servers.get("servers"), dict):
+                servers = servers["servers"]
+            else:
+                servers = {k: v for k, v in servers.items() if k != "timeout" and isinstance(v, dict)}
             names += [n for n in servers if isinstance(n, str) and n and n not in names]
     return names
 
@@ -138,6 +149,10 @@ def build_config(
         for name in mcp_servers:
             if name not in allowed_servers:
                 rules[f"{name}_*"] = "deny"
+        # OpenCode 2 drops the enabled-only entries above; its policies keep a left-out server from
+        # starting at all. OpenCode 1.x ignores the key.
+        config["policies"] = [{"action": "mcp.use", "resource": name, "effect": "deny"}
+                              for name in mcp_servers if name not in allowed_servers]
         rules["skill"] = {"*": "deny", **{name: "allow" for name in profile.get("skills") or []}}
         for tool in profile.get("tools_off") or []:
             rules[PERMISSION_FOR_TOOL.get(tool, tool)] = "deny"
@@ -266,20 +281,24 @@ class OpenCodeTranslator:
             pid = str(part.get("id") or "")
             if (part.get("time") or {}).get("end") and pid not in self._said and part.get("text"):
                 self._said.add(pid)
-                full, streamed = part["text"], self._streamed.pop(pid, "")
-                if streamed:
-                    if not full.startswith(streamed):
-                        if streamed.rstrip() == full.rstrip():
-                            # The final text dropped trailing whitespace already shown.
-                            return self._phase("answering")
-                        return [{"type": "error", "message": "OpenCode's completed answer differs from its streamed text; retry the request."}]
-                    # The words already reached the page as deltas; send only what was missed.
-                    tail = full[len(streamed):] if full.startswith(streamed) else ""
-                    return [*self._phase("answering"), *([{"type": "assistant_delta", "content": tail}] if tail else [])]
-                return [*self._phase("answering"), {"type": "assistant", "content": full}]
+                return self._settle(pid, part["text"])
             if not (part.get("time") or {}).get("end"):
                 return self._phase("answering")
         return []
+
+    def _settle(self, key: str, full: str) -> list[dict[str, Any]]:
+        """The completed text of one answer part, after its words may already have streamed."""
+        streamed = self._streamed.pop(key, "")
+        if streamed:
+            if not full.startswith(streamed):
+                if streamed.rstrip() == full.rstrip():
+                    # The final text dropped trailing whitespace already shown.
+                    return self._phase("answering")
+                return [{"type": "error", "message": "OpenCode's completed answer differs from its streamed text; retry the request."}]
+            # The words already reached the page as deltas; send only what was missed.
+            tail = full[len(streamed):]
+            return [*self._phase("answering"), *([{"type": "assistant_delta", "content": tail}] if tail else [])]
+        return [*self._phase("answering"), {"type": "assistant", "content": full}]
 
     def _tool(self, part: dict[str, Any]) -> list[dict[str, Any]]:
         call_id, name = str(part.get("callID") or part.get("id") or ""), part.get("tool") or "tool"
@@ -294,6 +313,323 @@ class OpenCodeTranslator:
             out.append({"type": "tool_result", "id": call_id, "name": name,
                         "content": str(content if content is not None else ""), "error": status == "error"})
         return out
+
+
+class OpenCodeV2Translator(OpenCodeTranslator):
+    """The same mapping for OpenCode 2, whose events are ``{"type", "data"}`` and name each step.
+
+    Text and reasoning arrive as ``session.text.*`` / ``session.reasoning.*`` per assistant message
+    and ordinal, tools as ``session.tool.*`` by call id, and the run ends with ``session.execution.*``."""
+
+    def __init__(self, session_id: str | None = None) -> None:
+        super().__init__(session_id)
+        self._tool_names: dict[str, str] = {}
+
+    def feed(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        kind, data = str(event.get("type") or ""), event.get("data")
+        if not isinstance(data, dict):
+            return []
+        sid = data.get("sessionID")
+        if self.session_id and sid and sid != self.session_id:
+            return []
+        key = f"{data.get('assistantMessageID')}:{data.get('ordinal')}"
+        if kind in ("session.reasoning.started", "session.reasoning.delta"):
+            return self._phase("thinking")
+        if kind == "session.text.started":
+            return self._phase("answering")
+        if kind == "session.text.delta":
+            out = self._phase("answering")
+            text = data.get("delta")
+            if isinstance(text, str) and text and key not in self._said:
+                self._streamed[key] = self._streamed.get(key, "") + text
+                out.append({"type": "assistant_delta", "content": text})
+            return out
+        if kind == "session.text.ended":
+            text = data.get("text")
+            if isinstance(text, str) and text and key not in self._said:
+                self._said.add(key)
+                return self._settle(key, text)
+            return []
+        if kind == "session.tool.input.started":
+            self._tool_names[str(data.get("id") or "")] = str(data.get("name") or "tool")
+            return []
+        if kind in ("session.tool.called", "session.tool.success", "session.tool.failed"):
+            return self._tool_event(kind, data)
+        if kind == "session.step.ended":
+            tokens = data.get("tokens")
+            cache_value = tokens.get("cache") if isinstance(tokens, dict) else None
+            cache = cache_value if isinstance(cache_value, dict) else {}
+            if isinstance(tokens, dict):
+                counts = [tokens.get("input"), tokens.get("output"), cache.get("read", 0), cache.get("write", 0)]
+                if all(type(n) is int and n >= 0 for n in counts) and any(counts):
+                    prompt, completion = counts[0] + counts[2] + counts[3], counts[1]
+                    mid = str(data.get("assistantMessageID") or "")
+                    if self._usage.get(mid) != (prompt, completion):
+                        self._usage[mid] = (prompt, completion)
+                        return [{"type": "usage", "prompt_tokens": prompt, "completion_tokens": completion}]
+            return []
+        if kind == "session.execution.started" and not self._busy:
+            self._busy = True
+            return [{"type": "status", "message": "Working…"}]
+        if kind in ("session.execution.succeeded", "session.execution.interrupted"):
+            return self._finish()
+        if kind == "session.execution.failed":
+            err = _obj(data.get("error"))
+            self.done = True
+            return [{"type": "error", "message": str(err.get("message") or "OpenCode reported an error")}]
+        if kind == "session.retry.scheduled":
+            # Without this the run looks frozen while OpenCode waits out its backoff.
+            err = _obj(data.get("error"))
+            attempt = data.get("attempt")
+            reason = " ".join(str(err.get("message") or "").split())[:160]
+            return [{"type": "status", "message": "The model request failed; OpenCode is retrying"
+                     + (f" (attempt {attempt})" if type(attempt) is int else "") + (f": {reason}" if reason else ".")}]
+        if kind == "session.compaction.started":
+            return [{"type": "status", "message": "OpenCode is summarizing the conversation to make room…"}]
+        return []
+
+    def _tool_event(self, kind: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+        call_id = str(data.get("id") or "")
+        name = self._tool_names.get(call_id) or str(data.get("name") or "tool")
+        out: list[dict[str, Any]] = []
+        if call_id not in self._called:
+            self._called.add(call_id)
+            arguments = data.get("input") if kind == "session.tool.called" else None
+            out.append({"type": "tool_call", "id": call_id, "name": name,
+                        "arguments": arguments if isinstance(arguments, dict) else {}})
+        if kind != "session.tool.called" and call_id not in self._finished:
+            self._finished.add(call_id)
+            if kind == "session.tool.success":
+                content = data.get("content")
+                text = "\n".join(str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text") \
+                    if isinstance(content, list) else str(content or "")
+                out.append({"type": "tool_result", "id": call_id, "name": name, "content": text, "error": False})
+            else:
+                err = data.get("error")
+                message = err.get("message") if isinstance(err, dict) else err
+                out.append({"type": "tool_result", "id": call_id, "name": name, "content": str(message or ""), "error": True})
+        return out
+
+
+def _obj(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _v2_permission(req: dict[str, Any]) -> dict[str, Any]:
+    """An OpenCode 2 permission request in the 1.x shape the Work view reads."""
+    action = str(req.get("action") or "tool")
+    return {"id": req.get("id"), "sessionID": req.get("sessionID"),
+            "permission": V2_PERMISSION_NAMES.get(action, action),
+            "patterns": [str(r) for r in req.get("resources") or []],
+            "metadata": _obj(req.get("metadata")),
+            "tool": {"callID": str(_obj(req.get("source")).get("id") or "")}}
+
+
+def _v2_question(form: dict[str, Any]) -> dict[str, Any] | None:
+    """An OpenCode 2 question form in the 1.x question shape, or None for any other kind of form.
+
+    Each question is one field: its title is the header, its description the question."""
+    metadata = _obj(form.get("metadata"))
+    fields = form.get("fields")
+    if metadata.get("kind") != "question" or not isinstance(fields, list):
+        return None
+    questions, keys, multiple = [], [], []
+    for field in fields:
+        if not isinstance(field, dict) or not field.get("key"):
+            continue
+        keys.append(str(field["key"]))
+        multiple.append(field.get("type") == "multiselect")
+        questions.append({
+            "question": field.get("description") or field.get("title") or "",
+            "header": field.get("title") or "",
+            "options": [{"label": o.get("label") or o.get("value"), "description": o.get("description") or ""}
+                        for o in field.get("options") or [] if isinstance(o, dict)],
+            "multiple": field.get("type") == "multiselect",
+            "custom": field.get("custom", True),
+        })
+    tool = _obj(metadata.get("tool"))
+    return {"id": form.get("id"), "sessionID": form.get("sessionID"), "questions": questions,
+            "tool": {"callID": str(tool.get("id") or "")}, "keys": keys, "multiple": multiple}
+
+
+class _V1Api:
+    """The OpenCode 1.x HTTP API: ``/session``, ``/event``, ``/permission`` and ``/question``."""
+
+    events_path = "/event"
+
+    def __init__(self, client: httpx.AsyncClient, root: Path) -> None:
+        self.client = client
+        client.params = httpx.QueryParams({"directory": str(root)})
+
+    def translator(self, session_id: str) -> OpenCodeTranslator:
+        return OpenCodeTranslator(session_id)
+
+    async def create_session(self, title: str, model: str) -> str:
+        created = await self.client.post("/session", json={"title": title})
+        created.raise_for_status()
+        return str(created.json()["id"])
+
+    async def prompt(self, session_id: str, text: str, model: str) -> None:
+        sent = await self.client.post(f"/session/{session_id}/prompt_async", json={
+            "model": {"providerID": PROVIDER_ID, "modelID": model}, "parts": [{"type": "text", "text": text}]})
+        sent.raise_for_status()
+
+    async def command(self, session_id: str, name: str, arguments: str, model: str) -> httpx.Response:
+        # OpenCode answers this request only when the command has finished.
+        return await self.client.post(f"/session/{session_id}/command", timeout=None,
+                                      json={"command": name, "arguments": arguments, "model": f"{PROVIDER_ID}/{model}"})
+
+    def inline(self, event: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+        """A permission or question request carried on the event stream, ready for the run loop."""
+        req = event.get("properties") or {}
+        if not isinstance(req, dict) or req.get("sessionID") != session_id or not req.get("id"):
+            return None
+        if event.get("type") == "permission.asked":
+            return {"type": "_permission", "request": req}
+        if event.get("type") == "question.asked":
+            return {"type": "_question", "request": req}
+        return None
+
+    async def pending(self, session_id: str, questions: bool) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        for path, kind in [("/permission", "_permission")] + ([("/question", "_question")] if questions else []):
+            try:
+                listed = (await self.client.get(path)).json()
+            except (httpx.HTTPError, ValueError):
+                continue
+            for req in listed if isinstance(listed, list) else []:
+                if isinstance(req, dict) and req.get("sessionID") == session_id and req.get("id"):
+                    found.append({"type": kind, "request": req})
+        return found
+
+    async def reply_permission(self, session_id: str, req: dict[str, Any], approved: bool) -> None:
+        await self.client.post(f"/permission/{req['id']}/reply", json={"reply": "once" if approved else "reject"})
+
+    async def reply_question(self, session_id: str, req: dict[str, Any], answers: list[list[str]] | None) -> None:
+        if answers is None:
+            await self.client.post(f"/question/{req['id']}/reject")
+        else:
+            await self.client.post(f"/question/{req['id']}/reply", json={"answers": answers})
+
+    async def abort(self, session_id: str) -> None:
+        await self.client.post(f"/session/{session_id}/abort")
+
+    async def delete(self, session_id: str) -> None:
+        await self.client.delete(f"/session/{session_id}")
+
+    async def commands(self) -> list[dict[str, Any]]:
+        response = await self.client.get("/command")
+        response.raise_for_status()
+        found = response.json()
+        return found if isinstance(found, list) else []
+
+
+class _V2Api(_V1Api):
+    """The OpenCode 2 HTTP API under ``/api``: the folder is a ``location``, questions are forms."""
+
+    events_path = "/api/event"
+
+    def __init__(self, client: httpx.AsyncClient, root: Path) -> None:
+        self.client = client
+        client.params = httpx.QueryParams({"location[directory]": str(root)})
+        self.root = root
+
+    def translator(self, session_id: str) -> OpenCodeTranslator:
+        return OpenCodeV2Translator(session_id)
+
+    async def create_session(self, title: str, model: str) -> str:
+        # OpenCode 2 has no title field: it names the session from the first message itself.
+        created = await self.client.post("/api/session", json={
+            "model": {"id": model, "providerID": PROVIDER_ID}, "location": {"directory": str(self.root)}})
+        created.raise_for_status()
+        return str(created.json()["data"]["id"])
+
+    async def prompt(self, session_id: str, text: str, model: str) -> None:
+        (await self.client.post(f"/api/session/{session_id}/prompt", json={"text": text})).raise_for_status()
+
+    async def command(self, session_id: str, name: str, arguments: str, model: str) -> httpx.Response:
+        sent = await self.client.post(f"/api/session/{session_id}/command", timeout=None, json={"name": name, "text": arguments})
+        if sent.status_code == 404 and "CommandNotFound" in sent.text:
+            # Skills are listed beside commands (as 1.x did) but run as a prompt that names the skill.
+            sent = await self.client.post(f"/api/session/{session_id}/prompt",
+                                          json={"text": arguments or f"Use the {name} skill.", "skills": [{"id": name}]})
+        return sent
+
+    def inline(self, event: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+        data = event.get("data") or {}
+        if not isinstance(data, dict):
+            return None
+        if event.get("type") == "permission.asked" and data.get("sessionID") == session_id and data.get("id"):
+            return {"type": "_permission", "request": _v2_permission(data)}
+        form = data.get("form")
+        if event.get("type") == "form.created" and isinstance(form, dict) and form.get("sessionID") == session_id and form.get("id"):
+            question = _v2_question(form)
+            return {"type": "_question", "request": question} if question else None
+        return None
+
+    async def pending(self, session_id: str, questions: bool) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        sources = [(f"/api/session/{session_id}/permission", "_permission")]
+        if questions:
+            sources.append((f"/api/session/{session_id}/form", "_question"))
+        for path, kind in sources:
+            try:
+                listed = (await self.client.get(path)).json().get("data")
+            except (httpx.HTTPError, ValueError, AttributeError):
+                continue
+            for item in listed if isinstance(listed, list) else []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                req = _v2_permission(item) if kind == "_permission" else _v2_question(item)
+                if req and req.get("sessionID") == session_id:
+                    found.append({"type": kind, "request": req})
+        return found
+
+    async def reply_permission(self, session_id: str, req: dict[str, Any], approved: bool) -> None:
+        await self.client.post(f"/api/session/{session_id}/permission/{req['id']}/reply",
+                               json={"decision": "once" if approved else "reject"})
+
+    async def reply_question(self, session_id: str, req: dict[str, Any], answers: list[list[str]] | None) -> None:
+        if answers is None:
+            await self.client.delete(f"/api/session/{session_id}/form/{req['id']}")
+            return
+        answer: dict[str, Any] = {}
+        for key, many, given in zip(req.get("keys") or [], req.get("multiple") or [], answers, strict=False):
+            answer[key] = list(given) if many else (given[0] if given else "")
+        await self.client.post(f"/api/session/{session_id}/form/{req['id']}/reply", json={"answer": answer})
+
+    async def abort(self, session_id: str) -> None:
+        await self.client.post(f"/api/session/{session_id}/interrupt")
+
+    async def delete(self, session_id: str) -> None:
+        await self.client.delete(f"/api/session/{session_id}")
+
+    async def commands(self) -> list[dict[str, Any]]:
+        """Commands and skills in the 1.x ``/command`` shape. The list fills in shortly after startup."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + COMMAND_LOAD_SECONDS
+        while True:
+            response = await self.client.get("/api/command")
+            response.raise_for_status()
+            commands = response.json().get("data") or []
+            if commands or loop.time() >= deadline:
+                break
+            await asyncio.sleep(0.25)
+        skills = (await self.client.get("/api/skill")).json().get("data") or []
+        # OpenCode 2 no longer says whether a command takes arguments, so every command may.
+        return [{"name": c.get("name"), "description": c.get("description") or "", "source": "command", "hints": ["$ARGUMENTS"]}
+                for c in commands if isinstance(c, dict)] + \
+               [{"name": s.get("id"), "description": s.get("description") or "", "source": "skill", "hints": []}
+                for s in skills if isinstance(s, dict)]
+
+
+async def _api(client: httpx.AsyncClient, root: Path) -> _V1Api:
+    """The API this server speaks: OpenCode 2 answers ``/api/info`` with JSON, 1.x with its web page."""
+    with contextlib.suppress(httpx.HTTPError, ValueError):
+        info = await client.get("/api/info")
+        if info.status_code == 200 and "json" in info.headers.get("content-type", "") and isinstance(info.json(), dict):
+            return _V2Api(client, root)
+    return _V1Api(client, root)
 
 
 class _Server:
@@ -441,16 +777,17 @@ async def run_opencode(
         await asyncio.shield(inference.close())
         raise
 
-    params = {"directory": str(root)}
     auth = httpx.BasicAuth("opencode", password)
     pump: asyncio.Task[None] | None = None
     poller: asyncio.Task[None] | None = None
     command_task: asyncio.Task[None] | None = None
     try:
-        async with httpx.AsyncClient(base_url=url, auth=auth, timeout=30.0, params=params) as client:
+        async with httpx.AsyncClient(base_url=url, auth=auth, timeout=30.0) as client:
+            api = await _api(client, root)
+
             async def pump_events() -> None:
                 try:
-                    async with client.stream("GET", "/event", timeout=None) as resp:
+                    async with client.stream("GET", api.events_path, timeout=None) as resp:
                         async for line in resp.aiter_lines():
                             if line.startswith("data:"):
                                 with contextlib.suppress(ValueError):
@@ -461,41 +798,28 @@ async def run_opencode(
                     await queue.put(None)
 
             pump = asyncio.create_task(pump_events())
-            created = await client.post("/session", json={"title": (session_title or task).strip().split("\n")[0][:80] or "arc-llama"})
-            created.raise_for_status()
-            session_id = created.json()["id"]
+            session_id = await api.create_session((session_title or task).strip().split("\n")[0][:80] or "arc-llama", model)
             yield {"type": "harness_session", "session_id": "oc-" + session_id}
-            translator = OpenCodeTranslator(session_id)
+            translator = api.translator(session_id)
 
             handled: set[str] = set()      # permission and question ids already put to the user (events and polling can both report one)
 
             async def poll_permissions() -> None:
                 seen: set[str] = set()
-                sources = [("/permission", "_permission")] + ([("/question", "_question")] if question_callback else [])
                 while True:
                     await asyncio.sleep(PERMISSION_POLL_SECONDS)
-                    for path, kind in sources:
-                        try:
-                            pending = (await client.get(path)).json()
-                        except (httpx.HTTPError, ValueError):
-                            continue
-                        for req in pending if isinstance(pending, list) else []:
-                            if not isinstance(req, dict) or req.get("sessionID") != session_id or not req.get("id") or req["id"] in seen:
-                                continue
-                            seen.add(req["id"])
-                            await queue.put({"type": kind, "request": req})
+                    for found in await api.pending(session_id, question_callback is not None):
+                        if found["request"]["id"] not in seen:
+                            seen.add(found["request"]["id"])
+                            await queue.put(found)
 
             poller = asyncio.create_task(poll_permissions())
             if command:
-                # OpenCode answers this request only when the command has finished, so run it alongside
-                # the event stream and only look at the result if it failed to start.
+                # The command can take as long as the run, so send it alongside the event stream and
+                # only look at the result if it failed to start.
                 async def run_command() -> None:
                     try:
-                        sent = await client.post(
-                            f"/session/{session_id}/command",
-                            json={"command": command, "arguments": arguments, "model": f"{PROVIDER_ID}/{model}"},
-                            timeout=None,
-                        )
+                        sent = await api.command(session_id, command, arguments, model)
                         if sent.status_code >= 400:
                             detail = " ".join(sent.text.split())[:300]
                             await queue.put({"type": "_failed", "message": f"OpenCode could not run /{command} (HTTP {sent.status_code}){': ' + detail if detail else ''}."})
@@ -504,14 +828,7 @@ async def run_opencode(
 
                 command_task = asyncio.create_task(run_command())
             else:
-                sent = await client.post(
-                    f"/session/{session_id}/prompt_async",
-                    json={
-                        "model": {"providerID": PROVIDER_ID, "modelID": model},
-                        "parts": [{"type": "text", "text": task}],
-                    },
-                )
-                sent.raise_for_status()
+                await api.prompt(session_id, task, model)
 
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout
@@ -539,16 +856,9 @@ async def run_opencode(
                 if event.get("type") == "_failed":
                     yield {"type": "error", "message": event["message"]}
                     return
-                if event.get("type") == "permission.asked":
-                    # The stream is the reliable source: OpenCode's list endpoint can answer 400 for a
-                    # pending web fetch (its own response validation fails), so polling alone can hang.
-                    req = event.get("properties") or {}
-                    if req.get("sessionID") == session_id and req.get("id"):
-                        event = {"type": "_permission", "request": req}
-                if event.get("type") == "question.asked":
-                    req = event.get("properties") or {}
-                    if req.get("sessionID") == session_id and req.get("id"):
-                        event = {"type": "_question", "request": req}
+                # The stream is the reliable source: OpenCode 1.19's list endpoint can answer 400 for a
+                # pending web fetch (its own response validation fails), so polling alone can hang.
+                event = api.inline(event, session_id) or event
                 if event.get("type") == "_question":
                     req = event["request"]
                     if req.get("id") in handled or question_callback is None:
@@ -566,10 +876,7 @@ async def run_opencode(
                             answers = None
                         # Time the user spends answering is not run time.
                         deadline += loop.time() - asked_at
-                    if answers is None:
-                        await client.post(f"/question/{req['id']}/reject")
-                    else:
-                        await client.post(f"/question/{req['id']}/reply", json={"answers": answers})
+                    await api.reply_question(session_id, req, answers)
                     continue
                 if event.get("type") == "_permission":
                     req = event["request"]
@@ -585,15 +892,12 @@ async def run_opencode(
                     asked_at = loop.time()
                     approved = bool(await confirm_callback(req["id"], tool, ask_arguments)) if confirm_callback else auto_confirm
                     deadline += loop.time() - asked_at
-                    await client.post(
-                        f"/permission/{req['id']}/reply",
-                        json={"reply": "once" if approved else "reject"},
-                    )
+                    await api.reply_permission(session_id, req, approved)
                     continue
                 for out in translator.feed(event):
                     yield out
             with contextlib.suppress(httpx.HTTPError):
-                await client.post(f"/session/{session_id}/abort")
+                await api.abort(session_id)
     except httpx.HTTPError as exc:
         yield {"type": "error", "message": f"OpenCode request failed: {exc}"}
     finally:
@@ -640,12 +944,9 @@ async def list_commands(root: Path | str, model: str = "arc-llama", *, binary: s
     server = _Server(exe, root, env)
     url = await server.start()
     try:
-        async with httpx.AsyncClient(base_url=url, auth=httpx.BasicAuth("opencode", password), timeout=30.0,
-                                     params={"directory": str(root)}) as client:
-            response = await client.get("/command")
-            response.raise_for_status()
-            found = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
+        async with httpx.AsyncClient(base_url=url, auth=httpx.BasicAuth("opencode", password), timeout=30.0) as client:
+            found = await (await _api(client, root)).commands()
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
         raise OpenCodeError(f"Could not list OpenCode commands: {exc}") from exc
     finally:
         server.terminate_now()
@@ -733,22 +1034,21 @@ async def probe_tools(root: Path | str, config: dict[str, Any], *, binary: str |
     model = cfg["model"].split("/", 1)[1]
     try:
         url = await server.start()
-        async with httpx.AsyncClient(base_url=url, auth=httpx.BasicAuth("opencode", password), timeout=30.0,
-                                     params={"directory": str(root)}) as client:
-            created = await client.post("/session", json={"title": "arc-llama tool scan"})
-            created.raise_for_status()
-            session_id = created.json()["id"]
+        async with httpx.AsyncClient(base_url=url, auth=httpx.BasicAuth("opencode", password), timeout=30.0) as client:
+            api = await _api(client, root)
+            session_id = await api.create_session("arc-llama tool scan", model)
             try:
-                (await client.post(f"/session/{session_id}/prompt_async", json={
-                    "model": {"providerID": PROVIDER_ID, "modelID": model}, "parts": [{"type": "text", "text": "hi"}]})).raise_for_status()
+                await api.prompt(session_id, "hi", model)
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + timeout
                 while not captured and loop.time() < deadline:
                     await asyncio.sleep(0.5)
             finally:
                 with contextlib.suppress(httpx.HTTPError):
-                    await client.delete(f"/session/{session_id}")        # leave no trace in the user's history
-    except (httpx.HTTPError, OpenCodeError) as exc:
+                    await api.abort(session_id)
+                with contextlib.suppress(httpx.HTTPError):
+                    await api.delete(session_id)        # leave no trace in the user's history
+    except (httpx.HTTPError, OpenCodeError, KeyError, ValueError) as exc:
         raise OpenCodeError(f"Could not read OpenCode's tools: {exc}") from exc
     finally:
         listener.shutdown()
@@ -765,6 +1065,7 @@ async def probe_tools(root: Path | str, config: dict[str, Any], *, binary: str |
 def group_tools(names: list[str], servers: list[str]) -> list[dict[str, str]]:
     """Label each tool as built-in, from one MCP server, or from a plugin."""
     builtin = {"bash", "read", "glob", "grep", "list", "task", "todowrite", "todoread", "lsp", "patch",
+               "shell", "execute", "subagent",                      # OpenCode 2's names
                "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", *EDIT_TOOLS, *HIDDEN_TOOLS}
     out = []
     for name in names:

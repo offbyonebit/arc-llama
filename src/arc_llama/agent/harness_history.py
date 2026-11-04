@@ -57,8 +57,29 @@ def _summary(harness: str, row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _opencode_v2(connection: sqlite3.Connection) -> bool:
+    """OpenCode 2 keeps sessions in ``session_v2`` and copies every 1.x session there when it upgrades the file."""
+    return connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'").fetchone() is not None
+
+
+def _legacy_opencode(connection: sqlite3.Connection) -> bool:
+    return connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'").fetchone() is not None
+
+
 def _rows(connection: sqlite3.Connection, harness: str, native_id: str | None = None) -> list[sqlite3.Row]:
-    if harness == "opencode":
+    if harness == "opencode" and _opencode_v2(connection):
+        query = """SELECT * FROM (SELECT s.id, s.title, s.directory AS folder, s.time_updated / 1000.0 AS updated,
+            (SELECT count(*) FROM session_message m WHERE m.session_id = s.id AND m.type = 'user') AS tasks
+            FROM session_v2 s WHERE s.parent_id IS NULL AND s.time_archived IS NULL"""
+        if _legacy_opencode(connection):
+            # OpenCode 1.x keeps using its own tables after OpenCode 2 has upgraded the file.
+            query += """ UNION ALL SELECT s.id, s.title, s.directory, s.time_updated / 1000.0,
+                (SELECT count(*) FROM message m WHERE m.session_id = s.id AND
+                 json_extract(CASE WHEN json_valid(m.data) THEN m.data ELSE '{}' END, '$.role') = 'user')
+                FROM session s WHERE s.parent_id IS NULL AND s.time_archived IS NULL
+                AND s.id NOT IN (SELECT id FROM session_v2)"""
+        query += ") s WHERE 1 = 1"
+    elif harness == "opencode":
         query = """SELECT s.id, s.title, s.directory AS folder, s.time_updated / 1000.0 AS updated,
             (SELECT count(*) FROM message m WHERE m.session_id = s.id AND
              json_extract(CASE WHEN json_valid(m.data) THEN m.data ELSE '{}' END, '$.role') = 'user') AS tasks
@@ -106,6 +127,9 @@ def _content(value: Any) -> str:
 
 
 def _messages(connection: sqlite3.Connection, harness: str, native_id: str) -> list[tuple[str, str, float]]:
+    if harness == "opencode" and _opencode_v2(connection) and connection.execute(
+            "SELECT 1 FROM session_v2 WHERE id = ?", (native_id,)).fetchone():
+        return _messages_v2(connection, native_id)
     if harness == "opencode":
         queries = [("message", "data"), ("part", "data")]
     else:
@@ -150,6 +174,31 @@ def _messages(connection: sqlite3.Connection, harness: str, native_id: str) -> l
             out.append((row["role"], content, row["timestamp"] * 1000))
     if len(messages) > MAX_MESSAGES:
         raise NativeHistoryError("This harness session has too many messages to import. Open it in the harness or choose a shorter session.")
+    return out
+
+
+def _messages_v2(connection: sqlite3.Connection, native_id: str) -> list[tuple[str, str, float]]:
+    """OpenCode 2 stores a message's text inline: ``text`` for the user, ``content`` parts for the assistant."""
+    size = connection.execute(
+        "SELECT count(*), COALESCE(sum(length(CAST(data AS BLOB))), 0) FROM session_message WHERE session_id = ?",
+        (native_id,),
+    ).fetchone()
+    if size[0] > MAX_MESSAGES * 20 or size[1] > MAX_SESSION_BYTES:
+        raise NativeHistoryError("This harness session is too large to import. Open it in the harness or choose a shorter session.")
+    messages = connection.execute(
+        "SELECT type, data, time_created FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant')"
+        " ORDER BY seq, time_created LIMIT ?",
+        (native_id, MAX_MESSAGES + 1),
+    ).fetchall()
+    if len(messages) > MAX_MESSAGES:
+        raise NativeHistoryError("This harness session has too many messages to import. Open it in the harness or choose a shorter session.")
+    out: list[tuple[str, str, float]] = []
+    for row in messages:
+        message = json.loads(row["data"])
+        if not isinstance(message, dict):
+            continue
+        text = message.get("text") if row["type"] == "user" else _content(message.get("content"))
+        out.append((row["type"], text if isinstance(text, str) else "", row["time_created"]))
     return out
 
 

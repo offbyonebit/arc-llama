@@ -22,9 +22,16 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
   the model, and loads it before Chat. Setup shows stages and byte progress,
   supports safe pause/retry, and preserves existing installs and running models.
   Optional starter prompts fill the composer without sending automatically.
+- Work runs OpenCode 2 as well as 1.x. OpenCode 2 replaced the server API, event stream and question
+  prompts; Work asks each OpenCode which one it speaks. Permissions, questions (as OpenCode 2 forms),
+  slash commands, skills, tool profiles and native history work with both. While OpenCode waits to
+  retry a failed model request, Work now says so instead of looking frozen.
+- The managed OpenCode install is now v2.2.5 (verified; OpenCode 1.19.5 also verified).
 
 ### Fixed
 
+- Work tool profiles now keep left-out MCP servers from starting under OpenCode 2, which ignores the
+  1.x way of switching a server off.
 - Paused guided setup stays visible after reload when the downloaded model has already been registered, so Continue remains available.
 - Work Undo backups are reclaimed only after their owning process releases its OS lock; an old but still-live run keeps its backups. Legacy folders without ownership evidence are retained.
 - Work disconnects observers for discarded step views. Streaming harness answers avoid duplicate completed text and report inconsistent final text as an error.

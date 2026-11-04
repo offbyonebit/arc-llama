@@ -54,7 +54,9 @@
       return out("web", "Using the internet", "Used the internet", { detail: firstString(a.url, a.query) });
     }
     if (["question", "ask_user"].includes(tool)) return out("ask", "Asking you a question", "Asked you a question", { detail: firstString(a.question, Array.isArray(a.questions) && a.questions[0] ? a.questions[0].question : "") });
-    if (tool === "task") return out("think", "Handing off a subtask", "Handed off a subtask", { detail: firstString(a.description, a.prompt) });
+    if (["task", "subagent"].includes(tool)) return out("think", "Handing off a subtask", "Handed off a subtask", { detail: firstString(a.description, a.prompt) });
+    // OpenCode 2 runs MCP and plugin tools from a short script ("Code Mode").
+    if (tool === "execute" && typeof a.code === "string") return out("tool", "Using the agent's tools", "Used the agent's tools", { detail: shorten(a.code, 600), toolName: "execute" });
     if (["todowrite", "todoread"].includes(tool)) return out("think", "Updating the plan", "Updated the plan");
 
     if (["bash", "run_command", "shell", "sh", "terminal"].includes(tool)) {

@@ -41,16 +41,18 @@ command line:
 arc-llama install-harness opencode
 arc-llama install-harness hermes
 arc-llama install-harness opencode --list
-arc-llama install-harness opencode --remove v1.19.4
+arc-llama install-harness opencode --remove v2.2.5
 ```
 
-**Tested versions:** Arc Llama installs the version it was verified against (OpenCode v1.19.4, Hermes v0.22.5).
+**Tested versions:** Arc Llama installs the version it was verified against (OpenCode v2.2.5, Hermes v0.22.5).
+Work also runs OpenCode 1.x (verified with v1.19.5): it asks each OpenCode which API it speaks and uses that one.
 *Install newest instead* (`--latest`) installs the newest upstream release, which is recorded as untested.
 
 **Where it lives:** each version gets its own folder under `<state_dir>/harnesses/<name>/`. A successful install
 records the executable in the config (`agent.opencode_bin` or `agent.hermes_bin`), so Work uses that copy ahead of
-`ARC_LLAMA_*_BIN` and PATH. Your own OpenCode or Hermes installation, `~/.hermes`, and OpenCode's data are never
-changed. Removing the selected copy clears the setting, and Work then falls back to the environment variable or PATH.
+`ARC_LLAMA_*_BIN` and PATH. Your own OpenCode or Hermes installation and `~/.hermes` are never changed. OpenCode
+2 upgrades OpenCode's session database the first time it runs, as it does when you upgrade OpenCode yourself; it keeps
+the 1.x tables, so OpenCode 1.x still opens the file, and Work's history lists sessions from both. Removing the selected copy clears the setting, and Work then falls back to the environment variable or PATH.
 A copy can't be removed while a Work task is using it.
 
 **OpenCode:**

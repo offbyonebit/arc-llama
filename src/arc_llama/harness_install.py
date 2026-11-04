@@ -62,7 +62,7 @@ MARKER = ".arc-llama-harness.json"
 LICENSE = "MIT"
 
 OPENCODE_REPO = "anomalyco/opencode"
-OPENCODE_PIN = "v1.19.4"
+OPENCODE_PIN = "v2.2.5"
 
 HERMES_REPO = "NousResearch/hermes-agent"
 
@@ -611,7 +611,7 @@ def offer(cfg: Config, name: str) -> dict[str, Any]:
     os_name, arch = host_platform()
     supported = os_name in ("linux", "windows") and (name == "hermes" or arch in ("x64", "arm64"))
     if name == "opencode":
-        version, repo, size_note = OPENCODE_PIN, OPENCODE_REPO, "about 80 MB download, ~200 MB installed"
+        version, repo, size_note = OPENCODE_PIN, OPENCODE_REPO, "about 120 MB download, ~250 MB installed"
     else:
         version, repo, size_note = HERMES_PIN.tag, HERMES_REPO, "about 90 MB download, ~600 MB installed"
     return {

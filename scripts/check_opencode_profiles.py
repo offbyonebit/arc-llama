@@ -39,7 +39,7 @@ async def main() -> int:
             problems.append(message)
 
     keep = servers[:1]
-    droppable = [t["id"] for t in everything if t["group"] == "plugin"][:1] + [t["id"] for t in everything if t["group"] == "builtin" and t["id"] == "bash"]
+    droppable = [t["id"] for t in everything if t["group"] == "plugin"][:1] + [t["id"] for t in everything if t["group"] == "builtin" and t["id"] in ("bash", "shell")]
     profile = {"mcp": keep, "skills": [], "web": False, "tools_off": droppable}
     under = set(await probe_tools(ROOT, build_config("http://127.0.0.1:1", "m", mcp_servers=servers, profile=profile)))
     print(f"Under a profile keeping {keep or 'no servers'} and dropping {droppable or 'nothing'}: {len(under)} tools")
