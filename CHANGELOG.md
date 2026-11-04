@@ -32,6 +32,8 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 - Work tool profiles now keep left-out MCP servers from starting under OpenCode 2, which ignores the
   1.x way of switching a server off.
+- Under OpenCode 2, Work denies the Code Mode `execute` tool so MCP and plugin tools reach the model
+  directly, where tool profiles and approvals apply to them as they do with 1.x.
 - Paused guided setup stays visible after reload when the downloaded model has already been registered, so Continue remains available.
 - Work Undo backups are reclaimed only after their owning process releases its OS lock; an old but still-live run keeps its backups. Legacy folders without ownership evidence are retained.
 - Work disconnects observers for discarded step views. Streaming harness answers avoid duplicate completed text and report inconsistent final text as an error.

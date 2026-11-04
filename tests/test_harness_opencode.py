@@ -86,6 +86,8 @@ def test_build_config_pins_local_provider_and_guards_mutations():
     asked = {pattern for pattern, action in rules if action == "ask"}
     assert {"sudo *", "git reset --hard*", "rm -r*"} <= asked      # destructive commands still ask
     assert "enabled_providers" not in build_config("http://x", "m", local_only=False)
+    # OpenCode 2 offers MCP tools directly only while its Code Mode "execute" tool is denied, in every mode.
+    assert cfg["permission"]["execute"] == auto["execute"] == "deny"
 
 
 def test_find_binary(monkeypatch, tmp_path):
@@ -302,7 +304,7 @@ def test_inherited_tools_ask_in_ask_mode_and_run_in_auto_mode(tmp_path):
     assert ask["github_get*"] == "allow" and ask["memory_search*"] == "allow"
     assert "github_create*" not in ask and "github_delete*" not in ask          # mutating tools are not allowed through
     auto = build_config("http://x", "m", auto_confirm=True, mcp_servers=["github", "memory"])["permission"]
-    assert set(auto) == {"edit", "bash", "question"}                            # Auto-approve leaves inherited tools alone
+    assert set(auto) == {"edit", "bash", "question", "execute"}                 # Auto-approve leaves inherited tools alone
 
 
 def test_mcp_server_names_reads_only_the_keys(tmp_path, monkeypatch):

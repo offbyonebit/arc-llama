@@ -70,6 +70,7 @@ def test_profile_starts_only_listed_servers_and_denies_the_rest():
     assert "github_list*" not in rules
     assert rules["skill"] == {"*": "deny", "pdf": "allow"}
     assert all(rules[tool] == "deny" for tool in ("webfetch", "websearch", "codesearch"))
+    assert rules["execute"] == "deny"                                                    # MCP tools stay direct under OpenCode 2
 
 
 def test_profile_can_keep_web_tools_and_ignores_unknown_servers():

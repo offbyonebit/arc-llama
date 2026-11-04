@@ -161,6 +161,9 @@ def build_config(
                 rules[tool] = "deny"
     if not questions:
         config["permission"]["question"] = "deny"
+    # OpenCode 2 hides MCP and plugin tools inside one "execute" tool (Code Mode) unless that tool is
+    # denied; then it offers them directly, where profiles and approvals can see them. 1.x has no such tool.
+    config["permission"]["execute"] = "deny"
     if local_only:
         # Without this a session can still reach any cloud provider in the user's own config.
         config["enabled_providers"] = [PROVIDER_ID]
