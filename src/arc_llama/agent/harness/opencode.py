@@ -529,6 +529,9 @@ class _V1Api:
     async def saved_allows(self) -> list[str]:
         return []
 
+    async def provider_blocked(self) -> bool:
+        return False
+
 
 class _V2Api(_V1Api):
     """The OpenCode 2 HTTP API under ``/api``: the folder is a ``location``, questions are forms."""
@@ -639,6 +642,17 @@ class _V2Api(_V1Api):
             return []
         return [f"{V2_PERMISSION_NAMES.get(str(s['action']), s['action'])} {s.get('resource') or '*'}"
                 for s in saved if isinstance(s, dict) and s.get("action")] if isinstance(saved, list) else []
+
+    async def provider_blocked(self) -> bool:
+        """True when the user's own config removes Work's provider.
+
+        OpenCode 2 ranks policies from user and project config above the inline config (so
+        ``enabled_providers`` without arc-llama in it blocks it), and a run would then fail with no clear reason."""
+        with contextlib.suppress(httpx.HTTPError, ValueError, AttributeError):
+            listed = (await self.client.get("/api/provider")).json().get("data")
+            if isinstance(listed, list):
+                return not any(isinstance(p, dict) and p.get("id") == PROVIDER_ID for p in listed)
+        return False
 
 
 async def _api(client: httpx.AsyncClient, root: Path) -> _V1Api:
@@ -802,6 +816,11 @@ async def run_opencode(
     try:
         async with httpx.AsyncClient(base_url=url, auth=auth, timeout=30.0) as client:
             api = await _api(client, root)
+            if await api.provider_blocked():
+                yield {"type": "error", "message": "Your own OpenCode settings turn off the arc-llama provider, so Work can't "
+                       "reach your local model. Add \"arc-llama\" to enabled_providers in your opencode.json, or remove the "
+                       "enabled_providers, disabled_providers or provider.use policy that blocks it, then try again."}
+                return
             # With auto-approve Work only asks about commands, so a saved edit rule changes nothing.
             skipped = [s for s in await api.saved_allows() if not auto_confirm or s.startswith("bash ")]
             if skipped:

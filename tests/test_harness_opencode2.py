@@ -112,6 +112,13 @@ async def test_saved_always_allows_are_reported_before_the_run(tmp_path, monkeyp
     assert events[-1]["type"] == "done"
 
 
+async def test_a_provider_blocked_by_the_users_config_is_explained(tmp_path, monkeypatch, fake):
+    monkeypatch.setenv("FAKE_OPENCODE_PROVIDER_BLOCKED", "1")
+    events, log = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)
+    assert events[-1]["type"] == "error" and "enabled_providers" in events[-1]["message"]
+    assert not any(e.get("path") == "/api/session" for e in log)       # nothing is started for a run that can't work
+
+
 async def test_no_saved_permissions_means_no_warning(tmp_path, monkeypatch, fake):
     events, _ = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)
     assert not [e for e in events if e["type"] == "warning"]

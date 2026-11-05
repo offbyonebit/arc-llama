@@ -131,6 +131,10 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/skill":
             return self._json({"location": {"directory": self._location()}, "data": [
                 {"id": "pdf", "name": "PDF", "description": "PDF skill", "path": "/x/SKILL.md", "content": "x"}]})
+        if path == "/api/provider":
+            # Policies from the user's own config can remove the arc-llama provider before Work sees it.
+            ids = ["openai"] if os.environ.get("FAKE_OPENCODE_PROVIDER_BLOCKED") else ["arc-llama", "openai"]
+            return self._json({"location": {"directory": self._location()}, "data": [{"id": i, "name": i} for i in ids]})
         if path == "/api/permission/saved":
             return self._json({"data": json.loads(os.environ.get("FAKE_OPENCODE_SAVED") or "[]")})
         if path == f"/api/session/{SID}/permission":
