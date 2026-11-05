@@ -89,10 +89,32 @@ async def test_a_permission_reaches_the_user_in_the_1x_vocabulary(tmp_path, monk
     events, log = await _run(tmp_path, monkeypatch, fake, confirm_callback=confirm)
     # OpenCode 2 calls it "shell"; the Work view's approval sheet speaks of "bash".
     assert [(a[0], a[1], a[2]["patterns"]) for a in asked] == [("per_1", "bash", ["rm -rf build"])]
-    replies = [e for e in log if "/permission/" in e.get("path", "")]
+    replies = [e for e in log if "/permission/per_" in e.get("path", "")]
     assert [(r["path"], r["body"]) for r in replies] == [
         ("/api/session/ses_fake2/permission/per_1/reply", {"decision": "once" if approve else "reject"})]
     assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("auto", [False, True])
+async def test_saved_always_allows_are_reported_before_the_run(tmp_path, monkeypatch, fake, auto):
+    """A saved "Always allow" in the shared opencode.db beats Work's "ask", so the user is told."""
+    monkeypatch.setenv("FAKE_OPENCODE_SAVED", json.dumps([
+        {"id": "prm_1", "projectID": "p", "action": "shell", "resource": "rm *"},
+        {"id": "prm_2", "projectID": "p", "action": "edit", "resource": "*"}]))
+
+    async def confirm(call_id, tool, arguments):
+        return True
+
+    events, _ = await _run(tmp_path, monkeypatch, fake, auto_confirm=auto, confirm_callback=None if auto else confirm)
+    warnings = [e["message"] for e in events if e["type"] == "warning"]
+    assert len(warnings) == 1 and "bash rm *" in warnings[0] and ("edit *" in warnings[0]) is not auto
+    assert events.index(next(e for e in events if e["type"] == "warning")) < events.index(next(e for e in events if e["type"] == "tool_call"))
+    assert events[-1]["type"] == "done"
+
+
+async def test_no_saved_permissions_means_no_warning(tmp_path, monkeypatch, fake):
+    events, _ = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)
+    assert not [e for e in events if e["type"] == "warning"]
 
 
 @pytest.mark.parametrize("mode", ["1", "event"])

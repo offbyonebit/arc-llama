@@ -131,6 +131,8 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/skill":
             return self._json({"location": {"directory": self._location()}, "data": [
                 {"id": "pdf", "name": "PDF", "description": "PDF skill", "path": "/x/SKILL.md", "content": "x"}]})
+        if path == "/api/permission/saved":
+            return self._json({"data": json.loads(os.environ.get("FAKE_OPENCODE_SAVED") or "[]")})
         if path == f"/api/session/{SID}/permission":
             if mode == "event":
                 return self._json({"_tag": "InvalidRequestError", "message": "nope"}, 400)

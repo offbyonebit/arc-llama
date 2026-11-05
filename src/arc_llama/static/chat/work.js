@@ -612,7 +612,7 @@
     function turnKey(r, current) {
       const open = (x) => (x && !x.answered ? 1 : 0);
       const c = r.changes;
-      return JSON.stringify([current, r.status, r.task, r.error, r.suggest, !!r.showSteps, !!r.showEarlier, r.endedAt, r.generationTokS,
+      return JSON.stringify([current, r.status, r.task, r.error, (r.warnings || []).length, r.suggest, !!r.showSteps, !!r.showEarlier, r.endedAt, r.generationTokS,
         r.steps.map((x) => x.state + (x.open ? "+" : "")).join(","), r.answer.length, r.answer.length ? r.answer[r.answer.length - 1].length : 0,
         open(r.pending), open(r.question), c ? [c.files?.length, !!c.reviewing, !!c.undoing, c.undone?.text, Object.keys(c.reviews || {}).length] : null]);
     }
@@ -785,6 +785,7 @@
         turn.append(el("div", { class: "work-error", role: "status" },
           "Written outside your project folder: " + strays.map((x) => x.human.path).join(", ") + ". Arc Llama can't undo changes there."));
       }
+      for (const text of r.warnings || []) turn.append(el("div", { class: "work-error", role: "status" }, text));
       if (r.changes && r.changes.files && r.changes.files.length) turn.append(resultCard(r.changes));
       if (r.answer.length) {
         turn.append(sayBlock(r.answer[r.answer.length - 1]));
@@ -1362,6 +1363,7 @@
           break;
         }
         case "status": run.statusText = event.message; if (/starting/i.test(event.message || "")) run.activity = "starting"; break;
+        case "warning": if (event.message) run.warnings = [...(run.warnings || []), event.message]; break;
         case "tool_call": {
           run.answerStreaming = false;
           run.activity = "tools";

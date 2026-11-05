@@ -526,6 +526,9 @@ class _V1Api:
         found = response.json()
         return found if isinstance(found, list) else []
 
+    async def saved_allows(self) -> list[str]:
+        return []
+
 
 class _V2Api(_V1Api):
     """The OpenCode 2 HTTP API under ``/api``: the folder is a ``location``, questions are forms."""
@@ -624,6 +627,18 @@ class _V2Api(_V1Api):
                 for c in commands if isinstance(c, dict)] + \
                [{"name": s.get("id"), "description": s.get("description") or "", "source": "skill", "hints": []}
                 for s in skills if isinstance(s, dict)]
+
+    async def saved_allows(self) -> list[str]:
+        """What the user saved with "Always allow" for this project, as "permission pattern".
+
+        OpenCode 2 keeps these in the opencode.db it shares with the user's own OpenCode and checks them
+        after the config's rules, so each one beats an "ask" from Work."""
+        try:
+            saved = (await self.client.get("/api/permission/saved")).json().get("data")
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return []
+        return [f"{V2_PERMISSION_NAMES.get(str(s['action']), s['action'])} {s.get('resource') or '*'}"
+                for s in saved if isinstance(s, dict) and s.get("action")] if isinstance(saved, list) else []
 
 
 async def _api(client: httpx.AsyncClient, root: Path) -> _V1Api:
@@ -787,6 +802,12 @@ async def run_opencode(
     try:
         async with httpx.AsyncClient(base_url=url, auth=auth, timeout=30.0) as client:
             api = await _api(client, root)
+            # With auto-approve Work only asks about commands, so a saved edit rule changes nothing.
+            skipped = [s for s in await api.saved_allows() if not auto_confirm or s.startswith("bash ")]
+            if skipped:
+                shown = ", ".join(skipped[:5]) + (f" and {len(skipped) - 5} more" if len(skipped) > 5 else "")
+                yield {"type": "warning", "message": f"OpenCode won't ask before these, because they were saved with "
+                       f"Always allow in your own OpenCode for this project: {shown}. Remove them in OpenCode to have Work ask again."}
 
             async def pump_events() -> None:
                 try:
