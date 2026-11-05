@@ -143,6 +143,10 @@ class H(BaseHTTPRequestHandler):
 
 
 def main():
+    if "--stdio" in sys.argv:
+        # OpenCode 1.x's command line is strict: an unknown flag prints the help and exits.
+        print("opencode serve\n\nstarts a headless opencode server", flush=True)
+        sys.exit(1)
     log({"argv": sys.argv[1:], "env": {k: os.environ.get(k) for k in (
         "OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_SERVER_PASSWORD",
         "OPENCODE_ENABLE_QUESTION_TOOL")}, "cwd": os.getcwd()})

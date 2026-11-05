@@ -133,6 +133,12 @@ async def _run(tmp_path, monkeypatch, **kwargs):
     return events, log
 
 
+async def test_opencode_1x_refuses_stdio_and_starts_without_it(tmp_path, monkeypatch):
+    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True)
+    assert events[-1]["type"] == "done" and "--stdio" not in log[0]["argv"]
+    assert str(FAKE) in oc._NO_STDIO          # later runs skip the refused attempt
+
+
 async def test_run_end_to_end_auto_confirm(tmp_path, monkeypatch):
     events, log = await _run(tmp_path, monkeypatch, auto_confirm=True)
     kinds = [e["type"] for e in events]

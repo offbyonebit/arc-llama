@@ -32,7 +32,8 @@ from arc_llama.agent.questions import clean_questions
 log = logging.getLogger("arc_llama.agent.harness.opencode")
 
 PROVIDER_ID = "arc-llama"
-LISTEN_RE = re.compile(r"listening on (https?://[^\s]+)")
+# `serve` prints "... listening on <url>"; `serve --stdio` (OpenCode 2) prints {"url":"<url>"}.
+LISTEN_RE = re.compile(r'listening on (https?://[^\s]+)|"url":\s*"(https?://[^"]+)"')
 STARTUP_TIMEOUT = 45.0
 PERMISSION_POLL_SECONDS = 0.75
 # OpenCode 2 loads commands in the background after it starts listening; wait this long for them.
@@ -66,6 +67,14 @@ HIDDEN_TOOLS = ("invalid", "question", "skill", *WEB_TOOLS)
 
 class OpenCodeError(RuntimeError):
     """The harness could not be started or reported a failure."""
+
+
+class _ExitedError(OpenCodeError):
+    """The server process ended before it reported where it listens."""
+
+
+# Binaries that refused `serve --stdio` (OpenCode 1.x has no such flag); they start without it from then on.
+_NO_STDIO: set[str] = set()
 
 
 def find_binary(configured: str | None = None) -> str | None:
@@ -706,10 +715,23 @@ class _Server:
     async def start(self) -> str:
         if not self.root.is_dir():
             raise OpenCodeError(f"The project folder does not exist: {self.root}")
+        # With --stdio OpenCode 2 removes the server password from the environment its shell commands inherit, so
+        # a command the model runs can't call this server and answer its own approvals. It also stops when stdin
+        # closes, so it can't outlive Arc Llama. OpenCode 1.x refuses the flag and exits at once.
+        if self.binary not in _NO_STDIO:
+            try:
+                return await self._launch(stdio=True)
+            except _ExitedError:
+                pass
+        url = await self._launch(stdio=False)
+        _NO_STDIO.add(self.binary)
+        return url
+
+    async def _launch(self, *, stdio: bool) -> str:
         try:
             self.proc = await asyncio.create_subprocess_exec(
-                self.binary, "serve", "--hostname", "127.0.0.1", "--port", "0",
-                cwd=str(self.root), env=self.env,
+                self.binary, "serve", "--hostname", "127.0.0.1", "--port", "0", *(["--stdio"] if stdio else []),
+                cwd=str(self.root), env=self.env, stdin=asyncio.subprocess.PIPE if stdio else None,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
         except FileNotFoundError as exc:
@@ -720,8 +742,10 @@ class _Server:
         assert self.proc.stdout is not None
         try:
             self.url = await asyncio.wait_for(self._read_url(self.proc.stdout), STARTUP_TIMEOUT)
-        except (asyncio.TimeoutError, OpenCodeError):
+        except (asyncio.TimeoutError, OpenCodeError) as exc:
             await self.stop()
+            if stdio and isinstance(exc, _ExitedError):
+                raise
             raise OpenCodeError("opencode did not report a listening address") from None
         return self.url
 
@@ -729,12 +753,12 @@ class _Server:
         while True:
             line = await stream.readline()
             if not line:
-                raise OpenCodeError("opencode exited during startup")
+                raise _ExitedError("opencode exited during startup")
             match = LISTEN_RE.search(line.decode(errors="replace"))
             if match:
                 # Keep draining so the child never blocks on a full pipe.
                 asyncio.get_running_loop().create_task(self._drain(stream))
-                return match.group(1).rstrip("/")
+                return (match.group(1) or match.group(2)).rstrip("/")
 
     @staticmethod
     async def _drain(stream: asyncio.StreamReader) -> None:

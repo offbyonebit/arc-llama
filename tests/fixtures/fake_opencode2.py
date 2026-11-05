@@ -215,7 +215,13 @@ def main():
         "OPENCODE_ENABLE_QUESTION_TOOL")}, "cwd": os.getcwd()})
     threading.Timer(90, lambda: os._exit(0)).start()   # never outlive a crashed test run
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    print(f"Server listening on http://127.0.0.1:{srv.server_address[1]}", flush=True)
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    if "--stdio" in sys.argv:
+        # Like the real thing: the address as JSON, and the server stops when its stdin closes.
+        print(json.dumps({"url": url}, separators=(",", ":")), flush=True)
+        threading.Thread(target=lambda: (sys.stdin.read(), os._exit(0)), daemon=True).start()
+    else:
+        print(f"Server listening on {url}", flush=True)
     srv.serve_forever()
 
 

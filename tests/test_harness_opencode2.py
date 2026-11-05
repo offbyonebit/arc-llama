@@ -166,6 +166,12 @@ async def test_an_mcp_request_for_input_is_declined_and_shown(tmp_path, monkeypa
     assert events[-1]["type"] == "done"
 
 
+async def test_the_server_runs_with_stdio_so_tools_cannot_read_its_password(tmp_path, monkeypatch, fake):
+    events, log = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)
+    assert log[0]["argv"][-1] == "--stdio" and events[-1]["type"] == "done"
+    assert str(fake) not in oc._NO_STDIO
+
+
 async def test_a_failed_run_reports_opencodes_reason(tmp_path, monkeypatch, fake):
     monkeypatch.setenv("FAKE_OPENCODE_FAIL", "1")
     events, _ = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)
