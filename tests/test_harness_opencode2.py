@@ -237,6 +237,30 @@ def test_mcp_server_names_reads_opencode_2_servers(tmp_path, monkeypatch):
     assert oc.mcp_server_names(project) == ["docs"]
 
 
+def test_mcp_server_names_reads_every_config_file_opencode_2_reads(tmp_path, monkeypatch):
+    """JSONC files, folders above the project, XDG_CONFIG_HOME, OPENCODE_CONFIG_DIR and the system folder
+    (checked here with the Windows layout, so the paths are built the way they are there)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(oc.sys, "platform", "win32")
+    for var, folder in (("ProgramData", "programdata"), ("XDG_CONFIG_HOME", "xdg"), ("OPENCODE_CONFIG_DIR", "extra")):
+        monkeypatch.setenv(var, str(tmp_path / folder))
+    monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
+    project = tmp_path / "outer" / "proj"
+    (project / ".opencode").mkdir(parents=True)
+
+    def write(path, name):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{\n  // a comment with "quotes"\n  "mcp": {"servers": {"' + name + '": {"type": "local", "url": "http://a//b",},},},\n}')
+
+    write(tmp_path / "programdata" / "opencode" / "opencode.json", "system")
+    write(tmp_path / "xdg" / "opencode" / "opencode.jsonc", "user")
+    write(tmp_path / "extra" / "opencode.json", "extra")
+    write(tmp_path / "outer" / "opencode.jsonc", "parent")
+    write(project / ".opencode" / "opencode.jsonc", "project")
+    assert sorted(oc.mcp_server_names(project)) == ["extra", "parent", "project", "system", "user"]
+
+
 def test_translator_settles_final_text_and_reports_tool_failures():
     t = OpenCodeV2Translator("s")
     out = []

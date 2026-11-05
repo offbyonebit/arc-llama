@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -77,21 +78,46 @@ def find_binary(configured: str | None = None) -> str | None:
     return shutil.which("opencode")
 
 
+# Comments, trailing commas and the strings that may hold either; OpenCode reads every config file as JSONC.
+_JSONC_NOISE = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/|,(?=\s*[}\]])', re.S)
+
+
+def _jsonc(text: str) -> Any:
+    for _ in range(2):          # a comma before a comment only trails once the comment is gone
+        text = _JSONC_NOISE.sub(lambda m: m.group(1) or "", text)
+    return json.loads(text)
+
+
+def _config_files(root: Path | str | None) -> list[Path]:
+    """Every file OpenCode reads its config from, as OpenCode 2 finds them (1.x reads a subset)."""
+    names = ("opencode.json", "opencode.jsonc")
+    if sys.platform == "darwin":
+        system = Path("/Library/Application Support/opencode")
+    elif sys.platform == "win32":
+        system = Path(os.environ.get("ProgramData") or "C:\\ProgramData") / "opencode"
+    else:
+        system = Path("/etc/opencode")
+    folders = [system, Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "opencode"]
+    if os.environ.get("OPENCODE_CONFIG_DIR"):
+        folders.append(Path(os.environ["OPENCODE_CONFIG_DIR"]))
+    if root:
+        # Project files are found in the folder and every folder above it, each also in its .opencode folder.
+        for folder in reversed([Path(root), *Path(root).parents]):
+            folders += [folder, folder / ".opencode"]
+    files = [folder / name for folder in folders for name in names]
+    if os.environ.get("OPENCODE_CONFIG"):
+        files.append(Path(os.environ["OPENCODE_CONFIG"]))
+    return files
+
+
 def mcp_server_names(root: Path | str | None = None, extra_files: tuple[Path, ...] = ()) -> list[str]:
     """Names of the MCP servers the user's OpenCode setup declares (their tools are named `<server>_<tool>`).
 
-    Reads the global config and the project's own config; values are never read, only the keys."""
-    candidates: list[Path] = [Path.home() / ".config" / "opencode" / "opencode.json"]
-    configured = os.environ.get("OPENCODE_CONFIG")
-    if configured:
-        candidates.append(Path(configured))
-    if root:
-        candidates += [Path(root) / "opencode.json", Path(root) / ".opencode" / "opencode.json"]
-    candidates += list(extra_files)
+    Reads every config file OpenCode would (see ``_config_files``); values are never read, only the keys."""
     names: list[str] = []
-    for path in candidates:
+    for path in [*_config_files(root), *extra_files]:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _jsonc(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         servers = data.get("mcp") if isinstance(data, dict) else None
