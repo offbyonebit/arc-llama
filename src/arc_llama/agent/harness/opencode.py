@@ -597,9 +597,14 @@ class _V2Api(_V1Api):
         if event.get("type") == "permission.asked" and data.get("sessionID") == session_id and data.get("id"):
             return {"type": "_permission", "request": _v2_permission(data)}
         form = data.get("form")
-        if event.get("type") == "form.created" and isinstance(form, dict) and form.get("sessionID") == session_id and form.get("id"):
-            question = _v2_question(form)
-            return {"type": "_question", "request": question} if question else None
+        if event.get("type") == "form.created" and isinstance(form, dict) and form.get("id"):
+            question = _v2_question(form) if form.get("sessionID") == session_id else None
+            if question:
+                return {"type": "_question", "request": question}
+            # Any other form, such as an MCP server asking for input (filed under "global"), has nowhere to
+            # show in Work and would hold the tool call until it times out.
+            if form.get("sessionID") in (session_id, "global"):
+                return {"type": "_form", "request": form}
         return None
 
     async def pending(self, session_id: str, questions: bool) -> list[dict[str, Any]]:
@@ -946,6 +951,16 @@ async def run_opencode(
                         # Time the user spends answering is not run time.
                         deadline += loop.time() - asked_at
                     await api.reply_question(session_id, req, answers)
+                    continue
+                if event.get("type") == "_form":
+                    form = event["request"]
+                    if form["id"] not in handled:
+                        handled.add(form["id"])
+                        with contextlib.suppress(httpx.HTTPError):
+                            await client.delete(f"/api/session/{form['sessionID']}/form/{form['id']}")
+                        asker = _obj(form.get("metadata")).get("server") or "A tool"
+                        yield {"type": "warning", "message": f"{asker} asked for input that Work can't show yet, so Work "
+                               "declined it. Run that step in OpenCode itself to answer it."}
                     continue
                 if event.get("type") == "_permission":
                     req = event["request"]

@@ -158,6 +158,14 @@ async def test_a_dismissed_question_cancels_the_form(tmp_path, monkeypatch, fake
     assert events[-1]["type"] == "done"
 
 
+async def test_an_mcp_request_for_input_is_declined_and_shown(tmp_path, monkeypatch, fake):
+    monkeypatch.setenv("FAKE_OPENCODE_ELICIT", "1")
+    events, log = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)
+    assert [(e["method"], e["path"]) for e in log if "/form/" in e.get("path", "")] == [("DELETE", "/api/session/global/form/frm_e")]
+    assert [e["message"].split(" asked")[0] for e in events if e["type"] == "warning"] == ["docs"]
+    assert events[-1]["type"] == "done"
+
+
 async def test_a_failed_run_reports_opencodes_reason(tmp_path, monkeypatch, fake):
     monkeypatch.setenv("FAKE_OPENCODE_FAIL", "1")
     events, _ = await _run(tmp_path, monkeypatch, fake, auto_confirm=True)

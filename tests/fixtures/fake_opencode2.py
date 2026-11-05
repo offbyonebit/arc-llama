@@ -20,7 +20,8 @@ mode = os.environ.get("FAKE_OPENCODE_PERMISSION")
 question_mode = os.environ.get("FAKE_OPENCODE_QUESTION")
 log_path = os.environ.get("FAKE_OPENCODE_LOG")
 subscribers: list[queue.Queue] = []
-state = {"permission": None, "replied": threading.Event(), "form": None, "answered": threading.Event(), "command_lists": 0}
+state = {"permission": None, "replied": threading.Event(), "form": None, "answered": threading.Event(), "command_lists": 0,
+         "cancelled": threading.Event()}
 
 
 def log(entry):
@@ -65,6 +66,12 @@ def replay():
         if question_mode == "event":
             publish("form.created", {"form": state["form"]})
         state["answered"].wait(10)
+    if os.environ.get("FAKE_OPENCODE_ELICIT"):
+        # OpenCode 2.2.5 files an MCP server's request for input under the "global" session.
+        publish("form.created", {"form": {"id": "frm_e", "sessionID": "global", "title": "docs is requesting input",
+                                          "metadata": {"kind": "mcp-elicitation", "server": "docs", "message": "Which space?"},
+                                          "fields": [{"key": "space", "type": "string"}]}})
+        state["cancelled"].wait(10)
     publish("session.tool.success", {"sessionID": SID, "assistantMessageID": "msg_a", "id": "call_1",
                                      "content": [{"type": "text", "text": "(no output)"}], "metadata": {"exit": 0}})
     publish("session.step.ended", {"sessionID": SID, "assistantMessageID": "msg_a", "finish": "tool-calls",
@@ -153,6 +160,8 @@ class H(BaseHTTPRequestHandler):
         log({"path": path, "method": "DELETE"})
         if path.startswith(f"/api/session/{SID}/form/"):
             state["answered"].set()
+        if path.startswith("/api/session/global/form/"):
+            state["cancelled"].set()
         self._empty()
 
     def do_POST(self):
