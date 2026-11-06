@@ -38,7 +38,11 @@ def register_harness_commands(cli: click.Group, *, console: Console, load_config
                 console.print(f"{mark} {item['version']}  ({tested})  {item['path']}")
             return
         if remove_version:
-            if not hi.remove_harness(cfg, name, remove_version, config_path=config_path):
+            try:
+                removed = hi.remove_harness(cfg, name, remove_version, config_path=config_path)
+            except hi.HarnessInstallError as exc:
+                raise click.ClickException(str(exc)) from exc
+            if not removed:
                 raise click.ClickException(f"{hi.LABELS[name]} {remove_version} was not installed by Arc Llama.")
             console.print(f"Removed {hi.LABELS[name]} {remove_version}.")
             return

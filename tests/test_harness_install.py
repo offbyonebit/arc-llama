@@ -411,3 +411,111 @@ def test_removing_last_hermes_also_removes_its_tools(cfg):
     assert (root / "tools").is_dir(), "tools removed while another Hermes still needs them"
     assert hi.remove_harness(config, "hermes", "v2", config_path=path)
     assert not (root / "tools").exists()
+
+
+# Windows refuses to rename or delete a folder while a file in it is open; these simulate that refusal.
+
+def _deny(monkeypatch, func_name: str, target: Path):
+    real = getattr(hi.os if func_name == "replace" else hi.shutil, func_name)
+
+    def denying(src, *args, **kwargs):
+        if Path(src) == target and not kwargs.get("ignore_errors"):
+            raise PermissionError(13, "Access is denied", str(src))
+        return real(src, *args, **kwargs)
+
+    monkeypatch.setattr(hi.os if func_name == "replace" else hi.shutil, func_name, denying)
+
+
+def _managed_opencode(config, version="v1"):
+    install = hi.harness_root(config) / "opencode" / f"opencode-{version}-linux-x64"
+    install.mkdir(parents=True)
+    (install / "opencode").write_bytes(b"x")
+    (install / hi.MARKER).write_text(json.dumps({"name": "opencode", "version": version, "executable": "opencode"}))
+    return install
+
+
+def test_removing_an_install_that_is_in_use_fails_clearly_and_keeps_the_selection(cfg, monkeypatch):
+    config, path = cfg
+    install = _managed_opencode(config)
+    config.agent.opencode_bin = str(install / "opencode")
+    config.save(path)
+    _deny(monkeypatch, "replace", install)
+    with pytest.raises(hi.HarnessInstallError, match="is in use"):
+        hi.remove_harness(config, "opencode", "v1", config_path=path)
+    assert install.is_dir() and load_config(path).agent.opencode_bin == str(install / "opencode")
+
+
+def test_removal_sweeps_trash_left_by_an_earlier_partial_delete(cfg):
+    config, path = cfg
+    install = _managed_opencode(config)
+    stale = install.parent / ".opencode-v0-linux-x64.trash-123"
+    (stale / "locked").mkdir(parents=True)
+    assert hi.remove_harness(config, "opencode", "v1", config_path=path)
+    assert not stale.exists() and not install.exists()
+
+
+def test_reinstalling_a_version_that_is_in_use_fails_clearly(cfg, monkeypatch):
+    config, path = cfg
+    _linux(monkeypatch)
+    payload = tar_bytes({"opencode": b"#!/bin/sh\necho 1.19.4\n"})
+    name = "opencode-linux-x64.tar.gz"
+    release = opencode_release(hi.OPENCODE_PIN, payload, name)
+    existing = _managed_opencode(config, hi.OPENCODE_PIN)
+    _deny(monkeypatch, "replace", existing)
+    with mock_client({
+        f"{hi.GITHUB_API}/repos/{hi.OPENCODE_REPO}/releases/tags/{hi.OPENCODE_PIN}": httpx.Response(200, json=release),
+        f"https://synthetic.invalid/{name}": httpx.Response(200, content=payload),
+    }) as client, pytest.raises(hi.HarnessInstallError, match="is in use"):
+        hi.install_harness(config, "opencode", config_path=path, client=client, runner=runner_for([]))
+    assert (existing / "opencode").read_bytes() == b"x"
+    assert not [p for p in existing.parent.iterdir() if ".staging-" in p.name or ".download-" in p.name]
+
+
+def test_hermes_leftover_folder_that_cannot_be_cleared_fails_clearly(cfg, monkeypatch):
+    config, path = cfg
+    _linux(monkeypatch)
+    payload = hermes_source("v0.22.5")
+    _pin_hermes(monkeypatch, payload)
+    monkeypatch.setattr(hi.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    leftover = hi.harness_root(config) / "hermes" / "hermes-v0.22.5-linux-x64"
+    (leftover / "venv").mkdir(parents=True)
+    _deny(monkeypatch, "rmtree", leftover)
+    with mock_client(hermes_routes(payload, "v0.22.5")) as client, pytest.raises(hi.HarnessInstallError, match="is in use"):
+        hi.install_harness(config, "hermes", config_path=path, client=client, runner=runner_for([], effect=fake_uv_sync))
+    assert load_config(path).agent.hermes_bin is None
+
+
+def test_stopping_a_command_on_windows_ends_its_whole_process_tree(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(hi.sys, "platform", "win32")
+    monkeypatch.setattr(hi.subprocess, "run", lambda args, **kw: seen.append(args))
+    proc = FakeProc(["uv", "sync"])
+    proc.pid = 4242
+    hi._stop_process(proc)
+    assert seen == [["taskkill", "/F", "/T", "/PID", "4242"]] and proc._code == -9
+
+
+def test_stopping_a_command_elsewhere_only_kills_it(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(hi.sys, "platform", "linux")
+    monkeypatch.setattr(hi.subprocess, "run", lambda args, **kw: seen.append(args))
+    proc = FakeProc(["uv", "sync"])
+    proc.pid = 4242
+    hi._stop_process(proc)
+    assert seen == [] and proc._code == -9
+
+
+def test_cli_remove_in_use_prints_the_reason_not_a_traceback(cfg, monkeypatch):
+    from click.testing import CliRunner
+
+    from arc_llama.cli import cli
+
+    _config, path = cfg
+
+    def in_use(*_a, **_kw):
+        raise hi.HarnessInstallError("OpenCode v1 in X is in use (Access is denied). Stop any Work task or program using it, then try again.")
+
+    monkeypatch.setattr(hi, "remove_harness", in_use)
+    result = CliRunner().invoke(cli, ["--config", str(path), "install-harness", "opencode", "--remove", "v1"])
+    assert result.exit_code == 1 and "is in use" in result.output and "Traceback" not in result.output
+    assert not isinstance(result.exception, hi.HarnessInstallError)

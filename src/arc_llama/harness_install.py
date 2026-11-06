@@ -125,6 +125,13 @@ class InstallCancelledError(HarnessInstallError):
     """The user cancelled the install."""
 
 
+def _in_use(what: str, path: Path, exc: OSError) -> HarnessInstallError:
+    # Windows refuses to rename or delete a folder while any file in it is open (a running harness,
+    # a leftover child process, an antivirus scan); Linux allows both.
+    return HarnessInstallError(f"{what} in {path} is in use ({exc.strerror or exc}). "
+                               "Stop any Work task or program using it, then try again.")
+
+
 Progress = Callable[[str, int | None, int | None], None]
 """progress(step, bytes_done, bytes_total)"""
 
@@ -256,8 +263,7 @@ def _run(ctx: _Context, args: list[str], *, cwd: Path | None = None, env: dict[s
     deadline = time.monotonic() + COMMAND_TIMEOUT
     while proc.poll() is None:
         if ctx.cancel.is_set() or time.monotonic() > deadline:
-            proc.kill()
-            proc.wait()
+            _stop_process(proc)
             reader.join(5)
             if ctx.cancel.is_set():
                 raise InstallCancelledError("Install cancelled.")
@@ -267,6 +273,22 @@ def _run(ctx: _Context, args: list[str], *, cwd: Path | None = None, env: dict[s
     if proc.returncode != 0:
         tail = next((line for line in reversed(lines) if line.strip()), "no output")
         raise HarnessInstallError(f"{step} failed (exit {proc.returncode}): {tail[:300]}")
+
+
+def _stop_process(proc: Any) -> None:
+    """Stop an install command and whatever it started.
+
+    On Windows ``kill()`` ends only the top process, so children such as uv's build backend could keep
+    files in the install folder open; ``taskkill /T`` ends the whole tree first."""
+    pid = getattr(proc, "pid", None)
+    if sys.platform == "win32" and isinstance(pid, int):
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=30,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    proc.kill()
+    proc.wait()
 
 
 def _download(ctx: _Context, client: httpx.Client, asset: RuntimeAsset, dest: Path, step: str) -> Path:
@@ -371,7 +393,10 @@ def _install_opencode(cfg: Config, version: str, client: httpx.Client, ctx: _Con
             "installed_at": time.time(),
         })
         ctx.check()
-        _publish_install(staging, install_dir)
+        try:
+            _publish_install(staging, install_dir)
+        except OSError as exc:
+            raise _in_use(f"OpenCode {tag}", install_dir, exc) from exc
     finally:
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(staging, ignore_errors=True)
@@ -463,7 +488,10 @@ def _install_hermes(cfg: Config, version: str, client: httpx.Client, ctx: _Conte
         ctx.check()
         # An unmarked folder is a failed or interrupted earlier attempt.
         if install_dir.exists():
-            shutil.rmtree(install_dir)
+            try:
+                shutil.rmtree(install_dir)
+            except OSError as exc:
+                raise _in_use("An earlier Hermes install attempt", install_dir, exc) from exc
         install_dir.mkdir(parents=True)
         ctx.progress("Extracting", None, None)
         try:
@@ -593,12 +621,21 @@ def remove_harness(cfg: Config, name: str, version: str, *, config_path: Path | 
             continue
         install_dir = Path(item["dir"])
         current = getattr(cfg.agent, f"{name}_bin", None)
-        if current and Path(current).resolve().is_relative_to(install_dir.resolve()):
+        selected = Path(current).resolve().is_relative_to(install_dir.resolve()) if current else False
+        trash = install_dir.with_name(f".{install_dir.name}.trash-{os.getpid()}")
+        try:
+            os.replace(install_dir, trash)
+        except OSError as exc:
+            raise _in_use(f"{LABELS[name]} {version}", install_dir, exc) from exc
+        # Only now: a failed removal must leave the selection pointing at the install that's still there.
+        if selected:
             setattr(cfg.agent, f"{name}_bin", None)
             cfg.save(config_path)
-        trash = install_dir.with_name(f".{install_dir.name}.trash-{os.getpid()}")
-        os.replace(install_dir, trash)
         shutil.rmtree(trash, ignore_errors=True)
+        # Earlier removals whose delete failed part-way (a file was still open) leave their trash behind.
+        for stale in install_dir.parent.glob(".*.trash-*"):
+            if stale.is_dir() and not stale.is_symlink():
+                shutil.rmtree(stale, ignore_errors=True)
         if name == "hermes" and not managed_installs(cfg, "hermes"):
             # The Python and uv downloaded for Hermes serve nothing else.
             shutil.rmtree(harness_root(cfg) / "tools", ignore_errors=True)

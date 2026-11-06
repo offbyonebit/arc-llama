@@ -396,3 +396,41 @@ def test_ui_flags_tell_the_page_shell_whether_work_is_on(tmp_path, monkeypatch, 
     assert response.headers["content-type"].startswith("text/javascript")
     assert response.headers["cache-control"] == "no-store"
     assert response.text == f"window.ARC_UI_FLAGS = {json.dumps({'work': expected})};\n"
+
+
+def test_opencode_probes_count_as_runs_so_removal_waits_for_them(tmp_path, monkeypatch):
+    from arc_llama.agent.harness.opencode import OpenCodeError
+
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
+    app, _cfg = _install_app(tmp_path, monkeypatch)
+    during = []
+
+    async def fake_list(folder, model, **_kw):
+        during.append(app.state.active_harness_runs["opencode"])
+        return []
+
+    async def failing_capabilities(folder, **_kw):
+        during.append(app.state.active_harness_runs["opencode"])
+        raise OpenCodeError("synthetic")
+
+    monkeypatch.setattr(server_mod, "list_commands", fake_list)
+    monkeypatch.setattr(server_mod, "list_capabilities", failing_capabilities)
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(app) as client:
+        assert client.get("/v1/agent/commands", params={"root": str(tmp_path)}, headers=headers).status_code == 200
+        assert client.get("/v1/agent/capabilities", params={"root": str(tmp_path)}, headers=headers).status_code == 502
+    assert during == [1, 1] and app.state.active_harness_runs["opencode"] == 0
+
+
+def test_removing_an_install_that_is_in_use_is_a_409_with_the_reason(tmp_path, monkeypatch):
+    import arc_llama.harness_install as hi
+
+    app, _cfg = _install_app(tmp_path, monkeypatch)
+
+    def in_use(*_a, **_kw):
+        raise hi.HarnessInstallError("OpenCode v1 in C:\\x is in use (Access is denied). Stop any Work task or program using it, then try again.")
+
+    monkeypatch.setattr(server_mod, "remove_harness", in_use)
+    with TestClient(app) as client:
+        r = client.delete("/admin/harnesses/opencode/v1", headers={"Authorization": "Bearer secret"})
+    assert r.status_code == 409 and "is in use" in r.json()["detail"]

@@ -81,6 +81,7 @@ from arc_llama.config import Config, default_config_path, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
 from arc_llama.harness_install import (
+    HarnessInstallError,
     HarnessInstallManager,
     is_managed,
     managed_installs,
@@ -1078,12 +1079,18 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
         try:
             profile = request.app.state.work_profiles.get(profile_id) if profile_id else None
-            return {"commands": filter_commands(await list_commands(folder, model, binary=cfg.agent.opencode_bin), profile)}
+            # The probe runs the selected OpenCode for a while, so removing it must wait, as for a task.
+            request.app.state.active_harness_runs["opencode"] += 1
+            try:
+                found = await list_commands(folder, model, binary=cfg.agent.opencode_bin)
+            finally:
+                request.app.state.active_harness_runs["opencode"] -= 1
+            return {"commands": filter_commands(found, profile)}
         except OpenCodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/v1/agent/capabilities")
-    async def agent_capabilities(root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+    async def agent_capabilities(request: Request, root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         """What a tool profile can switch on or off for a project: MCP servers, skills and web tools."""
         if not experimental_enabled():
             raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
@@ -1093,10 +1100,13 @@ def create_app(
         folder = folder.resolve()
         if not folder.is_dir():
             raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
+        request.app.state.active_harness_runs["opencode"] += 1
         try:
             return await list_capabilities(folder, binary=cfg.agent.opencode_bin)
         except OpenCodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            request.app.state.active_harness_runs["opencode"] -= 1
 
     @app.get("/v1/agent/profiles")
     async def agent_profiles(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
@@ -1232,7 +1242,10 @@ def create_app(
             raise HTTPException(status_code=409, detail=f"A Work task is using {name}. Wait for it to finish.")
         if request.app.state.harness_installs.active() is not None:
             raise HTTPException(status_code=409, detail="An agent install is running. Wait for it to finish.")
-        removed = await asyncio.to_thread(remove_harness, cfg, name, version, config_path=config_path or default_config_path())
+        try:
+            removed = await asyncio.to_thread(remove_harness, cfg, name, version, config_path=config_path or default_config_path())
+        except HarnessInstallError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not removed:
             raise HTTPException(status_code=404, detail="That version is not installed by Arc Llama")
         return {"removed": version}
