@@ -3,15 +3,21 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+
+// Isolated fixtures live under the OS temp folder (/tmp on Linux, %TEMP% on Windows).
+const smokePrefix = path.join(os.tmpdir(), 'arc-work-');
+const fold = p => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+const underSmokePrefix = p => fold(p).startsWith(fold(smokePrefix));
 
 const origin = process.argv[2], root = process.env.ARC_WORK_SMOKE_ROOT;
 const mode = process.env.ARC_WORK_NATIVE_CASE || 'retry';
 assert.ok(origin?.startsWith('http://127.0.0.1:'));
-assert.ok(root?.startsWith('/tmp/arc-work-'));
+assert.ok(root && underSmokePrefix(root));
 assert.ok(['normal', 'retry', 'keep-best'].includes(mode));
 await mkdir(root, { recursive: true });
-assert.deepEqual(await readdir(root), [], 'Use a fresh empty /tmp/arc-work-* project folder');
+assert.deepEqual(await readdir(root), [], `Use a fresh empty ${smokePrefix}* project folder`);
 await writeFile(path.join(root, 'README.txt'), 'Original project\n', {flag:'wx'});
 for (const name of ['A.txt', 'B.txt']) await assert.rejects(stat(path.join(root, name)), {code:'ENOENT'});
 const options = { headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] };
@@ -19,7 +25,7 @@ const browser = await chromium.launch({...options,channel:'chrome'}).catch(() =>
 let last = null;
 const faults = [], injected = new Set(), errors = [], partialFixtures = [];
 const protocolPauses = [];
-const reportPath = `/tmp/arc-work-inference-${mode}-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || "0.5b"}-report.json`;
+const reportPath = `${smokePrefix}inference-${mode}-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || "0.5b"}-report.json`;
 try {
   const page = await browser.newPage();
   page.on('pageerror', e => errors.push(e.message));
@@ -54,7 +60,7 @@ try {
     last = await api(`/admin/work/jobs/${created.id}`);
     if (mode !== 'normal' && last.state === 'running' && !injected.has(last.attempt)) {
       assert.notEqual(path.resolve(last.project_copy), path.resolve(root));
-      assert.ok(path.resolve(last.project_copy).startsWith('/tmp/arc-work-'));
+      assert.ok(underSmokePrefix(last.project_copy));
       const blocked = last.attempt === 1 ? ['B.txt'] : mode === 'keep-best' ? ['A.txt','B.txt'] : [];
       for (const name of blocked) {
         const target = path.join(last.project_copy, name);
@@ -128,7 +134,7 @@ try {
   for (const name of expected) await assert.rejects(stat(path.join(root,name)), {code:'ENOENT'});
   assert.equal((await readFile(path.join(root,'README.txt'),'utf8')).trim(),'Original project');
   assert.deepEqual(errors, []);
-  await page.screenshot({path:`/tmp/arc-work-inference-${mode}-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || "0.5b"}.png`, fullPage:true});
+  await page.screenshot({path:`${smokePrefix}inference-${mode}-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || "0.5b"}.png`, fullPage:true});
   const report = {mode,real_inference:true,model:`Qwen2.5-${process.env.ARC_WORK_SMOKE_MODEL_SIZE || '0.5b'}-Instruct-Q4_K_M`,backend:'CPU',faults,partial_fixtures:partialFixtures,observed_tool_errors:last.events.filter(e=>e.type==='tool_result' && e.error).length,protocol_pauses:protocolPauses,elapsed_seconds:(Date.now()-start)/1000,criteria:last.criteria,attempts:last.attempts,chosen_attempt:last.chosen_attempt,verification:last.verification,tool_results:last.events.filter(e=>e.type==='tool_result'),reload:'pass',reviewed_apply:'pass',undo:'pass',source_preserved:'pass'};
   await writeFile(reportPath,JSON.stringify(report,null,2));
   console.log(JSON.stringify({mode,result:'pass',attempts:last.attempts,chosen:last.chosen_attempt,report:reportPath}));

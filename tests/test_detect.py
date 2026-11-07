@@ -413,6 +413,116 @@ class TestScanWindows:
         assert any("synthetic slot" in n for n in gpus[0].notes)
 
 
+_DISPLAY = "{4d36e968-e325-11ce-bfc1-08002be10318}"
+_SYSTEM = "{4d36e97d-e325-11ce-bfc1-08002be10318}"
+
+
+class _FakeWinreg:
+    """The registry subset _enum_pci_locations reads: Enum\\PCI\\<hw>\\<instance>."""
+
+    HKEY_LOCAL_MACHINE = "HKLM"
+
+    def __init__(self, devices: dict[str, dict[str, dict]]):
+        self.tree = devices
+
+    class _Key:
+        def __init__(self, node):
+            self.node = node
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def OpenKey(self, parent, path):  # noqa: N802 - winreg API name
+        node = self.tree if parent == self.HKEY_LOCAL_MACHINE else parent.node
+        if path not in node:
+            raise OSError(path)
+        return self._Key(node[path])
+
+    def EnumKey(self, key, index):  # noqa: N802
+        children = [name for name, value in key.node.items() if isinstance(value, dict)]
+        if index >= len(children):
+            raise OSError("no more keys")
+        return children[index]
+
+    def QueryValueEx(self, key, name):  # noqa: N802
+        if name not in key.node:
+            raise OSError(name)
+        return key.node[name], 1
+
+
+class TestEnumPciLocations:
+    """The B60 on a real Windows host: one display function behind PCIe switch
+    ports and an audio function, all in the Battlemage device-ID range."""
+
+    @pytest.fixture
+    def b60_registry(self, monkeypatch):
+        import sys
+
+        import arc_llama.detect as dmod
+
+        inst = "8&326C2C08&0&00080000020A"
+        devices = {
+            "VEN_8086&DEV_E211&SUBSYS_60231849&REV_00": {
+                inst: {"ClassGUID": _DISPLAY, "LocationInformation": "PCI bus 6, device 0, function 0"}
+            },
+            "VEN_8086&DEV_E2F0&SUBSYS_00008086&REV_00": {"6&1": {"ClassGUID": _SYSTEM}},
+            "VEN_8086&DEV_E2F1&SUBSYS_00008086&REV_00": {"7&2": {"ClassGUID": _SYSTEM}},
+            "VEN_8086&DEV_E2F7&SUBSYS_60231849&REV_00": {"8&3": {"ClassGUID": _SYSTEM.upper()}},
+            "VEN_8086&DEV_E2FF&SUBSYS_00000000&REV_01": {"5&4": {"ClassGUID": _SYSTEM}},
+            "VEN_10DE&DEV_2684&SUBSYS_00000000&REV_A1": {"4&5": {"ClassGUID": _DISPLAY}},
+        }
+        fake = _FakeWinreg({"SYSTEM\\CurrentControlSet\\Enum\\PCI": devices})
+        monkeypatch.setitem(sys.modules, "winreg", fake)
+        monkeypatch.setattr(dmod.sys, "platform", "win32")
+        calls: list[str] = []
+
+        def fake_bdf(instance_id):
+            calls.append(instance_id)
+            # The real CM_Locate_DevNodeW fails without the enumerator prefix.
+            return (6, 0, 0) if instance_id.startswith("PCI\\") else None
+
+        monkeypatch.setattr(dmod, "_cfgmgr32_bdf", fake_bdf)
+        return devices, calls
+
+    def test_only_display_functions_are_listed(self, b60_registry):
+        from arc_llama.detect import _enum_pci_locations
+
+        slots = _enum_pci_locations()
+
+        assert [s["device_id"] for s in slots] == [0xE211]
+
+    def test_cfgmgr32_gets_the_full_instance_id(self, b60_registry):
+        from arc_llama.detect import _enum_pci_locations
+
+        _, calls = b60_registry
+        slots = _enum_pci_locations()
+
+        assert calls == ["PCI\\VEN_8086&DEV_E211&SUBSYS_60231849&REV_00\\8&326C2C08&0&00080000020A"]
+        assert slots[0]["pci_slot"] == "0000:06:00.0"
+        assert slots[0]["source"] == "cfgmgr32"
+
+    def test_location_string_fallback(self, b60_registry, monkeypatch):
+        import arc_llama.detect as dmod
+
+        monkeypatch.setattr(dmod, "_cfgmgr32_bdf", lambda _id: None)
+        slots = dmod._enum_pci_locations()
+
+        assert slots[0]["pci_slot"] == "0000:06:00.0"
+        assert slots[0]["source"] == "LocationInformation"
+
+    def test_instance_without_class_is_kept(self, b60_registry):
+        from arc_llama.detect import _enum_pci_locations
+
+        devices, _ = b60_registry
+        devices["VEN_8086&DEV_E20B&SUBSYS_00000000&REV_00"] = {"9&6": {}}
+        slots = _enum_pci_locations()
+
+        assert sorted(s["device_id"] for s in slots) == [0xE20B, 0xE211]
+
+
 class TestEnrichWithClinfo:
     def test_enrich_vram_from_clinfo(self):
         gpu = DetectedGPU(

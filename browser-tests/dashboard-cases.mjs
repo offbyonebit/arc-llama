@@ -104,7 +104,11 @@ export async function testFrontendIntegrationController({ page, origin }) {
     };
   });
   await page.click("#copy-generic-curl");
-  await page.waitForFunction(() => window.__fallbackCopiedText === "curl http://127.0.0.1:11437/v1/models");
+  // The dialog shows the curl.exe spelling when the browser reports Windows.
+  const expectedCurl = await page.evaluate(() => /win/i.test(navigator.platform || "")
+    ? "curl.exe http://127.0.0.1:11437/v1/models"
+    : "curl http://127.0.0.1:11437/v1/models");
+  await page.waitForFunction(expected => window.__fallbackCopiedText === expected, expectedCurl);
   await page.waitForFunction(() => document.querySelector("#copy-generic-curl")?.textContent === "Copied");
   await page.click("#frontend-close");
   await page.getByRole("button", { name: "Connect a frontend" }).click();
