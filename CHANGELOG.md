@@ -7,6 +7,12 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-07
+
+Arc Llama 1.1: install OpenCode or Hermes for Work from inside the app, a Linux command sandbox,
+guided first-run setup and OpenCode 2 support. Validated natively on Linux and Windows 11
+(Arc Pro B60).
+
 ### Added
 - Report a problem: a System page button and `arc-llama report` open a
   GitHub issue (or a Q&A discussion with `--discussion`) prefilled with the
