@@ -3,7 +3,7 @@
 
     python3 scripts/demo/edit.py [--out docs/media]
 
-Reads $DEMO/rec/<shot>.webm and <shot>.json from scripts/demo/record.mjs. Waits (model work the
+Reads $DEMO/rec/<shot>.mp4 and <shot>.json from scripts/demo/record.mjs. Waits (model work the
 viewer cannot see) are sped up; streamed text and the measured tok/s are left at real speed.
 Writes demo.mp4, demo.webp and demo-poster.png.
 """
@@ -34,21 +34,21 @@ def duration(path: Path) -> float:
     return float(out)
 
 
-def zoom(box: dict, scale_h: float) -> str:
-    """A 16:10 crop around ``box`` (page pixels), kept inside the frame."""
+def zoom(box: dict, scale_h: float, s: float = 1) -> str:
+    """A 16:10 crop around ``box`` (page pixels), kept inside the frame; ``s`` is the capture scale."""
     h = min(H, max(360, round(box["h"] * scale_h)))
     w = round(h * W / H)
     cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
     x = min(max(0, round(cx - w / 2)), W - w)
     y = min(max(0, round(cy - h / 2)), H - h)
-    return f"crop={w}:{h}:{x}:{y},scale={W}:{H}:flags=lanczos"
+    return f"crop={round(w * s)}:{round(h * s)}:{round(x * s)}:{round(y * s)},scale={W}:{H}:flags=lanczos"
 
 
 def piece(src: Path, out: Path, start: float, end: float, speed: float = 1.0, crop: str | None = None) -> Path:
     vf = [f"setpts=(PTS-STARTPTS)/{speed}"]
     if crop:
         vf.append(crop)
-    vf += [f"fps={FPS}", f"scale={W}:{H}", "format=yuv420p"]
+    vf += [f"fps={FPS}", f"scale={W}:{H}:flags=lanczos", "format=yuv420p"]
     run("-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src), "-an", "-vf", ",".join(vf),
         "-c:v", "libx264", "-crf", "12", "-preset", "veryfast", str(out))
     return out
@@ -99,27 +99,27 @@ def shots() -> tuple[list[Path], float]:
     out = []
 
     # 1. `arc-llama start`, then the page it opened (the blank page load in between is cut).
-    t, src = m["terminal"], REC / "terminal.webm"
+    t, src = m["terminal"], REC / "terminal.mp4"
     a = piece(src, WORK / "1a.mp4", 0.5, t["browser"])
     b = piece(src, WORK / "1b.mp4", t["page"], t["page"] + 3.0)
     out.append(caption(join([(a, ""), (b, "fade")], WORK / "1.mp4"), "Detects your Arc GPU", WORK / "1c.mp4"))
 
     # 2. Discover: ease down to the shelves, then push in on the hovered card.
-    t, src = m["discover"], REC / "discover.webm"
+    t, src = m["discover"], REC / "discover.mp4"
     a = piece(src, WORK / "2a.mp4", t["ready"] - 0.3, t["hover"] + 0.4)
-    b = piece(src, WORK / "2b.mp4", t["hover"] + 0.4, t["end"] - 0.2, crop=zoom(t["zoom_box"], 1.25))
+    b = piece(src, WORK / "2b.mp4", t["hover"] + 0.4, t["end"] - 0.2, crop=zoom(t["zoom_box"], 1.25, t.get("scale", 1)))
     out.append(caption(join([(a, ""), (b, "fade")], WORK / "2.mp4"), "Models sized for your card", WORK / "2c.mp4"))
 
     # 3. Chat: typing at 1.5x, the answer streams at real speed, then the measured tok/s up close.
-    t, src = m["chat"], REC / "chat.webm"
+    t, src = m["chat"], REC / "chat.mp4"
     a = piece(src, WORK / "3a.mp4", t["ready"] - 0.3, t["send"], speed=1.5)
     b = piece(src, WORK / "3b.mp4", t["send"], t["tps_shown"] + 0.3)
-    c = piece(src, WORK / "3c.mp4", t["tps_shown"] + 0.3, t["end"] - 0.3, crop=zoom(t["zoom_box"], 2.2))
+    c = piece(src, WORK / "3c.mp4", t["tps_shown"] + 0.3, t["end"] - 0.3, crop=zoom(t["zoom_box"], 2.2, t.get("scale", 1)))
     out.append(caption(join([(a, ""), (b, "cut"), (c, "fade")], WORK / "3.mp4"), "Streams on a B60", WORK / "3c2.mp4"))
 
     # 4. Work: model work between the visible steps runs 4x; the question, each approval and the
     # result play at real speed.
-    t, src = m["work"], REC / "work.webm"
+    t, src = m["work"], REC / "work.mp4"
     spans = [
         (t["ready"] - 0.3, t["send"], 2.0),            # typing the task
         (t["send"], t["question"] - 0.4, 4.0),          # the model reads the task and decides to ask

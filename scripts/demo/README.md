@@ -30,6 +30,7 @@ PLAYWRIGHT_BROWSERS_PATH=<dir> node scripts/demo/record.mjs all   # or terminal|
 python3 scripts/demo/edit.py                                      # writes docs/media/
 ```
 
-`record.mjs` drives the real app with Playwright (1440x900, dark, fresh profile) and notes when each
-event happened. `edit.py` speeds up waits 2-4x, keeps streamed text at real speed, adds the captions and
+`record.mjs` drives the real app with Playwright (1440x900, dark, fresh profile), captures it through
+Chrome's screencast at 2x as quality-100 JPEGs (Playwright's own video is low-bitrate VP8 that smears
+text), and notes when each event happened. `edit.py` speeds up waits 2-4x, keeps streamed text at real speed, adds the captions and
 fades, and exports the files. The shot list and prompts are at the top of each script.

@@ -1,10 +1,10 @@
 // Records the README demo, one video per shot, against the isolated demo server.
 //   node scripts/demo/record.mjs [all|terminal|discover|chat|work]
-// Needs scripts/demo/env.sh's setup (see scripts/demo/README.md). Writes $DEMO/rec/<shot>.webm and
-// <shot>.json (event times in seconds from the start of that video) for scripts/demo/edit.sh.
+// Needs scripts/demo/env.sh's setup (see scripts/demo/README.md). Writes $DEMO/rec/<shot>.mp4 (2880x1800)
+// and <shot>.json (event times in seconds from the start of that video) for scripts/demo/edit.py.
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
@@ -12,6 +12,8 @@ const { chromium } = createRequire(path.join(here, "../../browser-tests/package.
 const DEMO = process.env.DEMO || "/tmp/arc-demo";
 const ORIGIN = "http://127.0.0.1:11437";
 const OUT = path.join(DEMO, "rec");
+// Raw frames are large; keep them off the root disk.
+const FRAMES = process.env.DEMO_FRAMES || "/mnt/storage/tmp/arc-demo-frames";
 const SIZE = { width: 1440, height: 900 };
 const CHAT_PROMPT = "In three short bullet points, why does a mixture-of-experts model run fast on a 24 GB GPU?";
 const WORK_PROMPT = 'Add a small script that prints "Hello from Arc". Before writing it, use the question tool to ask me which language to use: Python, Bash or PowerShell.';
@@ -70,32 +72,60 @@ const CURSOR = `(() => {
   if (document.readyState === "loading") addEventListener("DOMContentLoaded", add); else add();
 })();`;
 
+// Frames are captured at 2x through Chrome's screencast as quality-100 JPEGs. Playwright's own
+// recordVideo writes ~0.5 Mbps real-time VP8, which smears text and blocks dark gradients.
+const DSF = 2;
+
+// Chrome sends a frame only when the page repaints, so each frame is held until the next one.
+function encodeFrames(dir, frames, end, out) {
+  const list = frames.map((f, i) => `file '${f.file}'\nduration ${((frames[i + 1]?.t ?? end) - f.t).toFixed(4)}`);
+  list.push(`file '${frames.at(-1).file}'`);
+  writeFileSync(path.join(dir, "list.txt"), list.join("\n") + "\n");
+  execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"),
+    "-fps_mode", "cfr", "-r", "30", "-c:v", "libx264", "-crf", "4", "-preset", "veryfast", "-pix_fmt", "yuv444p", out], { stdio: "inherit" });
+}
+
 async function shot(name, body) {
   mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox", "--disable-dev-shm-usage"] });
-  const context = await browser.newContext({
-    viewport: SIZE, deviceScaleFactor: 1, colorScheme: "dark", reducedMotion: "no-preference",
-    recordVideo: { dir: path.join(OUT, "tmp-" + name), size: SIZE },
-  });
+  const frameDir = path.join(FRAMES, name);
+  rmSync(frameDir, { recursive: true, force: true });
+  mkdirSync(frameDir, { recursive: true });
+  // Headless Chrome screencasts at CSS size unless the scale factor is forced at launch.
+  const browser = await chromium.launch({ channel: "chrome", args: ["--no-sandbox", "--disable-dev-shm-usage", `--force-device-scale-factor=${DSF}`] });
+  const context = await browser.newContext({ viewport: SIZE, deviceScaleFactor: DSF, colorScheme: "dark", reducedMotion: "no-preference" });
   await context.addInitScript(CURSOR);
   const page = await context.newPage();
-  const t0 = Date.now();
-  const marks = {};
+  const cdp = await context.newCDPSession(page);
+  const frames = [];
+  let t0 = null;
+  cdp.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
+    cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
+    if (t0 === null) return;
+    const file = path.join(frameDir, String(frames.length).padStart(6, "0") + ".jpg");
+    writeFileSync(file, Buffer.from(data, "base64"));
+    frames.push({ file, t: Math.max(0, metadata.timestamp - t0) });
+  });
+  await cdp.send("Page.startScreencast", { format: "jpeg", quality: 100, maxWidth: SIZE.width * DSF, maxHeight: SIZE.height * DSF, everyNthFrame: 1 });
+  t0 = Date.now() / 1000;
+  const marks = { scale: DSF };
   globalThis.marks_box = (k, b) => { marks[k] = b && { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; };
-  const mark = (k) => { marks[k] = +((Date.now() - t0) / 1000).toFixed(2); console.log(`  ${name}: ${k} @ ${marks[k]}s`); };
+  const mark = (k) => { marks[k] = +(Date.now() / 1000 - t0).toFixed(2); console.log(`  ${name}: ${k} @ ${marks[k]}s`); };
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   try {
     await body(page, mark);
     mark("end");
   } finally {
-    const video = page.video();
+    await cdp.send("Page.stopScreencast").catch(() => {});
     await context.close();
     await browser.close();
-    renameSync(await video.path(), path.join(OUT, name + ".webm"));
-    rmSync(path.join(OUT, "tmp-" + name), { recursive: true, force: true });
   }
   if (errors.length) throw new Error(`${name}: page errors: ${errors.join("; ")}`);
+  if (!frames.length) throw new Error(`${name}: no frames captured`);
+  frames[0].t = 0;
+  encodeFrames(frameDir, frames, marks.end, path.join(OUT, name + ".mp4"));
+  console.log(`  ${name}: ${frames.length} frames, ${(frames.length / marks.end).toFixed(1)} fps average`);
+  rmSync(frameDir, { recursive: true, force: true });
   writeFileSync(path.join(OUT, name + ".json"), JSON.stringify(marks, null, 2));
 }
 
@@ -148,6 +178,7 @@ async function discover() {
     await page.goto(ORIGIN + "/#discover");
     const need = page.getByText(/^Needs about \d+ GB of 24 GB$/).first();
     await need.waitFor({ timeout: 60000 });
+    await page.getByRole("button", { name: "Download and start" }).waitFor({ timeout: 60000 });
     await sleep(600);
     mark("ready");
     // Ease the shelf heading to the top of the view over 2.5 s.
