@@ -247,6 +247,8 @@ def _winreg_display_class_entries() -> list[dict]:
 
 def _read_instance_value(hw_key, inst_id: str, name: str):
     """Read one value from a PCI device-instance registry key, or None."""
+    if sys.platform != "win32":
+        return None
     import winreg
 
     try:
