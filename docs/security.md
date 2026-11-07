@@ -63,3 +63,14 @@ Plugins run inside the Arc Llama process with the service account's filesystem
 and network access. Install only code you trust and review its declared routes.
 Model output is untrusted too; the chat UI escapes raw HTML and filters unsafe
 Markdown link and image protocols before inserting rendered content.
+
+## Agent command sandbox on older Linux kernels
+
+On Linux, the built-in agent's shell commands run under Landlock (kernel 5.19 or
+newer). Landlock limits where they can write. Only Landlock ABI 4, in Linux 6.7
+and newer, can also stop them from opening a TCP connection to Arc Llama's own
+port. On kernels from 5.19 to 6.6, a sandboxed command can still reach the local
+API, read the session token and start another agent run with wider settings.
+On those kernels, leave auto-approve off for Work runs that may run commands, so
+every command still waits for your approval. Windows and macOS have no command
+sandbox at all.

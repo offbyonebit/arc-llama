@@ -338,6 +338,9 @@ is on, and each command's output says so when it isn't): they can only create, c
 delete files inside the project folder, temp folders and your cache folder
 (`~/.cache`, which Go, uv and pip need), and get "Permission denied" elsewhere. They can still read anything you can read, use the network
 and change file permissions, so this limits accidents, not a determined attacker.
+On Linux 6.7 and newer they also can't connect to Arc Llama's own API port. On older
+kernels they can, so a command could use the local admin API to start another run;
+there, leave auto-approve off for Work runs that may run commands.
 Set `ARC_LLAMA_COMMAND_SANDBOX=off` to turn it off. OpenCode and Hermes run
 commands under their own policies, and Windows has no command sandbox.
 Connected tools may access external services according to the harness setup.
