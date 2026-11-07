@@ -25,9 +25,13 @@ subscribers: list[queue.Queue] = []
 state = {"permission": None, "replied": threading.Event(), "question": None, "answered": threading.Event(), "seen_env": {}}
 
 
+_log_lock = threading.Lock()
+
+
 def log(entry):
+    # Handler threads log concurrently; Windows appends are not atomic, so serialize them.
     if log_path:
-        with open(log_path, "a") as fh:
+        with _log_lock, open(log_path, "a") as fh:
             fh.write(json.dumps(entry) + "\n")
 
 

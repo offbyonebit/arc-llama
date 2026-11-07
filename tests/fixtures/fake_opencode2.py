@@ -24,9 +24,13 @@ state = {"permission": None, "replied": threading.Event(), "form": None, "answer
          "cancelled": threading.Event()}
 
 
+_log_lock = threading.Lock()
+
+
 def log(entry):
+    # Handler threads log concurrently; Windows appends are not atomic, so serialize them.
     if log_path:
-        with open(log_path, "a") as fh:
+        with _log_lock, open(log_path, "a") as fh:
             fh.write(json.dumps(entry) + "\n")
 
 
