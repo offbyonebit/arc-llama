@@ -1,5 +1,7 @@
 # Arc Llama
 
+[![Arc Llama demo: arc-llama start detects an Arc Pro B60, Discover suggests models that fit its 24 GB, a chat answer streams at about 78 tokens per second, and a Work agent asks which language to use and for approval before writing a file](docs/media/demo.webp)](docs/media/demo.mp4)
+
 > Run local LLMs on your Intel Arc GPU with one command.
 
 Arc Llama detects your Arc card, installs a verified portable `llama.cpp`
