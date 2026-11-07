@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from arc_llama.agent import landlock
+
 GIT_MUTATION_COMMANDS = frozenset(
     {
         "git commit",
@@ -668,11 +670,15 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
     env = os.environ.copy()
     if sys.platform != "win32":
         env.update({"PS1": "", "TERM": "dumb"})
-    shell_command = _prepare_windows_command(command)
+    shell_command: str | list[str] = _prepare_windows_command(command)
+    use_shell = True
+    sandboxed = sys.platform != "win32" and landlock.enabled()
+    if sandboxed:
+        shell_command, use_shell = landlock.wrap(["/bin/sh", "-c", command], root), False
     try:
         result = subprocess.run(
             shell_command,
-            shell=True,
+            shell=use_shell,
             cwd=root,
             capture_output=True,
             text=True,
@@ -696,6 +702,11 @@ def run_command(command: str, root: Path, timeout: float = 60.0) -> ToolResult:
         output += f"[stderr]\n{result.stderr}"
     if result.returncode != 0:
         output += f"\n[exit code {result.returncode}]"
+        lowered = output.lower()
+        if sandboxed and ("permission denied" in lowered or "read-only file system" in lowered):
+            output += "\n[sandbox: commands can only write inside the project folder, temp folders and the user cache folder]"
+    if not sandboxed and landlock.status() == "unavailable":
+        output += "\n" + landlock.UNAVAILABLE_NOTE
     return ToolResult(output.strip(), error=result.returncode != 0)
 
 
@@ -764,6 +775,41 @@ def _search_files_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResul
         ctx.root,
         arguments.get("path_glob", "*"),
     )
+
+
+@tool(
+    name="ask_user",
+    description=(
+        "Ask the user a question and wait for the answer. Use it when you are blocked on a choice only "
+        "the user can make (which approach, which file, what they meant), instead of guessing. Offer 2-4 "
+        "short options; the user can also type their own answer. Do not ask about things you can find out "
+        "by reading the project."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The complete question."},
+            "header": {"type": "string", "description": "Very short label for the question (max 30 chars)."},
+            "options": {
+                "type": "array",
+                "description": "The choices to offer.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "Choice text (1-5 words)."},
+                        "description": {"type": "string", "description": "What choosing it means."},
+                    },
+                    "required": ["label"],
+                },
+            },
+            "multiple": {"type": "boolean", "description": "Allow picking more than one option."},
+        },
+        "required": ["question"],
+    },
+)
+def _ask_user_tool(arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    # The agent loop answers this itself when someone can see the question; reaching here means nobody can.
+    return ToolResult("Nobody can answer questions here. Make a sensible choice and say which you made.", error=True)
 
 
 # ---------------------------------------------------------------------------

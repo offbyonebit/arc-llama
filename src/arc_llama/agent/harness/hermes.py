@@ -94,6 +94,31 @@ def hermes_environment(home: Path) -> dict[str, str]:
             "NO_PROXY": "127.0.0.1,localhost,::1",
         }
     )
+    if sys.platform == "win32":
+        # Windows needs these to start processes, load system DLLs and pick a
+        # temp folder; none carries credentials.
+        env.update(
+            {
+                key: os.environ[key]
+                for key in (
+                    "WINDIR",
+                    "COMSPEC",
+                    "PATHEXT",
+                    "TEMP",
+                    "TMP",
+                    "USERNAME",
+                    "NUMBER_OF_PROCESSORS",
+                    "PROCESSOR_ARCHITECTURE",
+                )
+                if key in os.environ
+            }
+        )
+        # Python on Windows finds the home folder through USERPROFILE and never
+        # reads HOME; without it Hermes exits at startup. Keep app data private
+        # to this run like the XDG folders above.
+        env["USERPROFILE"] = str(home)
+        env["APPDATA"] = str(home / "appdata")
+        env["LOCALAPPDATA"] = str(home / "localappdata")
     return env
 
 
@@ -297,6 +322,52 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
+def _same_path(a: str | Path, b: str | Path) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def _recorded_gateway_pids(home: Path) -> set[int]:
+    """PIDs of the gateway Hermes recorded as serving this run's private home."""
+    pids: set[int] = set()
+    for name in ("gateway.pid", "gateway.lock"):
+        try:
+            record = json.loads((home / name).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(record, dict)
+            and record.get("kind") == "hermes-gateway"
+            and isinstance(record.get("pid"), int)
+            and isinstance(record.get("hermes_home"), str)
+            and _same_path(record["hermes_home"], home)
+        ):
+            pids.add(record["pid"])
+    return pids
+
+
+async def _stop_gateway(home: Path) -> None:
+    """End the gateway daemon that ``hermes acp`` starts for this run's private home.
+
+    Hermes detaches it from the ACP process tree and it exits only after ten idle
+    minutes, holding a lock file open in the home all along, so on Windows the home
+    could not be removed. ``hermes gateway stop`` takes about ten seconds to start,
+    too slow for every run's teardown; the gateway's own record names its PID."""
+    for pid in _recorded_gateway_pids(home):
+        with contextlib.suppress(OSError):
+            kill = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/F",
+                "/T",
+                "/PID",
+                str(pid),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(kill.wait(), 10)
+
+
 async def run_hermes(
     *,
     task: str,
@@ -333,9 +404,10 @@ async def run_hermes(
     proc = None
     background: list[asyncio.Task] = []
     rpc = None
-    temporary = tempfile.TemporaryDirectory(prefix="arc-llama-hermes-")
+    # A file Hermes still holds open must not turn a finished run into a crash.
+    temporary = tempfile.TemporaryDirectory(prefix="arc-llama-hermes-", ignore_cleanup_errors=True)
+    home = Path(temporary.name)
     try:
-        home = Path(temporary.name)
         (home / "config.yaml").write_text(json.dumps(build_hermes_config(model, observer.url)))
         proc = await asyncio.create_subprocess_exec(
             executable,
@@ -469,10 +541,18 @@ async def run_hermes(
                             {"method": "session/cancel", "params": {"sessionId": rpc.session}}
                         )
                 await asyncio.shield(_stop(proc))
+                if sys.platform == "win32":
+                    await asyncio.shield(_stop_gateway(home))
             for job in background:
                 job.cancel()
             if background:
                 await asyncio.shield(asyncio.gather(*background, return_exceptions=True))
             await asyncio.shield(observer.close())
             temporary.cleanup()
+            # Windows releases a killed process's open files a moment after it exits.
+            for _ in range(10):
+                if sys.platform != "win32" or not home.exists():
+                    break
+                await asyncio.sleep(0.2)
+                shutil.rmtree(home, ignore_errors=True)
     yield {"type": "done"}

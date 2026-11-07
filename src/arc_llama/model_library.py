@@ -45,6 +45,12 @@ def quant_label(filename: str) -> str:
     return match.group(0).upper() if match else "unknown"
 
 
+def memory_need_mb(size_mb: int, ctx: int = FIT_CTX) -> int:
+    """GPU memory for a model file of ``size_mb`` plus a ``ctx``-token conversation."""
+    kv = estimate_kv_bytes(ctx, KVCacheType.Q8_0) // 1_048_576
+    return size_mb + kv + _COMPUTE_MB + _SAFETY_MB
+
+
 def fit_badge(size_mb: int, vram_mb: int | None) -> str:
     """``fits``, ``tight``, ``too_big``, or ``unknown`` for a model of ``size_mb``.
 
@@ -54,16 +60,11 @@ def fit_badge(size_mb: int, vram_mb: int | None) -> str:
     """
     if not vram_mb:
         return "unknown"
-
-    def need(ctx: int) -> int:
-        kv = estimate_kv_bytes(ctx, KVCacheType.Q8_0) // 1_048_576
-        return size_mb + kv + _COMPUTE_MB + _SAFETY_MB
-
     # "fits" keeps 10% of the card free for the driver, desktop, and
     # estimate error; "tight" only promises a short context.
-    if need(FIT_CTX) <= vram_mb * 0.9:
+    if memory_need_mb(size_mb, FIT_CTX) <= vram_mb * 0.9:
         return "fits"
-    if need(TIGHT_CTX) <= vram_mb:
+    if memory_need_mb(size_mb, TIGHT_CTX) <= vram_mb:
         return "tight"
     return "too_big"
 
@@ -76,6 +77,8 @@ class QuantOption:
     size_mb: int
     shards: int = 1
     fit: str = "unknown"
+    need_mb: int = 0
+    """Estimated GPU memory in use: the file plus the conversation its badge promises."""
 
 
 def group_repo_files(
@@ -105,6 +108,8 @@ def group_repo_files(
         )
     for option in options:
         option.fit = fit_badge(option.size_mb, vram_mb) if option.size_mb else "unknown"
+        if option.size_mb:
+            option.need_mb = memory_need_mb(option.size_mb, TIGHT_CTX if option.fit == "tight" else FIT_CTX)
     options.sort(key=lambda o: (o.size_mb, o.file))
     return options, vision
 
@@ -165,6 +170,7 @@ class DownloadJob:
     registered: list[str] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    revision: str | None = None
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
@@ -200,7 +206,8 @@ class DownloadManager:
         self._worker: asyncio.Task[None] | None = None
 
     def submit(
-        self, repo: str, file: str, bytes_total: int | None, dest_dir: str | None = None
+        self, repo: str, file: str, bytes_total: int | None, dest_dir: str | None = None,
+        *, revision: str | None = None,
     ) -> DownloadJob:
         if not _REPO_RE.match(repo) or not file.lower().endswith(".gguf") or ".." in file:
             raise ValueError("invalid repo or file")
@@ -234,6 +241,7 @@ class DownloadManager:
             file=file,
             target_dir=str(target),
             bytes_total=bytes_total,
+            revision=revision,
         )
         self.jobs[job.id] = job
         self._queue.put_nowait(job)
@@ -270,7 +278,8 @@ class DownloadManager:
 
                 await asyncio.to_thread(check_space)
             task = asyncio.create_task(
-                asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False)
+                asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False,
+                                  **({"revision": job.revision} if job.revision else {}))
             )
             while not task.done():
                 job.bytes_done = max(0, _dir_bytes(target) - baseline)

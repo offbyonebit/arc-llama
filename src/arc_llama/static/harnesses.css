@@ -1,0 +1,32 @@
+/* Installing Work agents (OpenCode, Hermes): a confirm/progress dialog shared by Work and System,
+   and System's Agents list. Uses the paper tokens both pages load. */
+.harness-dialog { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--sh); }
+.harness-dialog[hidden] { display: none; }
+.harness-dialog-sheet { width: 100%; max-width: 480px; max-height: calc(100vh - 32px); overflow-y: auto; background: var(--pn); color: var(--tx); border: 1px solid var(--ln); border-radius: 14px; padding: 20px 22px; box-shadow: 0 18px 50px var(--sh); }
+.harness-dialog-sheet h2 { margin: 0 0 8px; font-size: 18px; }
+.harness-dialog-sheet p { margin: 0 0 10px; color: var(--t2); font-size: 14px; line-height: 1.45; }
+.harness-dialog-sheet dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; font-size: 13px; }
+.harness-dialog-sheet dt { color: var(--t3); }
+.harness-dialog-sheet dd { margin: 0; overflow-wrap: anywhere; }
+.harness-dialog-sheet a { color: var(--ac); }
+.harness-note { padding: 8px 10px; border-radius: 8px; background: var(--wnb); color: var(--wn); border: 1px solid var(--wnl); }
+.harness-error { padding: 8px 10px; border-radius: 8px; background: var(--bdb); color: var(--bd); border: 1px solid var(--bdl); overflow-wrap: anywhere; }
+.harness-progress { height: 6px; border-radius: 3px; background: var(--cc); overflow: hidden; margin: 6px 0 10px; }
+.harness-progress span { display: block; height: 100%; width: 0; background: var(--ac); transition: width .3s; }
+.harness-progress.indeterminate span { width: 35%; animation: harness-slide 1.4s ease-in-out infinite; }
+@keyframes harness-slide { from { margin-left: -35%; } to { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .harness-progress.indeterminate span { animation: none; width: 100%; opacity: .5; } }
+.harness-log { font-size: 12px; }
+.harness-log pre { max-height: 180px; overflow: auto; margin: 6px 0 0; padding: 8px; background: var(--cc); border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+.harness-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 14px; }
+.harness-actions .harness-secondary-link { margin-right: auto; }
+.harness-btn { font: inherit; font-size: 14px; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--ln); background: var(--pn); color: var(--tx); cursor: pointer; }
+.harness-btn.primary { background: var(--ac); border-color: var(--ac); color: var(--acf); }
+.harness-btn:disabled { opacity: .55; cursor: default; }
+.harness-link { font: inherit; font-size: 13px; background: none; border: 0; padding: 0; color: var(--ac); cursor: pointer; text-decoration: underline; }
+
+.harness-list { display: grid; gap: 10px; }
+.harness-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 12px 14px; border: 1px solid var(--ln); border-radius: 10px; background: var(--pn); }
+.harness-row h3 { margin: 0; font-size: 15px; }
+.harness-row p { margin: 2px 0 0; color: var(--t2); font-size: 13px; overflow-wrap: anywhere; }
+.harness-row .harness-actions { margin-top: 0; }

@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/model-journey-and-organization]
+    branches: [main, "release/**", feature/model-journey-and-organization]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -159,7 +160,10 @@ jobs:
           from arc_llama import __version__
           from arc_llama.server import create_app
 
-          assert create_app(plugins=[]).version == __version__
+          app = create_app(plugins=[])
+          assert app.version == __version__
+          # Scripts the server generates per request (e.g. /ui-flags.js) are routes, not package files.
+          routes = {getattr(route, "path", None) for route in app.routes}
           assert resources.files("arc_llama").joinpath("static/index.html").is_file()
           assert resources.files("arc_llama").joinpath("static/markdown_safety.js").is_file()
           assert resources.files("arc_llama").joinpath("static/vendor/marked-12.0.2.min.js").is_file()
@@ -170,8 +174,8 @@ jobs:
                   values = dict(attrs)
                   target = values.get("src") if tag == "script" else values.get("href") if tag == "link" and values.get("rel") == "stylesheet" else None
                   if target and target.startswith("/"):
-                      path = urlsplit(target).path.lstrip("/")
-                      assert resources.files("arc_llama").joinpath("static", path).is_file(), path
+                      path = urlsplit(target).path
+                      assert path in routes or resources.files("arc_llama").joinpath("static", path.lstrip("/")).is_file(), path
           for page in ("index.html", "chat.html", "work.html"):
               Assets().feed(resources.files("arc_llama").joinpath("static", page).read_text(encoding="utf-8"))
           PY

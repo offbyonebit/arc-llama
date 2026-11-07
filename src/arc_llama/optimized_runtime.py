@@ -35,6 +35,7 @@ from arc_llama.runtime import (
     _auth_headers,
     _find_llama_server,
     _publish_install,
+    _recover_interrupted_publish,
     _runtime_ssl_context,
     download_asset,
     extract_archive,
@@ -119,7 +120,11 @@ def _release(client: httpx.Client, version: str) -> dict:
         url = f"{GITHUB_API}/repos/{RUNTIME_REPO}/releases/tags/{version}"
     r = client.get(url, headers={"Accept": "application/vnd.github+json"})
     if r.status_code == 404:
-        raise OptimizedRuntimeError(f"No Arc Llama Runtime release '{version}' found.")
+        # GitHub answers 404 both for a missing release and for a private repository.
+        raise OptimizedRuntimeError(
+            f"Arc Llama Runtime release '{version or 'latest'}' isn't available: it isn't published yet, "
+            "or its release repository isn't public. Nothing was installed."
+        )
     r.raise_for_status()
     return r.json()
 
@@ -162,6 +167,7 @@ def install_optimized_runtime(
     if dest is None:
         dest = Path(cfg.paths.state_dir).expanduser() / "runtime" if cfg.paths.state_dir else default_state_dir() / "runtime"
     dest.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_publish(dest)
 
     work = Path(tempfile.mkdtemp(prefix=".arc-llama-runtime-dl-", dir=dest))
     own_client = False

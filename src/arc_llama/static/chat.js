@@ -7,7 +7,7 @@ function applyTheme(theme) {
   if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
   if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
 }
-applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "light"));
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || (typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")));
 // Side panels open beneath the header so its history/settings buttons stay reachable.
 (() => {
   const header = $("header");
@@ -649,10 +649,26 @@ async function fetchModels() {
   }
 }
 
+// With no models there is nothing to pick, so point to setup instead.
+function renderNoModelsHint(empty) {
+  const title = emptyState?.querySelector(".title"), hint = emptyState?.querySelector(".hint");
+  if (!title || !hint) return;
+  title.textContent = empty ? "No models yet" : "Start a conversation";
+  hint.textContent = empty ? "" : "Select a model and send a message to begin chatting with arc-llama.";
+  if (empty) {
+    hint.append("Chat needs a model. ");
+    const link = document.createElement("a");
+    link.href = "/";
+    link.textContent = "Get your first model";
+    hint.append(link, ".");
+  }
+}
+
 function renderModelPicker() {
   const requested = new URLSearchParams(window.location.search).get("model");
   const current = requested || selectedModel || sessionStorage.getItem("arc-llama-selected-model") || modelSelect.value;
   modelSelect.innerHTML = "";
+  renderNoModelsHint(models.length === 0);
   if (models.length === 0) {
     const opt = document.createElement("option");
     opt.textContent = "No models available";
@@ -721,12 +737,15 @@ async function fetchStatus() {
         m.llama_server = s.llama_server || "";
         m.effective_llama_server = s.effective_llama_server || "";
         m.env = s.env || {};
+        const device = (data.gpus || []).find(g => g.pci_slot === s.gpu_pci_slot);
+        m.configuredDevice = device?.name || null;
+        m.configuredBackend = device?.backend || null;
       }
       return m;
     });
     updatePickerStatus();
     window.dispatchEvent(new Event("arc-paper-models"));
-    if (settingsPanel.classList.contains("open")) renderSettingsPanel();
+    if (settingsPanel.classList.contains("open")) renderSettingsPanel({ poll: true });
   } catch (e) {
     // silent: the chat endpoint will surface real errors
   }
@@ -984,10 +1003,15 @@ function displayBudget(budget) {
   ctxMeter.title = budget.reason + (over ? " Compact older turns, lower the reply limit in settings, or increase context." : "");
 }
 
+function budgetKey(payload) {
+  const model = models.find(m => m.id === selectedModel);
+  return JSON.stringify([payload, model?.loaded, model?.ctx]);
+}
+
 async function countBudget(entries) {
   const payload = budgetPayload(entries);
   const model = models.find(m => m.id === selectedModel);
-  const key = JSON.stringify([payload, model?.loaded, model?.ctx]);
+  const key = budgetKey(payload);
   if (countedBudget?.key === key && Date.now() - countedBudget.at < 1000) return countedBudget.value;
   const mine = ++budgetSequence;
   budgetAbort?.abort();
@@ -1013,6 +1037,13 @@ function refreshBudget() {
   budgetAbort?.abort();
   budgetSequence++;
   if (!selectedModel || generating) return;
+  // The status poll calls this every few seconds. When nothing that affects the
+  // count changed, keep the exact figure instead of flashing back to an estimate
+  // and asking the server to tokenize the whole conversation again.
+  if (countedBudget && countedBudget.key === budgetKey(budgetPayload(draftEntries()))) {
+    displayBudget(countedBudget.value);
+    return;
+  }
   const estimate = estimateBudget(input.value);
   const reply = presetFor(selectedModel).max_tokens;
   displayBudget({ total_tokens: estimate.tokens + reply, reserved_tokens: reply, exact: false, reason: "Estimated context budget; checking the resident model when available." });
@@ -1134,9 +1165,16 @@ function renderUserImages(div, images) {
 async function sendMessage() {
   if (compacting) return;
   if (isComposerActionActive()) { sendComposerAction(); return; }
-  if (chatBusy() || !selectedModel) return;
+  if (chatBusy()) return;
   const text = input.value.trim();
   if (!text && !hasReadyAttachments()) return;
+  if (!selectedModel) {
+    // The message stays in the composer for when a model is ready.
+    const note = models.length ? "Choose a model first." : "No models yet. Open Models to get your first one.";
+    const last = chatLog.lastElementChild;
+    if (!(last?.classList.contains("error-card") && last.textContent.includes(note))) showError(note);
+    return;
+  }
   if (hasProcessingAttachments()) {
     showError("Please wait for attachments to finish processing.");
     return;
@@ -1208,7 +1246,8 @@ async function runSend() {
   lastAssistantDiv = assistantMsg.div;
   const live = document.createElement("div"); live.className = "live-activity"; live.dataset.phase = needsLoad ? "loading" : "generating";
   const liveDot = document.createElement("span"); liveDot.className = "live-activity-dot"; liveDot.setAttribute("aria-hidden", "true");
-  const liveLabel = document.createElement("span"); liveLabel.setAttribute("role", "status"); liveLabel.setAttribute("aria-live", "polite"); liveLabel.textContent = needsLoad ? "Starting model" : "Generating";
+  const generationLabel = window.ArcFirstAnswer?.model === selectedModel ? "Processing your question" : "Generating";
+  const liveLabel = document.createElement("span"); liveLabel.setAttribute("role", "status"); liveLabel.setAttribute("aria-live", "polite"); liveLabel.textContent = needsLoad ? "Starting model" : generationLabel;
   const liveTime = document.createElement("span"); liveTime.setAttribute("aria-hidden", "true");
   live.append(liveDot, liveLabel, liveTime); assistantMsg.div.querySelector(".role").appendChild(live);
   const liveStarted = Date.now(); const liveTimer = setInterval(() => { liveTime.textContent = `${Math.floor((Date.now() - liveStarted) / 1000)} s`; }, 1000);
@@ -1231,7 +1270,7 @@ async function runSend() {
     return;
   }
   assistantMsg.div.classList.remove("load-wait-card");
-  live.dataset.phase = "generating"; liveLabel.textContent = "Generating"; live.removeAttribute("title");
+  live.dataset.phase = "generating"; liveLabel.textContent = generationLabel; live.removeAttribute("title");
   clearTimeout(budgetTimer);
   const budget = await countBudget(effectiveConversation());
   if (budget?.exact && budget.over_budget) {
@@ -1251,6 +1290,7 @@ async function runSend() {
   let streamRaw = "";
   let lastDisplayedContent = "";
   let currentThinking = "";
+  let replyFinished = false;
 
   try {
     const r = await fetch("/v1/chat/completions", {
@@ -1276,60 +1316,57 @@ async function runSend() {
       const t = await r.text();
       throw new Error(`${r.status} ${t}`);
     }
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let streamFinished = false;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        if (!streamFinished) throw new Error("The stream ended before completion. Your partial answer was kept.");
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (line.trim() === "data: [DONE]") streamFinished = true;
-        if (line.startsWith("data:")) {
-          let event;
-          try { event = JSON.parse(line.slice(5)); } catch { /* non-JSON SSE */ }
-          if (event?.error) throw new Error(event.error.message || "Generation was interrupted.");
-        }
-        const chunkText = processSseLine(line);
-        if (chunkText != null) {
-          let reasoning = false;
-          try { reasoning = !!JSON.parse(line.slice(5)).choices?.[0]?.delta?.reasoning_content; } catch (_) {}
-          if (streamStartTime === null) streamStartTime = Date.now();
-          streamTokenCount += Math.max(1, Math.round(chunkText.length / 4));
-          streamRaw += chunkText;
-          const parsed = parseThinking(streamRaw);
-          if (!parsed.hasPartialTag) {
-            const phase = reasoning || (parsed.thinking && !parsed.content.trim()) ? "thinking" : "answering";
-            live.dataset.phase = phase; liveLabel.textContent = phase === "thinking" ? "Thinking" : "Writing answer";
-            const newContent = parsed.content.slice(lastDisplayedContent.length);
-            lastDisplayedContent = parsed.content;
-            currentThinking = parsed.thinking;
-            if (newContent) {
-              conversation[convoIndex].content = parsed.content;
-              appendChunk(assistantMsg.content, newContent);
-              if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
-            }
-            const thinkingBlock = assistantMsg.div.querySelector(".thinking-block");
-            const thinkingContent = assistantMsg.div.querySelector(".thinking-content");
-            if (thinkingBlock && thinkingContent) {
-              const trimmedThinking = currentThinking.trim();
-              if (trimmedThinking) {
-                thinkingBlock.style.display = "";
-                thinkingContent.textContent = trimmedThinking;
-              } else {
-                thinkingBlock.style.display = "none";
-                thinkingContent.textContent = "";
-              }
+    const stream = window.ArcChat.createCompletionStream(event => {
+      if (event.choices?.[0]?.finish_reason != null) replyFinished = event.choices[0].finish_reason === "stop";
+      if (event.usage) lastUsage = event.usage;
+      const delta = event.choices?.[0]?.delta;
+      if (!delta) return;
+      const thinking = delta.reasoning_content ?? delta.reasoning;
+      const reasoning = !!thinking;
+      const chunkText = (thinking ? "<think>" + thinking + "</think>" : "") + (delta.content || "");
+      if (chunkText) {
+        if (streamStartTime === null) streamStartTime = Date.now();
+        streamTokenCount += Math.max(1, Math.round(chunkText.length / 4));
+        streamRaw += chunkText;
+        const parsed = parseThinking(streamRaw);
+        if (!parsed.hasPartialTag) {
+          const phase = reasoning || (parsed.thinking && !parsed.content.trim()) ? "thinking" : "answering";
+          live.dataset.phase = phase; liveLabel.textContent = phase === "thinking" ? "Thinking" : "Writing answer";
+          const newContent = parsed.content.slice(lastDisplayedContent.length);
+          lastDisplayedContent = parsed.content;
+          currentThinking = parsed.thinking;
+          if (newContent) {
+            conversation[convoIndex].content = parsed.content;
+            appendChunk(assistantMsg.content, newContent);
+            if (shouldAutoScroll(chatLog)) autoScroll(chatLog);
+          }
+          const thinkingBlock = assistantMsg.div.querySelector(".thinking-block");
+          const thinkingContent = assistantMsg.div.querySelector(".thinking-content");
+          if (thinkingBlock && thinkingContent) {
+            const trimmedThinking = currentThinking.trim();
+            if (trimmedThinking) {
+              thinkingBlock.style.display = "";
+              thinkingContent.textContent = trimmedThinking;
+            } else {
+              thinkingBlock.style.display = "none";
+              thinkingContent.textContent = "";
             }
           }
         }
       }
+    });
+    const reader = r.body.getReader();
+    try {
+      while (!stream.done) {
+        const { done, value } = await reader.read();
+        if (done) { stream.end(); break; }
+        stream.push(value);
+      }
+    } finally {
+      // Completion, malformed frames and Stop all close the response body.
+      // A server need not close its connection after sending [DONE].
+      try { await reader.cancel(); } catch (_) {}
+      reader.releaseLock();
     }
     const finalParsed = parseThinking(streamRaw);
     conversation[convoIndex].content = finalParsed.content;
@@ -1348,6 +1385,7 @@ async function runSend() {
     await serverAppendMessages(currentChatId, [{ role: "assistant", content: conversation[convoIndex].content }]);
     await saveCurrentChat();
     renderTurnActions();
+    if (replyFinished) window.ArcFirstAnswer?.completed(selectedModel, finalParsed.content, m);
   } catch (e) {
     const partial = parseThinking(streamRaw);
     if (partial.content.trim() || partial.thinking.trim()) {
@@ -1391,30 +1429,6 @@ function renderResponseStatus(div, status) {
   note.textContent = status === "stopped" ? "Stopped" : "Interrupted: partial answer";
   div.appendChild(note);
 }
-
-function processSseLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed || !trimmed.startsWith("data:")) return null;
-  const payload = trimmed.slice(5).trim();
-  if (payload === "[DONE]") return null;
-  try {
-    const obj = JSON.parse(payload);
-    if (obj.usage) lastUsage = obj.usage;
-    const delta = obj.choices?.[0]?.delta;
-    if (!delta) return null;
-    let text = "";
-    if (delta.reasoning_content) {
-      text += "<think>" + delta.reasoning_content + "</think>";
-    }
-    if (delta.content != null) {
-      text += delta.content;
-    }
-    return text || null;
-  } catch (e) {
-    return null;
-  }
-}
-
 
 function finishGeneration() {
   generating = false;
@@ -1853,5 +1867,7 @@ function restoreDraft() {
   await loadFolders();
   await syncChatsFromServer();
   restoreDraft();
-  statusPoller = setInterval(fetchStatus, 3000);
+  window.ArcFirstAnswer?.begin({ input, selectedModel });
+  statusPoller = setInterval(() => { if (!document.hidden) fetchStatus(); }, 3000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) fetchStatus(); });
 })();

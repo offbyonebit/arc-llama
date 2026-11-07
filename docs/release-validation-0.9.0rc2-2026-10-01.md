@@ -1,6 +1,6 @@
 # RC2 improvement and validation report
 
-Date: 2026-10-01. Checkout: `/home/slowe/arc-llama`.
+Date: 2026-10-01. Checkout: `~/arc-llama`.
 Branch: `maintenance/rc1-local-follow-up`.
 Base HEAD: `5162625108225662345ef707c4e7414700f119a2`.
 Validation was completed before committing or pushing this improvement pass.

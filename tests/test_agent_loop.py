@@ -422,3 +422,87 @@ async def test_agent_reports_only_backend_measured_generation_speed(tmp_root, ti
     events = await collect_events("Synthetic task", [response], tmp_root)
     measured = [event for event in events if event["type"] == "performance"]
     assert measured == ([] if expected is None else [{"type": "performance", "generation_tok_s": expected}])
+
+
+def _call(arguments, finish_reason="tool_calls"):
+    return {"choices": [{"finish_reason": finish_reason, "message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": arguments}}]}}]}
+
+
+DONE = {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments,finish_reason,why",
+    [
+        ('{"path": "notes.txt", "content": "half writ', "length", "token limit"),  # cut off mid-call
+        ('{"path": "notes.txt", "content": "complete"}', "length", "token limit"),  # parses, still cut off
+        ('{"path": "notes.txt", "content": ', "tool_calls", "valid JSON object"),  # malformed
+        ('["notes.txt"]', "tool_calls", "valid JSON object"),  # JSON, but not an object
+    ],
+)
+async def test_cut_off_or_malformed_tool_calls_are_not_executed(tmp_root: Path, arguments, finish_reason, why) -> None:
+    events = await collect_events("t", [_call(arguments, finish_reason), DONE], tmp_root, auto_confirm=True)
+    [result] = [e for e in events if e["type"] == "tool_result"]
+    assert result["error"] is True and why in result["content"] and "Not executed" in result["content"]
+    assert not (tmp_root / "notes.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_complete_tool_call_still_runs(tmp_root: Path) -> None:
+    events = await collect_events("t", [_call('{"path": "notes.txt", "content": "complete"}'), DONE], tmp_root, auto_confirm=True)
+    [result] = [e for e in events if e["type"] == "tool_result"]
+    assert result["error"] is False
+    assert (tmp_root / "notes.txt").read_text() == "complete"
+
+
+def _ask_call(arguments):
+    return {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "call_q", "type": "function", "function": {"name": "ask_user", "arguments": json.dumps(arguments)}}]}}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers,told", [([["Postgres"]], "Answer: Postgres"), (None, "dismissed")])
+async def test_ask_user_puts_the_question_to_the_user_and_returns_the_answer(tmp_root: Path, answers, told) -> None:
+    responses = [
+        _ask_call({"question": "Which database?", "options": [{"label": "SQLite"}, {"label": "Postgres", "description": "A server"}]}),
+        {"choices": [{"message": {"role": "assistant", "content": "Using it."}}]},
+    ]
+    callback = AsyncMock(return_value=answers)
+    events = await collect_events("set up storage", responses, tmp_root, question_callback=callback)
+
+    asked = next(e for e in events if e["type"] == "question_required")
+    assert asked["call_id"] == "call_q" and asked["questions"][0]["question"] == "Which database?"
+    assert [o["label"] for o in asked["questions"][0]["options"]] == ["SQLite", "Postgres"]
+    callback.assert_awaited_once()
+    result = next(e for e in events if e["type"] == "tool_result")
+    assert told in result["content"] and not result["error"]
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_is_not_offered_when_nobody_can_answer(tmp_root: Path) -> None:
+    sent = []
+
+    def make_response(data):
+        resp = MagicMock()
+        resp.json.return_value = data
+        resp.raise_for_status.return_value = None
+        return resp
+
+    async def post(url, json=None, **_kw):
+        sent.append(json)
+        return make_response({"choices": [{"message": {"role": "assistant", "content": "done"}}]})
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = post
+    for kwargs in ({}, {"question_callback": AsyncMock(return_value=None)}):
+        sent.clear()
+        with patch("arc_llama.agent.loop.httpx.AsyncClient", return_value=mock_client):
+            async for _ in run_agent(task="t", model="m", base_url="http://x", root=tmp_root, **kwargs):
+                pass
+        names = {t["function"]["name"] for t in sent[-1]["tools"]}
+        assert ("ask_user" in names) == bool(kwargs)

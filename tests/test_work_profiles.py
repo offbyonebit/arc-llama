@@ -70,6 +70,7 @@ def test_profile_starts_only_listed_servers_and_denies_the_rest():
     assert "github_list*" not in rules
     assert rules["skill"] == {"*": "deny", "pdf": "allow"}
     assert all(rules[tool] == "deny" for tool in ("webfetch", "websearch", "codesearch"))
+    assert rules["execute"] == "deny"                                                    # MCP tools stay direct under OpenCode 2
 
 
 def test_profile_can_keep_web_tools_and_ignores_unknown_servers():
@@ -155,10 +156,10 @@ def test_a_run_gets_its_profile_and_an_unknown_one_is_refused(client, tmp_path, 
 
 
 def test_capabilities_and_commands_follow_the_profile(client, tmp_path, monkeypatch):
-    async def fake_caps(folder):
+    async def fake_caps(folder, **_kw):
         return {"mcp": ["searxng", "github"], "skills": [{"name": "pdf", "description": "d"}], "web": ["webfetch"]}
 
-    async def fake_list(folder, model):
+    async def fake_list(folder, model, **_kw):
         return [{"name": "pdf", "description": "", "source": "skill", "takes_arguments": False},
                 {"name": "docs", "description": "", "source": "skill", "takes_arguments": False}]
 

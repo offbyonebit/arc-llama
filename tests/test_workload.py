@@ -431,3 +431,45 @@ def test_init_not_sure_keeps_defaults_and_never_prompts(
     assert loaded.workload.context_length == ""
     assert loaded.workload.style == ""
     assert loaded.workload.priority == ""
+
+
+def test_failed_tune_retries_once_after_driver_change(tmp_path: Path, monkeypatch) -> None:
+    """#85: a tune that failed on an old driver is retried after a driver update."""
+    from arc_llama import autotune
+
+    cfg = _make_cfg(tmp_path)
+    model = cfg.models[0]
+    monkeypatch.setattr(autotune, "driver_stack_key", lambda: "driver=old")
+    gpu = cfg.find_gpu(model.gpu_pci_slot)
+    fp = compute_fingerprint(model, cfg.model_llama_server(model), gpu, "1.1.0",
+                             workload.fingerprint_key(cfg.workload))
+    autotune.set_tune_failed_state(cfg, model, "llama-server crashed", fp)
+
+    reset_tuned_state_if_stale(cfg, model, "1.1.0")
+    assert model.tune_state == "failed"  # same environment: no endless retuning
+
+    monkeypatch.setattr(autotune, "driver_stack_key", lambda: "driver=new")
+    reset_tuned_state_if_stale(cfg, model, "1.1.0")
+    assert model.tune_state == "untuned"
+    assert model.tune_fingerprint == ""
+
+
+@pytest.mark.asyncio
+async def test_stale_tune_is_reset_when_auto_tune_is_off(tmp_path: Path, monkeypatch) -> None:
+    """#85: with tune.auto off, a tune from an older driver is no longer shown as current."""
+    from unittest.mock import Mock
+
+    from arc_llama import autotune
+
+    cfg = _make_cfg(tmp_path)
+    cfg.tune.auto = False
+    model = cfg.models[0]
+    model.tune_state = "tuned"
+    model.tune_fingerprint = "from-an-older-driver"
+    saved = Mock()
+    tuner = autotune.Autotuner(cfg, Mock(), version="1.1.0", on_save=saved)
+    await tuner.start()
+    assert model.tune_state == "untuned"
+    saved.assert_called_once()
+    await tuner.start()  # nothing changed the second time: no extra save
+    saved.assert_called_once()

@@ -7,12 +7,10 @@ needed).
 2026-10-22 13:50:58,147 INFO httpx: HTTP Request: GET https://release-assets.githubusercontent.com/github-production-release-asset/612354784/10cb59b7-c01d-4e82-a004-a496638bd3d1?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-22T19%3A29%3A39Z&rscd=attachment%3B+filename%3Dllama-b11823-bin-win-vulkan-x64.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-22T18%3A29%3A16Z&ske=2026-10-22T19%3A29%3A39Z&sks=b&skv=2018-11-09&sig=XNR2dpVO8vOCqFh6og2RkOtRa%2BYckCgXczwxq5NxBXQ%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc5MjY5Njg1MywibmJmIjoxNzkyNjk1MDUzLCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.H_Qok7mRvGhGMlJrl40r652MAeevOb6MWnOFhH67igE&response-content-disposition=attachment%3B%20filename%3Dllama-b11823-bin-win-vulkan-x64.zip&response-content-type=application%2Foctet-stream "HTTP/1.1 200 OK"
 ---------------------------------------- 36.9/36.9 MB 100%
   verified llama.cpp b11823 · 
-C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
-\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823
+<work>\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823
 -vulkan\llama-server.exe
 3/4 Downloading Qwen/Qwen2.5-0.5B-Instruct-GGUF → 
-C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc
-\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-
+<work>\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-
 Instruct-GGUF
 2026-10-22 13:51:00,871 INFO httpx2: HTTP Request: GET https://huggingface.co/api/agent-harnesses "HTTP/1.1 200 OK"
 2026-10-22 13:51:01,007 INFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
@@ -33,8 +31,7 @@ Arc inference is ready · model qwen05
 Auto-tune: on -- 1 model(s) eligible; sweep starts after 120s idle. Use 
 --no-auto-tune to disable.
 Admin authentication is enabled via config file 
-(C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-ar
-c\work\windows-validation-2026-10-22\appdata\arc-llama\config.toml). Admin 
+(<work>\windows-validation-2026-10-22\appdata\arc-llama\config.toml). Admin 
 endpoints require 'Authorization: Bearer <token>'.
 arc-llama serve — applied Arc profiles:
   GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00: battlemage (vulkan) · 
@@ -47,7 +44,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:11437 (Press CTRL+C to quit)
 INFO:     127.0.0.1:61062 - "GET /v1/models HTTP/1.1" 200 OK
 2026-10-22 13:51:58,452 INFO arc_llama.router: loading model qwen05 on GPU unknown:VEN_8086&DEV_E211&SUBSYS_60231849&REV_00 ...
-2026-10-22 13:51:58,453 INFO arc_llama.launcher: [qwen05] starting: C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823-vulkan\llama-server.exe -m C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-Instruct-GGUF\qwen2.5-0.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 18080 -ngl 999 -c 32768 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 -ub 1024 -b 2048 --flash-attn on
+2026-10-22 13:51:58,453 INFO arc_llama.launcher: [qwen05] starting: <work>\windows-validation-2026-10-22\localappdata\arc-llama\runtime\llama-b11823-vulkan\llama-server.exe -m <work>\windows-validation-2026-10-22\localappdata\arc-llama\models\Qwen2.5-0.5B-Instruct-GGUF\qwen2.5-0.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 18080 -ngl 999 -c 32768 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 -ub 1024 -b 2048 --flash-attn on
 2026-10-22 13:51:59,151 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"
 2026-10-22 13:52:00,667 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"
 2026-10-22 13:52:02,182 INFO httpx: HTTP Request: GET http://127.0.0.1:18080/health "HTTP/1.1 503 Service Unavailable"

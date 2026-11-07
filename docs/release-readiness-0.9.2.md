@@ -1,6 +1,6 @@
 # Arc Llama 0.9.2 development readiness
 
-Date: 2026-10-17. Canonical checkout: `/home/slowe/arc-llama`, `main`, based on
+Date: 2026-10-17. Canonical checkout: `~/arc-llama`, `main`, based on
 `bbed86b` plus the existing local work and this follow-up. Package and lockfile
 version: **0.9.2.dev0**. This is unpublished development work; no commit, push,
 service deployment, or public release is implied by this record.

@@ -178,6 +178,13 @@
       return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     }
 
+    function formatChatDate(ms) {
+      const d = new Date(ms);
+      const opts = { month: "short", day: "numeric" };
+      if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+      return d.toLocaleDateString(undefined, opts);
+    }
+
     function renderHistoryPanel() {
       const chats = loadChats().filter(c => currentFolder === ALL_FOLDERS || c.folder === currentFolder);
       ctx.hList.innerHTML = "";
@@ -191,7 +198,10 @@
         card.dataset.id = c.id;
         const ICON_CLOSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
         card.innerHTML = `
-          <div class="h-card-title">${ctx.escapeHtml(c.title)}</div>
+          <div class="h-card-head">
+            <div class="h-card-title">${ctx.escapeHtml(c.title)}</div>
+            ${c.updatedAt ? `<time class="h-card-date" datetime="${new Date(c.updatedAt).toISOString()}" title="${ctx.escapeHtml(new Date(c.updatedAt).toLocaleString())}">${formatChatDate(c.updatedAt)}</time>` : ""}
+          </div>
           <div class="h-card-meta">
             <span>${ctx.escapeHtml(c.model || "unknown")}</span>
             <span>${formatRelativeTime(c.updatedAt)}</span>

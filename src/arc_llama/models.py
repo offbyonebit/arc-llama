@@ -11,11 +11,13 @@ need to type `arc-llama add` for a GGUF they already have on disk.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from arc_llama.config import (
@@ -144,7 +146,8 @@ def add_local_model(
     """
     if not NAME_RE.match(name):
         raise ValueError(f"Model name '{name}' must match [a-z0-9][a-z0-9._-]*")
-    p = Path(path).expanduser().resolve()
+    # llama.cpp loads a split model only from its first shard, which also holds the metadata.
+    p = gguf_shards(Path(path).expanduser().resolve())[0]
     if not p.exists():
         raise FileNotFoundError(f"Model file not found: {p}")
     gpu = cfg.find_gpu(gpu_pci_slot)
@@ -929,12 +932,43 @@ def scan_models(
     return res
 
 
+def _hf_file_digest(sibling: Any) -> tuple[str, bool]:
+    """LFS hashes name raw bytes; git blob IDs also hash their size header."""
+    lfs = getattr(sibling, "lfs", None)
+    if lfs is not None:
+        digest = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            return digest.lower(), False
+    else:
+        digest = getattr(sibling, "blob_id", None)
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{40}", digest):
+            return digest.lower(), True
+    raise ValueError(f"No verifiable content digest for {getattr(sibling, 'rfilename', '(unknown file)')}")
+
+
+def _verify_hf_download(path: Path, sibling: Any) -> None:
+    expected, git_blob = _hf_file_digest(sibling)
+    size = path.stat().st_size
+    expected_size = getattr(sibling, "size", None)
+    if isinstance(expected_size, int) and size != expected_size:
+        raise ValueError(f"Downloaded file size mismatch: {path.name}")
+    digest = hashlib.sha1() if git_blob else hashlib.sha256()
+    if git_blob:
+        digest.update(f"blob {size}\0".encode())
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected:
+        raise ValueError(f"Downloaded file checksum mismatch: {path.name}")
+
+
 def download_from_hf(
     spec: HFModelSpec,
     *,
     target_dir: Path,
     token: str | None = None,
     progress: bool = True,
+    revision: str | None = None,
 ) -> Path:
     """Resolve a HFModelSpec to a concrete file path under `target_dir`.
 
@@ -952,32 +986,78 @@ def download_from_hf(
             "and use `arc-llama add --path /path/to/model.gguf`."
         ) from e
 
-    # The listing is needed to find shards and projectors even when the user
-    # named an exact file; without it an explicit file still downloads alone.
-    repo_files: list[str] | None
-    try:
-        repo_files = list(HfApi(token=token).list_repo_files(spec.repo))
-    except Exception:
-        if spec.file is None:
-            raise
-        repo_files = None
+    api = HfApi(token=token)
+    accepted_revision = revision
+    if revision is not None and not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", revision):
+        raise ValueError("Invalid immutable model revision")
+    info = (api.model_info(spec.repo, files_metadata=True, revision=revision)
+            if revision is not None else api.model_info(spec.repo, files_metadata=True))
+    revision = info.sha
+    if accepted_revision is not None and revision != accepted_revision:
+        raise ValueError("The model hub returned a different revision than the accepted model")
+    if not isinstance(revision, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", revision):
+        raise ValueError("The model hub did not provide an immutable repository revision")
+    # Listing, metadata and every companion belong to one immutable commit.
+    repo_files = list(api.list_repo_files(spec.repo, revision=revision))
+    siblings = {item.rfilename: item for item in (info.siblings or [])}
     main_file, extras = plan_hf_files(spec, repo_files)
-    main_path = Path(
-        hf_hub_download(
-            repo_id=spec.repo,
-            filename=main_file,
-            local_dir=str(target_dir),
-            token=token,
-        )
-    )
-    for extra in extras:
-        hf_hub_download(
-            repo_id=spec.repo,
-            filename=extra,
-            local_dir=str(target_dir),
-            token=token,
-        )
-    return main_path
+    names = list(dict.fromkeys([main_file, *extras]))
+    for name in names:
+        parts = PurePosixPath(name)
+        if parts.is_absolute() or ".." in parts.parts or "\\" in name or ":" in name:
+            raise ValueError("The model hub returned an invalid file path")
+        if name not in siblings:
+            raise ValueError(f"Missing integrity metadata for {name}")
+        _hf_file_digest(siblings[name])
+    # Do not expose new model files to discovery until the entire requested set
+    # has downloaded and passed its pinned integrity checks. Publication is per
+    # file; this is not a crash-atomic replacement of an existing multi-file set.
+    # The staging folder is named for the repo and commit so a retry after a
+    # dropped connection or a restart resumes partial files and keeps finished
+    # shards; every file is verified again before it is published.
+    key = hashlib.sha256(f"{spec.repo}@{revision}".encode()).hexdigest()[:16]
+    staging = target_dir / f".arc-download-{key}"
+    staging.mkdir(parents=True, exist_ok=True)
+    published: set[str] = set()
+    for name in names:
+        existing = target_dir / name
+        if existing.is_file() and not existing.is_symlink():
+            try:  # already published by an earlier attempt that failed later
+                _verify_hf_download(existing, siblings[name])
+                published.add(name)
+                continue
+            except Exception:  # noqa: BLE001 - mismatched or partial: fetch it again
+                pass
+        source = Path(hf_hub_download(repo_id=spec.repo, filename=name,
+            revision=revision, local_dir=str(staging), token=token))
+        # The hub SDK resolves local_dir, so a models_dir reached through a
+        # symlink (or a mapped drive on Windows) comes back as its real path.
+        # Resolve only the folder: the file itself may be a cache symlink.
+        expected = staging / name
+        if (source.parent.resolve() / source.name) != (expected.parent.resolve() / expected.name):
+            raise ValueError("The model hub downloader returned an unexpected destination")
+        if source.is_symlink():
+            # Older SDKs may link a local-dir file into their shared cache.
+            # Materialize and verify private bytes before publishing them.
+            copy = source.with_name(source.name + ".verified-copy")
+            shutil.copyfile(source, copy)
+            source.unlink()
+            copy.replace(source)
+        try:
+            _verify_hf_download(source, siblings[name])
+        except Exception:
+            # Bad bytes: drop the staging folder so a retry starts clean.
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    root = target_dir.resolve()
+    for name in (n for n in names if n not in published):
+        dest = target_dir / name
+        if not dest.parent.resolve().is_relative_to(root):
+            raise ValueError("Model destination escapes the download directory")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging / name, dest)
+    shutil.rmtree(staging, ignore_errors=True)
+    return target_dir / main_file
 
 
 def plan_hf_files(spec: HFModelSpec, repo_files: list[str] | None) -> tuple[str, list[str]]:
@@ -1018,7 +1098,9 @@ def plan_hf_files(spec: HFModelSpec, repo_files: list[str] | None) -> tuple[str,
     if split_info(file) is not None:
         for shard in gguf_shards(file):
             name = (folder + shard.name) if folder else shard.name
-            if name != file and name in ggufs:
+            if name not in ggufs:
+                raise FileNotFoundError(f"Missing model shard in pinned repository: {name}")
+            if name != file:
                 extras.append(name)
     # Only a projector in the model's own folder is fetched: that is where
     # find_mmproj looks when the model is registered.

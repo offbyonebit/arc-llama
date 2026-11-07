@@ -22,7 +22,7 @@ export async function testRuntimeCompatibilityGuidance({ page, origin }) {
   await option.getByRole("button", { name: "Check runtime compatibility" }).click();
   await page.waitForFunction(() => document.querySelector(".library-option .library-compatibility")?.textContent.includes("Requires a different runtime"));
   if (calls[0].repo !== "test/Model-GGUF" || calls[0].file !== "model-Q4_K_M.gguf") throw new Error("checked the wrong model file");
-  if (!(await option.innerText()).includes("Likely to fit")) throw new Error("compatibility replaced the memory-fit estimate");
+  if (!(await option.innerText()).includes("Should fit in graphics memory")) throw new Error("compatibility replaced the memory-fit estimate");
   if (await option.getByRole("button", { name: "Download", exact: true }).isDisabled()) throw new Error("compatibility prevented a deliberate download");
   await option.getByText("What was checked", { exact: true }).click();
   if (!(await option.innerText()).includes("inference remain unverified")) throw new Error("evidence limits were hidden");
@@ -89,8 +89,8 @@ export async function testLibrarySearchAndDownload({ page, origin }) {
   await page.route("**/admin/library/repo**", route => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ repo: "unsloth/<b>Qwen3</b>-GGUF", vision: true, vram_mb: 24576, options: [
-      { file: "Qwen3-Q4_K_M.gguf", quant: "Q4_K_M", size_mb: 5000, shards: 1, fit: "fits" },
-      { file: "Q8/Qwen3-Q8_0-00001-of-00002.gguf", quant: "Q8_0", size_mb: 30000, shards: 2, fit: "too_big" },
+      { file: "Qwen3-Q4_K_M.gguf", quant: "Q4_K_M", size_mb: 5000, shards: 1, fit: "fits", need_mb: 6584 },
+      { file: "Q8/Qwen3-Q8_0-00001-of-00002.gguf", quant: "Q8_0", size_mb: 30000, shards: 2, fit: "too_big", need_mb: 31584 },
     ] }),
   }));
   await page.route("**/admin/library/download", route => {
@@ -111,7 +111,7 @@ export async function testLibrarySearchAndDownload({ page, origin }) {
   await page.locator(".library-repo button", { hasText: "Compare versions" }).click();
   await page.waitForSelector(".library-option .status-pill");
   const badges = await page.locator(".library-option .status-pill").allInnerTexts();
-  if (badges[0] !== "Likely to fit" || badges[1] !== "Likely too large") throw new Error(`unexpected badges ${badges}`);
+  if (badges[0] !== "Needs about 6 GB of 24 GB" || badges[1] !== "Needs about 31 GB · more than this card's 24 GB") throw new Error(`unexpected badges ${badges}`);
   const firstRow = await page.locator(".library-option").first().innerText();
   if (!firstRow.includes("4-bit compressed") || !firstRow.includes("4.9 GiB") || !firstRow.includes("less memory")) throw new Error(`unexpected row ${firstRow}`);
   if (await page.locator(".library-technical").first().evaluate(node => node.open)) throw new Error("technical detail was expanded by default");
@@ -166,7 +166,7 @@ export async function testModelChoiceExplanations({ page, origin }) {
   await page.getByRole("button", { name: "Compare versions" }).click();
   await page.waitForSelector(".library-technical");
   const choices = await page.locator(".library-options").innerText();
-  for (const phrase of ["Compression not reported", "Size not reported", "Fit unknown", "GPU memory capacity is unavailable", "3-bit compressed", "Limited memory headroom", "shorter conversation", "6-bit compressed", "middle ground", "16-bit precision", "larger download"]) {
+  for (const phrase of ["Compression not reported", "Size not reported", "Graphics memory unknown", "GPU memory capacity is unavailable", "3-bit compressed", "Short chats only", "short conversation", "6-bit compressed", "middle ground", "16-bit precision", "larger download"]) {
     if (!choices.includes(phrase)) throw new Error(`missing plain-language explanation: ${phrase}`);
   }
   if (await page.locator(".library-options img").count()) throw new Error("remote filename was rendered as HTML");
@@ -308,4 +308,123 @@ export async function testCompatibilityAbandonedChecks({ page, origin }) {
   await page.evaluate(() => window.compatAttempts[1](new Response(JSON.stringify({ status: "incompatible", label: "Old result", detail: "Stale result." }))));
   if (!(await host.innerText()).includes("Current result") || (await host.innerText()).includes("Stale result")) throw new Error("abandoned response overwrote the current result");
   if (await page.evaluate(() => window.compatAborts) !== 2) throw new Error("timeout/runtime change did not abort fetches");
+}
+
+export async function testDiscoverShelves({ page, origin }) {
+  const avatarRequests = [];
+  await page.route("https://huggingface.co/api/avatars/**", route => {
+    avatarRequests.push(route.request().url());
+    if (route.request().url().endsWith("/LiquidAI")) return route.abort();
+    return route.fulfill({ status: 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="purple"/></svg>' });
+  });
+  const entry = (id, author, author_name, extra = {}) => ({
+    id, repo: `${author}/${id}-GGUF`, name: `Model <b>${id}</b>`, author, author_name, params: "12B", description: "Plain description.",
+    converter: null, downloads: 1234567, license: "apache-2.0", vision: false,
+    pick: { file: `${id}-Q4_K_M.gguf`, quant: "Q4_K_M", size_mb: 6652, shards: 1, fit: "fits", need_mb: 8236 }, ...extra,
+  });
+  const featured = {
+    vram_mb: 24576, gpu_name: "Arc Pro B60", offline: false,
+    publishers: [
+      { id: "google", name: "Google", families: "Gemma" },
+      { id: "LiquidAI", name: "Liquid AI", families: "LFM" },
+      { id: "Qwen", name: "Qwen", families: "Qwen" },
+    ],
+    shelves: [
+      { id: "start", title: "Good first models", subtitle: "Well-known chat models", entries: ["g12", "big", "broken"] },
+      { id: "small", title: "Small and fast", subtitle: "Quick downloads", entries: ["lfm", "tight"] },
+    ],
+    entries: [
+      entry("g12", "google", "Google", { converter: "Unsloth" }),
+      entry("big", "google", "Google", { pick: { file: "big-Q4.gguf", quant: "Q4_K_M", size_mb: 30000, fit: "too_big", need_mb: 31584 } }),
+      { id: "broken", repo: "Qwen/broken", name: "Broken", author: "Qwen", author_name: "Qwen", params: "8B", description: "", error: "hub down" },
+      entry("lfm", "LiquidAI", "Liquid AI", { license: "other" }),
+      entry("tight", "google", "Google", { pick: { file: "tight-Q4_K_M.gguf", quant: "Q4_K_M", size_mb: 20000, fit: "tight", need_mb: 21300 } }),
+    ],
+  };
+  let featuredCalls = 0;
+  await page.route("**/admin/library/featured", route => { featuredCalls++; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(featured) }); });
+  const downloads = [];
+  let jobs = [];
+  await page.route("**/admin/library/download", route => {
+    const body = route.request().postDataJSON();
+    downloads.push(body);
+    jobs = [{ id: "j1", repo: body.repo, file: body.file, status: "downloading", bytes_done: 25, bytes_total: 100 }];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "j1" }) });
+  });
+  await page.route("**/admin/library/jobs", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobs }) }));
+  await page.route("**/admin/library/search**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ results: [] }) }));
+  await page.route("**/admin/library/repo**", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ vram_mb: 24576, options: [] }) }));
+
+  await page.goto(origin);
+  if (featuredCalls) throw new Error("recommendations were fetched before Discover was opened");
+  await page.locator('.paper-rail a[aria-label="Discover"]').click();
+  await page.waitForSelector(".discover-card");
+  if (!(await page.locator(".discover-hardware").innerText()).includes("Arc Pro B60 · 24 GB")) throw new Error("hardware line missing");
+  const names = await page.locator(".discover-name").allInnerTexts();
+  if (names.join("|") !== "Model <b>g12</b>|Model <b>lfm</b>|Model <b>tight</b>") throw new Error(`unexpected cards ${names}`);
+  if (await page.locator(".discover-card b b, .discover-card script").count()) throw new Error("card text rendered as HTML");
+  const first = await page.locator(".discover-card").first().innerText();
+  for (const phrase of ["Google", "file by Unsloth", "Needs about 8 GB of 24 GB", "15 GB to spare", "Apache 2.0", "1.2M downloads", "Get · 6.5 GB"]) {
+    if (!first.includes(phrase)) throw new Error(`card missing ${phrase}: ${first}`);
+  }
+  for (const vague of ["Likely", "Fits your card", "estimate"]) if ((await page.locator("#discover-featured").innerText()).includes(vague)) throw new Error(`vague wording left: ${vague}`);
+  if (!(await page.locator(".discover-card").nth(2).innerText()).includes("Room for short chats only")) throw new Error("tight fit not explained");
+  if (!(await page.locator(".discover-card").nth(1).innerText()).includes("Custom license")) throw new Error("license not translated");
+  await page.waitForFunction(() => document.querySelectorAll(".discover-card")[1]?.querySelector("img.discover-sleeve") === null);
+  if ((await page.locator(".discover-card").nth(1).locator(".discover-sleeve-initial").innerText()) !== "L") throw new Error("failed avatar lost its initial");
+  if ((await page.locator(".discover-card img").first().getAttribute("referrerpolicy")) !== "no-referrer") throw new Error("avatar leaked referrer");
+  if (avatarRequests.some(url => !/^https:\/\/huggingface\.co\/api\/avatars\/(google|LiquidAI)$/.test(url))) throw new Error(`unexpected avatar URL ${avatarRequests}`);
+  if ((await page.locator(".discover-publisher").count()) !== 2) throw new Error("publisher with no usable models was listed");
+
+  await page.locator(".discover-publisher", { hasText: "Liquid AI" }).click();
+  if ((await page.locator(".discover-name").allInnerTexts()).join() !== "Model <b>lfm</b>") throw new Error("publisher filter failed");
+  if ((await page.locator('.discover-publisher[aria-pressed="true"]').count()) !== 1) throw new Error("filter state not exposed");
+  await page.locator(".discover-publisher", { hasText: "Liquid AI" }).click();
+  if ((await page.locator(".discover-card").count()) !== 3) throw new Error("clearing the filter did not restore shelves");
+
+  await page.getByRole("button", { name: "Download Model <b>g12</b>, 6.5 GB" }).click();
+  await page.waitForFunction(() => document.querySelector(".discover-card .discover-foot button.primary")?.textContent === "Downloading 25%");
+  if (downloads[0].repo !== "google/g12-GGUF" || downloads[0].file !== "g12-Q4_K_M.gguf" || downloads[0].size_mb !== 6652) throw new Error(`wrong download ${JSON.stringify(downloads)}`);
+
+  await page.getByRole("button", { name: "Other versions of Model <b>lfm</b>" }).click();
+  await page.waitForFunction(() => document.querySelector("#library-results .library-repo h3")?.textContent === "LiquidAI/lfm-GGUF");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error("Discover shelves overflow on mobile");
+}
+
+export async function testDiscoverShelvesOffline({ page, origin }) {
+  let calls = 0;
+  await page.route("**/admin/library/featured", route => {
+    calls++;
+    return calls === 1
+      ? route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ detail: "no network" }) })
+      : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ vram_mb: null, gpu_name: null, offline: true, publishers: [], shelves: [], entries: [] }) });
+  });
+  await page.goto(`${origin}/#discover`);
+  await page.waitForFunction(() => document.querySelector("#discover-featured")?.textContent.includes("Recommendations are unavailable: no network"));
+  await page.locator("#discover-featured").getByRole("button", { name: "Try again" }).click();
+  await page.waitForFunction(() => document.querySelector("#discover-featured")?.textContent.includes("need a connection to Hugging Face"));
+  if (!(await page.locator(".discover-hardware").innerText()).includes("Graphics memory is unknown")) throw new Error("unknown GPU not explained");
+  if (await page.locator("#library-query").isDisabled()) throw new Error("search was blocked while offline");
+}
+
+export async function testDiscoverWaitsForAdminToken({ page, origin }) {
+  let releaseToken;
+  const tokenGate = new Promise(resolve => { releaseToken = resolve; });
+  await page.route("**/admin/session-token", async route => {
+    await tokenGate;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ admin_token: "tok" }) });
+  });
+  const auth = [];
+  await page.route("**/admin/library/featured", route => {
+    auth.push(route.request().headers().authorization || null);
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ vram_mb: 24576, gpu_name: "Arc Pro B60", offline: false, publishers: [], shelves: [], entries: [] }) });
+  });
+  await page.goto(`${origin}/#discover`);
+  await page.waitForTimeout(150);
+  if (auth.length) throw new Error("recommendations were requested before the admin token arrived");
+  releaseToken();
+  await page.waitForFunction(() => document.querySelector(".discover-hardware")?.textContent.includes("Arc Pro B60"));
+  if (auth.join() !== "Bearer tok") throw new Error(`unexpected featured auth ${auth}`);
 }

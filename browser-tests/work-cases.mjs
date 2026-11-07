@@ -48,6 +48,23 @@ export async function testWorkViewHiddenUnlessExperimental({ page, origin }) {
 
 export async function testWorkModeApprovalAndUndo({ page, origin }) {
   const calls = [];
+  await page.addInitScript(() => {
+    const NativeObserver = window.ResizeObserver;
+    window.__workObserved = new Set();
+    window.ResizeObserver = class extends NativeObserver {
+      targets = new Set();
+      observe(target, options) {
+        if (target.classList.contains("work-steps")) {
+          this.targets.add(target); window.__workObserved.add(target);
+        }
+        super.observe(target, options);
+      }
+      disconnect() {
+        for (const target of this.targets) window.__workObserved.delete(target);
+        this.targets.clear(); super.disconnect();
+      }
+    };
+  });
   await installAgentStream(page);
   await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
   await page.route("**/v1/agent/run-1/confirm", route => {
@@ -118,6 +135,9 @@ export async function testWorkModeApprovalAndUndo({ page, origin }) {
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await page.waitForFunction(() => document.querySelector(".work-result")?.textContent.includes("Undone: 1 file restored."));
   if (!calls.some(c => c.kind === "undo")) throw new Error("undo was not requested");
+  if (await page.evaluate(() => [...window.__workObserved].some(target => !target.isConnected))) {
+    throw new Error("Work updates retained observers on removed step trees");
+  }
 }
 
 export async function testWorkModeDeniedAndStopped({ page, origin }) {
@@ -149,6 +169,98 @@ export async function testWorkModeDeniedAndStopped({ page, origin }) {
   if ((await page.getAttribute("#work-send", "aria-label")) !== "Stop") throw new Error("no stop control while running");
   await page.click("#work-send");
   await page.waitForFunction(() => document.querySelector(".work-eyebrow")?.textContent.includes("stopped"));
+}
+
+export async function testWorkModeModelAsksAQuestion({ page, origin }) {
+  const calls = [];
+  let answerStatus = 200;
+  await installAgentStream(page);
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  await page.route("**/v1/agent/run-q/answer", route => {
+    calls.push(route.request().postDataJSON());
+    return route.fulfill(answerStatus === 200 ? json({ ok: true }) : { status: answerStatus, contentType: "application/json", body: JSON.stringify({ detail: "no" }) });
+  });
+  await openChat(page, origin);
+  await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.fill("#work-root", "/work/demo");
+  await page.fill("#work-task", "Add storage");
+  await page.press("#work-task", "Enter");
+  await page.waitForFunction(() => !!window.__push);
+  const options = [{ label: "SQLite", description: "One file, nothing to run" }, { label: "Postgres", description: "A database server" }];
+  await page.evaluate((options) => {
+    window.__push({ type: "tool_call", id: "call_q", name: "question", arguments: { questions: [{ question: "Which database?" }] } });
+    window.__push({ type: "question_required", id: "que_1", call_id: "call_q", run_id: "run-q",
+      questions: [{ question: "Which database should I use?", header: "Database", options, multiple: false, custom: true }] });
+  }, options);
+  await page.waitForSelector(".work-question");
+  const card = await page.locator(".work-question").innerText();
+  if (!card.includes("Which database should I use?") || !card.includes("One file, nothing to run")) throw new Error("question card is missing its text: " + card);
+  if (!(await page.locator("#work-activity-label").innerText()).includes("Waiting for your answer")) throw new Error("activity does not say it is waiting on the user");
+  if (!(await page.locator(".paper-nav-dot").isVisible())) throw new Error("Work rail did not indicate the waiting question");
+  if (await page.getByRole("button", { name: "Send", exact: true }).count()) throw new Error("a one-click question should not need Send");
+  await page.getByRole("radio", { name: /Postgres/ }).click();
+  await page.waitForFunction(() => !document.querySelector(".work-question"));
+  if (calls.length !== 1 || JSON.stringify(calls[0]) !== JSON.stringify({ answers: [["Postgres"]] })) throw new Error("answer was not sent: " + JSON.stringify(calls));
+
+  // Several questions, one with many answers and one typed: nothing is sent until every one is answered.
+  await page.evaluate(() => {
+    window.__push({ type: "tool_result", id: "call_q", name: "question", content: "answered", error: false });
+    window.__push({ type: "question_required", id: "que_2", call_id: "", run_id: "run-q", questions: [
+      { question: "Which parts?", header: "Parts", options: [{ label: "API", description: "" }, { label: "CLI", description: "" }], multiple: true, custom: false },
+      { question: "Name the table?", header: "", options: [], multiple: false, custom: true }] });
+  });
+  await page.waitForSelector(".work-question");
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  if (!(await send.isDisabled())) throw new Error("Send enabled before anything was answered");
+  await page.getByRole("checkbox", { name: "API" }).click();
+  await page.getByRole("checkbox", { name: "CLI" }).click();
+  if (!(await send.isDisabled())) throw new Error("Send enabled with a question unanswered");
+  await page.locator(".work-question-input").fill("orders");
+  await send.click();
+  await page.waitForFunction(() => !document.querySelector(".work-question"));
+  if (JSON.stringify(calls[1]) !== JSON.stringify({ answers: [["API", "CLI"], ["orders"]] })) throw new Error("answers were not sent: " + JSON.stringify(calls));
+
+  // Skip dismisses without answering.
+  await page.evaluate(() => window.__push({ type: "question_required", id: "que_3", call_id: "", run_id: "run-q",
+    questions: [{ question: "Anything else?", header: "", options: [], multiple: false, custom: true }] }));
+  await page.waitForSelector(".work-question");
+  await page.getByRole("button", { name: "Skip", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".work-question"));
+  if (JSON.stringify(calls[2]) !== JSON.stringify({ answers: null })) throw new Error("skip was not sent as a dismissal");
+
+  // A single-choice question has one answer: picking an option clears typed text, and typing clears the pick.
+  await page.evaluate(() => window.__push({ type: "question_required", id: "que_4", call_id: "", run_id: "run-q", questions: [
+    { question: "Which cache?", header: "", options: [{ label: "Redis", description: "" }, { label: "None", description: "" }], multiple: false, custom: true },
+    { question: "TTL?", header: "", options: [], multiple: false, custom: true }] }));
+  await page.waitForSelector(".work-question");
+  await page.locator('.work-question-input[data-question="0"]').fill("memcached");
+  await page.getByRole("radio", { name: "Redis" }).click();
+  if (await page.locator('.work-question-input[data-question="0"]').inputValue()) throw new Error("picking an option kept the typed answer");
+  await page.locator('.work-question-input[data-question="0"]').fill("in-process");
+  if (await page.getByRole("radio", { name: "Redis" }).getAttribute("aria-checked") !== "false") throw new Error("typing did not replace the picked option");
+  await page.locator('.work-question-input[data-question="1"]').fill("60");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".work-question"));
+  if (JSON.stringify(calls[3]) !== JSON.stringify({ answers: [["in-process"], ["60"]] })) throw new Error("single-choice answer sent twice: " + JSON.stringify(calls[3]));
+
+  // A rejected answer brings the card back with the reason; one the agent stopped waiting for closes it.
+  answerStatus = 500;
+  await page.evaluate(() => window.__push({ type: "question_required", id: "que_5", call_id: "", run_id: "run-q",
+    questions: [{ question: "Proceed?", header: "", options: [], multiple: false, custom: true }] }));
+  await page.locator(".work-question-input").fill("yes");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.waitForSelector(".work-question .work-error");
+  if (await page.locator(".work-question-input").inputValue() !== "yes") throw new Error("a failed answer lost what was typed");
+  answerStatus = 404;
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".work-question .work-error")?.textContent.includes("stopped waiting"));
+  if (await page.locator(".work-question").getByRole("button", { name: "Skip", exact: true }).count()) throw new Error("a closed question still offers Skip");
+  await page.locator(".work-question").getByRole("button", { name: "Close", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".work-question"));
+  await page.evaluate(() => { window.__push({ type: "assistant", content: "Done." }); window.__push({ type: "done" }); window.__end(); });
+  await page.waitForFunction(() => document.querySelector(".work-eyebrow")?.textContent.includes("finished"));
+  if (!(await page.locator(".work-steps").innerText()).includes("Asked you a question")) throw new Error("question step not described");
 }
 
 export async function testWorkModeServerRejectsMissingFolder({ page, origin }) {
@@ -965,4 +1077,53 @@ export async function testWorkLinkedHarnessSessionsStayAccessible({ page, origin
   await page.locator('[data-session-id="oc-ses_linked"] .work-recent-item').click();
   await page.locator('.paper-work-review').waitFor({ state: 'hidden' });
   if (opened !== original.id) throw new Error('original harness session no longer accessible');
+}
+
+// A long session must not redraw its whole history for every streamed token: earlier turns and
+// the live turn's step list stay the same nodes, while what changed still shows.
+export async function testWorkLongSessionDrawsOnlyWhatChanged({ page, origin }) {
+  await installAgentStream(page);
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  const runs = Array.from({ length: 12 }, (_, i) => ({ id: `r${i}`, task: `Earlier task ${i}`, model: "qwen", harness: "builtin", folder: "/work/demo", folderName: "demo",
+    status: "done", startedAt: 1e12, endedAt: 1e12 + 5000, changes: null, error: "", answer: [`## Answer ${i}\n\nDone.`],
+    steps: Array.from({ length: 5 }, (_, j) => ({ id: `s${i}-${j}`, state: "done", time: "1s", open: false, human: { kind: "read", pending: `Reading f${j}`, done: `Read f${j}`, detail: "x", path: `f${j}` } })) }));
+  await page.route("**/v1/agent/sessions**", route => {
+    const id = new URL(route.request().url()).pathname.split("/v1/agent/sessions")[1];
+    if (route.request().method() === "PUT") return route.fulfill(json({ id: "long" }));
+    if (id && id !== "/") return route.fulfill(json({ id: "long", title: "Long", folder: "/work/demo", harness: "builtin", runs }));
+    return route.fulfill(json({ sessions: [{ id: "long", title: "Long", folder: "/work/demo", updated: Date.now() / 1000, tasks: runs.length }] }));
+  });
+  await openChat(page, origin);
+  await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.click(".work-recent-item");
+  await page.waitForFunction(() => document.querySelectorAll(".work-turn").length === 12);
+  await page.fill("#work-task", "One more");
+  await page.press("#work-task", "Enter");
+  await page.waitForFunction(() => !!window.__push);
+  await page.evaluate(() => {
+    for (let i = 0; i < 4; i++) { window.__push({ type: "tool_call", id: "c" + i, name: "read_file", arguments: { path: `g${i}.py` } }); window.__push({ type: "tool_result", id: "c" + i, content: "ok" }); }
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".work-turn:last-child .work-step").length === 4);
+  await page.evaluate(() => {
+    window.__marked = { earlier: document.querySelector(".work-turn"), steps: document.querySelector(".work-turn:last-child .work-steps") };
+    window.__marked.earlier.__mark = window.__marked.steps.__mark = true;
+  });
+  await page.evaluate(async () => { for (let i = 0; i < 40; i++) { window.__push({ type: "assistant_delta", content: `w${i} ` }); await new Promise(r => setTimeout(r, 2)); } });
+  await page.waitForFunction(() => document.querySelector(".work-turn:last-child .work-say")?.textContent.includes("w39"));
+  const kept = await page.evaluate(() => ({ earlier: document.querySelector(".work-turn") === window.__marked.earlier && window.__marked.earlier.__mark,
+    steps: document.querySelector(".work-turn:last-child .work-steps") === window.__marked.steps, turns: document.querySelectorAll(".work-turn").length }));
+  if (!kept.earlier) throw new Error("an earlier turn was redrawn while the answer streamed");
+  if (!kept.steps) throw new Error("the live step list was redrawn while only the answer changed");
+  if (kept.turns !== 13) throw new Error(`expected 13 turns, saw ${kept.turns}`);
+
+  // A new step still appears, and an earlier turn still responds to Show steps.
+  await page.evaluate(() => window.__push({ type: "tool_call", id: "c9", name: "read_file", arguments: { path: "late.py" } }));
+  await page.waitForFunction(() => document.querySelectorAll(".work-turn:last-child .work-step").length === 5);
+  await page.locator(".work-turn").first().getByRole("button", { name: "Show 5 steps" }).click();
+  await page.waitForFunction(() => document.querySelector(".work-turn .work-steps")?.textContent.includes("Read f4"));
+  await page.evaluate(() => { window.__push({ type: "tool_result", id: "c9", content: "ok" }); window.__push({ type: "done" }); window.__end(); });
+  await page.waitForFunction(() => document.querySelector(".work-turn:last-child .work-eyebrow")?.textContent.includes("finished"));
+  if (!(await page.locator(".work-turn:last-child .work-say").innerText()).includes("w0 w1")) throw new Error("the streamed answer lost text");
+  if (await page.locator(".work-turn").count() !== 13) throw new Error("turns were duplicated or lost after the run ended");
 }

@@ -1111,11 +1111,6 @@ main {
 #settings-toggle.open svg { transform: rotate(45deg); }
 #history-toggle.open { color: var(--accent-bright); }
 
-#settings-toggle:focus-visible,
-#history-toggle:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--accent-glow);
-}
 
 /* ------------------------------------------------------------------
    Side panels
@@ -1333,14 +1328,28 @@ main {
 
 .h-card:active { transform: translateY(1px); }
 
+.h-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-right: 24px;
+}
+
 .h-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 13px;
   font-weight: 700;
   color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 24px;
+}
+
+.h-card-date {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-mute);
 }
 
 .h-card-meta {

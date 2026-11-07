@@ -1,0 +1,68 @@
+name: Bug report
+description: Something failed to install, start, load a model, or answer.
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. The quickest way to fill this form is **Report a problem** in the web UI (System) or `arc-llama report` in a terminal, which fill in the environment for you.
+        Please remove anything private before submitting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you ran or clicked, what you expected, and what happened instead.
+      placeholder: |
+        I ran `arc-llama run qwen3-8b` and the server exited with ...
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where did it fail?
+      options:
+        - Installing (pip / uv)
+        - Setup (init, install-runtime, GPU detection)
+        - Downloading or registering a model
+        - Loading a model / starting llama-server
+        - Chat or API requests
+        - Web UI
+        - Work (experimental)
+        - Benchmark or tuning
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Arc Llama version, OS, Python version, and backend (Vulkan or SYCL). Filled in automatically by the Report button.
+      render: text
+      placeholder: |
+        Arc Llama: 1.0.0
+        OS: Linux-6.8.0-x86_64
+        Python: 3.12.3
+        Backend: vulkan
+    validations:
+      required: true
+  - type: textarea
+    id: gpu
+    attributes:
+      label: GPU
+      description: Card model, VRAM, and driver. `arc-llama gpus` prints this.
+      render: text
+      placeholder: Intel Arc A770 (0x56a0, alchemist, 16384 MiB, driver i915)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log tail
+      description: The end of the llama-server log or the terminal error. For more, attach the zip from `arc-llama support-bundle`.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Model file and quantization, recipe changes, or whether it worked on an earlier version.

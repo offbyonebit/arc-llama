@@ -53,7 +53,10 @@
     if (["webfetch", "websearch", "web_fetch", "web_search"].includes(tool)) {
       return out("web", "Using the internet", "Used the internet", { detail: firstString(a.url, a.query) });
     }
-    if (tool === "task") return out("think", "Handing off a subtask", "Handed off a subtask", { detail: firstString(a.description, a.prompt) });
+    if (["question", "ask_user"].includes(tool)) return out("ask", "Asking you a question", "Asked you a question", { detail: firstString(a.question, Array.isArray(a.questions) && a.questions[0] ? a.questions[0].question : "") });
+    if (["task", "subagent"].includes(tool)) return out("think", "Handing off a subtask", "Handed off a subtask", { detail: firstString(a.description, a.prompt) });
+    // OpenCode 2 runs MCP and plugin tools from a short script ("Code Mode").
+    if (tool === "execute" && typeof a.code === "string") return out("tool", "Using the agent's tools", "Used the agent's tools", { detail: shorten(a.code, 600), toolName: "execute" });
     if (["todowrite", "todoread"].includes(tool)) return out("think", "Updating the plan", "Updated the plan");
 
     if (["bash", "run_command", "shell", "sh", "terminal"].includes(tool)) {
@@ -321,10 +324,92 @@
     const measuredSpeed = (value) => Number.isFinite(value) && value > 0 ? `${value.toFixed(1)} tok/s` : "";
 
     // ---- rendering
-    function stepRow(step) {
+    // The step thread is an electric arc: every command grows a bolt from the previous node to its own, a bright
+    // spark at its head, and the node lights when it arrives. A finished step's bolt flashes once and settles into
+    // a dim filament, the live one crackles, a step
+    // waiting for approval holds amber, and a failed one is a broken wire. Step heights vary, so the bolts
+    // are laid out after the rows are in the page (arcLayout). Bolt shapes come from a seeded generator,
+    // so the same step always gets the same bolt, and each animation is keyed to the time it started,
+    // because render() rebuilds the DOM on every update.
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    function svg(tag, attrs, ...kids) {
+      const n = document.createElementNS(SVG_NS, tag);
+      for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+      n.append(...kids);
+      return n;
+    }
+    const ARC_STRIKE_MS = 800;
+    const ARC_GROW_MS = 520;   // a new step's bolt grows from the previous node, a spark at its head, then the node lights
+    const calmMotion = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    function arcDefs() {
+      if (document.getElementById("work-arc-defs")) return;
+      const crackle = svg("feTurbulence", { type: "fractalNoise", baseFrequency: "0.05 0.14", numOctaves: "2", seed: "1", result: "n" },
+        svg("animate", { attributeName: "seed", values: "1;4;2;7;3;9", dur: "0.6s", calcMode: "discrete", repeatCount: "indefinite" }));
+      document.body.append(svg("svg", { id: "work-arc-defs", width: "0", height: "0", "aria-hidden": "true", style: "position:absolute" },
+        svg("defs", {},
+          svg("filter", { id: "work-arc-glow", x: "-300%", y: "-2%", width: "700%", height: "104%" }, svg("feGaussianBlur", { stdDeviation: "3" })),
+          svg("filter", { id: "work-arc-crackle", x: "-150%", y: "-10%", width: "400%", height: "120%" }, crackle,
+            svg("feDisplacementMap", { in: "SourceGraphic", in2: "n", scale: "5", xChannelSelector: "R", yChannelSelector: "G" })))));
+    }
+    function boltRandom(seed) {   // mulberry32
+      let a = seed >>> 0;
+      return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    }
+    function bolt(y0, y1, seed) {
+      const rnd = boltRandom(seed * 7919 + 17), n = Math.max(2, Math.round((y1 - y0) / 10)), pts = [[16, y0]];
+      for (let k = 1; k < n; k++) pts.push([16 + (rnd() * 2 - 1) * 5 * Math.pow(Math.sin(Math.PI * k / n), 0.6), y0 + (y1 - y0) * k / n]);
+      pts.push([16, y1]);
+      const d = (list) => "M" + list.map((q) => `${q[0].toFixed(1)} ${q[1].toFixed(1)}`).join(" L");
+      let fork = null;
+      if (n >= 6 && seed % 3 === 0) {
+        const [x, y] = pts[Math.floor(n / 2)], side = rnd() < 0.5 ? -1 : 1;
+        fork = d([[x, y], [x + side * (6 + rnd() * 5), y + 7], [x + side * (10 + rnd() * 5), y + 14]]);
+      }
+      return { main: d(pts), fork };
+    }
+    function arcNode(state, step, index) {
+      const node = el("span", { class: "work-arc-node " + state, "aria-hidden": "true" });
+      const age = step && step.bornAt && index > 0 ? Date.now() - step.bornAt : Infinity;
+      if (!calmMotion() && age < ARC_GROW_MS + 300) {   // lights up when the bolt reaches it
+        node.classList.add("born");
+        node.style.setProperty("--arrive-delay", `${ARC_GROW_MS - age}ms`);
+      }
+      return node;
+    }
+    function arcLayout(stepsEl, r) {
+      const rows = [...stepsEl.querySelectorAll(":scope > .work-step")];
+      stepsEl.querySelector(":scope > .work-arc")?.remove();
+      if (rows.length < 2) return;
+      arcDefs();
+      const nodeY = (row) => row.offsetTop + (parseFloat(getComputedStyle(row).getPropertyValue("--arc-node")) || 12);
+      const ys = rows.map(nodeY), top = ys[0], calm = calmMotion(), now = Date.now();
+      const glows = svg("g", { class: "glows", filter: "url(#work-arc-glow)" }), cores = svg("g", { class: "cores" }), heads = svg("g", { class: "heads" });
+      for (let i = 1; i < rows.length; i++) {
+        const step = r && r.steps ? r.steps[i] : null;
+        const state = (step && step.state) || "done";
+        // First sight of a step is not a state change (a reopened run must not replay its flashes).
+        if (step && step.arcSeen !== state) { step.arcAt = step.arcSeen === undefined ? 0 : now; step.arcSeen = state; }
+        const strikeAge = step && step.arcAt ? now - step.arcAt : Infinity;
+        const growAge = step && step.bornAt ? now - step.bornAt : Infinity;
+        const strike = !calm && strikeAge < ARC_STRIKE_MS, grow = !calm && growAge < ARC_GROW_MS + 400;
+        const cls = `${state}${strike ? " strike" : ""}${grow ? " grow" : ""}${!calm && state === "running" ? " crackle" : ""}`;
+        const style = `--strike-delay:-${Math.min(strikeAge, 9e6)}ms;--grow-delay:-${Math.min(growAge, 9e6)}ms;--grow-ms:${ARC_GROW_MS}ms`;
+        const shape = bolt(ys[i - 1] - top, ys[i] - top, i);
+        const mk = (kind, d, extra) => svg("path", { class: `${kind} ${cls}`, d, style, ...extra });
+        glows.append(mk("glow", shape.main));
+        cores.append(mk("core", shape.main, { pathLength: "1" }));
+        if (shape.fork && state === "done") cores.append(mk("fork", shape.fork));
+        if (grow && growAge < ARC_GROW_MS) heads.append(svg("circle", { class: "head", r: "2.4", style: `${style};offset-path:path('${shape.main}')` }));
+      }
+      const arc = svg("svg", { class: "work-arc", width: "32", height: String(ys[ys.length - 1] - top), focusable: "false", "aria-hidden": "true" }, glows, cores, heads);
+      arc.style.top = `${top}px`;
+      stepsEl.prepend(arc);
+    }
+
+    function stepRow(step, index = 0) {
       const human = step.human;
       const state = step.state;
-      const mark = el("span", { class: "work-mark " + state, "aria-hidden": "true" }, state === "done" ? "✓" : state === "failed" ? "!" : state === "waiting" ? "!" : "");
+      const mark = arcNode(state, step, index);
       const title = state === "done" || state === "failed" ? human.done : human.pending;
       const body = el("div", { class: "work-step-body" }, el("div", { class: "work-step-title" }, title));
       if (state === "waiting") body.append(el("div", { class: "work-step-sub" }, "Needs your OK before it changes anything"));
@@ -362,9 +447,95 @@
         }).catch(() => {});
       };
       sheet.append(el("div", { class: "work-actions" },
-        el("button", { class: "work-btn", type: "button", disabled: answered, onclick: () => decide(false) }, "Don’t Allow"),
-        el("button", { class: "work-btn primary", type: "button", disabled: answered, onclick: () => decide(true) }, "Allow"),
-        code && !d.showCommand ? el("button", { class: "work-link", type: "button", onclick: () => { pending.showCommand = !pending.showCommand; render(); } }, pending.showCommand ? "Hide command" : "Show command") : null));
+        el("button", { class: "work-btn", type: "button", "data-focus-key": "deny", disabled: answered, onclick: () => decide(false) }, "Don’t Allow"),
+        el("button", { class: "work-btn primary", type: "button", "data-focus-key": "allow", disabled: answered, onclick: () => decide(true) }, "Allow"),
+        code && !d.showCommand ? el("button", { class: "work-link", type: "button", "data-focus-key": "command", onclick: () => { pending.showCommand = !pending.showCommand; render(); } }, pending.showCommand ? "Hide command" : "Show command") : null));
+      return sheet;
+    }
+
+    // A question from the model, with its choices as buttons. A lone single-choice question sends on click;
+    // anything else collects every answer first. Typed answers live on the question so a redraw keeps them.
+    function questionSheet(q) {
+      const qs = q.questions || [];
+      q.picks = q.picks || qs.map(() => []);
+      q.typed = q.typed || qs.map(() => "");
+      const oneClick = qs.length === 1 && !qs[0].multiple;
+      // A single-choice question has one answer: typed text replaces a picked option.
+      const answers = () => qs.map((item, i) => {
+        const typed = q.typed[i].trim();
+        return !item.multiple && typed ? [typed] : [...q.picks[i], ...(typed ? [typed] : [])];
+      });
+      // The card goes away while the answer is sent and comes back with the reason if it was not taken.
+      // A 404 means the agent stopped waiting (it timed out or the run ended), so the card is closed for good.
+      const send = (value) => {
+        q.answered = true;
+        q.failed = "";
+        render();
+        const fail = (text, closed = false) => { q.answered = false; q.closed = closed; q.failed = text; render(); };
+        ctx.request(`/v1/agent/${encodeURIComponent(q.run_id || run.id)}/answer`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers: value }),
+        }).then((r) => {
+          if (r.status === 404) fail("The agent stopped waiting for this answer, so it was not sent.", true);
+          else if (!r.ok) fail(`Your answer was not accepted (error ${r.status}). Try again.`);
+        }).catch(() => fail("Your answer could not be sent. Check the connection and try again."));
+      };
+      const locked = q.answered || q.closed;
+      const sheet = el("div", { class: "work-sheet work-question", role: "dialog", "aria-label": qs.length === 1 ? qs[0].header || "Question" : "Questions" });
+      const sendBtn = el("button", { class: "work-btn primary", type: "button", onclick: () => send(answers()) }, "Send");
+      const ready = () => { sendBtn.disabled = locked || answers().some((a) => !a.length); };
+      qs.forEach((item, i) => {
+        const block = el("div", { class: "work-question-item" });
+        if (item.header) block.append(el("div", { class: "work-question-head" }, item.header));
+        block.append(el("h2", {}, item.question));
+        if (item.multiple) block.append(el("p", {}, "Pick any that apply."));
+        const choices = el("div", { class: "work-choices", role: item.multiple ? "group" : "radiogroup" });
+        for (const opt of item.options || []) {
+          const on = q.picks[i].includes(opt.label);
+          choices.append(el("button", { class: "work-choice" + (on ? " on" : ""), type: "button", disabled: locked,
+            role: item.multiple ? "checkbox" : "radio", "aria-checked": String(on),
+            onclick: () => {
+              // Read the pick now: typing may have cleared it since this button was drawn.
+              const picked = q.picks[i].includes(opt.label);
+              if (!item.multiple) q.typed[i] = "";
+              if (oneClick) { q.picks[i] = [opt.label]; send(answers()); return; }
+              q.picks[i] = item.multiple ? (picked ? q.picks[i].filter((x) => x !== opt.label) : [...q.picks[i], opt.label]) : picked ? [] : [opt.label];
+              render();
+            } },
+          el("b", {}, opt.label), opt.description ? el("span", {}, opt.description) : null));
+        }
+        if ((item.options || []).length) block.append(choices);
+        if (item.custom !== false) {
+          const input = el("input", { class: "work-question-input", type: "text", value: q.typed[i], disabled: locked, "data-question": String(i),
+            placeholder: (item.options || []).length ? "Or type your own answer" : "Type your answer", "aria-label": `Your answer to: ${item.question}` });
+          input.addEventListener("input", () => {
+            q.typed[i] = input.value;
+            if (!item.multiple && input.value.trim() && q.picks[i].length) {
+              // Typing replaces the picked option; unmark it in place so the input keeps focus.
+              q.picks[i] = [];
+              for (const b of choices.querySelectorAll(".work-choice.on")) { b.classList.remove("on"); b.setAttribute("aria-checked", "false"); }
+            }
+            ready();
+          });
+          input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !sendBtn.disabled) { e.preventDefault(); send(answers()); } });
+          block.append(input);
+        }
+        sheet.append(block);
+      });
+      ready();
+      if (q.failed) sheet.append(el("p", { class: "work-error", role: "alert" }, q.failed));
+      if (q.closed) {
+        sheet.append(el("div", { class: "work-actions" },
+          el("button", { class: "work-btn", type: "button", onclick: () => { q.answered = true; render(); } }, "Close")));
+        return sheet;
+      }
+      sheet.append(el("div", { class: "work-actions" },
+        el("button", { class: "work-btn", type: "button", disabled: q.answered, onclick: () => send(null) }, "Skip"),
+        oneClick && !q.typed[0].trim() && (qs[0].options || []).length ? null : sendBtn));
+      if (oneClick && (qs[0].options || []).length) {
+        // Typing turns the one-click question into one that needs Send.
+        const input = sheet.querySelector(".work-question-input");
+        if (input) input.addEventListener("input", () => { if (!sheet.contains(sendBtn)) sheet.querySelector(".work-actions").append(sendBtn); });
+      }
       return sheet;
     }
 
@@ -405,14 +576,25 @@
       return card;
     }
 
+    // A stream can deliver hundreds of events a second; drawing once per frame is enough.
+    let renderQueued = false;
+    function scheduleRender() {
+      if (renderQueued) return;
+      renderQueued = true;
+      requestAnimationFrame(() => { if (renderQueued) render(); });
+    }
+
     function render() {
+      renderQueued = false;
       const scroller = document.querySelector(".work-scroll");
       const stick = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+      const focusKey = document.activeElement?.dataset?.focusKey, hadSheet = !!document.querySelector(".work-sheet");
       draw();
+      if (focusKey) document.querySelector(`[data-focus-key="${focusKey}"]`)?.focus({ preventScroll: true });
       refreshWorkContext();
       if (!scroller || !run) return;
       const sheet = document.querySelector(".work-sheet");
-      if (sheet) sheet.scrollIntoView({ block: "nearest" });
+      if (sheet) { if (!hadSheet) sheet.scrollIntoView({ block: "nearest" }); }
       else if (stick) scroller.scrollTop = scroller.scrollHeight;
     }
 
@@ -423,13 +605,23 @@
       return block;
     }
 
+    // Earlier turns rarely change, so each keeps its drawn node until something it shows does.
+    // Rebuilding all of them on every update made long sessions lag behind the stream.
+    let drawnTurns = new Map();
+    const drawnSteps = new WeakMap();   // run -> { key, node, observer }: the step list, kept while its steps are unchanged
+    function turnKey(r, current) {
+      const open = (x) => (x && !x.answered ? 1 : 0);
+      const c = r.changes;
+      return JSON.stringify([current, r.status, r.task, r.error, (r.warnings || []).length, r.suggest, !!r.showSteps, !!r.showEarlier, r.endedAt, r.generationTokS,
+        r.steps.map((x) => x.state + (x.open ? "+" : "")).join(","), r.answer.length, r.answer.length ? r.answer[r.answer.length - 1].length : 0,
+        open(r.pending), open(r.question), c ? [c.files?.length, !!c.reviewing, !!c.undoing, c.undone?.text, Object.keys(c.reviews || {}).length] : null]);
+    }
     function draw() {
       const host = $("#work-run");
       const intro = $("#work-intro");
       if (!host) return;
       intro.hidden = runs.length > 0;
       host.hidden = runs.length === 0;
-      host.replaceChildren();
       const busy = !!(run && run.status === "running");
       $("#work-send").classList.toggle("stop", busy);
       $("#work-send").setAttribute("aria-label", busy ? "Stop" : "Start");
@@ -443,11 +635,39 @@
           ? `Latest measured model call${run?.model ? ` (${run.model})` : ""}; excludes loading, prompt processing, tools, and approvals. Updates when the backend reports generation timing.`
           : "Waiting for backend generation timing. No speed is estimated from response text or total task duration.";
       }
+      updateActivity(busy);
+      currentEyebrow = null;
+      const next = new Map();
+      runs.forEach((r, i) => {
+        const current = r === run;
+        const key = turnKey(r, current);
+        let entry = drawnTurns.get(r);
+        // The live turn's clock text changes every second, so it is always drawn fresh.
+        if (!entry || entry.key !== key || (current && r.status === "running")) {
+          const fresh = drawTurn(r, current);
+          // Patch the turn already on the page: a reused step list stays where it is instead of
+          // being moved into a new section, which would make the browser lay it all out again.
+          if (entry) { entry.node.className = fresh.className; placeChildren(entry.node, [...fresh.childNodes].map((n) => n.keep || n)); }
+          else for (const n of [...fresh.childNodes]) if (n.keep) fresh.replaceChild(n.keep, n);
+          entry = { key, node: entry ? entry.node : fresh };
+        } else if (current) {
+          currentEyebrow = entry.node.querySelector(".work-eyebrow");
+        }
+        next.set(r, entry);
+      });
+      placeChildren(host, runs.map((r) => next.get(r).node));
+      for (const r of drawnTurns.keys()) if (!next.has(r)) forgetSteps(r);
+      drawnTurns = next;
+      window.ArcPaper?.workState({ pending: (!!run?.pending && !run.pending.answered) || (!!run?.question && !run.question.answered && !run.question.closed), result: host.querySelector(".work-turn:last-child .work-result"), recentTasks: $("#work-recent") });
+    }
+
+    function updateActivity(busy) {
       const activity = $("#work-activity");
       if (activity) {
         const waiting = busy && run.pending && !run.pending.answered;
-        const phases = { starting: "Starting agent", generating: "Generating", thinking: "Thinking", answering: "Writing answer", tools: "Running tools", waiting: "Waiting for approval" };
-        const phase = waiting ? "waiting" : run?.activity || "starting";
+        const asking = busy && run.question && !run.question.answered && !run.question.closed;
+        const phases = { starting: "Starting agent", generating: "Generating", thinking: "Thinking", answering: "Writing answer", tools: "Running tools", waiting: "Waiting for approval", asking: "Waiting for your answer" };
+        const phase = waiting ? "waiting" : asking ? "asking" : run?.activity || "starting";
         const modelState = ctx.getModelState?.(run?.model);
         const loading = ["starting", "generating"].includes(phase) && ["loading", "draining"].includes(modelState);
         const text = busy ? loading ? modelState === "loading" ? "Loading model" : "Waiting for model switch" : phases[phase] || "Working" : "";
@@ -456,51 +676,105 @@
         if ($("#work-activity-label").textContent !== text) $("#work-activity-label").textContent = text;
         $("#work-activity-time").textContent = busy ? elapsedText(Date.now() - run.startedAt) : "";
       }
-      for (const turn of runs) host.append(drawTurn(turn, turn === run));
-      window.ArcPaper?.workState({ pending: !!run?.pending && !run.pending.answered, result: host.querySelector(".work-turn:last-child .work-result"), recentTasks: $("#work-recent") });
     }
 
-    // One message and everything that came of it. Earlier turns are compact; the latest is in full.
-    function drawTurn(r, current) {
-      const turn = el("section", { class: "work-turn" + (current ? "" : " prev"), "aria-label": "Task" });
+    // The once-a-second clock only refreshes elapsed-time text. A full redraw
+    // here dropped text selection and focus (Allow / Don't Allow) every second
+    // and pulled the page back to a waiting approval.
+    let currentEyebrow = null;
+    function tickClock() {
+      if (!run || run.status !== "running") return;
+      // Before the first step the placeholder's own wording depends on elapsed
+      // time, and there is nothing on screen to select or focus yet.
+      if (!run.steps.length && !run.answer.length && !run.pending && !run.question) { render(); return; }
+      updateActivity(true);
+      if (currentEyebrow) currentEyebrow.textContent = eyebrowText(run);
+    }
+
+    function eyebrowText(r) {
       const mode = (r.auto ? " · auto-approve" : "") + (r.profileName ? ` · ${r.profileName}` : "");
       const eyebrow = r.status === "running" ? `${r.folderName}${mode} · working for ${elapsedText(Date.now() - r.startedAt)}`
         : r.status === "stopped" ? `${r.folderName}${mode} · stopped`
         : r.status === "error" ? `${r.folderName}${mode} · stopped by an error`
         : r.imported ? `${r.folderName} · imported conversation`
         : `${r.folderName}${mode} · finished in ${elapsedText((r.endedAt || Date.now()) - r.startedAt)}`;
-      const heading = splitTask(r.task);
       const speed = measuredSpeed(r.generationTokS);
-      turn.append(el("div", { class: "work-eyebrow" }, eyebrow + (speed ? ` · ${speed}` : "")), el("h1", { class: "work-title" }, heading.title));
+      return eyebrow + (speed ? ` · ${speed}` : "");
+    }
+
+    // Puts exactly `nodes` in `parent`, in order, without detaching the ones already in place.
+    function placeChildren(parent, nodes) {
+      const wanted = new Set(nodes);
+      for (const n of [...parent.childNodes]) if (!wanted.has(n)) n.remove();   // first, so kept nodes are already in order
+      nodes.forEach((n, i) => { if (parent.childNodes[i] !== n) parent.insertBefore(n, parent.childNodes[i] || null); });
+      while (parent.childNodes.length > nodes.length) parent.lastChild.remove();
+    }
+    function forgetSteps(r) {
+      drawnSteps.get(r)?.observer?.disconnect();
+      drawnSteps.delete(r);
+    }
+    // The step list of a turn. A streaming answer redraws its turn many times a second; the steps
+    // only change when a tool call starts or ends, so the same list (and its laid-out arc) is reused.
+    function stepList(r, current) {
+      const live = (x) => x && !x.answered;
+      // Approval and question cards are interactive, and the placeholder's text follows the clock.
+      const reusable = r.steps.length && !live(r.pending) && !live(r.question);
+      const key = reusable ? JSON.stringify([current, r.steps.map((x) => [x.id, x.state, !!x.open, x.time])]) : null;
+      const kept = drawnSteps.get(r);
+      if (key && kept && kept.key === key) return kept.node;
+      forgetSteps(r);
+      const steps = el("div", { class: "work-steps", "aria-live": current ? "polite" : "off" });
+      const placeholder = r.status === "running" && !r.steps.length && !r.pending && !r.question && !r.answer.length;
+      r.steps.forEach((step, i) => {
+        steps.append(stepRow(step, i));
+        if (r.pending && !r.pending.answered && r.pending.stepId === step.id) steps.append(approvalSheet(r.pending, step));
+        if (r.question && !r.question.answered && r.question.call_id === step.id) steps.append(questionSheet(r.question));
+      });
+      if (r.pending && !r.pending.answered && !r.steps.some((x) => x.id === r.pending.stepId)) steps.append(approvalSheet(r.pending, null));
+      if (r.question && !r.question.answered && !r.steps.some((x) => x.id === r.question.call_id)) steps.append(questionSheet(r.question));
+      if (placeholder) {
+        const waited = (Date.now() - r.startedAt) / 1000;
+        const livePhases = { thinking: "Thinking", answering: "Writing answer", generating: "Generating" };
+        const phase = livePhases[r.activity] || (/starting/i.test(r.statusText || "") ? (r.harness === "hermes" ? "Starting Hermes" : r.harness === "opencode" ? "Starting OpenCode" : "Starting agent")
+          : /working/i.test(r.statusText || "") ? (r.modelCold ? "Loading model / preparing prompt" : "Generating")
+          : "Getting ready");
+        const sub = r.modelCold && !["thinking", "answering"].includes(r.activity)
+          ? `${r.model} was not in memory, so it is being loaded first. This usually takes a minute or two.`
+          : waited > 8 ? "Still working. The first request also has to read the agent's instructions, which takes a moment."
+          : "";
+        steps.append(el("div", { class: "work-step running" }, arcNode("running"),
+          el("div", { class: "work-step-body" }, el("div", { class: "work-step-title" }, phase),
+            sub ? el("div", { class: "work-step-sub" }, sub) : null)));
+      }
+      requestAnimationFrame(() => arcLayout(steps, r));
+      let observer = null;
+      if (typeof ResizeObserver === "function") {
+        let first = true;   // the observer reports once on attach; that layout is already done above
+        observer = new ResizeObserver(() => { if (first) { first = false; return; } arcLayout(steps, r); });
+        observer.observe(steps);
+      }
+      drawnSteps.set(r, { key, node: steps, observer });
+      return steps;
+    }
+
+    // One message and everything that came of it. Earlier turns are compact; the latest is in full.
+    function drawTurn(r, current) {
+      const turn = el("section", { class: "work-turn" + (current ? "" : " prev"), "aria-label": "Task" });
+      const heading = splitTask(r.task);
+      const eyebrow = el("div", { class: "work-eyebrow" }, eyebrowText(r));
+      if (current) currentEyebrow = eyebrow;
+      turn.append(eyebrow, el("h1", { class: "work-title" }, heading.title));
       if (heading.rest) turn.append(el("p", { class: "work-sub" }, heading.rest));
 
       // Steps: always shown while a turn is live or waiting on you; folded away once it is history.
-      const folded = !current && !r.showSteps && r.status !== "running" && !(r.pending && !r.pending.answered);
+      const folded = !current && !r.showSteps && r.status !== "running" && !(r.pending && !r.pending.answered) && !(r.question && !r.question.answered);
       if (folded && r.steps.length) {
         turn.append(el("button", { class: "work-link", type: "button", "aria-expanded": "false",
           onclick: () => { r.showSteps = true; render(); } }, `Show ${r.steps.length} step${r.steps.length === 1 ? "" : "s"}`));
       } else {
-        const steps = el("div", { class: "work-steps", "aria-live": current ? "polite" : "off" });
-        for (const step of r.steps) {
-          steps.append(stepRow(step));
-          if (r.pending && !r.pending.answered && r.pending.stepId === step.id) steps.append(approvalSheet(r.pending, step));
-        }
-        if (r.pending && !r.pending.answered && !r.steps.some((x) => x.id === r.pending.stepId)) steps.append(approvalSheet(r.pending, null));
-        if (r.status === "running" && !r.steps.length && !r.pending && !r.answer.length) {
-          const waited = (Date.now() - r.startedAt) / 1000;
-          const livePhases = { thinking: "Thinking", answering: "Writing answer", generating: "Generating" };
-          const phase = livePhases[r.activity] || (/starting/i.test(r.statusText || "") ? (r.harness === "hermes" ? "Starting Hermes" : r.harness === "opencode" ? "Starting OpenCode" : "Starting agent")
-            : /working/i.test(r.statusText || "") ? (r.modelCold ? "Loading model / preparing prompt" : "Generating")
-            : "Getting ready");
-          const sub = r.modelCold && !["thinking", "answering"].includes(r.activity)
-            ? `${r.model} was not in memory, so it is being loaded first. This usually takes a minute or two.`
-            : waited > 8 ? "Still working. The first request also has to read the agent's instructions, which takes a moment."
-            : "";
-          steps.append(el("div", { class: "work-step running" }, el("span", { class: "work-mark running", "aria-hidden": "true" }),
-            el("div", { class: "work-step-body" }, el("div", { class: "work-step-title" }, phase),
-              sub ? el("div", { class: "work-step-sub" }, sub) : null)));
-        }
-        turn.append(steps);
+        const list = stepList(r, current);
+        // A list already on the page is held by a stand-in, so building this turn does not move it.
+        turn.append(list.isConnected ? Object.assign(document.createComment(""), { keep: list }) : list);
         if (!current && r.showSteps && r.steps.length) {
           turn.append(el("button", { class: "work-link", type: "button", "aria-expanded": "true",
             onclick: () => { r.showSteps = false; render(); } }, "Hide steps"));
@@ -511,6 +785,7 @@
         turn.append(el("div", { class: "work-error", role: "status" },
           "Written outside your project folder: " + strays.map((x) => x.human.path).join(", ") + ". Arc Llama can't undo changes there."));
       }
+      for (const text of r.warnings || []) turn.append(el("div", { class: "work-error", role: "status" }, text));
       if (r.changes && r.changes.files && r.changes.files.length) turn.append(resultCard(r.changes));
       if (r.answer.length) {
         turn.append(sayBlock(r.answer[r.answer.length - 1]));
@@ -818,7 +1093,7 @@
     let sessionId = null, sessionOrigin = "", saving = Promise.resolve();
     const newSessionId = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
     function sessionPayload() {
-      const plain = JSON.parse(JSON.stringify(runs, (key, value) => (key === "pending" || key === "undoing" ? undefined : value)));
+      const plain = JSON.parse(JSON.stringify(runs, (key, value) => (key === "pending" || key === "question" || key === "undoing" ? undefined : value)));
       for (const r of plain) if (r.status === "running") { r.status = "stopped"; r.error = r.error || "This task was interrupted when the page closed."; }
       const first = runs[0] ? splitTask(runs[0].task).title : "Untitled";
       const last = runs[runs.length - 1] || {};
@@ -870,9 +1145,17 @@
       warning.hidden = !warnings.length;
       window.ArcPaper?.workSessions?.(sessions.length);
       box.hidden = !sessions.length && !warnings.length;
+      function sessionDate(seconds) {
+        const d = new Date(seconds * 1000);
+        const opts = { month: "short", day: "numeric" };
+        if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+        return d.toLocaleDateString(undefined, opts);
+      }
       function sessionRow(item, expanded = false, includeRelated = true) {
         const open = el("button", { type: "button", class: "work-recent-item" },
-          el("b", {}, item.title),
+          el("div", { class: "work-recent-head" },
+            el("b", {}, item.title),
+            item.updated ? el("time", { datetime: new Date(item.updated * 1000).toISOString(), title: new Date(item.updated * 1000).toLocaleString() }, sessionDate(item.updated)) : null),
           el("span", {}, `${item.harness === "opencode" ? "OpenCode · " : item.harness === "hermes" ? "Hermes · " : ""}${item.native ? "Harness history · " : item.origin ? "Work copy · " : ""}${baseName(item.folder) || "project"} · ${item.tasks} task${item.tasks === 1 ? "" : "s"} · ${expanded ? new Date(item.updated * 1000).toLocaleString() : ago(item.updated)}`));
         open.addEventListener("click", () => openSession(item.id));
         const remove = el("button", { type: "button", class: "work-recent-remove", "aria-label": `Delete ${item.title}`, title: "Delete" }, "×");
@@ -911,7 +1194,7 @@
         runs = (record.runs || []).map((x) => {
           // Undo needs the files kept in memory right after a run, so it is only offered then.
           if (x.changes) x.changes = { ...x.changes, undoable: false, reopened: true };
-          return { ...x, pending: null, showSteps: false };
+          return { ...x, pending: null, question: null, showSteps: false };
         });
         run = runs[runs.length - 1] || null;
         compacted = record.compacted || null;
@@ -920,8 +1203,8 @@
         sessionId = record.id;
         sessionOrigin = record.origin || "";
         if (record.folder || record.native) $("#work-root").value = record.folder || "";
-        if (record.harness && [...$("#work-harness").options].some((o) => o.value === record.harness && !o.disabled)) $("#work-harness").value = record.harness;
-        else if (record.native) $("#work-harness").value = "builtin";
+        if (record.harness && info?.harnesses?.some((h) => h.id === record.harness && h.available)) $("#work-harness").value = lastHarness = record.harness;
+        else if (record.native) $("#work-harness").value = lastHarness = "builtin";
         commandsKey = "";
         updateHarnessControls();
         problem("");
@@ -1080,12 +1363,13 @@
           break;
         }
         case "status": run.statusText = event.message; if (/starting/i.test(event.message || "")) run.activity = "starting"; break;
+        case "warning": if (event.message) run.warnings = [...(run.warnings || []), event.message]; break;
         case "tool_call": {
           run.answerStreaming = false;
           run.activity = "tools";
           if (step(event.id)) break;
           const human = humanizeStep(event.name, event.arguments);
-          run.steps.push({ id: event.id, human, state: "running", time: elapsedText(Date.now() - run.startedAt), open: human.kind === "other" ? false : false });
+          run.steps.push({ id: event.id, human, state: "running", time: elapsedText(Date.now() - run.startedAt), open: false, bornAt: Date.now() });
           break;
         }
         case "confirm_required": {
@@ -1095,11 +1379,17 @@
           if (run.id !== run.pending.run_id) run.id = run.pending.run_id;
           break;
         }
+        case "question_required": {
+          run.question = { ...event, run_id: event.run_id || run.id, answered: false };
+          if (run.id !== run.question.run_id) run.id = run.question.run_id;
+          break;
+        }
         case "tool_result": {
           run.activity = "generating";
           const s = step(event.id);
           if (s) { s.state = event.error ? "failed" : "done"; s.output = event.content; s.time = elapsedText(Date.now() - run.startedAt); }
           if (run.pending && run.pending.stepId === event.id) run.pending = null;
+          if (run.question && run.question.call_id === event.id) run.question = null;
           break;
         }
         case "assistant_delta":
@@ -1160,20 +1450,20 @@
       store(HARNESS_KEY, harness);
       const history = historyForRequest();
       run = { id: null, task, model, harness, folder, budgetScope: budgetScope(), activity: "starting", profileName: (profileFor() || {}).name || "", auto: autoOn, modelCold: loadedKnown && !loadedIds.has(model), folderName: baseName(folder) || "project", status: "running",
-              startedAt: Date.now(), endedAt: 0, steps: [], answer: [], pending: null, changes: null, error: "", statusText: "Getting started" };
+              startedAt: Date.now(), endedAt: 0, steps: [], answer: [], pending: null, question: null, changes: null, error: "", statusText: "Getting started" };
       runs.push(run);
       if (!sessionId) sessionId = newSessionId();
       persist();
       $("#work-task").value = "";
       autosize();
       clearInterval(tick);
-      tick = setInterval(() => { if (run && run.status === "running") render(); }, 1000);
+      tick = setInterval(tickClock, 1000);
       render();
       controller = new AbortController();
       try {
         const res = await ctx.request("/v1/agent", {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-          body: JSON.stringify({ model, task, harness, work_type: workType(), root: folder, work_session_id: sessionId, track_changes: true, local_only: true, auto_confirm: autoOn, history, ...(command ? { command: command.name, arguments: command.args } : {}), ...(profileFor() ? { tool_profile_id: profileFor().id } : {}) }),
+          body: JSON.stringify({ model, task, harness, work_type: workType(), root: folder, work_session_id: sessionId, track_changes: true, local_only: true, auto_confirm: autoOn, questions: true, history, ...(command ? { command: command.name, arguments: command.args } : {}), ...(profileFor() ? { tool_profile_id: profileFor().id } : {}) }),
         });
         if (!res.ok) {
           let detail = `The request failed (${res.status}).`;
@@ -1200,7 +1490,7 @@
             const payload = line.slice(5).trim();
             if (payload === "[DONE]") continue;
             try { handle(JSON.parse(payload)); } catch (_) { /* ignore a malformed frame */ }
-            render();
+            scheduleRender();
           }
         }
         if (run.status === "running") {
@@ -1214,6 +1504,7 @@
         if (e && e.name === "AbortError") {
           run.status = "stopped";
           run.pending = null;
+          run.question = null;
         } else {
           run.status = "error";
           run.error = e && e.message ? e.message : String(e);
@@ -1225,6 +1516,7 @@
         clearInterval(tick);
         for (const s of run.steps) if (s.state === "running" || s.state === "waiting") s.state = run.status === "done" ? "done" : "failed";
         run.pending = null;
+        run.question = null;
         budgetKey = "";
         render();
         persist();
@@ -1278,7 +1570,12 @@
       const task = $("#work-task");
       task.addEventListener("input", () => { refreshWorkContext(); autosize(); problem(""); notice(""); menuIndex = 0; if (typedCommand() !== null) loadCommands(); renderMenu(); });
       task.addEventListener("blur", () => { $("#work-commands").hidden = true; });
-      $("#work-harness").addEventListener("change", () => { commandsKey = ""; updateHarnessControls(); refreshWorkContext(); });
+      $("#work-harness").addEventListener("change", () => {
+        const chosen = info?.harnesses?.find((h) => h.id === $("#work-harness").value);
+        if (chosen && !chosen.available) { offerInstall(chosen); return; }
+        lastHarness = $("#work-harness").value;
+        commandsKey = ""; updateHarnessControls(); refreshWorkContext();
+      });
       $("#work-profile").addEventListener("change", (e) => {
         if (e.target.value === "__manage") { e.target.value = profileId; openManager(!profiles.length); return; }
         chooseProfile(e.target.value);
@@ -1317,6 +1614,33 @@
       });
     }
 
+    // ---- installing a missing agent: its menu entry opens the shared installer instead of selecting it
+    let harnessInstaller = null, lastHarness = "builtin";
+    function renderHarnessOptions() {
+      $("#work-harness").replaceChildren(...info.harnesses.map((h) => {
+        const installable = !h.available && h.install?.installable;
+        return el("option", { value: h.id, disabled: !h.available && !installable }, h.label + (h.available ? "" : installable ? " (install…)" : " (not installed)"));
+      }));
+    }
+    async function harnessInstalled(name) {
+      try {
+        const r = await ctx.request("/v1/agent/info");
+        if (r.ok) info = await r.json();
+      } catch (_) { return; }
+      renderHarnessOptions();
+      if (info.harnesses.find((h) => h.id === name)?.available) {
+        $("#work-harness").value = lastHarness = name;
+        store(HARNESS_KEY, name);
+      } else $("#work-harness").value = lastHarness;
+      commandsKey = ""; updateHarnessControls(); refreshWorkContext();
+    }
+    function offerInstall(harness) {
+      $("#work-harness").value = lastHarness;
+      harnessInstaller ||= window.ArcHarnesses?.createInstaller({ document, request: ctx.request, onInstalled: harnessInstalled });
+      if (harnessInstaller) harnessInstaller.open(harness);
+      else problem(`${harness.label} is not installed.`);
+    }
+
     const onWorkPage = () => location.pathname === "/work" || location.hash === "#work";
     function workUnavailable(reason) {
       if (!onWorkPage()) return;
@@ -1342,16 +1666,16 @@
         $("#work-type-label").hidden = false;
         types.addEventListener("change", () => {
           // Documents runs on the built-in agent only.
-          if (workType() === "documents") $("#work-harness").value = "builtin";
+          if (workType() === "documents") $("#work-harness").value = lastHarness = "builtin";
           $("#work-harness").disabled = workType() === "documents";
           commandsKey = ""; updateHarnessControls(); modelPicked = false; syncModels();
         });
       }
       const harness = $("#work-harness");
-      harness.replaceChildren(...info.harnesses.map((h) => el("option", { value: h.id, disabled: !h.available }, h.label + (h.available ? "" : " (not installed)"))));
+      renderHarnessOptions();
       const saved = recall(HARNESS_KEY);
       const pick = info.harnesses.find((h) => h.id === saved && h.available) || info.harnesses.find((h) => h.id === "opencode" && h.available) || info.harnesses[0];
-      harness.value = pick.id;
+      harness.value = lastHarness = pick.id;
       updateHarnessControls();
       // Default to the user's home folder (never the server's own working directory), then remember their choice.
       $("#work-root").value = recall(ROOT_KEY) || info.home || "";

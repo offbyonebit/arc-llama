@@ -246,7 +246,7 @@ def test_agent_commands_lists_the_harness_commands(tmp_path, monkeypatch):
     monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
     calls = []
 
-    async def fake_list(folder, model):
+    async def fake_list(folder, model, **_kw):
         calls.append(str(folder))
         return [{"name": "review", "description": "d", "source": "command", "takes_arguments": True}]
 
@@ -297,7 +297,7 @@ def test_hermes_rejects_unsupported_features(tmp_path, monkeypatch, options):
 
 
 def test_hermes_requires_flag_and_auth_and_reports_capabilities(tmp_path, monkeypatch):
-    monkeypatch.setattr(server_mod, "find_hermes_binary", lambda: "/bin/hermes")
+    monkeypatch.setattr(server_mod, "find_hermes_binary", lambda *_: "/bin/hermes")
     with TestClient(_app(tmp_path, monkeypatch)) as client:
         assert client.post("/v1/agent", json={**BODY, "harness": "hermes"}).status_code == 403
     monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
@@ -309,3 +309,128 @@ def test_hermes_requires_flag_and_auth_and_reports_capabilities(tmp_path, monkey
         assert hermes["available"] is True and hermes["auto_approve"] is False
         assert "flagged" in hermes["approval_note"]
         assert client.get("/v1/agent/commands?harness=hermes", headers=headers).json() == {"commands": []}
+
+
+def _install_app(tmp_path, monkeypatch, token="secret"):
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    cfg = Config(server=ServerConfig(admin_token=token))
+    cfg.paths.state_dir = str(tmp_path / "state")
+    return create_app(cfg, config_path=tmp_path / "config.toml"), cfg
+
+
+def test_agent_info_reports_harness_source_and_install_offer(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
+    monkeypatch.delenv("ARC_LLAMA_OPENCODE_BIN", raising=False)
+    monkeypatch.setattr(server_mod, "find_binary", lambda *_: None)
+    monkeypatch.setattr(server_mod, "find_hermes_binary", lambda *_: "/usr/bin/hermes")
+    app, _cfg = _install_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        info = client.get("/v1/agent/info", headers={"Authorization": "Bearer secret"}).json()
+    by_id = {h["id"]: h for h in info["harnesses"]}
+    assert by_id["opencode"]["available"] is False and by_id["opencode"]["source"] == "missing"
+    offer = by_id["opencode"]["install"]
+    assert offer["license"] == "MIT" and offer["source"].startswith("https://github.com/")
+    assert offer["location"].startswith(str(tmp_path / "state"))
+    assert by_id["hermes"]["source"] == "path" and by_id["hermes"]["path"] == "/usr/bin/hermes"
+
+
+def test_harness_install_endpoints_gate_auth_and_run_jobs(tmp_path, monkeypatch):
+    import arc_llama.harness_install as hi
+
+    app, cfg = _install_app(tmp_path, monkeypatch)
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(app) as client:
+        assert client.post("/admin/harnesses/opencode/install").status_code == 401
+        assert client.post("/admin/harnesses/opencode/install", headers=headers).status_code == 403
+        monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
+        seen = {}
+
+        def fake_install(cfg_, name, **kw):
+            seen.update(name=name, version=kw["version"], config_path=kw["config_path"])
+            kw["progress"]("Downloading OpenCode", 1, 2)
+            return hi.InstallResult(name, "v1", tmp_path / "opencode", tmp_path, True)
+
+        app.state.harness_installs.installer = fake_install
+        assert client.post("/admin/harnesses/nope/install", headers=headers).status_code == 400
+        assert client.post("/admin/harnesses/opencode/install", json={"version": "v0"}, headers=headers).status_code == 400
+        job = client.post("/admin/harnesses/opencode/install", json={"version": "latest"}, headers=headers).json()
+        for _ in range(100):
+            jobs = client.get("/admin/harnesses/jobs", headers=headers).json()["jobs"]
+            if jobs[0]["status"] == "done":
+                break
+            import time
+
+            time.sleep(0.02)
+        assert jobs[0]["id"] == job["id"] and jobs[0]["status"] == "done" and jobs[0]["installed_version"] == "v1"
+        assert seen == {"name": "opencode", "version": "latest", "config_path": tmp_path / "config.toml"}
+        assert client.post("/admin/harnesses/jobs/nope/cancel", headers=headers).status_code == 404
+        assert client.delete("/admin/harnesses/opencode/v1", headers=headers).status_code == 404
+        app.state.active_harness_runs["opencode"] = 1
+        assert client.delete("/admin/harnesses/opencode/v1", headers=headers).status_code == 409
+
+
+def test_work_run_uses_the_configured_harness_binary(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
+    seen = {}
+
+    async def fake_run(**kwargs):
+        seen["binary"] = kwargs.get("binary")
+        yield {"type": "done"}
+
+    monkeypatch.setattr(server_mod, "run_opencode", fake_run)
+    app, cfg = _install_app(tmp_path, monkeypatch, token="")
+    cfg.agent.opencode_bin = "/managed/opencode"
+    with TestClient(app) as client:
+        client.post("/v1/agent", json={**BODY, "root": str(tmp_path)})
+        assert app.state.active_harness_runs["opencode"] == 0
+    assert seen["binary"] == "/managed/opencode"
+
+
+@pytest.mark.parametrize("env,expected", [("", False), ("1", True)])
+def test_ui_flags_tell_the_page_shell_whether_work_is_on(tmp_path, monkeypatch, env, expected):
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", env)
+    with TestClient(_app(tmp_path, monkeypatch)) as client:
+        response = client.get("/ui-flags.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/javascript")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.text == f"window.ARC_UI_FLAGS = {json.dumps({'work': expected})};\n"
+
+
+def test_opencode_probes_count_as_runs_so_removal_waits_for_them(tmp_path, monkeypatch):
+    from arc_llama.agent.harness.opencode import OpenCodeError
+
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
+    app, _cfg = _install_app(tmp_path, monkeypatch)
+    during = []
+
+    async def fake_list(folder, model, **_kw):
+        during.append(app.state.active_harness_runs["opencode"])
+        return []
+
+    async def failing_capabilities(folder, **_kw):
+        during.append(app.state.active_harness_runs["opencode"])
+        raise OpenCodeError("synthetic")
+
+    monkeypatch.setattr(server_mod, "list_commands", fake_list)
+    monkeypatch.setattr(server_mod, "list_capabilities", failing_capabilities)
+    headers = {"Authorization": "Bearer secret"}
+    with TestClient(app) as client:
+        assert client.get("/v1/agent/commands", params={"root": str(tmp_path)}, headers=headers).status_code == 200
+        assert client.get("/v1/agent/capabilities", params={"root": str(tmp_path)}, headers=headers).status_code == 502
+    assert during == [1, 1] and app.state.active_harness_runs["opencode"] == 0
+
+
+def test_removing_an_install_that_is_in_use_is_a_409_with_the_reason(tmp_path, monkeypatch):
+    import arc_llama.harness_install as hi
+
+    app, _cfg = _install_app(tmp_path, monkeypatch)
+
+    def in_use(*_a, **_kw):
+        raise hi.HarnessInstallError("OpenCode v1 in C:\\x is in use (Access is denied). Stop any Work task or program using it, then try again.")
+
+    monkeypatch.setattr(server_mod, "remove_harness", in_use)
+    with TestClient(app) as client:
+        r = client.delete("/admin/harnesses/opencode/v1", headers={"Authorization": "Bearer secret"})
+    assert r.status_code == 409 and "is in use" in r.json()["detail"]

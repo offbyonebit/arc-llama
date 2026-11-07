@@ -6,9 +6,9 @@ plans [
     "model": "qwen05",
     "GGML_VK_VISIBLE_DEVICES": "1",
     "argv": [
-      "C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe",
+      "<work>\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe",
       "-m",
-      "C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "<work>\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q4_k_m.gguf",
       "--host",
       "127.0.0.1",
       "--port",
@@ -35,9 +35,9 @@ plans [
     "model": "qwen05-q8",
     "GGML_VK_VISIBLE_DEVICES": "1",
     "argv": [
-      "C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe",
+      "<work>\\windows-validation-2026-10-22\\localappdata\\arc-llama\\runtime\\llama-b11823-vulkan\\llama-server.exe",
       "-m",
-      "C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q8_0.gguf",
+      "<work>\\windows-validation-2026-10-22\\localappdata\\arc-llama\\models\\Qwen2.5-0.5B-Instruct-GGUF\\qwen2.5-0.5b-instruct-q8_0.gguf",
       "--host",
       "127.0.0.1",
       "--port",

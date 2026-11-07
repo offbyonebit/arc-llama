@@ -31,7 +31,7 @@ function applyTheme(theme) {
   if (toggle) { toggle.textContent = dark ? "Light theme" : "Dark theme"; toggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme"); }
   if (document.querySelectorAll) document.querySelectorAll(".brand-logo").forEach((logo) => { logo.src = logo.dataset[dark ? "dark" : "light"] || logo.src; });
 }
-applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || "light"));
+applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(THEME_KEY) || (typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")));
 const MIB = 1024;
 const SELECTED_MODEL_KEY = "arc-llama-selected-model";
 
@@ -58,7 +58,13 @@ function authHeaders(headers = {}) {
   return adminToken ? { ...headers, Authorization: `Bearer ${adminToken}` } : headers;
 }
 
+let adminTokenReady = null;
 async function initAdminToken() {
+  adminTokenReady ??= loadAdminToken();
+  return adminTokenReady;
+}
+
+async function loadAdminToken() {
   try {
     const response = await fetch("/admin/session-token");
     if (response.ok) adminToken = (await response.json()).admin_token || null;
@@ -79,7 +85,12 @@ function setServerState(kind, text) {
   }
 }
 
-function setFooter(text, isError = false) {
+// An action's result stays readable for a while; the next status poll used to
+// replace "Delete failed" or "Freed 4 GiB" with "Updated <time>" at once.
+let footerHoldUntil = 0;
+function setFooter(text, isError = false, { poll = false } = {}) {
+  if (poll && Date.now() < footerHoldUntil) return;
+  if (!poll) footerHoldUntil = Date.now() + 10000;
   $("#last-updated").textContent = text;
   $("#status-footer").classList.toggle("error", isError);
   $("#status-footer").classList.toggle("online", !isError);
@@ -240,6 +251,13 @@ function createModelCard(model) {
   review.setAttribute("aria-label", `Review model ${displayName(model)}`);
   review.title = `Review ${displayName(model)} and open its selected-model details`;
   side.appendChild(review);
+  const remove = button("Delete", "delete-button danger", (event) => {
+    event.stopPropagation();
+    deleteModel(model);
+  });
+  remove.setAttribute("aria-label", `Delete model ${displayName(model)}`);
+  remove.title = `Delete ${displayName(model)} from this computer`;
+  side.appendChild(remove);
   const memory = document.createElement("div");
   memory.className = "paper-model-fit";
   memory.textContent = model.vram_estimate?.estimated_mb != null ? `~${fmtGiB(model.vram_estimate.estimated_mb)}` : "Unavailable";
@@ -261,7 +279,7 @@ function renderModels() {
   if (!models.length) {
     const empty = document.createElement("div");
     empty.className = "empty-panel";
-    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Download a model above, or scan for files already on disk.</p>";
+    empty.innerHTML = "<div class=\"empty-icon\" aria-hidden=\"true\"></div><h3>No models found</h3><p>Find one in Discover, or scan for files already on disk.</p>";
     empty.appendChild(button("Scan for models", "secondary", scanModels));
     empty.appendChild(button("Browse model library", "secondary", () => {
       if (location.hash !== "#library-title") history.pushState(null, "", "#library-title");
@@ -279,14 +297,22 @@ function renderModels() {
   renderedModelsSignature = signature;
 }
 
+// Returns whether the panel was rebuilt. Rebuilding on every status poll
+// dropped keyboard focus (Load, Use in Work, compatibility) every 5 seconds
+// and made screen readers re-read the live panel.
+let renderedReadinessSignature = null;
 function renderReadiness() {
   const container = $("#readiness-card");
   const model = selected();
+  // The runtime identity is server-wide; a new runtime must reset the compatibility result shown here.
+  const signature = JSON.stringify([model || null, model ? gpuFor(model) || null : null, snapshot?.runtime_compatibility_identity ?? null]);
+  if (signature === renderedReadinessSignature) return false;
+  renderedReadinessSignature = signature;
   container.replaceChildren();
   if (!model) {
     container.className = "readiness-card empty";
     container.innerHTML = "<div class=\"readiness-icon\" aria-hidden=\"true\"></div><div><h3>Select a model to see its launch settings.</h3><p>We will show its configured GPU, context, and memory capacity before you start.</p></div>";
-    return;
+    return true;
   }
   container.className = "readiness-card";
   const gpu = gpuFor(model);
@@ -360,6 +386,7 @@ function renderReadiness() {
   }
   if (fileState.available !== false) container.appendChild(libraryController.compatibilityControl({ name: model.name }));
   container.appendChild(createDetails(model, gpu));
+  return true;
 }
 
 function metricRow(label, value, tone) {
@@ -495,7 +522,7 @@ function renderSystemReadinessOffline() {
   container.appendChild(metrics);
   setSystemReadinessAction(
     container,
-    "Could not reach arc-llama. Make sure the server is running, then check again.",
+    "Could not reach Arc Llama. Make sure the server is running, then check again.",
     button("Check again", "secondary", () => fetchStatus(true)),
   );
 }
@@ -606,6 +633,7 @@ function updateDashboardView() {
   const label = system ? "System" : discover ? "Discover" : "Models";
   window.ArcPaper?.view(view);
   dashboard.dataset.dashboardView = view;
+  if (view === "discover") window.ArcDashboard.discoverOpened?.();
   for (const link of document.querySelectorAll("[data-view-link]")) {
     const active = link.dataset.viewLink === view;
     link.classList.toggle("active", active);
@@ -695,6 +723,8 @@ const libraryController = window.ArcDashboard.createLibraryController({
     renderNextStep();
   },
 });
+// Opening the page on #discover runs before the token request finishes.
+window.ArcDashboard.discoverOpened = () => initAdminToken().then(() => libraryController.loadFeatured());
 function pollLibraryJobs(options) { return libraryController.poll(options); }
 function loadLibraryDisk() { return libraryController.loadDisk(); }
 
@@ -708,6 +738,12 @@ const pluginsController = window.ArcDashboard.createPluginsController({
 function fetchPlugins() { return pluginsController.poll(); }
 function renderPlugins() { return pluginsController.render(); }
 
+const harnessPanel = window.ArcHarnesses?.createPanel({
+  document,
+  request: (url, options = {}) => fetch(url, { ...options, headers: authHeaders(options.headers || {}) }),
+  container: $("#harness-list"),
+});
+
 const integrationController = window.ArcDashboard.createIntegrationController({
   document,
   request: (...args) => fetch(...args),
@@ -716,6 +752,11 @@ const integrationController = window.ArcDashboard.createIntegrationController({
 });
 function openFrontendDialog() { return integrationController.open(); }
 
+const onboardingController = window.ArcDashboard.createOnboardingController?.({
+  document, request: (...args) => fetch(...args), authHeaders,
+  chooseAnother: () => showModelsView("#library-title"), scanExisting: () => scanModels(), refreshStatus: () => fetchStatus(true),
+}) || { update() {} };
+
 function render() {
   window.ArcPaper?.syncModels(snapshot?.models || [], selectedModel, name => { selectedModel = name; sessionStorage.setItem(SELECTED_MODEL_KEY, name); render(); });
   libraryController.invalidateCompatibility();
@@ -723,11 +764,11 @@ function render() {
   $("#stop-all").disabled = loadedCount === 0;
   setServerState("online", loadedCount ? `${loadedCount} model${loadedCount === 1 ? "" : "s"} loaded` : "Server ready");
   renderModels();
-  renderReadiness();
-  window.ArcPaper?.inspector(selected(), name => paperModelAction("load", name), name => paperModelAction("stop", name));
+  if (renderReadiness()) window.ArcPaper?.inspector(selected(), name => paperModelAction("load", name), name => paperModelAction("stop", name));
   renderSystemReadiness();
   renderStart();
   renderNextStep();
+  onboardingController.update(snapshot, statusOnline);
   renderPlugins();
 }
 
@@ -776,7 +817,7 @@ async function fetchStatusRequest() {
     const focusedModelControl = modelListFocusTarget();
     render();
     restoreModelListFocus(focusedModelControl);
-    setFooter(`Updated ${new Date().toLocaleTimeString()}`);
+    setFooter(`Updated ${new Date().toLocaleTimeString()}`, false, { poll: true });
     return true;
   } catch (error) {
     statusOnline = false;
@@ -785,13 +826,14 @@ async function fetchStatusRequest() {
       : "Could not reach Arc Llama. Check that the server is running, then try again.";
     renderStart();
     renderNextStep();
-    setServerState("error", "Could not reach arc-llama");
+    setServerState("error", "Could not reach Arc Llama");
     $("#model-list").setAttribute("aria-busy", "false");
     if (!snapshot) {
       renderedModelsSignature = null;
-      $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach arc-llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
+      $("#model-list").innerHTML = "<div class=\"empty-panel error-panel\"><div class=\"empty-icon\" aria-hidden=\"true\">!</div><h3>Could not reach Arc Llama</h3><p>Make sure the server is running, then refresh this page.</p></div>";
     }
     renderSystemReadinessOffline();
+    onboardingController.update(snapshot, false);
     setFooter(error.message, true);
     return false;
   }
@@ -863,6 +905,51 @@ async function stopAll() {
   }
 }
 
+// Delete a model from the card. Files inside the models folder are deleted; a model the
+// user keeps elsewhere is only taken off the list, and the confirmation says which.
+const deletingModels = new Set();
+async function deleteModel(model) {
+  // A double-click used to open two confirmation dialogs.
+  if (deletingModels.has(model.name)) return;
+  deletingModels.add(model.name);
+  try { await deleteModelOnce(model); } finally { deletingModels.delete(model.name); }
+}
+
+async function deleteModelOnce(model) {
+  const label = displayName(model);
+  let managed = false;
+  let sizeText = "";
+  try {
+    const disk = await fetch("/admin/library/disk", { headers: authHeaders() });
+    if (disk.ok) {
+      const row = (await disk.json()).models.find((m) => m.name === model.name);
+      managed = !!row?.managed;
+      if (row && row.size_mb > 0) sizeText = ` (${fmtMb(row.size_mb)})`;
+    }
+  } catch (_) { /* fall back to the safer wording: files stay */ }
+  const question = managed
+    ? `Delete ${label}${sizeText} from this computer?\n\nThe model files are removed and the space is freed. This cannot be undone; you would need to download it again.`
+    : `Remove ${label} from your list?\n\nThe file is not in the Arc Llama models folder, so it stays where it is on disk.`;
+  if (!confirm(question)) return;
+  try {
+    const response = await fetch(`/admin/library/models/${encodeURIComponent(model.name)}?delete_files=${managed}`, {
+      method: "DELETE", headers: authHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || data.detail || `Delete failed (${response.status})`);
+    if (selectedModel === model.name) { selectedModel = null; sessionStorage.removeItem(SELECTED_MODEL_KEY); }
+    const failed = data.failed?.length ? ` ${data.failed.length} file(s) could not be deleted.` : "";
+    const message = managed ? `Deleted ${label}; freed ${fmtMb(data.freed_mb)}.${failed}` : `Removed ${label} from the list.`;
+    setFooter(message, !!failed);
+    setReviewMessage(message);
+  } catch (error) {
+    setFooter(error.message, true);
+    setReviewMessage(error.message);
+  } finally {
+    await fetchStatus(true);
+  }
+}
+
 async function paperModelAction(action, name) {
   const buttons = document.querySelectorAll("#paper-model-actions button");
   buttons.forEach(button => { button.disabled = true; });
@@ -929,6 +1016,7 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
   await fetchStatus(true);
   await pluginsController.start();
   pluginsController.bind();
+  harnessPanel?.refresh();
   await fetchMeasurements();
   libraryController.start();
   measurementsController.start();

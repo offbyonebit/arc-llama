@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from arc_llama.arch import Backend
@@ -49,3 +50,14 @@ def test_runtime_use_switches_configured_binary_and_backend(tmp_path):
     saved = load_config(config_path)
     assert Path(saved.paths.llama_server).name == "llama-server"
     assert saved.gpus[0].backend == Backend.VULKAN.value
+
+
+def test_missing_release_says_why_and_that_nothing_was_installed():
+    import httpx
+
+    from arc_llama.optimized_runtime import OptimizedRuntimeError
+    from arc_llama.optimized_runtime import _release as fetch_release
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+    with pytest.raises(OptimizedRuntimeError, match="isn't published yet.*Nothing was installed"):
+        fetch_release(client, "latest")

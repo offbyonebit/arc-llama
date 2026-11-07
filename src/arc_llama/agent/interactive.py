@@ -15,12 +15,19 @@ from typing import Any
 
 import httpx
 
+from arc_llama.agent import landlock
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.prompts import (
     PLANNING_INSTRUCTIONS,
     SYSTEM_PROMPT,
     USER_INSTRUCTIONS,
     format_tool_result,
+)
+from arc_llama.agent.responses import (
+    ModelResponseError,
+    completion_message,
+    completion_problem,
+    parse_tool_call,
 )
 from arc_llama.agent.tools import TOOLS, ToolContext, ToolResult
 from arc_llama.chat_store import ChatStore
@@ -48,6 +55,9 @@ class InteractiveAgent:
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
+        port = httpx.URL(self.base_url).port
+        if port:
+            landlock.protect_port(port)
         self.root = Path(root).resolve()
         self.auto_confirm = auto_confirm
         self.plan_mode = plan_mode
@@ -120,15 +130,21 @@ class InteractiveAgent:
                     json={"model": self.model, "messages": plan_messages},
                 )
                 plan_response.raise_for_status()
-                plan_data = plan_response.json()
-                plan_content = (
-                    plan_data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                )
-            except httpx.HTTPError as e:
+                plan_choice, plan_message = completion_message(plan_response.json())
+                problem = completion_problem(plan_choice.get("finish_reason"))
+                if problem:
+                    raise ModelResponseError("Incomplete model plan: " + problem)
+                if plan_message.get("tool_calls"):
+                    raise ModelResponseError("The model returned tool calls instead of a plan. Retry the request.")
+                plan_content = plan_message.get("content")
+            except (httpx.HTTPError, UnicodeEncodeError) as e:
                 yield {"type": "error", "message": f"LLM request failed while planning: {e}"}
                 return
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM while planning: {e}"}
+                return
+            except ModelResponseError as e:
+                yield {"type": "error", "message": str(e)}
                 return
 
             if not plan_content:
@@ -176,15 +192,17 @@ class InteractiveAgent:
                 )
                 response.raise_for_status()
                 data = response.json()
-            except httpx.HTTPError as e:
+                choice, message = completion_message(data, call_prefix=f"turn-{turn}-call")
+            except (httpx.HTTPError, UnicodeEncodeError) as e:
                 yield {"type": "error", "message": f"LLM request failed: {e}"}
                 return
             except json.JSONDecodeError as e:
                 yield {"type": "error", "message": f"Invalid JSON from LLM: {e}"}
                 return
+            except ModelResponseError as e:
+                yield {"type": "error", "message": str(e)}
+                return
 
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
             content = message.get("content")
             tool_calls = message.get("tool_calls") or []
 
@@ -194,22 +212,24 @@ class InteractiveAgent:
                 yield {"type": "assistant", "content": content}
 
             if not tool_calls:
+                problem = completion_problem(choice.get("finish_reason"))
+                if problem or not content:
+                    yield {"type": "error", "message": problem or "The model returned an empty response. Retry the request."}
+                    return
                 yield {"type": "done"}
                 return
 
             for call_index, tc in enumerate(tool_calls):
                 name = tc.get("function", {}).get("name")
-                raw_args = tc.get("function", {}).get("arguments", "{}")
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except json.JSONDecodeError:
-                    arguments = {}
+                arguments, problem = parse_tool_call(tc, choice.get("finish_reason"))
 
                 call_id = tc.get("id") or f"turn-{turn}-call-{call_index}"
 
                 yield {"type": "tool_call", "id": call_id, "name": name, "arguments": arguments}
 
-                if TOOLS.requires_confirmation(name) and not self.auto_confirm:
+                if problem is not None:
+                    result = ToolResult(problem, error=True)
+                elif TOOLS.requires_confirmation(name) and not self.auto_confirm:
                     yield {
                         "type": "confirm_required",
                         "id": call_id,

@@ -9,12 +9,12 @@ WARN Retry attempt #2. Sleeping 7.7948579s before the next attempt
   help: Consider enabling use of system TLS certificates with the
         `--system-certs` command-line flag
 Traceback (most recent call last):
-  File "C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\arc-llama\scripts\check_config_versions.py", line 202, in <module>
+  File "<work>\windows-validation-2026-10-22\arc-llama\scripts\check_config_versions.py", line 202, in <module>
     sys.exit(main())
              ^^^^^^
-  File "C:\Users\user\Documents\Codex\2026-10-22\repo-https-github-com-offbyonebit-arc\work\windows-validation-2026-10-22\arc-llama\scripts\check_config_versions.py", line 153, in main
+  File "<work>\windows-validation-2026-10-22\arc-llama\scripts\check_config_versions.py", line 153, in main
     subprocess.run(["uv", "pip", "install", "-q", "--python", str(python), f"arc-llama=={version}"], check=True)
   File "C:\Users\user\AppData\Local\Programs\Python\Python312\Lib\subprocess.py", line 571, in run
     raise CalledProcessError(retcode, process.args,
-subprocess.CalledProcessError: Command '['uv', 'pip', 'install', '-q', '--python', 'C:\\Users\\user\\Documents\\Codex\\2026-10-22\\repo-https-github-com-offbyonebit-arc\\work\\windows-validation-2026-10-22\\temp\\arc-llama-config-versions-r0gog374\\venv-0.9.1.2\\Scripts\\python.exe', 'arc-llama==0.9.1.2']' returned non-zero exit status 1.
+subprocess.CalledProcessError: Command '['uv', 'pip', 'install', '-q', '--python', '<work>\\windows-validation-2026-10-22\\temp\\arc-llama-config-versions-r0gog374\\venv-0.9.1.2\\Scripts\\python.exe', 'arc-llama==0.9.1.2']' returned non-zero exit status 1.
 EXIT_CODE=1

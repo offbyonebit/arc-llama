@@ -5,6 +5,148 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-11-07
+
+Arc Llama 1.1: install OpenCode or Hermes for Work from inside the app, a Linux command sandbox,
+guided first-run setup and OpenCode 2 support. Validated natively on Linux and Windows 11
+(Arc Pro B60).
+
+### Added
+- Report a problem: a System page button and `arc-llama report` open a
+  GitHub issue (or a Q&A discussion with `--discussion`) prefilled with the
+  version, OS, Python, GPU, backend, and a redacted log tail. Nothing is sent
+  until the user submits it on GitHub; no token is stored or embedded.
+- Bug report issue form matching the prefilled fields.
+- Guided first-answer setup: `arc-llama start` opens the local browser after
+  listening, detects hardware, and discovers a starter from the current public
+  model catalog with estimated fit. If the catalog can't be read or finds
+  nothing, setup falls back to one pinned model (Qwen2.5 0.5B Instruct at a fixed
+  commit); `ARC_LLAMA_STARTER_CATALOG=off` always uses it, for repeatable runs.
+  Accepted downloads pin the discovered commit, show the publisher’s license,
+  and check runtime architecture recognition before downloading weights.
+  An explicit action prepares a missing runtime, downloads/verifies/registers
+  the model, and loads it before Chat. Setup shows stages and byte progress,
+  supports safe pause/retry, and preserves existing installs and running models.
+  Optional starter prompts fill the composer without sending automatically.
+- Work runs OpenCode 2 as well as 1.x. OpenCode 2 replaced the server API, event stream and question
+  prompts; Work asks each OpenCode which one it speaks. Permissions, questions (as OpenCode 2 forms),
+  slash commands, skills, tool profiles and native history work with both. While OpenCode waits to
+  retry a failed model request, Work now says so instead of looking frozen.
+- The managed OpenCode install is now v2.2.5 (verified; OpenCode 1.19.5 also verified).
+- Install OpenCode or Hermes for Work from inside Arc Llama: Work's Agent menu, System → Agents for Work, or
+  `arc-llama install-harness`. Arc Llama installs the tested versions by default, verifies each download by SHA-256,
+  and keeps each harness in its own folder under the state directory without touching your own installation.
+- Synthetic runtime replacement fault tests, native Linux launcher lifecycle
+  stress tests, and generated configuration migration/preservation checks.
+- Discover opens on shelves of hand-picked models sized for your GPU, with publisher cards. One click
+  downloads the largest 4-bit file that fits with room for a long chat, and fit is shown as a figure
+  ("Needs about 17 GB of 24 GB").
+- Work: the model can ask you a question with clickable choices (OpenCode's question tool and a new
+  built-in `ask_user` tool). Time spent waiting on you no longer counts against an OpenCode run.
+- Work warns at the start of a run when an "Always allow" saved in OpenCode 2 would skip Work's
+  approval prompt.
+
+### Security
+
+- A website can no longer read the admin token through DNS rebinding: `/admin/session-token` now
+  checks the Host header as well as the peer address.
+- On Linux 6.7 and newer (Landlock ABI 4), the built-in agent's sandboxed commands can't connect to
+  Arc Llama's own API port. On older kernels they still can; see `docs/security.md`.
+- OpenCode 2 runs as `serve --stdio`, so its server password no longer reaches the shell commands the
+  model runs. OpenCode 1.x falls back to plain `serve`.
+
+### Fixed
+
+- Windows: GPU detection no longer counts a card's PCIe switch ports and audio function as extra
+  GPUs, and reads the real PCI slot.
+- Windows: Hermes starts in Work, and its detached helper is shut down with the run instead of
+  lingering for ten minutes and turning cleanup into an error.
+- Windows: removing or reinstalling an agent whose files are in use now says so (HTTP 409 and a CLI
+  message) instead of failing with a 500. Cancelling an install ends its whole process tree.
+- Model downloads resume after a dropped connection, and Retry setup keeps the shards already
+  fetched. Downloads also work when the models folder is behind a symlink.
+- Ctrl+C or a service stop no longer waits for the whole setup download to finish.
+- `arc-llama start` and `serve` no longer save their command-line overrides (host, port,
+  `--admin-token` and others) when the startup scan registers new models, so a saved LAN host stays.
+- The command sandbox lets commands write `~/.cache` (Go, uv and pip need it), says when it is
+  unavailable, and requires Landlock ABI 2 (Linux 5.19+), since ABI 1 broke renames between folders.
+- A lone surrogate character in a tool argument no longer crashes an agent run or drops its Undo
+  backup.
+- Failed tunes are retried after a driver or oneAPI change, and stale tunes are found with
+  auto-tune off (#85).
+- `arc-llama tune` no longer picks a ubatch above 1024 on Linux Vulkan, which can lose the device on
+  long prompts.
+- `arc-llama add` on a later shard of a split model registers the first shard.
+- An OpenCode answer whose final text drops trailing whitespace is no longer reported as an error.
+- MCP image results are no longer sent to text-only models, which ended the run.
+- Work explains a run that your own OpenCode config blocks from the local model (`enabled_providers`).
+- Work finds MCP servers in every config file OpenCode reads (`.jsonc`, parent folders, `.opencode`,
+  `XDG_CONFIG_HOME`, `OPENCODE_CONFIG_DIR` and the system folder), and declines an MCP server's request
+  for input instead of waiting for it.
+- The Arc Llama Runtime installer explains a 404: the release isn't published or the repository isn't
+  public.
+- First run: no "No models found" flash before the guided card, `arc-llama start` with no models points
+  to setup in the browser, and Chat with no models says so instead of ignoring Enter.
+- Status polls no longer rebuild what you're using: Work keeps focus on Allow and your scroll
+  position, Models keeps focus, and Chat keeps the open settings panel.
+- A rejected or unsaved model edit no longer leaves its KV class changed in memory, and
+  `PUT /admin/ui/layout` returns 400 for invalid JSON.
+- UI: the first visit follows the system's light or dark setting. Highlighted code is readable in the
+  light theme, keyboard focus is visible in Chat and Work, primary buttons stay blue on hover, blue
+  text on tints passes contrast, and screen readers hear a waiting permission, active downloads and
+  the current first-run step.
+- Type checking passes on Linux for the Windows detection code, and the bare-wheel CI check accepts
+  routes the server generates, such as `/ui-flags.js`.
+- Work tool profiles now keep left-out MCP servers from starting under OpenCode 2, which ignores the
+  1.x way of switching a server off.
+- Under OpenCode 2, Work denies the Code Mode `execute` tool so MCP and plugin tools reach the model
+  directly, where tool profiles and approvals apply to them as they do with 1.x.
+- Paused guided setup stays visible after reload when the downloaded model has already been registered, so Continue remains available.
+- Work Undo backups are reclaimed only after their owning process releases its OS lock; an old but still-live run keeps its backups. Legacy folders without ownership evidence are retained.
+- Work disconnects observers for discarded step views. Streaming harness answers avoid duplicate completed text and report inconsistent final text as an error.
+- The development lockfile now matches the tested MCP dependency, and the command sandbox uses an explicit ctypes layout on Python 3.14.
+
+- Both built-in agents validate model replies before approvals or tool execution, including planning. Malformed
+  choices/messages/call lists produce a controlled error; refusals and incomplete replies cannot report success.
+  Tool arguments reject duplicate keys and non-finite values, and generated call ids stay consistent in history.
+
+- Built-in code search excludes file symlinks and rechecks all indexed content for equal-size, same-timestamp edits; invalid embeddings are rejected before publication.
+- Model-hub downloads pin all shards and projectors to one commit and verify LFS SHA-256 or git blob hashes in private staging before publishing new files.
+- The built-in agent no longer runs a tool call cut off by the token limit (`finish_reason: length`) or one whose
+  arguments are not a JSON object. It used to run the tool with `{}`; the model is now told to send the call again.
+- An MCP tool's plain return value is no longer sent to the model twice (FastMCP's `{"result": ...}` structured copy
+  of a text result is recognised).
+- `docs/upgrading.md` now describes a backup that also covers chats and Work jobs (config folder plus state
+  directory), and the 1.0 and 1.1 compatibility of configuration versus chat and job data.
+- The sdist no longer picks up local-only notes hidden through `.git/info/exclude` (`CLAUDE.md`,
+  `LOCAL_REPO_BOUNDARIES.md`) or the Windows validation screenshots folder.
+- MCP structured values survive text summaries; changed tool catalogs are refreshed with old proxies invalidated. The optional MCP extra now requires the tested 1.30 API or later in the 1.x series.
+
+- Chat accepts fragmented UTF-8, CR/LF SSE line endings, multiline data events,
+  and completion markers with no space after the colon. Malformed or oversized
+  events interrupt the response while preserving partial text and reasoning.
+  Completed streams close promptly even when the backend keeps the body open.
+- An `install-runtime` replacement killed between moving the old runtime aside
+  and publishing the new one no longer leaves the configured runtime missing:
+  the next install, even offline, restores the previous install and removes
+  leftover backups.
+- A corrupt or hostile `.gguf` whose header claims more data than the file holds is now rejected in milliseconds.
+  Before, a 69-byte file could make a model scan take 17 s and 3.6 GB of RAM.
+- Built-in agent code search (`semantic_search`) finds files added after indexing, never cites text from a file that
+  changed with the same size and timestamp, and survives an indexing run killed partway. The index is now one file
+  replaced atomically, and it is rebuilt automatically from the older three-file layout.
+- On Linux, the built-in agent's shell commands can no longer create, change or delete files outside the project
+  folder, temp folders and `~/.cache` (Landlock ABI 2, kernel 5.19+). Reads, the network and permission changes are not restricted.
+  `ARC_LLAMA_COMMAND_SANDBOX=off` turns it off.
+- MCP servers for the built-in agent: every page of a server's tools is registered (repeated cursors stop the walk),
+  tool errors stay errors, images are passed as images and audio or binary resources are summarised instead of
+  dumped as text, startup/discovery and tool calls time out instead of hanging, and duplicate or empty tool names are
+  skipped. OpenCode and Hermes use their own MCP clients and are unaffected.
+- `ARC_LLAMA_ADMIN_TOKEN` is no longer written into `config.toml` when Arc Llama saves the config (for example after
+  `install-runtime`). The environment token overrides the file's token as documented, and the file keeps its own.
+
 ## [1.0.0] - 2026-10-23
 
 Arc Llama 1.0: the stable single-GPU release. Validated natively on Linux and Windows 11

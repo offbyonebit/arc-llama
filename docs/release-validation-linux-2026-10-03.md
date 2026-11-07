@@ -1,6 +1,6 @@
 # Linux end-to-end validation — 2026-10-03
 
-Checkout: `/home/slowe/arc-llama`; branch: `maintenance/rc1-local-follow-up`.
+Checkout: `~/arc-llama`; branch: `maintenance/rc1-local-follow-up`.
 Base HEAD: `6473f7a88c3d28b39096b83fb6ee4af9227bb015`.
 Candidate: **0.9.0rc2**, including uncommitted source fixes. Nothing was committed,
 pushed, or released. This report supersedes the October 1 report's Linux
@@ -287,7 +287,7 @@ authenticated status, with 16 registered models. No model was started by that
 health check. Temporary limits apply to tests only, not permanent service policy.
 
 Logs, harnesses, results, and a SHA-256 source manifest are retained at
-`/home/slowe/Documents/Codex/2026-09-28/l/arc-full-e2e/`. That evidence excludes
+a local folder outside the repo. That evidence excludes
 model weights, environments, caches, and private user configuration. Test
 scripts still reference their temporary staging paths and the local models.
 The GitHub candidate CI/Windows release gates remain outstanding because this

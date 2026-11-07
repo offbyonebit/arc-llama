@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import struct
+import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from helpers import FakeField as _FakeField
 from helpers import FakeTensor as _FakeTensor
 from helpers import FakeTensorReader as _FakeReader
 
 from arc_llama.gguf_meta import (
+    check_gguf_header,
     estimate_weight_vram_bytes,
     expert_count,
     expert_tensor_bytes_by_layer,
@@ -547,4 +551,64 @@ def test_metadata_cache_reuses_reader_refreshes_and_isolates_mutations(tmp_path,
     assert read_gguf_meta(path)["block_count"] == 2
     assert len(calls) == 2
     path.unlink()
+    assert read_gguf_meta(path) == {}
+
+
+# ---------------------------------------------------------------------------
+# Hostile headers: declared lengths larger than the file must be rejected
+# before gguf-py allocates for them.
+# ---------------------------------------------------------------------------
+
+def _header(n_tensors: int, kvs: bytes, n_kv: int = 1) -> bytes:
+    return b"GGUF" + struct.pack("<IQQ", 3, n_tensors, n_kv) + kvs
+
+
+def _key(name: str) -> bytes:
+    return struct.pack("<Q", len(name)) + name.encode()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        _header(0, _key("a") + struct.pack("<IIQ", 9, 0, 2**32)),  # u8 array of 2**32
+        _header(0, _key("a") + struct.pack("<IIQ", 9, 0, 2**64 - 1)),
+        _header(0, _key("a") + struct.pack("<IIQ", 9, 8, 2**40)),  # string array
+        _header(0, _key("a") + struct.pack("<IQ", 8, 2**40)),  # huge string
+        _header(0, struct.pack("<Q", 2**50)),  # huge key
+        _header(0, b"", n_kv=2**40),
+        _header(2**40, _key("a") + struct.pack("<II", 4, 7)),  # tensor count
+        _header(0, _key("a") + struct.pack("<I", 99) + b"\0" * 8),  # unknown type
+    ],
+    ids=["u8-array-2^32", "u8-array-u64max", "string-array", "string", "key", "kv-count", "tensor-count", "type"],
+)
+def test_hostile_header_rejected_quickly(tmp_path, data):
+    path = tmp_path / "hostile.gguf"
+    path.write_bytes(data)
+    started = time.monotonic()
+    with pytest.raises(ValueError):
+        check_gguf_header(path)
+    assert time.monotonic() - started < 1.0
+    assert read_gguf_meta(path) == {}
+
+
+def test_real_gguf_passes_header_check(tmp_path):
+    path = tmp_path / "valid.gguf"
+    writer = gguf.GGUFWriter(str(path), "llama")
+    writer.add_block_count(2)
+    writer.add_context_length(4096)
+    writer.add_array("tokenizer.ggml.tokens", ["a", "b", "c"])
+    writer.add_tensor("w", np.zeros((4,), dtype="float32"))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    check_gguf_header(path)
+    meta = read_gguf_meta(path)
+    assert meta["architecture"] == "llama" and meta["context_length"] == 4096
+
+
+def test_non_gguf_file_is_left_to_the_reader(tmp_path):
+    path = tmp_path / "junk.gguf"
+    path.write_bytes(b"not a model at all, just text" * 4)
+    check_gguf_header(path)
     assert read_gguf_meta(path) == {}

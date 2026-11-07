@@ -7,7 +7,10 @@
 <link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
 <link rel="stylesheet" href="/style.css?v=ui-0.29" />
 <link rel="stylesheet" href="/paper-tokens.css?v=paper-3" />
-<link rel="stylesheet" href="/paper.css?v=paper-6" />
+<link rel="stylesheet" href="/paper.css?v=paper-10" />
+<link rel="stylesheet" href="/harnesses.css?v=harness-1" />
+<link rel="stylesheet" href="/onboarding.css?v=first-answer-1" />
+<link rel="stylesheet" href="/discover.css?v=discover-1" />
 </head>
 <body>
 <header class="app-header">
@@ -38,6 +41,33 @@
     </div>
   </section>
 
+  <section class="flow-section first-answer-section" data-area="models" hidden aria-labelledby="first-answer-title">
+    <div id="first-answer" class="first-answer-card">
+      <p class="eyebrow">WELCOME TO ARC LLAMA</p>
+      <h2 id="first-answer-title" data-setup="title">Let’s get your first answer</h2>
+      <p data-setup="hardware"></p>
+      <h3 data-setup="model"></h3>
+      <p data-setup="description"></p>
+      <a data-setup="source" target="_blank" rel="noopener noreferrer" hidden></a>
+      <ol class="first-answer-steps" data-setup="steps" aria-label="Setup stages">
+        <li data-phase="runtime">Prepare runtime</li><li data-phase="downloading">Download model</li>
+        <li data-phase="loading">Load model</li><li data-phase="ready">Ask a question</li>
+      </ol>
+      <p data-setup="status" role="status" aria-live="polite"></p>
+      <progress data-setup="progress" aria-label="Download progress" hidden></progress>
+      <p data-setup="bytes"></p>
+      <p data-setup="error" class="setup-error" role="alert" hidden></p>
+      <p data-setup="consent" class="setup-consent">Downloads the model from Hugging Face and, if needed, a verified portable runtime from GitHub. Then loads the model and opens Chat. No question is sent automatically.</p>
+      <div class="first-answer-actions">
+        <button data-setup="start" class="primary">Download and start</button>
+        <button data-setup="pause" class="secondary" hidden>Pause after this step</button>
+        <a data-setup="chat" class="primary-cta" hidden>Open Chat</a>
+        <button data-setup="another" class="ghost">Choose another model</button>
+        <button data-setup="scan" class="ghost">Use a model already on disk</button>
+      </div>
+    </div>
+  </section>
+
   <section class="flow-section next-step-section" data-area="models" aria-labelledby="next-step-title">
     <div id="next-step" class="next-step" aria-live="polite">
       <h2 id="next-step-title">Checking your setup</h2>
@@ -50,7 +80,7 @@
       <div>
         <h2 id="system-readiness-title">System status</h2>
       </div>
-      <div class="toolbar"><button id="connect-frontend" class="secondary">Connect a frontend</button><button id="customize-ui" class="secondary">Customize UI</button></div>
+      <div class="toolbar"><button id="connect-frontend" class="secondary">Connect a frontend</button><button id="customize-ui" class="secondary">Arrange plugin buttons</button><button id="report-problem" class="secondary">Report a problem</button></div>
     </div>
     <div id="system-readiness" class="system-readiness pending" aria-live="polite">
       <p>Waiting for server status</p>
@@ -61,15 +91,15 @@
     <div class="section-head compact">
       <div>
         <h2 id="library-title" tabindex="-1">Find models on Hugging Face</h2>
-        <p class="section-copy">Search Hugging Face to download a model. It will appear in Your models when added.</p>
+        <p class="section-copy">Pick a model below, or search Hugging Face if you know what you want. Downloads appear in Your models.</p>
       </div>
     </div>
     <form id="library-search" class="library-search" role="search">
       <input id="library-query" type="search" minlength="2" maxlength="100" placeholder="Search, e.g. qwen3 8b" aria-label="Search Hugging Face GGUF models">
       <button type="submit" class="secondary">Search</button>
     </form>
-    <p class="section-copy">Memory fit is an estimate. Review the downloaded model before chatting.</p>
     <div id="library-results" class="library-results" aria-live="polite"></div>
+    <div id="discover-featured" class="discover-featured" aria-live="polite"></div>
     <p id="library-recovery-status" class="section-copy" role="status" tabindex="-1" hidden></p>
     <div id="library-jobs" class="library-jobs" aria-live="polite"></div>
 
@@ -95,6 +125,16 @@
       <summary>Disk usage</summary>
       <div id="library-disk" class="library-disk"></div>
     </details>
+  </section>
+
+  <section class="flow-section harnesses-section" data-area="system" aria-labelledby="harnesses-title">
+    <div class="section-head compact">
+      <div>
+        <h2 id="harnesses-title">Agents for Work</h2>
+        <p class="section-copy">OpenCode and Hermes can run Work tasks. Arc Llama can install a tested copy of each for you.</p>
+      </div>
+    </div>
+    <div id="harness-list" class="harness-list" aria-live="polite"></div>
   </section>
 
   <section class="flow-section plugins-section" data-area="system" aria-labelledby="plugins-title">
@@ -151,6 +191,23 @@
   <p class="frontend-dialog-copy">Choose where installed plugin actions appear. Use the arrows to reorder them.</p>
   <div id="ui-layout-list" class="plugin-list"></div>
   <div class="toolbar"><button id="ui-layout-reset" class="ghost">Restore defaults</button><button id="ui-layout-cancel" class="ghost">Cancel</button><button id="ui-layout-save" class="primary">Save layout</button></div>
+</dialog>
+
+<dialog id="report-dialog" class="frontend-dialog" aria-labelledby="report-dialog-title">
+  <div class="frontend-dialog-head">
+    <div>
+      <p class="eyebrow">FEEDBACK</p>
+      <h2 id="report-dialog-title">Report a problem</h2>
+    </div>
+    <button id="report-close" class="ghost frontend-close" aria-label="Close">Close</button>
+  </div>
+  <p class="frontend-dialog-copy">This opens GitHub with the details below already filled in. Nothing is sent until you review it and submit it with your own GitHub account. Home folders and tokens are removed first.</p>
+  <p id="report-status" class="frontend-note" role="status" aria-live="polite">Collecting details…</p>
+  <pre id="report-preview" class="frontend-code" hidden><code></code></pre>
+  <div class="toolbar">
+    <a id="report-issue" class="primary-cta" target="_blank" rel="noopener noreferrer" href="https://github.com/offbyonebit/arc-llama/issues/new?template=bug-report.yml">Open a bug report</a>
+    <a id="report-discussion" class="secondary" target="_blank" rel="noopener noreferrer" href="https://github.com/offbyonebit/arc-llama/discussions/new?category=q-a">Ask a question instead</a>
+  </div>
 </dialog>
 
 <footer id="status-footer">
@@ -214,11 +271,15 @@
   <p class="frontend-hint">Prefer to type it yourself? The API listens on OpenAI paths under <span id="frontend-port-hint" class="frontend-port">…</span>.</p>
 </dialog>
 
-    <script src="/dashboard/library.js?v=ui-0.29"></script>
+    <script src="/dashboard/library.js?v=discover-1"></script>
     <script src="/dashboard/measurements.js?v=ui-0.25"></script>
     <script src="/dashboard/plugins.js?v=ui-0.21"></script>
     <script src="/dashboard/integration.js?v=ui-0.21"></script>
-    <script src="/paper.js?v=paper-5"></script>
-    <script src="/app.js?v=paper-5"></script>
+    <script src="/dashboard/report.js?v=report-1"></script>
+    <script src="/harnesses.js?v=harness-1"></script>
+    <script src="/ui-flags.js"></script>
+    <script src="/paper.js?v=paper-6"></script>
+    <script src="/dashboard/onboarding.js?v=first-run-3"></script>
+    <script src="/app.js?v=discover-1"></script>
 </body>
 </html>

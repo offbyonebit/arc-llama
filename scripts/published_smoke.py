@@ -16,10 +16,15 @@ import sys
 import tarfile
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
-RUNTIME_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b11381/llama-b11381-bin-ubuntu-x64.tar.gz"
-RUNTIME_SHA = "7e235592575e8df35f525195b6d7ac773c9d50a4ddb070ba4fb1ff3c073ef4da"
+if sys.platform == "win32":
+    RUNTIME_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b11381/llama-b11381-bin-win-cpu-x64.zip"
+    RUNTIME_SHA = "f5cb0430a9dd2174f392fdad17ed5d6417e5542c47efc993fa4917287a738a76"
+else:
+    RUNTIME_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b11381/llama-b11381-bin-ubuntu-x64.tar.gz"
+    RUNTIME_SHA = "7e235592575e8df35f525195b6d7ac773c9d50a4ddb070ba4fb1ff3c073ef4da"
 MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/9217f5db79a29953eb74d5343926648285ec7e67/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 MODEL_SHA = "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
 WORK_MODEL_URL = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf"
@@ -65,7 +70,7 @@ def main() -> None:
         parser.error("--ui-check-timeout must be between 1 and 900 seconds")
     root = args.work_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
-    archive = download(RUNTIME_URL, root / "runtime.tar.gz", RUNTIME_SHA)
+    archive = download(RUNTIME_URL, root / RUNTIME_URL.rsplit("/", 1)[-1], RUNTIME_SHA)
     model = (
         download(WORK_MODEL_URL, root / "work-1.5b.gguf", WORK_MODEL_SHA)
         if args.model_size == "1.5b"
@@ -73,9 +78,13 @@ def main() -> None:
     )
     runtime_dir = root / "runtime"
     runtime_dir.mkdir(exist_ok=True)
-    with tarfile.open(archive) as bundle:
-        bundle.extractall(runtime_dir, filter="data")
-    runtime = next(runtime_dir.rglob("llama-server"))
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(runtime_dir)
+    else:
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(runtime_dir, filter="data")
+    runtime = next(runtime_dir.rglob("llama-server.exe" if sys.platform == "win32" else "llama-server"))
     if args.prepare_only:
         print("Pinned runtime and model verified.", flush=True)
         return
@@ -236,6 +245,10 @@ def main() -> None:
                     flush=True,
                 )
         finally:
+            if sys.platform == "win32":
+                # terminate() ends only the server; a failed run would leave its
+                # llama-server running and holding the runtime files.
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
             proc.terminate()
             try:
                 proc.wait(timeout=20)

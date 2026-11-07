@@ -190,6 +190,9 @@ def _decode_qw_memory_size(raw, typ: int | None) -> int | None:
     return None
 
 
+_DISPLAY_CLASS_GUID = "{4d36e968-e325-11ce-bfc1-08002be10318}"
+
+
 def _winreg_display_class_entries() -> list[dict]:
     """Read Intel display-adapter class entries for driver and VRAM info.
 
@@ -201,8 +204,7 @@ def _winreg_display_class_entries() -> list[dict]:
         return []
     import winreg
 
-    class_guid = "{4d36e968-e325-11ce-bfc1-08002be10318}"
-    key_path = rf"SYSTEM\CurrentControlSet\Control\Class\{class_guid}"
+    key_path = rf"SYSTEM\CurrentControlSet\Control\Class\{_DISPLAY_CLASS_GUID}"
     entries: list[dict] = []
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as root:
@@ -241,6 +243,20 @@ def _winreg_display_class_entries() -> list[dict]:
     except OSError:
         pass
     return entries
+
+
+def _read_instance_value(hw_key, inst_id: str, name: str):
+    """Read one value from a PCI device-instance registry key, or None."""
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(hw_key, inst_id) as inst_key:
+            value, _ = winreg.QueryValueEx(inst_key, name)
+    except OSError:
+        return None
+    return value
 
 
 def _enum_pci_locations() -> list[dict]:
@@ -282,18 +298,24 @@ def _enum_pci_locations() -> list[dict]:
                             except OSError:
                                 break
                             j += 1
-                            # VERIFY ON HARDWARE: confirm this is the full
-                            # device-instance ID format CM_Locate_DevNodeW expects.
-                            full_id = f"{hw_id}\\{inst_id}"
+                            class_guid = _read_instance_value(hw_key, inst_id, "ClassGUID")
+                            # A discrete card's PCIe switch ports and audio function
+                            # share its device-ID range but are not display devices.
+                            # Keep instances with no class: a card without a driver.
+                            if (
+                                isinstance(class_guid, str)
+                                and class_guid.lower() != _DISPLAY_CLASS_GUID
+                            ):
+                                continue
+                            # CM_Locate_DevNodeW needs the enumerator prefix.
+                            full_id = f"PCI\\{hw_id}\\{inst_id}"
                             bdf = _cfgmgr32_bdf(full_id)
                             source = "cfgmgr32"
                             if bdf is None:
-                                try:
-                                    with winreg.OpenKey(hw_key, inst_id) as inst_key:
-                                        loc, _ = winreg.QueryValueEx(
-                                            inst_key, "LocationInformation"
-                                        )
-                                except OSError:
+                                loc = _read_instance_value(
+                                    hw_key, inst_id, "LocationInformation"
+                                )
+                                if not isinstance(loc, str):
                                     loc = None
                                 m = loc_re.search(loc or "")
                                 if m:

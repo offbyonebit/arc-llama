@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -147,3 +148,25 @@ def test_review_cannot_describe_a_copy_mid_replacement(work_app):
                 == 409
             )
         assert (source / "note.txt").read_text() == "original"
+
+
+def test_startup_sweeps_work_undo_folders_left_by_earlier_processes(work_app):
+    import os
+
+    cfg, _ = work_app
+    undo = Path(cfg.paths.state_dir) / "work-undo"
+    old = undo / "0b9f2a64-1c3d-4e5f-8a7b-9c0d1e2f3a4b"
+    fresh = undo / "1c0a3b75-2d4e-4f60-9b8c-0d1e2f3a4b5c"
+    for folder in (old, fresh):
+        folder.mkdir(parents=True)
+        (folder / "a.txt").write_text("saved copy")
+    stale = time.time() - 24 * 3600
+    os.utime(old, (stale, stale))
+    from arc_llama.agent.changes import _OWNER_MARKER
+    (undo / f".{old.name}.owner").write_bytes(_OWNER_MARKER)
+
+    with TestClient(server_mod.create_app(cfg)):
+        pass
+
+    assert not old.exists()
+    assert fresh.exists()

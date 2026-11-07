@@ -20,6 +20,7 @@ ships with the install.
 from __future__ import annotations
 
 import asyncio
+import collections
 import io
 import json
 import logging
@@ -44,7 +45,7 @@ from starlette.types import Receive, Scope, Send
 
 from arc_llama import __version__
 from arc_llama.agent import run_agent
-from arc_llama.agent.changes import ChangeTracker
+from arc_llama.agent.changes import ChangeTracker, sweep_orphans
 from arc_llama.agent.checkpoints import CheckpointStore
 from arc_llama.agent.harness import (
     HARNESSES,
@@ -67,6 +68,7 @@ from arc_llama.agent.harness_history import (
 )
 from arc_llama.agent.mcp_client import MCPClientManager
 from arc_llama.agent.profiles import PROFILE_ID, ProfileStore
+from arc_llama.agent.questions import clean_answers
 from arc_llama.agent.repo_map import SemanticIndex
 from arc_llama.agent.sessions import SESSION_ID, SessionStore
 from arc_llama.api.context_budget import register_context_budget_route
@@ -75,9 +77,17 @@ from arc_llama.api.library import register_library_routes
 from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
-from arc_llama.config import Config, load_config
+from arc_llama.config import Config, default_config_path, load_config
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import gguf_total_bytes
+from arc_llama.harness_install import (
+    HarnessInstallError,
+    HarnessInstallManager,
+    is_managed,
+    managed_installs,
+    remove_harness,
+)
+from arc_llama.harness_install import offer as harness_offer
 from arc_llama.model_compatibility import CompatibilityChecks
 from arc_llama.model_library import (
     DownloadManager,
@@ -211,6 +221,13 @@ def _is_cross_origin(request: Request) -> bool:
     return host is not None and host not in _LOOPBACK_HOSTS
 
 
+def _host_is_loopback(request: Request) -> bool:
+    """True when the Host header names a loopback address, not a DNS name."""
+    host = request.headers.get("host", "")
+    hostname = _origin_host(f"http://{host}") if host else None
+    return hostname is not None and hostname.lower() in _LOOPBACK_HOSTS
+
+
 async def _require_admin(request: Request) -> None:
     """Require the configured admin token in the Authorization header.
 
@@ -267,6 +284,10 @@ def create_app(
     plugins: list[Any] | None = None,
 ) -> FastAPI:
     cfg = cfg or load_config()
+    # Sandboxed agent commands must not reach this API (admin token, unconfined runs).
+    from arc_llama.agent import landlock
+
+    landlock.protect_port(cfg.server.port)
     state_dir = None
     if cfg.paths.state_dir:
         state_dir = Path(cfg.paths.state_dir).expanduser()
@@ -306,10 +327,18 @@ def create_app(
         pending_plan_approvals: dict[str, tuple[asyncio.Event, dict[str, bool]]] = {}
         app.state.pending_confirmations = pending_confirmations
         app.state.pending_plan_approvals = pending_plan_approvals
+        # run_id -> (answered, {"questions": [...], "answers": [[...]] | None}) for a question the model is waiting on
+        app.state.pending_questions = {}
         app.state.work_runs = {}
+        app.state.active_harness_runs = collections.Counter()
+        app.state.harness_installs = HarnessInstallManager(cfg, config_path or default_config_path())
         app.state.work_profiles = ProfileStore((state_dir / "work-profiles.json") if state_dir else Path(".arc_llama_work_profiles.json"))
         app.state.work_sessions = SessionStore((state_dir / "work-sessions") if state_dir else Path(".arc_llama_work_sessions"))
         app.state.work_undo_dir = (state_dir / "work-undo") if state_dir else Path(".arc_llama_work_undo")
+        if state_dir:
+            swept = sweep_orphans(app.state.work_undo_dir)
+            if swept:
+                log.info("removed %d leftover work-undo folder(s) from earlier runs", swept)
         if state_dir:
             app.state.chat_store = ChatStore(state_dir / "chats")
             app.state.checkpoint_store = CheckpointStore(state_dir / "checkpoints")
@@ -326,7 +355,6 @@ def create_app(
         tuner: Any | None = None
         if getattr(cfg, "tune", None) and cfg.tune.auto:
             from arc_llama.autotune import start_autotuner
-            from arc_llama.config import default_config_path
 
             save_path = config_path or default_config_path()
 
@@ -342,6 +370,8 @@ def create_app(
             await startup_plugins(app_plugins, app)
             yield
         finally:
+            for tracker in app.state.work_runs.values():
+                tracker.close()
             if getattr(app.state, "work", None) is not None:
                 await app.state.work.shutdown()
             if app.state.api_keys is not None:
@@ -349,6 +379,9 @@ def create_app(
             if app.state.perf_history is not None:
                 app.state.perf_history.flush()
             await app.state.compatibility_checks.shutdown()
+            first_answer = getattr(app.state, "first_answer", None)
+            if first_answer is not None:
+                await first_answer.shutdown()
             downloads = getattr(app.state, "downloads", None)
             if downloads is not None:
                 await downloads.shutdown()
@@ -483,6 +516,12 @@ def create_app(
         # any request that carries a non-loopback Origin header.
         if _is_cross_origin(request):
             raise HTTPException(status_code=403, detail="Cross-origin requests are not allowed")
+        # DNS rebinding: a page on attacker.example can point its name at
+        # 127.0.0.1 and then make a *same-origin* fetch here, which carries no
+        # Origin header. The Host header still names the attacker's domain, so
+        # only hand the token out when the request was addressed to loopback.
+        if not _host_is_loopback(request):
+            raise HTTPException(status_code=403, detail="Use http://127.0.0.1 or http://localhost")
         c: Config = request.app.state.cfg
         return {"admin_token": c.server.admin_token}
 
@@ -706,7 +745,9 @@ def create_app(
                 "profile": "optional-profile-name", // must match the server's active profile
                 "harness": "builtin" | "opencode" | "hermes",  // experimental; default "builtin"
                 "local_only": true,                 // opencode only: never reach cloud providers
-                "track_changes": false              // emit a final "changes" event and allow undo
+                "track_changes": false,             // emit a final "changes" event and allow undo
+                "questions": false                  // the client answers question_required (POST .../answer);
+                                                    // without it the model is never offered a way to ask
             }
 
         Returns a text/event-stream of JSON objects:
@@ -716,6 +757,7 @@ def create_app(
             {"type": "tool_call", "id": "...", "name": "...", "arguments": {...}}
             {"type": "tool_result", "id": "...", "name": "...", "content": "...", "error": false}
             {"type": "confirm_required", "id": "...", "run_id": "...", "tool": "...", "arguments": {...}}
+            {"type": "question_required", "id": "...", "run_id": "...", "call_id": "...", "questions": [...]}
             {"type": "error", "message": "..."}
             {"type": "done"}
         """
@@ -735,7 +777,7 @@ def create_app(
         for key in ("root", "folder", "profile"):
             if body.get(key) is not None and not isinstance(body[key], str):
                 raise HTTPException(status_code=400, detail=f"{key} must be a string")
-        for key in ("auto_confirm", "plan_mode", "track_changes"):
+        for key in ("auto_confirm", "plan_mode", "track_changes", "questions"):
             if key in body and not isinstance(body[key], bool):
                 raise HTTPException(status_code=400, detail=f"{key} must be a boolean")
         max_turns = body.get("max_turns", 30)
@@ -810,6 +852,8 @@ def create_app(
         if auto_confirm:
             await _require_admin(request)
         plan_mode = bool(body.get("plan_mode", False))
+        # Only a client that shows questions may let the model ask; anyone else would leave it waiting.
+        answers_questions = bool(body.get("questions", False))
         folder = body.get("folder") or ""
         root_path = body.get("root") or cfg.agent.root
         root = Path(root_path).expanduser()
@@ -852,6 +896,8 @@ def create_app(
         if plan_mode:
             pending_plans[run_id] = (plan_event, plan_result)
 
+        pending_questions = request.app.state.pending_questions
+
         base_url = f"http://{cfg.server.host}:{cfg.server.port}"
         chat_store: ChatStore = request.app.state.chat_store
         checkpoint_store: CheckpointStore = request.app.state.checkpoint_store
@@ -874,6 +920,16 @@ def create_app(
             await plan_event.wait()
             return plan_result["approved"]
 
+        async def question_callback(question_id: str, questions: list[dict[str, Any]]) -> list[list[str]] | None:
+            answered = asyncio.Event()
+            slot: dict[str, Any] = {"questions": questions, "answers": None}
+            pending_questions[run_id] = (answered, slot)
+            try:
+                await answered.wait()
+            finally:
+                pending_questions.pop(run_id, None)
+            return slot["answers"]
+
         tracker: ChangeTracker | None = None
         if body.get("track_changes", False):
             tracker = ChangeTracker(root, request.app.state.work_undo_dir / run_id)
@@ -891,28 +947,35 @@ def create_app(
                     root=root,
                     auto_confirm=auto_confirm,
                     confirm_callback=confirm_callback,
+                    question_callback=question_callback if answers_questions else None,
                     local_only=local_only,
                     command=harness_command,
                     arguments=command_arguments,
                     tool_profile=tool_profile,
                     session_title=task,
+                    binary=cfg.agent.opencode_bin,
                 )
             elif harness == "hermes":
                 runner = run_hermes(
                     task=prompt, model=model, base_url=base_url, root=root,
                     auto_confirm=auto_confirm, confirm_callback=confirm_callback,
-                    local_only=local_only,
+                    local_only=local_only, binary=cfg.agent.hermes_bin,
                 )
             else:
+                # Upstream models: unknown, so keep sending images as before.
+                local_model = cfg.find_model(model)
+                supports_vision = local_model is None or "vision" in model_capabilities(local_model)
                 runner = run_agent(
                     task=prompt,
                     model=model,
                     base_url=base_url,
                     root=root,
+                    supports_vision=supports_vision,
                     auto_confirm=auto_confirm,
                     confirm_callback=confirm_callback,
                     plan_mode=plan_mode,
                     plan_callback=plan_callback,
+                    question_callback=question_callback if answers_questions else None,
                     run_id=run_id,
                     checkpoint_store=checkpoint_store,
                     max_turns=max_turns,
@@ -922,6 +985,8 @@ def create_app(
                     work_type=work_type,
                 )
             streamed_message: ChatMessage | None = None
+            active_harness_runs = request.app.state.active_harness_runs
+            active_harness_runs[harness] += 1
             try:
                 async for event in runner:
                     if event.get("type") == "harness_session" and work_session_id:
@@ -935,7 +1000,7 @@ def create_app(
                         confirm_event.clear()
                         confirm_result["approved"] = False
                         event = {**event, "run_id": run_id}
-                    if event.get("type") == "plan":
+                    if event.get("type") in ("plan", "question_required"):
                         event = {**event, "run_id": run_id}
                     if event.get("type") == "checkpoint":
                         event = {**event, "run_id": run_id}
@@ -972,10 +1037,12 @@ def create_app(
                     close_runner = getattr(runner, "aclose", None)
                     if close_runner is not None:
                         await close_runner()
+                active_harness_runs[harness] -= 1
                 if tracker is not None and not kept:
                     tracker.discard()
                 pending.pop(run_id, None)
                 pending_plans.pop(run_id, None)
+                pending_questions.pop(run_id, None)
                 if agent_chat_id is not None:
                     try:
                         chat = chat_store.get(agent_chat_id)
@@ -1012,12 +1079,18 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
         try:
             profile = request.app.state.work_profiles.get(profile_id) if profile_id else None
-            return {"commands": filter_commands(await list_commands(folder, model), profile)}
+            # The probe runs the selected OpenCode for a while, so removing it must wait, as for a task.
+            request.app.state.active_harness_runs["opencode"] += 1
+            try:
+                found = await list_commands(folder, model, binary=cfg.agent.opencode_bin)
+            finally:
+                request.app.state.active_harness_runs["opencode"] -= 1
+            return {"commands": filter_commands(found, profile)}
         except OpenCodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/v1/agent/capabilities")
-    async def agent_capabilities(root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+    async def agent_capabilities(request: Request, root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         """What a tool profile can switch on or off for a project: MCP servers, skills and web tools."""
         if not experimental_enabled():
             raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
@@ -1027,10 +1100,13 @@ def create_app(
         folder = folder.resolve()
         if not folder.is_dir():
             raise HTTPException(status_code=400, detail=f"Project folder not found on the server: {folder}")
+        request.app.state.active_harness_runs["opencode"] += 1
         try:
-            return await list_capabilities(folder)
+            return await list_capabilities(folder, binary=cfg.agent.opencode_bin)
         except OpenCodeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            request.app.state.active_harness_runs["opencode"] -= 1
 
     @app.get("/v1/agent/profiles")
     async def agent_profiles(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
@@ -1107,6 +1183,73 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"deleted": removed}
 
+    def _harness_status(name: str) -> dict[str, Any]:
+        """Where the harness Work will use comes from, plus what the app can install."""
+        configured = getattr(cfg.agent, f"{name}_bin")
+        env_value = os.environ.get("ARC_LLAMA_OPENCODE_BIN" if name == "opencode" else "ARC_LLAMA_HERMES_BIN")
+        found = (find_binary if name == "opencode" else find_hermes_binary)(configured)
+        if found is None:
+            source = "missing"
+        elif configured and is_managed(cfg, found):
+            source = "managed"
+        elif configured:
+            source = "config"
+        elif env_value:
+            source = "env"
+        else:
+            source = "path"
+        managed = managed_installs(cfg, name)
+        return {
+            "available": found is not None,
+            "source": source,
+            "path": found,
+            "managed": [{k: m.get(k) for k in ("version", "tested", "path", "installed_at")} for m in managed],
+            "install": harness_offer(cfg, name),
+        }
+
+    @app.get("/admin/harnesses/jobs")
+    async def harness_install_jobs(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        manager: HarnessInstallManager = request.app.state.harness_installs
+        return {"jobs": [job.public() for job in manager.jobs.values()]}
+
+    @app.post("/admin/harnesses/{name}/install")
+    async def harness_install_start(name: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if not experimental_enabled():
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        version = body.get("version", "pinned") if isinstance(body, dict) else "pinned"
+        manager: HarnessInstallManager = request.app.state.harness_installs
+        try:
+            job = manager.submit(name, version)
+        except ValueError as exc:
+            raise HTTPException(status_code=409 if "already running" in str(exc) else 400, detail=str(exc)) from exc
+        return job.public()
+
+    @app.post("/admin/harnesses/jobs/{job_id}/cancel")
+    async def harness_install_cancel(job_id: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if not request.app.state.harness_installs.cancel(job_id):
+            raise HTTPException(status_code=404, detail="No running install with that id")
+        return {"cancelling": job_id}
+
+    @app.delete("/admin/harnesses/{name}/{version}")
+    async def harness_remove(name: str, version: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        if name not in ("opencode", "hermes"):
+            raise HTTPException(status_code=400, detail="Unknown harness")
+        if request.app.state.active_harness_runs[name] > 0:
+            raise HTTPException(status_code=409, detail=f"A Work task is using {name}. Wait for it to finish.")
+        if request.app.state.harness_installs.active() is not None:
+            raise HTTPException(status_code=409, detail="An agent install is running. Wait for it to finish.")
+        try:
+            removed = await asyncio.to_thread(remove_harness, cfg, name, version, config_path=config_path or default_config_path())
+        except HarnessInstallError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not removed:
+            raise HTTPException(status_code=404, detail="That version is not installed by Arc Llama")
+        return {"removed": version}
+
     @app.get("/v1/agent/info")
     async def agent_info(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         """What the Work view can offer on this server."""
@@ -1127,8 +1270,8 @@ def create_app(
             ),
             "harnesses": [
                 {"id": "builtin", "label": "Built-in", "available": True},
-                {"id": "opencode", "label": "OpenCode", "available": find_binary() is not None},
-                {"id": "hermes", "label": "Hermes", "available": find_hermes_binary() is not None,
+                {"id": "opencode", "label": "OpenCode", **_harness_status("opencode")},
+                {"id": "hermes", "label": "Hermes", **_harness_status("hermes"),
                  "auto_approve": False,
                  "approval_note": "Hermes asks before file edits and commands flagged by its own checks. Auto-approve is unavailable."},
             ],
@@ -1182,6 +1325,28 @@ def create_app(
         event, result = entry
         result["approved"] = bool(body.get("approved", False))
         event.set()
+        return {"ok": True}
+
+    @app.post("/v1/agent/{run_id}/answer")
+    async def answer_agent_question(
+        run_id: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict[str, bool]:
+        """Answer the question a running agent is waiting on.
+
+        Request body: {"answers": [["chosen label or typed text", ...], ...]} with one list per
+        question, or {"answers": null} to dismiss the question.
+        """
+        body = await _read_json_body(request)
+        entry = request.app.state.pending_questions.get(run_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Run not found or not waiting on a question")
+        answered, slot = entry
+        raw = body.get("answers")
+        answers = None if raw is None else clean_answers(raw, len(slot["questions"]))
+        if raw is not None and answers is None:
+            raise HTTPException(status_code=400, detail="answers must hold one list of strings per question")
+        slot["answers"] = answers
+        answered.set()
         return {"ok": True}
 
     @app.post("/v1/agent/{run_id}/plan")
@@ -1427,6 +1592,37 @@ def create_app(
     # Admin (used by the web UI / TUI)
     # ------------------------------------------------------------------
 
+    @app.get("/admin/report-link")
+    async def admin_report_link(
+        request: Request,
+        kind: str = "issue",
+        _auth: None = Depends(_require_admin),
+    ) -> dict:
+        """Return a prefilled GitHub report link for the web UI's Report button.
+
+        Built locally from config and the newest log; nothing is sent to
+        GitHub. The browser opens the link and the user submits it themselves.
+        """
+        from arc_llama.issue_report import build_report_link, collect_context
+
+        if kind not in {"issue", "discussion"}:
+            raise HTTPException(status_code=400, detail="kind must be issue or discussion")
+        c: Config = request.app.state.cfg
+        log_dir = getattr(request.app.state.router, "log_dir", None)
+        context = await asyncio.to_thread(collect_context, c, log_dir=log_dir)
+        link = build_report_link(context, kind=kind)
+        return {
+            "url": link.url,
+            "kind": link.kind,
+            "log_lines_included": link.log_lines_included,
+            "trimmed": link.trimmed,
+            "preview": {
+                "environment": context.environment_text(),
+                "gpu": context.gpu_text(),
+                "log": context.log_text(link.log_lines_included),
+            },
+        }
+
     @app.get("/admin/status")
     async def admin_status(request: Request, _auth: None = Depends(_require_admin)) -> dict:
         rt: Router = request.app.state.router
@@ -1518,6 +1714,7 @@ def create_app(
                 "vram_mb": g.vram_mb,
                 "name": g.name,
                 "enabled": g.enabled,
+                "backend": g.backend,
             }
             for g in c.gpus
         ]
@@ -1543,6 +1740,10 @@ def create_app(
         }
 
     register_work_routes(app, require_admin=_require_admin, read_json_body=_read_json_body)
+    from arc_llama.api.onboarding import register_onboarding_routes
+    register_onboarding_routes(app, require_admin=_require_admin,
+                               read_json_body=_read_json_body,
+                               config_path=config_path or default_config_path())
     register_context_budget_route(app)
     register_integration_route(app, require_admin=_require_admin)
 
@@ -1611,11 +1812,11 @@ def create_app(
     async def put_ui_layout(
         request: Request, _auth: None = Depends(_require_admin)
     ) -> dict[str, Any]:
-        body = await request.json()
+        body = await _read_json_body(request)
         actions = _ui_actions()
         ids = {a["id"] for a in actions}
-        layout = body.get("layout", {}) if isinstance(body, dict) else {}
-        hidden = body.get("hidden", []) if isinstance(body, dict) else []
+        layout = body.get("layout", {})
+        hidden = body.get("hidden", [])
         if not isinstance(layout, dict) or not isinstance(hidden, list):
             raise HTTPException(status_code=400, detail="Invalid UI layout")
         values = [x for p in ("toolbar", "plugins", "chat") for x in layout.get(p, [])]
@@ -1797,7 +1998,7 @@ def create_app(
         If the model is currently loaded, the server is stopped first; callers
         decide whether to reload it afterwards via /admin/load.
         """
-        from arc_llama.config import default_config_path, validate_model_runtime
+        from arc_llama.config import validate_model_runtime
         from arc_llama.gguf_meta import validate_override_patterns, weight_tensor_table
         from arc_llama.recipes import FLASH_ATTN_VALUES, KVCacheType
 
@@ -1869,6 +2070,7 @@ def create_app(
                 raise HTTPException(status_code=400, detail="parallel must be 1..32")
             recipe["parallel"] = par
             changed.append("parallel")
+        kv_class = model.kv_class
         if "kv_class" in body:
             v = str(body["kv_class"])
             if v not in valid_classes:
@@ -1876,7 +2078,7 @@ def create_app(
                     status_code=400,
                     detail=f"kv_class must be one of {sorted(valid_classes)}",
                 )
-            model.kv_class = v
+            kv_class = v  # applied with the recipe below, so a later 400 leaves the model untouched
             changed.append("kv_class")
         if "spec_type" in body:
             v = body["spec_type"]
@@ -2121,9 +2323,9 @@ def create_app(
             changed.append("split_mode")
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
-        previous_recipe = model.recipe
+        previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
-        model.recipe = recipe
+        model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
             c.save(config_path or default_config_path())
@@ -2135,7 +2337,7 @@ def create_app(
             # disagreed until the next restart quietly reverted the edit. Undo
             # and fail loudly instead: a rejected edit is recoverable, an edit
             # that silently un-applies later is not.
-            model.recipe = previous_recipe
+            model.recipe, model.kv_class = previous_recipe, previous_kv_class
             model.llama_server, model.env = previous_runtime
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(
@@ -2162,7 +2364,6 @@ def create_app(
         restarts see the same registry. New models become loadable via
         `/admin/load/{name}` immediately — the router rebuilds its server map.
         """
-        from arc_llama.config import default_config_path
         from arc_llama.models import discover_ggufs, register_discovered
 
         c: Config = request.app.state.cfg
@@ -2201,6 +2402,17 @@ def create_app(
     # Static web UI (optional; only mounted if the static dir is present)
     # ------------------------------------------------------------------
     static_dir = Path(__file__).parent / "static"
+
+    @app.get("/ui-flags.js")
+    async def ui_flags() -> Response:
+        # Read synchronously before the page shell builds its navigation, so
+        # a disabled feature never flashes into view and then disappears.
+        flags = {"work": experimental_enabled()}
+        return Response(
+            f"window.ARC_UI_FLAGS = {json.dumps(flags)};\n",
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/work")
     async def work_page() -> Response:

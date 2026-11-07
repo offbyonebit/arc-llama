@@ -16,11 +16,11 @@ _MAX_METADATA = 2_097_152
 _MAX_DIAGNOSTIC = 131_072
 
 
-async def _hub_read(url: str, limit: int, *, range_header: bool = False) -> bytes:
+async def _hub_read(url: str, limit: int, *, range_header: bool = False, public: bool = False) -> bytes:
     from huggingface_hub.utils import build_hf_headers
 
     # Use the user's Hub access settings, and never forward them to another host.
-    headers = build_hf_headers()
+    headers = build_hf_headers(token=False) if public else build_hf_headers()
     if range_header:
         headers["Range"] = f"bytes=0-{limit - 1}"
     data = bytearray()

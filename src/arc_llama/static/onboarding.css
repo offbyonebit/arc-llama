@@ -1,0 +1,30 @@
+.first-answer-section { margin-block: 1.5rem; }
+.first-answer-card { border: 1px solid var(--ln, #8885); border-radius: 18px; padding: clamp(20px, 4vw, 36px); background: var(--pn, transparent); max-width: 820px; }
+.first-answer-card h2 { font-size: clamp(24px, 3vw, 34px); line-height: 1.2; margin: 0 0 14px; }
+.first-answer-card h3 { margin: 20px 0 8px; }
+.first-answer-card p { line-height: 1.6; max-width: 66ch; }
+.first-answer-card progress { display: block; width: 100%; height: 10px; margin-top: 16px; accent-color: var(--ac, #d36d45); }
+.first-answer-card progress[hidden], .first-answer-card [hidden], .first-question [hidden], .first-answer-section[hidden] { display: none; }
+.first-answer-steps { display: flex; flex-wrap: wrap; gap: 8px 28px; padding-left: 20px; margin: 24px 0; font-size: 13px; opacity: .7; }
+.first-answer-steps li[data-current="true"] { font-weight: 700; opacity: 1; }
+.first-answer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 18px; }
+.first-answer-card .setup-error { color: var(--bd, #b34a3b); }
+.first-answer-card .setup-consent { font-size: 13px; opacity: .75; }
+.setup-coordinated { display: none !important; }
+.first-question { max-width: 820px; margin: 20px auto 0; padding: 18px 24px; border: 1px solid var(--ln, #8885); border-radius: 14px; }
+.first-question h2 { margin: 0 0 6px; font-size: 19px; }
+.first-question p { margin: 0; line-height: 1.5; }
+.first-question-prompts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.first-question-prompts button { border-radius: 20px; padding: 8px 12px; }
+.first-question.answered { font-size: 13px; opacity: .8; }
+@media (max-width: 600px) { .first-question { margin-inline: 12px; padding: 16px; } .first-answer-actions > button, .first-answer-actions > a { width: 100%; text-align: center; } }
+
+body.paper-chat > .first-question { flex: none; width: min(700px, calc(100% - 48px)); box-sizing: border-box; }
+
+.first-answer-welcome .empty-state { display: none !important; }
+.first-question { background: var(--pn, transparent); }
+.first-question-prompts button { border: 1px solid var(--ln, #8885); background: transparent; color: var(--tx, inherit); box-shadow: none; font-size: 13px; }
+.first-question-prompts button:hover { background: var(--sel, #8882); }
+.first-question-prompts button:focus-visible { outline: 2px solid var(--ac, #d36d45); outline-offset: 2px; }
+
+.first-answer-card a[data-setup="source"] { color: var(--ac, #2563eb); }

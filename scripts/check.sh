@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run every automated check before calling a change done. Usage: scripts/check.sh [--live]
-#   --live also checks real OpenCode tool profiles and Hermes ACP (slow, starts MCP servers; uses fake inference).
+#   --live also checks real OpenCode tool profiles, OpenCode questions and Hermes ACP (slow, starts MCP servers; uses fake inference).
 set -u
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
@@ -19,6 +19,7 @@ step "pytest" "$PY" -m pytest -q
 step "browser suite" bash -c 'cd browser-tests && node run.mjs'
 if [ "${1:-}" = "--live" ]; then
   step "real OpenCode profile enforcement" "$PY" scripts/check_opencode_profiles.py
+  step "real OpenCode question round trip" "$PY" scripts/check_opencode_question.py
   step "real Hermes ACP integration" "$PY" scripts/check_hermes.py
 fi
 

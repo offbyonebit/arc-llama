@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -86,12 +88,27 @@ def test_parse_hf_spec_empty_after_colon():
 
 @pytest.fixture
 def mock_hf_module():
-    """Return a mock huggingface_hub module with HfApi and hf_hub_download."""
+    """Pinned synthetic hub metadata and a real temporary-file transfer."""
     mock = MagicMock()
-    mock_api_instance = MagicMock()
-    mock.HfApi.return_value = mock_api_instance
-    mock.hf_hub_download = MagicMock(return_value="/mock/download/model.gguf")
-    return mock, mock_api_instance
+    api = mock.HfApi.return_value
+    api.list_repo_files.return_value = ["model.gguf", "model-Q4_K_M.gguf"]
+    data = b"GGUFsynthetic fixture"
+    digest = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+    def info(*args, **kwargs):
+        return SimpleNamespace(sha="a" * 40, siblings=[
+            SimpleNamespace(rfilename=name, size=len(data), lfs=None, blob_id=digest)
+            for name in api.list_repo_files.return_value])
+
+    def transfer(**kwargs):
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    api.model_info.side_effect = info
+    mock.hf_hub_download.side_effect = transfer
+    return mock, api
 
 
 def _make_download_from_hf_test_env(mock_hf_module):
@@ -107,14 +124,15 @@ def test_download_from_hf_explicit_filename(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         result = download_from_hf(spec, target_dir=tmp_path)
 
-    assert result == Path("/mock/download/model.gguf")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
     # The listing finds split shards and projectors; with none, only the
     # named file downloads.
-    mock_api.list_repo_files.assert_called_once_with("org/repo")
+    mock_api.list_repo_files.assert_called_once_with("org/repo", revision="a" * 40)
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -131,12 +149,13 @@ def test_download_from_hf_quant_hint_single_match(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         result = download_from_hf(spec, target_dir=tmp_path)
 
-    assert result == Path("/mock/download/model.gguf")
-    mock_api.list_repo_files.assert_called_once_with("org/repo")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
+    mock_api.list_repo_files.assert_called_once_with("org/repo", revision="a" * 40)
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -155,11 +174,12 @@ def test_download_from_hf_quant_hint_prefers_uniform(mock_hf_module, tmp_path):
         result = download_from_hf(spec, target_dir=tmp_path)
 
     # Should pick the uniform quant (not UD- or _XL)
-    assert result == Path("/mock/download/model.gguf")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -201,11 +221,12 @@ def test_download_from_hf_single_gguf_auto_picks(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         result = download_from_hf(spec, target_dir=tmp_path)
 
-    assert result == Path("/mock/download/model.gguf")
+    assert result == tmp_path / "model-Q4_K_M.gguf"
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model-Q4_K_M.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token=None,
     )
 
@@ -229,17 +250,41 @@ def test_download_from_hf_missing_huggingface_hub(tmp_path, monkeypatch):
         download_from_hf(spec, target_dir=tmp_path)
 
 
-def test_download_from_hf_returns_correct_path(mock_hf_module, tmp_path):
-    """Verify the returned path matches what hf_hub_download returns."""
+def test_download_from_hf_refuses_unexpected_destination(mock_hf_module, tmp_path):
     mock_module, _ = mock_hf_module
-    custom_path = "/custom/path/to/model.gguf"
-    mock_module.hf_hub_download.return_value = custom_path
+    mock_module.hf_hub_download.side_effect = None
+    mock_module.hf_hub_download.return_value = "/unexpected/model.gguf"
     spec = HFModelSpec(repo="org/repo", file="model.gguf", quant=None)
-
     with _make_download_from_hf_test_env(mock_hf_module):
-        result = download_from_hf(spec, target_dir=tmp_path)
+        with pytest.raises(ValueError, match="unexpected destination"):
+            download_from_hf(spec, target_dir=tmp_path)
+    assert not (tmp_path / "model.gguf").exists()
 
-    assert result == Path(custom_path)
+
+def test_download_from_hf_accepts_symlinked_models_dir(mock_hf_module, tmp_path):
+    """The hub SDK resolves local_dir, so a symlinked models_dir returns real paths."""
+    mock_module, _ = mock_hf_module
+    data = b"GGUFsynthetic fixture"
+
+    def resolving_transfer(**kwargs):
+        path = Path(kwargs["local_dir"]).resolve() / kwargs["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    mock_module.hf_hub_download.side_effect = resolving_transfer
+    real = tmp_path / "big-disk"
+    real.mkdir()
+    linked = tmp_path / "models"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating symlinks needs Developer Mode or admin on Windows")
+    spec = HFModelSpec(repo="org/repo", file="model-Q4_K_M.gguf", quant=None)
+    with _make_download_from_hf_test_env(mock_hf_module):
+        result = download_from_hf(spec, target_dir=linked)
+    assert result == linked / "model-Q4_K_M.gguf"
+    assert (real / "model-Q4_K_M.gguf").read_bytes() == data
 
 
 def test_download_from_hf_passes_token(mock_hf_module, tmp_path):
@@ -250,11 +295,12 @@ def test_download_from_hf_passes_token(mock_hf_module, tmp_path):
     with _make_download_from_hf_test_env(mock_hf_module):
         download_from_hf(spec, target_dir=tmp_path, token="hf_12345")
 
-    mock_api.list_repo_files.assert_called_once_with("org/repo")
+    mock_api.list_repo_files.assert_called_once_with("org/repo", revision="a" * 40)
     mock_module.hf_hub_download.assert_called_once_with(
         repo_id="org/repo",
         filename="model.gguf",
-        local_dir=str(tmp_path),
+        local_dir=ANY,
+        revision="a" * 40,
         token="hf_12345",
     )
 
@@ -336,6 +382,20 @@ def test_add_local_model_missing_file(tmp_path, mock_recipe_and_mtp):
             path=str(tmp_path / "nonexistent.gguf"),
             gpu_pci_slot="0000:03:00.0",
         )
+
+
+def test_add_local_model_registers_a_later_shard_as_its_first(tmp_path, mock_recipe_and_mtp):
+    cfg = _make_config_with_gpu(tmp_path)
+    for i in (1, 2):
+        (tmp_path / f"big-0000{i}-of-00002.gguf").write_bytes(b"fake")
+
+    model = add_local_model(
+        cfg,
+        name="big",
+        path=str(tmp_path / "big-00002-of-00002.gguf"),
+        gpu_pci_slot="0000:03:00.0",
+    )
+    assert Path(model.path).name == "big-00001-of-00002.gguf"
 
 
 def test_add_local_model_missing_gpu(tmp_path, mock_recipe_and_mtp):
@@ -955,3 +1015,72 @@ def test_register_discovered_skips_mtp_for_hybrid_ssm(tmp_path):
     assert added, "model was not registered at all"
     recipe = added[0].recipe or {}
     assert recipe.get("spec_type") != "draft-mtp"
+
+
+
+def test_download_honors_accepted_revision_even_when_head_changes(mock_hf_module, tmp_path):
+    mock, api = mock_hf_module
+    original = api.model_info.side_effect
+    accepted = "a" * 40
+    def info(repo, **kwargs):
+        result = original(repo, **kwargs)
+        result.sha = accepted if kwargs.get("revision") == accepted else "b" * 40
+        return result
+    api.model_info.side_effect = info
+    with _make_download_from_hf_test_env(mock_hf_module):
+        result = download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision=accepted)
+    assert result.is_file()
+    api.model_info.assert_called_once_with("org/repo", files_metadata=True, revision=accepted)
+    assert mock.hf_hub_download.call_args.kwargs["revision"] == accepted
+
+
+def test_download_rejects_server_revision_substitution(mock_hf_module, tmp_path):
+    mock, _ = mock_hf_module
+    with _make_download_from_hf_test_env(mock_hf_module), pytest.raises(ValueError, match="different revision"):
+        download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision="b" * 40)
+    mock.hf_hub_download.assert_not_called()
+
+
+@pytest.mark.parametrize("revision", ["main", "../bad", "a" * 41])
+def test_download_rejects_mutable_or_invalid_accepted_revision(mock_hf_module, tmp_path, revision):
+    mock, api = mock_hf_module
+    with _make_download_from_hf_test_env(mock_hf_module), pytest.raises(ValueError, match="Invalid immutable"):
+        download_from_hf(HFModelSpec("org/repo", "model.gguf", None), target_dir=tmp_path, revision=revision)
+    api.model_info.assert_not_called()
+    mock.hf_hub_download.assert_not_called()
+
+
+def test_download_from_hf_resumes_and_skips_verified_files(mock_hf_module, tmp_path):
+    """A retry keeps finished shards and skips files an earlier attempt published."""
+    mock_module, mock_api = mock_hf_module
+    names = ["m-Q4_K_M-00001-of-00002.gguf", "m-Q4_K_M-00002-of-00002.gguf"]
+    mock_api.list_repo_files.return_value = names
+    data = b"GGUFsynthetic fixture"
+    fetched: list[str] = []
+    fail = {names[1]}
+
+    def transfer(**kwargs):
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        if path.exists():  # the hub SDK skips files it already finished
+            return str(path)
+        fetched.append(kwargs["filename"])
+        if kwargs["filename"] in fail:
+            raise ConnectionError("network dropped")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    mock_module.hf_hub_download.side_effect = transfer
+    spec = HFModelSpec(repo="org/repo", file=names[0], quant=None)
+    with _make_download_from_hf_test_env(mock_hf_module):
+        with pytest.raises(ConnectionError):
+            download_from_hf(spec, target_dir=tmp_path)
+        fail.clear()
+        download_from_hf(spec, target_dir=tmp_path)
+        assert fetched == names + [names[1]]  # shard 1 was not fetched twice
+        assert not list(tmp_path.glob(".arc-download-*"))
+        fetched.clear()
+        mock_module.hf_hub_download.reset_mock()
+        download_from_hf(spec, target_dir=tmp_path)
+    mock_module.hf_hub_download.assert_not_called()
+    assert all((tmp_path / n).read_bytes() == data for n in names)

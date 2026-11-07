@@ -78,7 +78,7 @@ Library-version proof (the crash precondition):
   sonames (e.g. `libur_loader.so.0`: `c8d7…` in venv vs `ca86…` in 2026.1).
   Both export `urProgramBuildExp@@LIBUR_LOADER_0.12`, so the loader binds
   silently with no version check.
-- Why the wrong tree won: `/home/slowe/.bashrc` sources
+- Why the wrong tree won: `~/.bashrc` sources
   `setvars.sh --force` for every login shell (for the llama.cpp SYCL
   stack), exporting the 2026.1 `LD_LIBRARY_PATH`. `libsycl.so.8`'s
   RUNPATH is only `$ORIGIN`, and transitive resolution of

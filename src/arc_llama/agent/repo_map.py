@@ -7,11 +7,14 @@ The repo map needs no extra dependencies. Semantic search is opt-in via the
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import logging
 import os
 import re
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -129,8 +132,57 @@ def _project_files(root: Path) -> list[Path]:
             for name in dirs
             if not _is_ignored(base / name, root) and not (base / name).is_symlink()
         ]
-        paths.extend(base / name for name in files if not _is_ignored(base / name, root))
+        for name in files:
+            path = base / name
+            if _is_ignored(path, root):
+                continue
+            try:
+                if stat.S_ISLNK(os.lstat(path).st_mode):
+                    continue
+            except OSError:
+                continue
+            paths.append(path)
     return sorted(paths)
+
+
+def _read_project_bytes(path: Path, root: Path) -> bytes:
+    """Read one bounded regular file without following project symlinks.
+
+    On POSIX, directory-relative opens pin every parent and refuse links even
+    if an entry changes after traversal. Other platforms also reject links and
+    require the resolved path to remain in the supplied root.
+    """
+    relative = path.relative_to(root)
+    if any(part in ("", ".", "..") for part in relative.parts):
+        raise OSError("invalid project path")
+    parents: list[int] = []
+    try:
+        if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+            flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0)
+            parent = os.open(root, flags)
+            parents.append(parent)
+            for part in relative.parts[:-1]:
+                parent = os.open(part, flags, dir_fd=parent)
+                parents.append(parent)
+            fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=parent)
+        else:
+            if any((root / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts) + 1)):
+                raise OSError("project symlink refused")
+            if not path.resolve(strict=True).is_relative_to(root):
+                raise OSError("path outside project root")
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE_SIZE:
+                raise OSError("project source must be a bounded regular file")
+            data = stream.read(MAX_FILE_SIZE + 1)
+            after = os.fstat(stream.fileno())
+            if len(data) > MAX_FILE_SIZE or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise OSError("project file changed while reading")
+            return data
+    finally:
+        for parent in reversed(parents):
+            os.close(parent)
 
 
 def _is_text_file(path: Path) -> bool:
@@ -170,11 +222,13 @@ class CodeChunk:
     start_line: int
 
 
-def _chunk_file(path: Path, root: Path) -> list[CodeChunk]:
+def _chunk_file(path: Path, root: Path, text: str | None = None) -> list[CodeChunk]:
     rel = path.relative_to(root).as_posix()
     ext = path.suffix.lower()
     try:
-        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if text is None:
+            text = _read_project_bytes(path, root).decode("utf-8", errors="ignore")
+        lines = text.splitlines()
     except OSError:
         return []
 
@@ -242,15 +296,24 @@ def build_repo_map(root: Path, max_entries: int = 500) -> str:
 
 
 class SemanticIndex:
-    """Optional local semantic search over the project codebase."""
+    """Optional local semantic search over the project codebase.
+
+    The whole index (embeddings, chunks and the file manifest) is one
+    ``index.npz`` written to a temporary name and renamed into place, so a
+    query never pairs chunks from one indexing run with vectors from another,
+    even if indexing was killed partway. Each search re-lists the project, so
+    added and deleted files trigger a re-index, and every returned chunk's file
+    is checked against its recorded SHA-256 so an edit that kept the same size
+    and timestamp is never cited from stale text.
+    """
 
     def __init__(self, index_dir: Path) -> None:
         self.index_dir = index_dir
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self._embedder: Any | None = None
         self._enabled: bool | None = None
-        self._normalized_embeddings: Any | None = None
-        self._normalized_embeddings_stamp: tuple[int, int] | None = None
+        self._loaded: tuple[Any, list[dict[str, Any]], dict[str, Any]] | None = None
+        self._loaded_stamp: tuple[int, int] | None = None
 
     def _check_enabled(self) -> bool:
         if self._enabled is None:
@@ -264,42 +327,79 @@ class SemanticIndex:
             self._embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
         return self._embedder
 
-    def _manifest_path(self) -> Path:
-        return self.index_dir / "manifest.json"
-
-    def _embeddings_path(self) -> Path:
-        return self.index_dir / "embeddings.npy"
-
-    def _chunks_path(self) -> Path:
-        return self.index_dir / "chunks.json"
+    def _index_path(self) -> Path:
+        return self.index_dir / "index.npz"
 
     def _clear_embedding_cache(self) -> None:
-        self._normalized_embeddings = None
-        self._normalized_embeddings_stamp = None
+        self._loaded = None
+        self._loaded_stamp = None
 
-    def _load_normalized_embeddings(self) -> Any:
-        """Load and normalize embeddings once per on-disk index version."""
+    def _load(self) -> tuple[Any, list[dict[str, Any]], dict[str, Any]] | None:
+        """(unit-normalized embeddings, chunks, manifest), cached per on-disk index version."""
         import numpy as np
 
-        path = self._embeddings_path()
-        stat = path.stat()
+        path = self._index_path()
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
         stamp = (stat.st_mtime_ns, stat.st_size)
-        if self._normalized_embeddings is not None and stamp == self._normalized_embeddings_stamp:
-            return self._normalized_embeddings
+        if self._loaded is not None and stamp == self._loaded_stamp:
+            return self._loaded
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                matrix = data["embeddings"]
+                meta = json.loads(str(data["meta"]))
+        except (OSError, ValueError, KeyError) as exc:
+            log.warning("Semantic index %s is unreadable; rebuilding: %s", path, exc)
+            return None
+        if not isinstance(meta, dict):
+            return None
+        chunks, manifest = meta.get("chunks", []), meta.get("manifest", {})
+        if not isinstance(chunks, list) or not isinstance(manifest, dict):
+            return None
+        if matrix.ndim != 2 or not np.issubdtype(matrix.dtype, np.number) or not np.isfinite(matrix).all() or len(chunks) != len(matrix):
+            log.warning("Semantic index %s is inconsistent; rebuilding", path)
+            return None
+        norms = np.linalg.norm(matrix.astype(np.float64), axis=1, keepdims=True) if len(matrix) else matrix
+        if len(matrix) and (not np.isfinite(norms).all() or (norms == 0).any()):
+            return None
+        unit_matrix = matrix / np.where(norms == 0, 1, norms) if len(matrix) else matrix
+        self._loaded = (unit_matrix, chunks, manifest)
+        self._loaded_stamp = stamp
+        return self._loaded
 
-        matrix = np.load(path)
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        unit_matrix = matrix / np.where(norms == 0, 1, norms)
-        self._normalized_embeddings = unit_matrix
-        self._normalized_embeddings_stamp = stamp
-        return unit_matrix
+    @staticmethod
+    def _indexable_files(root: Path) -> list[tuple[Path, os.stat_result]]:
+        found = []
+        for path in _project_files(root):
+            try:
+                file_stat = path.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(file_stat.st_mode) or not _is_text_file(path):
+                continue
+            if file_stat.st_size <= MAX_FILE_SIZE:
+                found.append((path, file_stat))
+        return found
 
     def _is_stale(self, root: Path, manifest: dict[str, Any]) -> bool:
-        for entry in manifest.get("files", []):
-            path = root / entry["path"]
+        if manifest.get("root") != str(root):
+            return True
+        recorded = {entry["path"]: entry for entry in manifest.get("files", [])}
+        current = self._indexable_files(root)
+        if len(current) != len(recorded):
+            return True
+        for path, file_stat in current:
+            entry = recorded.get(path.relative_to(root).as_posix())
+            if (
+                entry is None
+                or entry.get("mtime_ns") != file_stat.st_mtime_ns
+                or entry.get("size") != file_stat.st_size
+            ):
+                return True
             try:
-                file_stat = path.stat()
-                if file_stat.st_mtime != entry["mtime"] or file_stat.st_size != entry["size"]:
+                if hashlib.sha256(_read_project_bytes(path, root)).hexdigest() != entry.get("sha256"):
                     return True
             except OSError:
                 return True
@@ -312,58 +412,52 @@ class SemanticIndex:
                 "Semantic search requires the 'semantic' extra. "
                 "Install with: pip install 'arc-llama[semantic]'"
             )
+        import numpy as np
 
         root = root.resolve()
         chunks: list[CodeChunk] = []
         files: list[dict[str, Any]] = []
-
-        for path in _project_files(root):
-            if not path.is_file():
-                continue
-            if not _is_text_file(path):
-                continue
+        for path, file_stat in self._indexable_files(root):
             try:
-                file_stat = path.stat()
+                data = _read_project_bytes(path, root)
+                digest = hashlib.sha256(data).hexdigest()
             except OSError:
                 continue
-            if file_stat.st_size > MAX_FILE_SIZE:
-                continue
-            file_chunks = _chunk_file(path, root)
-            chunks.extend(file_chunks)
+            chunks.extend(_chunk_file(path, root, data.decode("utf-8", errors="ignore")))
             files.append(
                 {
                     "path": path.relative_to(root).as_posix(),
-                    "mtime": file_stat.st_mtime,
+                    "mtime_ns": file_stat.st_mtime_ns,
                     "size": file_stat.st_size,
+                    "sha256": digest,
                 }
             )
 
-        if not chunks:
-            manifest = {"files": files, "chunk_count": 0}
-            self._manifest_path().write_text(json.dumps(manifest), encoding="utf-8")
-            self._chunks_path().write_text(json.dumps([]), encoding="utf-8")
-            self._clear_embedding_cache()
-            if self._embeddings_path().exists():
-                self._embeddings_path().unlink()
-            return {"indexed_files": len(files), "chunks": 0}
-
-        embedder = self._embedder_instance()
-        embeddings = list(embedder.embed([c.text for c in chunks]))
-
-        import numpy as np
-
-        matrix = np.vstack(embeddings).astype(np.float32)
+        if chunks:
+            embedder = self._embedder_instance()
+            matrix = np.vstack(list(embedder.embed([c.text for c in chunks]))).astype(np.float32)
+            if matrix.ndim != 2 or len(matrix) != len(chunks) or not matrix.shape[1] or not np.isfinite(matrix).all():
+                raise ValueError("Embedder returned invalid or non-finite vectors")
+            if (np.linalg.norm(matrix.astype(np.float64), axis=1) == 0).any():
+                raise ValueError("Embedder returned zero vectors")
+        else:
+            matrix = np.zeros((0, 0), dtype=np.float32)
+        meta = {
+            "manifest": {"root": str(root), "files": files, "chunk_count": len(chunks)},
+            "chunks": [{"path": c.path, "start_line": c.start_line, "text": c.text[:500]} for c in chunks],
+        }
+        fd, name = tempfile.mkstemp(prefix=".index-", suffix=".tmp.npz", dir=self.index_dir)
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                np.savez(f, embeddings=matrix, meta=np.array(json.dumps(meta)))
+            os.replace(tmp, self._index_path())
+        finally:
+            tmp.unlink(missing_ok=True)
         self._clear_embedding_cache()
-        np.save(self._embeddings_path(), matrix)
-
-        manifest = {"files": files, "chunk_count": len(chunks)}
-        self._manifest_path().write_text(json.dumps(manifest), encoding="utf-8")
-        self._chunks_path().write_text(
-            json.dumps(
-                [{"path": c.path, "start_line": c.start_line, "text": c.text[:500]} for c in chunks]
-            ),
-            encoding="utf-8",
-        )
+        # Files from the earlier three-part layout are no longer read.
+        for old in ("embeddings.npy", "chunks.json", "manifest.json"):
+            (self.index_dir / old).unlink(missing_ok=True)
         return {"indexed_files": len(files), "chunks": len(chunks)}
 
     def search(self, root: Path, query: str, top_k: int = 5) -> list[dict[str, Any]]:
@@ -373,40 +467,43 @@ class SemanticIndex:
                 "Semantic search requires the 'semantic' extra. "
                 "Install with: pip install 'arc-llama[semantic]'"
             )
-
         root = root.resolve()
-        manifest: dict[str, Any] = {"files": []}
-        if self._manifest_path().exists():
-            try:
-                manifest = json.loads(self._manifest_path().read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
+        for attempt in range(2):
+            loaded = self._load()
+            if loaded is None or self._is_stale(root, loaded[2]):
+                self.index(root)
+                loaded = self._load()
+            if loaded is None:
+                return []
+            results = self._rank(loaded, query, top_k)
+            if self._cites_changed_file(root, loaded[2], results):
+                # Same size and timestamp, different bytes: rebuild once and rank again.
+                if attempt == 0:
+                    self.index(root)
+                    continue
+                raise RuntimeError("Project files kept changing during search; retry")
+            return results
+        return results
 
-        if not self._embeddings_path().exists() or self._is_stale(root, manifest):
-            self.index(root)
-
-        if not self._chunks_path().exists():
-            return []
-
-        chunks = json.loads(self._chunks_path().read_text(encoding="utf-8"))
-        if not chunks:
-            return []
-
-        embedder = self._embedder_instance()
-        query_embedding = list(embedder.embed([query]))[0]
-
+    def _rank(
+        self, loaded: tuple[Any, list[dict[str, Any]], dict[str, Any]], query: str, top_k: int
+    ) -> list[dict[str, Any]]:
         import numpy as np
 
-        # Cosine similarity on normalized vectors. The corpus matrix is
-        # unchanged across queries, so keep its normalized form in memory.
-        unit_matrix = self._load_normalized_embeddings()
-        q_norm = np.linalg.norm(query_embedding)
+        unit_matrix, chunks, _ = loaded
+        if not chunks:
+            return []
+        query_embedding = list(self._embedder_instance().embed([query]))[0]
+        query_embedding = np.asarray(query_embedding, dtype=np.float32)
+        if query_embedding.ndim != 1 or query_embedding.shape[0] != unit_matrix.shape[1] or not np.isfinite(query_embedding).all():
+            raise ValueError("Embedder returned an invalid query vector")
+        q_norm = np.linalg.norm(query_embedding.astype(np.float64))
+        if not np.isfinite(q_norm) or q_norm == 0:
+            raise ValueError("Embedder returned an invalid query vector")
         q_unit = query_embedding / q_norm if q_norm else query_embedding
         scores = unit_matrix @ q_unit
-
-        top_indices = np.argsort(scores)[::-1][:top_k]
         results = []
-        for idx in top_indices:
+        for idx in np.argsort(scores)[::-1][:top_k]:
             chunk = chunks[int(idx)]
             results.append(
                 {
@@ -417,3 +514,14 @@ class SemanticIndex:
                 }
             )
         return results
+
+    @staticmethod
+    def _cites_changed_file(root: Path, manifest: dict[str, Any], results: list[dict[str, Any]]) -> bool:
+        digests = {entry["path"]: entry.get("sha256") for entry in manifest.get("files", [])}
+        for path in {r["path"] for r in results}:
+            try:
+                if hashlib.sha256(_read_project_bytes(root / path, root)).hexdigest() != digests.get(path):
+                    return True
+            except OSError:
+                return True
+        return False

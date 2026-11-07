@@ -223,3 +223,85 @@ def test_hermes_unknown_session_updates_are_ignored():
         )
         == []
     )
+
+
+def test_hermes_windows_environment_sets_home_and_keeps_secrets_out(monkeypatch, tmp_path):
+    monkeypatch.setattr(adapter.sys, "platform", "win32")
+    monkeypatch.setenv("TEMP", r"C:\Temp")
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-for-hermes")
+    monkeypatch.setenv("APPDATA", r"C:\Users\someone\AppData\Roaming")
+
+    env = adapter.hermes_environment(tmp_path)
+
+    # Python on Windows reads USERPROFILE, not HOME, for the home folder.
+    assert env["USERPROFILE"] == str(tmp_path)
+    assert env["APPDATA"] == str(tmp_path / "appdata")
+    assert env["LOCALAPPDATA"] == str(tmp_path / "localappdata")
+    assert env["TEMP"] == r"C:\Temp"
+    assert env["COMSPEC"] == r"C:\Windows\System32\cmd.exe"
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_hermes_posix_environment_has_no_windows_folders(monkeypatch, tmp_path):
+    monkeypatch.setattr(adapter.sys, "platform", "linux")
+
+    env = adapter.hermes_environment(tmp_path)
+
+    assert env["HOME"] == str(tmp_path)
+    assert "USERPROFILE" not in env and "APPDATA" not in env
+
+
+@pytest.mark.skipif(adapter.sys.platform != "win32", reason="Windows home-folder lookup")
+def test_hermes_environment_lets_a_windows_child_find_its_home(tmp_path):
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", "import pathlib, tempfile; print(pathlib.Path.home()); tempfile.mkdtemp()"],
+        env=adapter.hermes_environment(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(tmp_path)
+
+
+def _gateway_record(home, **overrides):
+    return json.dumps({"pid": 4242, "kind": "hermes-gateway", "argv": ["main.py", "gateway", "run"],
+                       "hermes_home": str(home), **overrides})
+
+
+def test_recorded_gateway_is_found_in_the_private_home(tmp_path):
+    (tmp_path / "gateway.pid").write_text(_gateway_record(tmp_path))
+    (tmp_path / "gateway.lock").write_text(_gateway_record(str(tmp_path).swapcase() if adapter.sys.platform == "win32" else tmp_path))
+
+    assert adapter._recorded_gateway_pids(tmp_path) == {4242}
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "not json",
+        json.dumps([4242]),
+        json.dumps({"pid": "4242", "kind": "hermes-gateway"}),
+        json.dumps({"pid": 4242, "kind": "something-else"}),
+        json.dumps({"pid": 4242, "kind": "hermes-gateway"}),
+    ],
+)
+def test_unusable_gateway_records_name_no_process(tmp_path, record):
+    (tmp_path / "gateway.pid").write_text(record)
+
+    assert adapter._recorded_gateway_pids(tmp_path) == set()
+
+
+def test_gateway_serving_another_home_is_left_alone(tmp_path):
+    (tmp_path / "gateway.pid").write_text(_gateway_record(tmp_path / "someone-else"))
+
+    assert adapter._recorded_gateway_pids(tmp_path) == set()
+
+
+def test_no_gateway_record_names_no_process(tmp_path):
+    assert adapter._recorded_gateway_pids(tmp_path) == set()

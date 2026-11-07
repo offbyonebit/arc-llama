@@ -1,4 +1,8 @@
-import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply, testGuidedHidesEmptyLibraryUntilSetupAnswers, testGuidedLibraryReturnsWhenSetupStatusFails, testChatWithoutModelsPointsToSetup, testWorkNavHiddenWhenWorkIsOff, testWorkNavShownWhenWorkIsOn } from "./onboarding-cases.mjs";
+import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
+import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
+import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
@@ -36,6 +40,7 @@ import {
   testWorkContextIgnoresStaleBudgets,
   testWorkModeApprovalAndUndo,
   testWorkModeDeniedAndStopped,
+  testWorkModeModelAsksAQuestion,
   testWorkModeServerRejectsMissingFolder,
   testWorkModeEndedWithoutResultIsAnError,
   testWorkModeOffersClosestFolder,
@@ -47,6 +52,7 @@ import {
   testWorkSlashMenuListsHarnessCommands,
   testWorkSlashCommandRunsInTheHarness,
   testWorkSessionsAreSavedAndReopened,
+  testWorkLongSessionDrawsOnlyWhatChanged,
   testWorkToolProfilesLimitWhatARunCanUse,
   testWorkProfilesRecoverFromDiscoveryFailure,
   testWorkProfilesIgnoreClosedDiscovery,
@@ -72,6 +78,9 @@ import {
   testModelChoiceExplanations,
   testDownloadRecovery,
   testMissingFileRecovery,
+  testDiscoverShelves,
+  testDiscoverShelvesOffline,
+  testDiscoverWaitsForAdminToken,
 } from "./library-cases.mjs";
 
 import {
@@ -92,6 +101,24 @@ import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudg
 import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./workbench-cases.mjs";
 
 const TESTS = [
+  ["guided-dynamic-catalog", testGuidedDynamicCatalogStates],
+  ["guided-first-answer", testGuidedFirstAnswer],
+  ["guided-hides-empty-library", testGuidedHidesEmptyLibraryUntilSetupAnswers],
+  ["smooth-chat-budget-poll", testChatPollKeepsExactBudget],
+  ["smooth-chat-settings-poll", testChatPollKeepsSettingsOpen],
+  ["smooth-model-panel-focus", testModelPanelKeepsFocusAcrossPolls],
+  ["smooth-action-result-poll", testActionResultSurvivesNextPoll],
+  ["smooth-work-clock-focus", testWorkClockKeepsApprovalFocus],
+  ["guided-library-on-status-failure", testGuidedLibraryReturnsWhenSetupStatusFails],
+  ["chat-without-models-points-to-setup", testChatWithoutModelsPointsToSetup],
+  ["work-nav-hidden-when-off", testWorkNavHiddenWhenWorkIsOff],
+  ["work-nav-shown-when-on", testWorkNavShownWhenWorkIsOn],
+  ["guided-pause-retry-errors", testGuidedPauseRetryAndErrors],
+  ["guided-hardware-small-screen", testGuidedHardwareAndSmallScreen],
+  ["welcome-preserves-draft-failure", testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess],
+  ["welcome-complete-nonempty", testWelcomeNeedsCompleteNonemptyReply],
+  ["chat-sse-framing", testChatSseFraming],
+  ["chat-sse-errors-keep-partial", testChatSseErrorsKeepPartial],
   ["work-hermes-harness", testWorkHermesHarness],
   ["work-hermes-unavailable", testWorkHermesUnavailable],
   ["work-live-activity-full-prompt", testWorkLiveActivityAndFullPrompt],
@@ -105,6 +132,8 @@ const TESTS = [
   ["paper-mobile-sheets", testPaperMobileSheets],
   ["paper-claims-context", testPaperRealClaimsAndContext],
   ["paper-model-load-stop", testPaperModelLoadStop],
+  ["paper-model-delete", testPaperModelDelete],
+  ["paper-system-sections-aligned", testPaperSystemSectionsAligned],
   ["paper-work-model-picker", testPaperWorkModelPicker],
   ["work-attempt-settings-and-results", testWorkAttemptSettingsAndResults],
   ["work-projects-jobs-and-review", testWorkProjectsJobsAndReview],
@@ -151,6 +180,9 @@ const TESTS = [
   ["runtime-compatibility-guidance", testRuntimeCompatibilityGuidance],
   ["library-publisher-avatars", testLibraryPublisherAvatars],
   ["library-search-and-download", testLibrarySearchAndDownload],
+  ["discover-shelves", testDiscoverShelves],
+  ["discover-shelves-offline", testDiscoverShelvesOffline],
+  ["discover-waits-for-admin-token", testDiscoverWaitsForAdminToken],
   ["dashboard-plugin-layout-controller", testDashboardPluginLayoutController],
   ["frontend-integration-controller", testFrontendIntegrationController],
   ["regenerate-and-edit", testRegenerateAndEdit],
@@ -162,6 +194,7 @@ const TESTS = [
   ["work-hidden-unless-experimental", testWorkViewHiddenUnlessExperimental],
   ["work-approval-and-undo", testWorkModeApprovalAndUndo],
   ["work-denied-and-stopped", testWorkModeDeniedAndStopped],
+  ["work-model-asks-a-question", testWorkModeModelAsksAQuestion],
   ["work-server-rejects-missing-folder", testWorkModeServerRejectsMissingFolder],
   ["work-ended-without-result", testWorkModeEndedWithoutResultIsAnError],
   ["work-auto-approve", testWorkModeAutoApprove],
@@ -173,6 +206,7 @@ const TESTS = [
   ["work-slash-menu-lists-harness-commands", testWorkSlashMenuListsHarnessCommands],
   ["work-slash-command-runs-in-the-harness", testWorkSlashCommandRunsInTheHarness],
   ["work-sessions-saved-and-reopened", testWorkSessionsAreSavedAndReopened],
+  ["work-long-session-draws-only-what-changed", testWorkLongSessionDrawsOnlyWhatChanged],
   ["work-native-harness-history", testWorkNativeHarnessHistory],
   ["work-session-duplicates", testWorkSessionDuplicatesAreExpandable],
   ["work-stable-conversation-id", testWorkRunCarriesItsStableConversationId],
@@ -181,6 +215,10 @@ const TESTS = [
   ["work-tool-profiles-limit-a-run", testWorkToolProfilesLimitWhatARunCanUse],
   ["work-profiles-discovery-recovery", testWorkProfilesRecoverFromDiscoveryFailure],
   ["work-profiles-stale-discovery", testWorkProfilesIgnoreClosedDiscovery],
+  ["work-agent-install-flow", testWorkAgentInstallFlow],
+  ["work-agent-install-cancel", testWorkAgentInstallCancelKeepsSelection],
+  ["system-agents-panel", testSystemAgentsPanel],
+  ["system-agents-off-without-experimental", testSystemAgentsOffWithoutExperimental],
 ];
 
 // ---------------------------------------------------------------------------

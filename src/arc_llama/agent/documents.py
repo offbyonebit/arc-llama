@@ -25,7 +25,7 @@ from arc_llama.agent.tools import (
 DOCUMENT_TOOLS = ToolRegistry()
 
 # Coding tools that are safe and useful when working with documents. No shell, no patching.
-SHARED_TOOLS = frozenset({"read_file", "read_multiple_files", "read_pdf", "list_directory", "search_files"})
+SHARED_TOOLS = frozenset({"read_file", "read_multiple_files", "read_pdf", "list_directory", "search_files", "ask_user"})
 
 MAX_READ_CHARS = 60_000
 MAX_SHEET_ROWS = 200

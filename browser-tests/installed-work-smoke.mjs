@@ -2,16 +2,23 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+// Isolated fixtures live under the OS temp folder (/tmp on Linux, %TEMP% on Windows).
+const smokePrefix = path.join(os.tmpdir(), 'arc-work-');
+const fold = p => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+const underSmokePrefix = p => fold(p).startsWith(fold(smokePrefix));
 
 const origin = process.argv[2], root = process.env.ARC_WORK_SMOKE_ROOT;
-if (!origin?.startsWith("http://127.0.0.1:") || !root?.startsWith("/tmp/arc-work-")) throw new Error("Expected isolated smoke paths");
+if (!origin?.startsWith("http://127.0.0.1:") || !root || !underSmokePrefix(root)) throw new Error("Expected isolated smoke paths");
 const options = { headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] };
 const browser = await chromium.launch({ ...options, channel: "chrome" }).catch(() => chromium.launch(options));
 try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
-  await page.goto(origin + "/work");
+  await page.goto(origin + "/workbench");
   await page.waitForSelector("#workspace-model option", { state: "attached" });
   await page.evaluate(() => { document.querySelector("#project-editor").open = true; });
   await page.click("#new-workspace");
@@ -27,20 +34,20 @@ try {
   assert.match(await page.locator("#job-state").innerText(), /^completed:/);
   const copyText = await page.locator("#job-copy").innerText();
   const copy = copyText.replace("Project copy: ", "");
-  assert.equal((await readFile(copy + "/WORK_RESULT.txt", "utf8")).trim(), "local worker ready");
-  await assert.rejects(readFile(root + "/WORK_RESULT.txt"));
+  assert.equal((await readFile(path.join(copy, "WORK_RESULT.txt"), "utf8")).trim(), "local worker ready");
+  await assert.rejects(readFile(path.join(root, "WORK_RESULT.txt")));
   await page.reload();
   await page.locator(".work-job").first().click();
   await page.click("#review-changes");
   await page.waitForFunction(() => document.querySelector("#diff").textContent.includes("+local worker ready"));
   await page.getByRole("button", { name: "Apply reviewed changes" }).click();
   await page.getByRole("button", { name: "Undo applied changes" }).waitFor();
-  assert.equal((await readFile(root + "/WORK_RESULT.txt", "utf8")).trim(), "local worker ready");
+  assert.equal((await readFile(path.join(root, "WORK_RESULT.txt"), "utf8")).trim(), "local worker ready");
   await page.getByRole("button", { name: "Undo applied changes" }).click();
   await page.getByRole("button", { name: "Apply reviewed changes" }).waitFor();
-  await assert.rejects(readFile(root + "/WORK_RESULT.txt"));
-  assert.equal((await readFile(root + "/README.txt", "utf8")).trim(), "Original project");
+  await assert.rejects(readFile(path.join(root, "WORK_RESULT.txt")));
+  assert.equal((await readFile(path.join(root, "README.txt"), "utf8")).trim(), "Original project");
   assert.deepEqual(errors, []);
-  await page.screenshot({ path: "/tmp/arc-work-installed.png", fullPage: true });
+  await page.screenshot({ path: smokePrefix + "installed.png", fullPage: true });
   console.log(JSON.stringify({ work_tab: "pass", native_agent_file_edit: "pass", browser_reload: "pass", reviewed_apply: "pass", undo: "pass", source_preserved: "pass" }));
 } finally { await browser.close(); }

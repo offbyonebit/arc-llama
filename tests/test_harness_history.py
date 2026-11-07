@@ -151,3 +151,63 @@ def test_hermes_text_blocks_exclude_attachments(databases):
     record = history.get_native_session("hermes-fixture_hermes")
     assert record["runs"][0]["answer"] == ["Synthetic block"]
     assert "private" not in json.dumps(record)
+
+
+@pytest.fixture
+def opencode_v2(databases):
+    """An OpenCode 2 file after upgrading from 1.x: the old tables stay, sessions live in session_v2."""
+    with contextlib.closing(sqlite3.connect(databases["opencode"])) as connection, connection:
+        connection.executescript("""
+            CREATE TABLE session_v2 (id TEXT, title TEXT, directory TEXT, parent_id TEXT,
+                time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER,
+                time_created INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES ('ses_fixture', 'Synthetic chat after the upgrade', '/synthetic/project', NULL, 5000, NULL);
+            INSERT INTO session_v2 VALUES ('ses_v2child', 'Child', '/synthetic/project', 'ses_fixture', 6000, NULL);
+        """)
+        for seq, (kind, data) in enumerate([
+            ("user", {"text": "Create a synthetic file"}),
+            ("assistant", {"content": [{"type": "reasoning", "text": "Synthetic reasoning stays out"},
+                                       {"type": "tool", "id": "c1", "name": "shell", "state": {"input": {"command": "DO NOT REPLAY"}}},
+                                       {"type": "text", "text": "The synthetic file is ready"}]}),
+            ("idle", {"outcome": "succeeded"}),
+            ("user", {"text": "Explain it"}),
+            ("assistant", {"content": [{"type": "text", "text": "It holds a fixture"}]}),
+        ]):
+            connection.execute("INSERT INTO session_message VALUES (?, 'ses_fixture', ?, ?, ?, ?)",
+                               (f"msg_{seq}", kind, seq, 100 + seq, json.dumps(data)))
+    return databases
+
+
+def test_opencode_2_history_comes_from_its_own_tables(opencode_v2):
+    sessions, warnings = history.list_native_sessions()
+    opencode = [row for row in sessions if row["harness"] == "opencode"]
+    assert not warnings and [row["id"] for row in opencode] == ["oc-ses_fixture"]
+    assert opencode[0]["title"] == "Synthetic chat after the upgrade" and opencode[0]["tasks"] == 2
+    record = history.get_native_session("oc-ses_fixture")
+    assert [run["task"] for run in record["runs"]] == ["Create a synthetic file", "Explain it"]
+    assert record["runs"][0]["answer"] == ["The synthetic file is ready"]
+    assert "DO NOT REPLAY" not in json.dumps(record) and "reasoning" not in json.dumps(record)
+    assert history.get_native_session("oc-ses_v2child") is None
+
+
+def test_opencode_2_size_and_message_limits(opencode_v2, monkeypatch):
+    monkeypatch.setattr(history, "MAX_MESSAGES", 2)
+    with pytest.raises(history.NativeHistoryError, match="too many messages"):
+        history.get_native_session("oc-ses_fixture")
+    monkeypatch.setattr(history, "MAX_MESSAGES", 2000)
+    monkeypatch.setattr(history, "MAX_SESSION_BYTES", 20)
+    with pytest.raises(history.NativeHistoryError, match="too large"):
+        history.get_native_session("oc-ses_fixture")
+
+
+def test_sessions_opencode_1x_writes_after_the_upgrade_still_show(opencode_v2):
+    with contextlib.closing(sqlite3.connect(opencode_v2["opencode"])) as connection, connection:
+        connection.execute("INSERT INTO session VALUES ('ses_later', 'Synthetic 1.x chat', '/synthetic/project', NULL, 9000, NULL)")
+        connection.execute("INSERT INTO message VALUES ('ml', 'ses_later', ?, 900)", (json.dumps({"role": "user"}),))
+        connection.execute("INSERT INTO part VALUES ('pl', 'ml', 'ses_later', ?, 900)", (json.dumps({"type": "text", "text": "Synthetic later task"}),))
+    sessions, _ = history.list_native_sessions()
+    opencode = [row["id"] for row in sessions if row["harness"] == "opencode"]
+    assert opencode == ["oc-ses_later", "oc-ses_fixture"]            # listed once each, newest first
+    assert history.get_native_session("oc-ses_later")["runs"][0]["task"] == "Synthetic later task"
+    assert history.get_native_session("oc-ses_fixture")["title"] == "Synthetic chat after the upgrade"

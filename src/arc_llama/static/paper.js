@@ -11,6 +11,7 @@
     System:'<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>'
   };
   const chat = !!$('#chat-log');
+  const workEnabled = window.ARC_UI_FLAGS?.work !== false;
   document.body.classList.add('paper', chat ? 'paper-chat' : 'paper-dashboard');
   const header = $('body > header');
   const rail = node('aside','paper-rail'); rail.setAttribute('aria-label','Arc Llama');
@@ -23,12 +24,13 @@
   for (const name of ['Chat','Work','Models','Discover','System']) {
     const link = links.find(l => l.textContent.trim() === name);
     if (!link) continue;
+    if (name==='Work' && !workEnabled) { link.remove(); continue; } // Work is off on this server.
     link.setAttribute('aria-label',name); link.title=name;
     link.replaceChildren();
     const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true'); svg.classList.add('paper-icon'); svg.innerHTML=icons[name];
     link.append(svg,node('span','paper-nav-label',name));
-    if (name==='Work') { const dot=node('span','paper-nav-dot'); dot.hidden=true; dot.setAttribute('aria-label','Permission waiting'); link.append(dot); }
-    if (name==='Models') { const badge=node('span','paper-nav-badge'); badge.hidden=true; link.append(badge); }
+    if (name==='Work') { const dot=node('span','paper-nav-dot'); dot.id='paper-work-pending'; dot.hidden=true; dot.setAttribute('aria-label','Permission waiting'); link.append(dot); }
+    if (name==='Models') { const badge=node('span','paper-nav-badge'); badge.id='paper-models-downloads'; badge.hidden=true; link.append(badge); }
     nav.append(link);
   }
   rail.append(nav,node('div','paper-spacer'));
@@ -113,7 +115,7 @@
   });
   function external(label) { const badge=node('span','paper-external','External'); badge.title=label; return badge; }
   const api=window.ArcPaper={ syncModels, external };
-  api.jobs=jobs=>{const active=(jobs||[]).filter(j=>['queued','downloading','registering'].includes(j.status));const badge=$('.paper-nav-badge');badge.textContent=active.length;badge.hidden=!active.length;badge.setAttribute('aria-label',`${active.length} active downloads`);};
+  api.jobs=jobs=>{const active=(jobs||[]).filter(j=>['queued','downloading','registering'].includes(j.status));const badge=$('.paper-nav-badge');badge.textContent=active.length;badge.hidden=!active.length;badge.setAttribute('aria-label',`${active.length} active downloads`);if(active.length)badge.parentElement.setAttribute('aria-describedby',badge.id);else badge.parentElement.removeAttribute('aria-describedby');};
   if(!chat) {
     const title=node('span','paper-header-title','Models'); header.querySelector('.brand').replaceChildren(title);
     const dashboard=$('.dashboard');
@@ -146,7 +148,7 @@
       const actions=node('div','paper-model-actions');actions.id='paper-model-actions';
       const action=node('button',model.loaded?'':'primary',model.state==='loading'?'Loading…':model.loaded?'Stop model':'Load model');action.type='button';action.disabled=model.state==='loading'||model.state==='draining'||(!model.loaded&&file===false);action.addEventListener('click',()=>model.loaded?stop(model.name):load(model.name));
       const work=node('a','','Use in Work');work.href=`/work?model=${encodeURIComponent(model.name)}`;
-      actions.append(action,work);
+      actions.append(action); if(workEnabled) actions.append(work);
       $('#readiness-card .readiness-heading').after(ladder);$('#readiness-card').append(actions);
     };
   } else {
@@ -225,7 +227,7 @@
     changes.addEventListener('click',()=>{reviewKind='changes';drawReview();});recent.addEventListener('click',()=>{reviewKind='recent';drawReview();});
     closeReview.addEventListener('click',()=>{openReview(false);reviewToggle.focus();});reviewToggle.addEventListener('click',()=>{drawReview();openReview(review.hidden);});
     api.workState=({pending,result,recentTasks})=>{
-      $('.paper-nav-dot').hidden=!pending;
+      const dot=$('.paper-nav-dot');if(dot){dot.hidden=!pending;if(pending)dot.parentElement.setAttribute('aria-describedby',dot.id);else dot.parentElement.removeAttribute('aria-describedby');}
       reviewToggle.hidden=!document.body.classList.contains('work-mode');
       sessionsToggle.hidden=reviewToggle.hidden;
       if(result) reviewSource=result;

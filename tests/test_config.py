@@ -210,7 +210,7 @@ def test_default_config_path_is_isolated(tmp_path):
 def test_resolve_admin_token_warning_omits_secret(caplog, tmp_path):
     cfg = Config()
     path = tmp_path / "config.toml"
-    with caplog.at_level(logging.WARNING, logger="arc_llama.config"):
+    with caplog.at_level(logging.DEBUG, logger="arc_llama.config"):
         _resolve_admin_token(cfg, path, persist=False)
     assert cfg.server.admin_token is not None
     assert len(cfg.server.admin_token) > 16
@@ -299,3 +299,26 @@ def test_inference_deadlines_round_trip_and_allow_unlimited(tmp_path):
     loaded = load_config(path)
     assert loaded.server.inference_first_response_seconds == 0
     assert loaded.server.inference_stream_idle_seconds == 240
+
+
+def test_env_admin_token_is_never_saved(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text('[server]\nadmin_token = "from-file"\n')
+    monkeypatch.setenv("ARC_LLAMA_ADMIN_TOKEN", "from-env")
+    cfg = load_config(path)
+    assert cfg.server.admin_token == "from-env"
+    cfg.agent.root = "/elsewhere"
+    cfg.save(path)
+    text = path.read_text()
+    assert "from-env" not in text and 'admin_token = "from-file"' in text
+    monkeypatch.delenv("ARC_LLAMA_ADMIN_TOKEN")
+    assert load_config(path).server.admin_token == "from-file"
+
+
+def test_env_admin_token_without_file_token_saves_none(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    path.write_text('[agent]\nroot = "."\n')
+    monkeypatch.setenv("ARC_LLAMA_ADMIN_TOKEN", "from-env")
+    cfg = load_config(path)
+    cfg.save(path)
+    assert "from-env" not in path.read_text()

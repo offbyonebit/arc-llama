@@ -2,6 +2,7 @@
 
 Top-level commands:
 
+  arc-llama start      Open the browser and get your first answer.
   arc-llama run        One-command setup: detect, runtime, model, fit, serve.
   arc-llama init       Auto-detect GPUs and write an initial config.
   arc-llama doctor     Diagnose the local environment (drivers, oneAPI, perms).
@@ -24,6 +25,7 @@ A small static web UI is bundled and served at `/` on the same port as
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -43,6 +45,7 @@ from arc_llama.arch import Arch, Backend, aot_arch_for
 from arc_llama.binary import detect_backends, detect_llama_server_backend
 from arc_llama.cli_agent import register_agent_commands
 from arc_llama.cli_diagnostics import register_diagnostic_commands
+from arc_llama.cli_harness import register_harness_commands
 from arc_llama.cli_models import register_model_commands
 from arc_llama.cli_performance import register_performance_commands
 from arc_llama.cli_recipes import register_recipe_commands
@@ -188,6 +191,7 @@ _diagnostic_command_exports = register_diagnostic_commands(
 )
 _doctor_marker = _diagnostic_command_exports["_doctor_marker"]
 doctor = _diagnostic_command_exports["doctor"]
+report_cmd = _diagnostic_command_exports["report_cmd"]
 support_bundle_cmd = _diagnostic_command_exports["support_bundle_cmd"]
 
 _do_scan: Any
@@ -494,6 +498,16 @@ def _print_serve_banner(cfg: Config) -> None:
         console.print(f"  model {m.name}: ctx={ctx} · KV {kv_txt} · port {m.port}")
     if not cfg.models:
         console.print("  [dim]no models registered — `arc-llama add` something first[/dim]")
+
+
+def _print_guided_banner(cfg: Config) -> None:
+    """Short startup summary for `arc-llama start`: devices only, no build hints."""
+    for gpu in cfg.gpus:
+        if gpu.enabled:
+            vram = f" · {gpu.vram_mb / 1024:.1f} GiB" if gpu.vram_mb else ""
+            console.print(f"[dim]Using {gpu.name or gpu.arch}{vram}[/dim]")
+    for m in cfg.models:
+        console.print(f"[dim]Model: {m.name}[/dim]")
 
 
 def _bootstrap_run_config(config_path: Path) -> Config:
@@ -989,6 +1003,35 @@ def setup_cmd(
     )
 
 
+@cli.command("start")
+@click.option("--port", type=click.IntRange(1, 65535), default=None, help="Local web UI port.")
+@click.option("--open/--no-open", "open_browser", default=True, help="Open the browser when ready.")
+@click.pass_context
+def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
+    """Open Arc Llama locally, with guided setup if no models are installed.
+
+    No model or runtime is downloaded until you choose Download and start in
+    the browser. Existing configuration and model choices are preserved.
+    """
+    path = ctx.obj["config_path"]
+    cfg = load_config(path)
+    if not cfg.gpus:
+        try:
+            detected = detect_gpus()
+            cfg.gpus = init_config_from_detection(detected).gpus
+        except Exception as exc:
+            console.print(f"[yellow]Hardware detection needs attention: {exc}[/yellow]")
+    _save_or_die(cfg, path)
+    browser_path = "/chat" if cfg.models else "/"
+    url = f"http://127.0.0.1:{port or cfg.server.port}{browser_path}"
+    console.print(f"[bold]Open Arc Llama:[/bold] [cyan]{url}[/cyan]")
+    console.print("[dim]Keep this terminal open. Press Ctrl+C to stop.[/dim]")
+    ctx.obj["open_browser_path"] = browser_path if open_browser else None
+    ctx.obj["guided_start"] = True
+    ctx.invoke(serve, host="127.0.0.1", port=port, profile=None, admin_token=None,
+               scan=True, auto_tune=None, lan=False, assume_yes=False)
+
+
 @cli.command("serve")
 @click.option(
     "--host",
@@ -1047,6 +1090,11 @@ def serve(
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
+    # Command-line overrides apply to this run only. Remember the saved values
+    # so a startup-scan save doesn't write them to config.toml (``start``
+    # always passes host=127.0.0.1, which used to replace a saved LAN host).
+    saved_overridable = (cfg.server.host, cfg.server.port, cfg.agent.profile,
+                         cfg.server.admin_token, cfg.tune.auto)
     if lan:
         if host and host not in ("0.0.0.0", "::"):
             raise click.UsageError("--lan binds every interface; drop --host or use --host alone.")
@@ -1073,7 +1121,10 @@ def serve(
             added = []
             console.print(f"[yellow]Startup scan failed: {e}[/yellow]")
         if added:
-            _save_or_die(cfg, ctx.obj["config_path"])
+            to_save = copy.deepcopy(cfg)
+            (to_save.server.host, to_save.server.port, to_save.agent.profile,
+             to_save.server.admin_token, to_save.tune.auto) = saved_overridable
+            _save_or_die(to_save, ctx.obj["config_path"])
             console.print(
                 f"[green]Auto-registered {len(added)} new model(s):[/green] "
                 + ", ".join(m.name for m in added)
@@ -1082,28 +1133,45 @@ def serve(
     if lan:
         _prepare_lan(cfg, port or cfg.server.port, assume_yes)
 
-    _print_autotune_banner(cfg)
+    guided = bool(ctx.obj.get("guided_start"))
+    if not guided or cfg.models:
+        _print_autotune_banner(cfg)
     if not cfg.models:
-        console.print(
-            "[yellow]No models registered yet — drop a GGUF in "
-            f"{cfg.paths.models_dir} or run `arc-llama add`.[/yellow]"
-        )
+        if guided:
+            # `start` already printed the address; the browser offers the
+            # download, so CLI registration hints would contradict it.
+            console.print(
+                "[yellow]No models yet — open the address above and choose "
+                "[bold]Download and start[/bold].[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]No models registered yet — run `arc-llama start` for "
+                f"guided setup, drop a GGUF in {cfg.paths.models_dir}, or run "
+                "`arc-llama add`.[/yellow]"
+            )
     if cfg.server.host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
             f"[yellow]Binding to {cfg.server.host!r}, not loopback -- make sure "
             "admin_token is set to something you control (it was auto-generated "
             "if you never set one).[/yellow]"
         )
-    token_source = (
-        "ARC_LLAMA_ADMIN_TOKEN environment variable"
-        if os.environ.get("ARC_LLAMA_ADMIN_TOKEN")
-        else f"config file ({ctx.obj['config_path']})"
-    )
-    console.print(
-        f"[dim]Admin authentication is enabled via {token_source}. "
-        "Admin endpoints require 'Authorization: Bearer <token>'.[/dim]"
-    )
-    _print_serve_banner(cfg)
+    if guided:
+        # The local browser UI authenticates itself, so token details would
+        # only distract here; they matter to API callers of plain `serve`.
+        _print_guided_banner(cfg)
+    else:
+        if os.environ.get("ARC_LLAMA_ADMIN_TOKEN"):
+            token_note = "Admin token: from the ARC_LLAMA_ADMIN_TOKEN environment variable."
+        elif Path(ctx.obj["config_path"]).exists():
+            token_note = f"Admin token: saved in {ctx.obj['config_path']}."
+        else:
+            token_note = (
+                "Admin token: temporary for this run (no config file yet). "
+                "Run `arc-llama init` or set ARC_LLAMA_ADMIN_TOKEN to keep one."
+            )
+        console.print(f"[dim]{token_note} Admin API calls need 'Authorization: Bearer <token>'.[/dim]")
+        _print_serve_banner(cfg)
     try:
         import uvicorn
     except ImportError:
@@ -1150,7 +1218,12 @@ def serve(
         except (OSError, ValueError):
             pass
 
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
+    browser_path = ctx.obj.pop("open_browser_path", None)
+    if browser_path is not None:
+        from arc_llama.browser_launch import serve_in_browser
+        serve_in_browser(app, host=cfg.server.host, port=cfg.server.port, path=browser_path)
+    else:
+        uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
 
 
 def _lan_addresses() -> list[str]:
@@ -1330,6 +1403,7 @@ _runtime_command_exports = register_runtime_commands(
     save_or_die=lambda cfg, path: _save_or_die(cfg, path),
 )
 runtime_group = _runtime_command_exports["runtime_group"]
+register_harness_commands(cli, console=console, load_config=lambda path: load_config(path))
 _installed_runtimes = _runtime_command_exports["_installed_runtimes"]
 runtime_list_cmd = _runtime_command_exports["runtime_list_cmd"]
 runtime_use_cmd = _runtime_command_exports["runtime_use_cmd"]

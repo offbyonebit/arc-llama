@@ -580,16 +580,16 @@ class Router:
     # ------------------------------------------------------------------
 
     async def ensure_active(
-        self, query: str, *, acquire: bool = False
+        self, query: str, *, acquire: bool = False, allow_eviction: bool = True
     ) -> tuple[ModelConfig, LlamaServer]:
         manager = self.resources
         if manager is None:
-            return await self._ensure_active(query, acquire=acquire)
+            return await self._ensure_active(query, acquire=acquire, allow_eviction=allow_eviction)
         async with manager.acquire("model-load", exclusive=False):
-            return await self._ensure_active(query, acquire=acquire)
+            return await self._ensure_active(query, acquire=acquire, allow_eviction=allow_eviction)
 
     async def _ensure_active(
-        self, query: str, *, acquire: bool = False
+        self, query: str, *, acquire: bool = False, allow_eviction: bool = True
     ) -> tuple[ModelConfig, LlamaServer]:
         """Make sure the requested model is the resident one (per policy) and
         return its (config, LlamaServer). Caller forwards the request to
@@ -736,6 +736,10 @@ class Router:
             else:
                 await asyncio.to_thread(self._check_vram_fit, target_model, target_gpu)
 
+            # Guided setup must not interrupt a model that started while it
+            # was downloading. Check under the same lock as the swap itself.
+            if not allow_eviction and any(name != target_model.name for name in self.running_models()):
+                raise RuntimeError("Another model is running. Stop it before continuing setup, or use it in Chat.")
             await self._evict_for(target_model, target_gpu)
 
             # We are the one responsible for starting.

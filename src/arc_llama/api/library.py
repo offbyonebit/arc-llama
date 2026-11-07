@@ -51,11 +51,16 @@ def register_library_routes(
     disk_report_fn: Callable[..., Any],
     deletable_files_fn: Callable[..., Any],
     download_manager_factory: Callable[..., Any],
+    featured_catalog_factory: Callable[[], Any] | None = None,
 ) -> None:
     """Register model-library endpoints using server-owned auth and helpers."""
     # ------------------------------------------------------------------
     # Model library: Hugging Face search, downloads, disk usage
     # ------------------------------------------------------------------
+
+    from arc_llama.discover import FeaturedCatalog
+
+    make_catalog = featured_catalog_factory or FeaturedCatalog
 
     def _library_vram(c: Config) -> int | None:
         gpu = next((g for g in c.gpus if g.enabled), None)
@@ -93,6 +98,18 @@ def register_library_routes(
         except Exception as e:  # noqa: BLE001 - network or hub errors
             raise HTTPException(status_code=502, detail=f"Hugging Face search failed: {e}") from e
         return {"results": results}
+
+    @app.get("/admin/library/featured")
+    async def library_featured(
+        request: Request, _auth: None = Depends(require_admin)
+    ) -> dict[str, Any]:
+        c: Config = request.app.state.cfg
+        catalog = getattr(request.app.state, "featured", None)
+        if catalog is None:
+            catalog = make_catalog()
+            request.app.state.featured = catalog
+        gpu = next((g for g in c.gpus if g.enabled), None)
+        return await catalog.get(_library_vram(c), gpu.name if gpu is not None else None)  # type: ignore[no-any-return]
 
     @app.get("/admin/library/repo")
     async def library_repo(
