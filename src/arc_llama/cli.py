@@ -68,6 +68,7 @@ from arc_llama.models import (
 from arc_llama.platform_checks import (
     rebar_likely_enabled,
 )
+from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -829,7 +830,7 @@ def _print_run_readiness(cfg: Config, model: ModelConfig) -> bool:
 )
 @click.option(
     "--runtime-version",
-    default="latest",
+    default=LLAMA_CPP_BUILD,
     show_default=True,
     help="llama.cpp release tag used when a runtime must be installed.",
 )
@@ -955,7 +956,7 @@ def run_cmd(
 )
 @click.option(
     "--runtime-version",
-    default="latest",
+    default=LLAMA_CPP_BUILD,
     show_default=True,
     help="llama.cpp release tag used when a runtime must be installed.",
 )

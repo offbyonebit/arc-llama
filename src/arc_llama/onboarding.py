@@ -24,6 +24,7 @@ from arc_llama.model_library import (
     DownloadManager,
     fit_badge,
 )
+from arc_llama.recipes import KVCacheType, new_model_kv_type
 from arc_llama.starter_discovery import (
     Starter,
     check_runtime,
@@ -95,6 +96,11 @@ class FirstAnswerSetup:
             ]
         return names
 
+    def _fit_kv(self, gpu: GPUConfig) -> KVCacheType:
+        """KV cache the starter will get: setup installs Vulkan when no runtime exists yet."""
+        backend = gpu.backend if runtime_path(self.cfg) is not None else Backend.VULKAN.value
+        return new_model_kv_type(gpu.arch, backend)
+
     def _context(self) -> tuple[Any, ...]:
         gpu = enabled_gpu(self.cfg)
         return (gpu.pci_slot, gpu.vram_mb, gpu.backend) if gpu else (None,)
@@ -120,11 +126,15 @@ class FirstAnswerSetup:
             self.discovery_at = time.monotonic()
             return
         self.discovery_status = "searching"
-        self.discovery_task = asyncio.create_task(self._discover(context, gpu.vram_mb))
+        self.discovery_task = asyncio.create_task(
+            self._discover(context, gpu.vram_mb, self._fit_kv(gpu))
+        )
 
-    async def _discover(self, context: tuple[Any, ...], vram_mb: int) -> None:
+    async def _discover(
+        self, context: tuple[Any, ...], vram_mb: int, kv_type: KVCacheType = KVCacheType.Q8_0
+    ) -> None:
         try:
-            suggestion = await discover(vram_mb)
+            suggestion = await discover(vram_mb, kv_type=kv_type)
             if context != self._context() or self.starter:
                 return
             self.suggestion = suggestion
@@ -220,7 +230,7 @@ class FirstAnswerSetup:
             gpu is None
             or gpu.pci_slot != self.gpu_slot
             or self.starter is None
-            or fit_badge(self.starter.size_mb, gpu.vram_mb) != "fits"
+            or fit_badge(self.starter.size_mb, gpu.vram_mb, self._fit_kv(gpu)) != "fits"
         ):
             raise ValueError(
                 "The selected GPU or its available capacity changed. Review your hardware and choose another model."
@@ -252,7 +262,7 @@ class FirstAnswerSetup:
                         raise ValueError(
                             "No enabled GPU is configured. Check your hardware and retry."
                         )
-                    await validate(starter, gpu.vram_mb or 0)
+                    await validate(starter, gpu.vram_mb or 0, self._fit_kv(gpu))
                     if self._paused():
                         return
                     self._check_gpu()

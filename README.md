@@ -1,6 +1,6 @@
 # Arc Llama
 
-[![Arc Llama demo: arc-llama start detects an Arc Pro B60, Discover suggests models that fit its 24 GB, a chat answer streams at about 76 tokens per second, and a Work agent asks which language to use and for approval before writing a file](https://raw.githubusercontent.com/offbyonebit/arc-llama/v1.1.0/docs/media/demo.webp)](https://github.com/offbyonebit/arc-llama/blob/v1.1.0/docs/media/demo.mp4)
+![Arc Llama demo: arc-llama start detects an Arc Pro B60, Discover suggests models that fit its 24 GB, a chat answer streams at about 76 tokens per second, and a Work agent asks which language to use and for approval before writing a file](https://raw.githubusercontent.com/offbyonebit/arc-llama/v1.1.0/docs/media/demo.webp)
 
 > Run local LLMs on your Intel Arc GPU with one command.
 

@@ -30,6 +30,7 @@ from arc_llama.model_compatibility import (
     runtime_identity,
 )
 from arc_llama.model_library import fit_badge, group_repo_files
+from arc_llama.recipes import KVCacheType
 
 _REPO = re.compile(r"[A-Za-z0-9][\w.-]*/[\w.-]+\Z")
 _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -93,7 +94,9 @@ async def metadata(repo: str, revision: str | None = None) -> dict[str, Any]:
     return data
 
 
-def options(info: dict[str, Any], vram_mb: int) -> list[tuple[str, int, str]]:
+def options(
+    info: dict[str, Any], vram_mb: int, kv_type: KVCacheType = KVCacheType.Q8_0
+) -> list[tuple[str, int, str]]:
     """Reject unknown/partial shard sizes rather than underestimating the download."""
     repo = info.get("id", "")
     tags = info.get("tags") or []
@@ -130,7 +133,7 @@ def options(info: dict[str, Any], vram_mb: int) -> list[tuple[str, int, str]]:
             if isinstance(size, int) and not isinstance(size, bool) and size > 0
             else None
         )
-    grouped, vision = group_repo_files(list(files.items()), vram_mb)
+    grouped, vision = group_repo_files(list(files.items()), vram_mb, kv_type)
     if vision or any(
         "image-text" in str(tag) or "multimodal" in str(tag) for tag in tags
     ):
@@ -145,18 +148,20 @@ def options(info: dict[str, Any], vram_mb: int) -> list[tuple[str, int, str]]:
         if not names or any(not files.get(name) for name in names):
             continue
         total = sum(files[name] or 0 for name in names)
-        if fit_badge(math.ceil(total / 1_048_576), vram_mb) == "fits":
+        if fit_badge(math.ceil(total / 1_048_576), vram_mb, kv_type) == "fits":
             result.append((option.file, total, option.quant))
     # Standard 4-bit first for a modest first download, then larger fitting
     # variants within that quantization. The repository order comes from the Hub.
     return sorted(result, key=lambda row: (int(row[2][1]), -row[1], row[0]))
 
 
-async def candidate(info: dict[str, Any], vram_mb: int) -> Starter | None:
+async def candidate(
+    info: dict[str, Any], vram_mb: int, kv_type: KVCacheType = KVCacheType.Q8_0
+) -> Starter | None:
     revision = info.get("sha")
     if not isinstance(revision, str) or not _REVISION.fullmatch(revision):
         return None
-    choices = options(info, vram_mb)
+    choices = options(info, vram_mb, kv_type)
     if not choices:
         return None
     file, size, _ = choices[0]
@@ -197,7 +202,9 @@ async def candidate(info: dict[str, Any], vram_mb: int) -> Starter | None:
     )
 
 
-async def discover(vram_mb: int, *, timeout: float = 25) -> Starter | None:
+async def discover(
+    vram_mb: int, *, timeout: float = 25, kv_type: KVCacheType = KVCacheType.Q8_0
+) -> Starter | None:
     """At most 32 repo checks, four concurrent, under one cancellable deadline."""
 
     async def search() -> Starter | None:
@@ -216,7 +223,7 @@ async def discover(vram_mb: int, *, timeout: float = 25) -> Starter | None:
                 try:
                     info = await metadata(repo)
                     checked += 1
-                    return await candidate(info, vram_mb)
+                    return await candidate(info, vram_mb, kv_type)
                 except Exception:
                     return None  # One unavailable publisher cannot break the catalog.
 
@@ -236,7 +243,7 @@ async def discover(vram_mb: int, *, timeout: float = 25) -> Starter | None:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def pinned() -> Starter | None:
-        return await candidate(await metadata(*PINNED_STARTER), vram_mb)
+        return await candidate(await metadata(*PINNED_STARTER), vram_mb, kv_type)
 
     if os.environ.get("ARC_LLAMA_STARTER_CATALOG", "on").lower() == "off":
         return await asyncio.wait_for(pinned(), timeout=timeout)
@@ -258,12 +265,14 @@ async def discover(vram_mb: int, *, timeout: float = 25) -> Starter | None:
     return found
 
 
-async def validate(starter: Starter, vram_mb: int) -> None:
+async def validate(
+    starter: Starter, vram_mb: int, kv_type: KVCacheType = KVCacheType.Q8_0
+) -> None:
     # Exact accepted commit, never current HEAD. Recompute file size/eligibility.
     info = await asyncio.wait_for(metadata(starter.repo, starter.revision), timeout=12)
     if info.get("sha") != starter.revision or not any(
         file == starter.file and size == starter.size_bytes
-        for file, size, _ in options(info, vram_mb)
+        for file, size, _ in options(info, vram_mb, kv_type)
     ):
         raise ValueError(
             "The accepted model files cannot be confirmed to fit. Refresh the recommendation or use Discover."

@@ -213,7 +213,11 @@ async def test_library_endpoints(monkeypatch, tmp_path) -> None:
     server_mod, app = _app(monkeypatch, tmp_path)
     monkeypatch.setattr(server_mod, "search_repos", lambda q, limit: [{"repo": "u/r"}])
 
-    def fake_options(repo, vram):
+    def fake_options(repo, vram, kv_type):
+        from arc_llama.recipes import KVCacheType
+
+        # A Battlemage card on SYCL keeps the q8_0 estimate; Vulkan there would use f16.
+        assert kv_type == KVCacheType.Q8_0
         if repo == "u/broken":
             raise RuntimeError("hub down")
         return {"repo": repo, "vram_mb": vram, "options": [], "vision": False}

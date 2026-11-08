@@ -224,7 +224,7 @@ async def test_discovery_is_single_flight_cached_retryable_and_discards_changed_
     selected = await candidate(rows, 12288)
     gate = asyncio.Event()
 
-    async def lookup(vram):
+    async def lookup(vram, kv_type=None):
         await gate.wait()
         return selected
 
@@ -261,10 +261,10 @@ async def test_discovery_shutdown_cancels_pending_io(tmp_path, monkeypatch):
 
     gate = asyncio.Event()
     monkeypatch.setattr(
-        "arc_llama.onboarding.discover", AsyncMock(side_effect=lambda vram: None)
+        "arc_llama.onboarding.discover", AsyncMock(side_effect=lambda vram, kv_type=None: None)
     )
 
-    async def slow(vram):
+    async def slow(vram, kv_type=None):
         await gate.wait()
 
     monkeypatch.setattr("arc_llama.onboarding.discover", slow)

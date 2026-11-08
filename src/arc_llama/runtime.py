@@ -29,6 +29,7 @@ import httpx
 from arc_llama.arch import Backend
 from arc_llama.binary import detect_llama_server_backend
 from arc_llama.config import Config, default_state_dir, load_config
+from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 log = logging.getLogger("arc_llama.runtime")
 
@@ -121,6 +122,11 @@ def resolve_release(client: httpx.Client, version: str) -> dict:
     else:
         url = f"{GITHUB_API}/repos/{LLAMA_CPP_REPO}/releases/tags/{version}"
     r = client.get(url)
+    if version not in ("latest", "", None) and getattr(r, "status_code", None) == 404:
+        raise RuntimeInstallError(
+            f"llama.cpp build {version} was not found on GitHub ({LLAMA_CPP_REPO}). "
+            "Choose another build with --runtime-version (a tag such as b12193, or 'latest')."
+        )
     r.raise_for_status()
     return r.json()
 
@@ -407,7 +413,7 @@ def _runtime_ssl_context() -> ssl.SSLContext | bool:
 def install_runtime(
     *,
     backend: str = "vulkan",
-    version: str = "latest",
+    version: str = LLAMA_CPP_BUILD,
     dest: Path | None = None,
     cfg: Config | None = None,
     set_default: bool = True,
@@ -470,6 +476,13 @@ def install_runtime(
             if version in ("latest", "", None):
                 release = _resolve_release_with_asset(client, os_name, arch, backend)
                 asset = select_asset(release, os_name, arch, backend)
+            elif version == LLAMA_CPP_BUILD:
+                raise RuntimeInstallError(
+                    f"Arc Llama's pinned llama.cpp build {version} has no "
+                    f"{asset_suffix(os_name, arch, backend)} download any more. "
+                    "Install another build with --runtime-version (a tag, or 'latest'), "
+                    "or update Arc Llama."
+                ) from None
             else:
                 raise
         install_dir = dest / f"llama-{asset.tag}-{backend}"

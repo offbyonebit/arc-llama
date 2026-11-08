@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arc-llama"
-version = "1.1.0"
+version = "1.1.1"
 description = "Run local LLMs on Intel Arc GPUs with one command. Detects your card, installs a verified llama.cpp runtime (Vulkan or SYCL), and serves OpenAI and Ollama compatible APIs."
 readme = "README.md"
 license = { text = "MIT" }

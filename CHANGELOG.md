@@ -7,6 +7,26 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-07
+
+### Changed
+- New Battlemage (Xe2) models on the Vulkan backend start with an f16 KV cache and flash attention
+  off, instead of a q8_0 KV cache with flash attention forced on. Xe2 drivers report only an 8x16x16
+  cooperative-matrix shape, so llama.cpp's Vulkan flash attention runs a scalar path (llama.cpp
+  issues 30503 and 27638). Measured on an Arc Pro B60 with Ornith 1.5 9B Q4_K_M and llama.cpp b12193:
+  prompt processing at 16K tokens 532 to 820 tok/s (+54%), generation at 16K depth 13.6 to 19.1 tok/s
+  (+40%). Discover and guided setup size models for the f16 cache on these GPUs. Saved recipes,
+  other GPUs and the SYCL backend are unchanged. To be revisited once llama.cpp PR 30351 ships.
+- Stability: the llama.cpp runtime that `install-runtime`, `run`, `setup` and guided setup install is
+  now a fixed, tested build (b12193) for Vulkan and SYCL on Linux and Windows, instead of whichever
+  build ggml-org published most recently. `--runtime-version latest` (or any tag) still chooses
+  another build, the download is still checked against its SHA-256, and a missing pinned download
+  now says so plainly.
+
+### Fixed
+- The demo at the top of the README no longer links to the MP4, which GitHub downloads instead of
+  playing.
+
 ## [1.1.0] - 2026-11-07
 
 Arc Llama 1.1: install OpenCode or Hermes for Work from inside the app, a Linux command sandbox,

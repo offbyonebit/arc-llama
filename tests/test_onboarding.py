@@ -86,7 +86,7 @@ def setup(tmp_path, monkeypatch):
 
     metadata = Mock(side_effect=options)
 
-    async def validate(s, vram):
+    async def validate(s, vram, kv_type=None):
         result = metadata(s.repo, vram)
         option = next((o for o in result["options"] if o["file"] == s.file), None)
         if (
@@ -100,10 +100,10 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(onboarding, "validate", validate)
     monkeypatch.setattr(onboarding, "check_runtime", AsyncMock())
 
-    async def discover(vram):
+    async def discover(vram, *, kv_type):
         from arc_llama.model_library import fit_badge
 
-        return next((s for s in STARTERS if fit_badge(s.size_mb, vram) == "fits"), None)
+        return next((s for s in STARTERS if fit_badge(s.size_mb, vram, kv_type) == "fits"), None)
 
     monkeypatch.setattr(onboarding, "discover", discover)
 

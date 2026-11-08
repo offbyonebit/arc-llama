@@ -100,7 +100,7 @@ def test_catalog_caches_complete_results_and_retries_failures() -> None:
     calls: list[str] = []
     broken = {FEATURED[0].id}
 
-    def entry_fn(item, vram_mb):
+    def entry_fn(item, vram_mb, kv_type=None):
         calls.append(item.id)
         if item.id in broken:
             raise RuntimeError("hub down")
@@ -123,7 +123,7 @@ def test_catalog_caches_complete_results_and_retries_failures() -> None:
 
 
 def test_catalog_reports_offline_when_every_fetch_fails() -> None:
-    def entry_fn(item, vram_mb):
+    def entry_fn(item, vram_mb, kv_type=None):
         raise OSError("no network")
 
     data = asyncio.run(FeaturedCatalog(entry_fn).get(None, None))
@@ -135,8 +135,8 @@ async def test_featured_endpoint_requires_admin_and_passes_gpu(monkeypatch, tmp_
     seen = []
 
     class Catalog:
-        async def get(self, vram_mb, gpu_name):
-            seen.append((vram_mb, gpu_name))
+        async def get(self, vram_mb, gpu_name, kv_type):
+            seen.append((vram_mb, gpu_name, kv_type))
             return {"entries": [], "vram_mb": vram_mb, "gpu_name": gpu_name}
 
     async with app.router.lifespan_context(app):
@@ -146,4 +146,6 @@ async def test_featured_endpoint_requires_admin_and_passes_gpu(monkeypatch, tmp_
             response = await client.get("/admin/library/featured", headers={"Authorization": "Bearer tok"})
             assert response.status_code == 200
     gpu = next(g for g in app.state.cfg.gpus if g.enabled)
-    assert seen == [(gpu.vram_mb, gpu.name)]
+    from arc_llama.recipes import new_model_kv_type
+
+    assert seen == [(gpu.vram_mb, gpu.name, new_model_kv_type(gpu.arch, gpu.backend))]

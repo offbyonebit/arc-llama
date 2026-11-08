@@ -45,13 +45,16 @@ def quant_label(filename: str) -> str:
     return match.group(0).upper() if match else "unknown"
 
 
-def memory_need_mb(size_mb: int, ctx: int = FIT_CTX) -> int:
-    """GPU memory for a model file of ``size_mb`` plus a ``ctx``-token conversation."""
-    kv = estimate_kv_bytes(ctx, KVCacheType.Q8_0) // 1_048_576
+def memory_need_mb(size_mb: int, ctx: int = FIT_CTX, kv_type: KVCacheType = KVCacheType.Q8_0) -> int:
+    """GPU memory for a model file of ``size_mb`` plus a ``ctx``-token conversation.
+
+    ``kv_type`` is the cache a new model would get on this GPU and backend
+    (see :func:`arc_llama.recipes.new_model_kv_type`)."""
+    kv = estimate_kv_bytes(ctx, kv_type) // 1_048_576
     return size_mb + kv + _COMPUTE_MB + _SAFETY_MB
 
 
-def fit_badge(size_mb: int, vram_mb: int | None) -> str:
+def fit_badge(size_mb: int, vram_mb: int | None, kv_type: KVCacheType = KVCacheType.Q8_0) -> str:
     """``fits``, ``tight``, ``too_big``, or ``unknown`` for a model of ``size_mb``.
 
     Uses the generic KV-per-token constant: the exact figure needs the GGUF
@@ -62,9 +65,9 @@ def fit_badge(size_mb: int, vram_mb: int | None) -> str:
         return "unknown"
     # "fits" keeps 10% of the card free for the driver, desktop, and
     # estimate error; "tight" only promises a short context.
-    if memory_need_mb(size_mb, FIT_CTX) <= vram_mb * 0.9:
+    if memory_need_mb(size_mb, FIT_CTX, kv_type) <= vram_mb * 0.9:
         return "fits"
-    if memory_need_mb(size_mb, TIGHT_CTX) <= vram_mb:
+    if memory_need_mb(size_mb, TIGHT_CTX, kv_type) <= vram_mb:
         return "tight"
     return "too_big"
 
@@ -82,7 +85,9 @@ class QuantOption:
 
 
 def group_repo_files(
-    files: list[tuple[str, int | None]], vram_mb: int | None
+    files: list[tuple[str, int | None]],
+    vram_mb: int | None,
+    kv_type: KVCacheType = KVCacheType.Q8_0,
 ) -> tuple[list[QuantOption], bool]:
     """Turn a repo's ``(path, size)`` list into downloadable options.
 
@@ -107,9 +112,11 @@ def group_repo_files(
             QuantOption(file=name, quant=quant_label(name), size_mb=size_mb, shards=len(shards))
         )
     for option in options:
-        option.fit = fit_badge(option.size_mb, vram_mb) if option.size_mb else "unknown"
+        option.fit = fit_badge(option.size_mb, vram_mb, kv_type) if option.size_mb else "unknown"
         if option.size_mb:
-            option.need_mb = memory_need_mb(option.size_mb, TIGHT_CTX if option.fit == "tight" else FIT_CTX)
+            option.need_mb = memory_need_mb(
+                option.size_mb, TIGHT_CTX if option.fit == "tight" else FIT_CTX, kv_type
+            )
     options.sort(key=lambda o: (o.size_mb, o.file))
     return options, vision
 
@@ -139,12 +146,14 @@ def search_repos(query: str, *, limit: int = 20, api: Any = None) -> list[dict[s
     return out
 
 
-def repo_options(repo: str, vram_mb: int | None, *, api: Any = None) -> dict[str, Any]:
+def repo_options(
+    repo: str, vram_mb: int | None, *, api: Any = None, kv_type: KVCacheType = KVCacheType.Q8_0
+) -> dict[str, Any]:
     if not _REPO_RE.match(repo):
         raise ValueError("repo must look like owner/name")
     info = _api(api).model_info(repo, files_metadata=True)
     files = [(s.rfilename, getattr(s, "size", None)) for s in (info.siblings or [])]
-    options, vision = group_repo_files(files, vram_mb)
+    options, vision = group_repo_files(files, vram_mb, kv_type)
     return {
         "repo": repo,
         "vision": vision,

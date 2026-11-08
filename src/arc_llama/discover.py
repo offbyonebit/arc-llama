@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from arc_llama.model_library import QuantOption, _api, group_repo_files
+from arc_llama.recipes import KVCacheType
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,13 @@ def _license(card: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def featured_entry(item: Featured, vram_mb: int | None, *, api: Any = None) -> dict[str, Any]:
+def featured_entry(
+    item: Featured,
+    vram_mb: int | None,
+    kv_type: KVCacheType = KVCacheType.Q8_0,
+    *,
+    api: Any = None,
+) -> dict[str, Any]:
     """One card: curated text plus live Hub figures and the file to download."""
     owner = item.repo.split("/", 1)[0]
     entry: dict[str, Any] = {
@@ -120,7 +127,7 @@ def featured_entry(item: Featured, vram_mb: int | None, *, api: Any = None) -> d
     }
     info = _api(api).model_info(item.repo, files_metadata=True)
     files = [(s.rfilename, getattr(s, "size", None)) for s in (info.siblings or [])]
-    options, vision = group_repo_files(files, vram_mb)
+    options, vision = group_repo_files(files, vram_mb, kv_type)
     pick = pick_option(options)
     modified: Any = getattr(info, "last_modified", None)
     entry.update(
@@ -141,16 +148,22 @@ class FeaturedCatalog:
 
     def __init__(self, entry_fn: Any = featured_entry) -> None:
         self._entry_fn = entry_fn
-        self._cache: dict[int | None, tuple[float, dict[str, Any]]] = {}
+        self._cache: dict[tuple[int | None, KVCacheType], tuple[float, dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
-    async def get(self, vram_mb: int | None, gpu_name: str | None) -> dict[str, Any]:
+    async def get(
+        self,
+        vram_mb: int | None,
+        gpu_name: str | None,
+        kv_type: KVCacheType = KVCacheType.Q8_0,
+    ) -> dict[str, Any]:
+        key = (vram_mb, kv_type)
         async with self._lock:
-            cached = self._cache.get(vram_mb)
+            cached = self._cache.get(key)
             if cached and time.monotonic() - cached[0] < self.TTL:
                 return {**cached[1], "gpu_name": gpu_name}
             results = await asyncio.gather(
-                *(asyncio.to_thread(self._entry_fn, item, vram_mb) for item in FEATURED),
+                *(asyncio.to_thread(self._entry_fn, item, vram_mb, kv_type) for item in FEATURED),
                 return_exceptions=True,
             )
             entries = []
@@ -169,5 +182,5 @@ class FeaturedCatalog:
             }
             # A partly failed fetch is retried on the next visit, not kept for hours.
             if not any("error" in e for e in entries):
-                self._cache[vram_mb] = (time.monotonic(), data)
+                self._cache[key] = (time.monotonic(), data)
             return {**data, "gpu_name": gpu_name}

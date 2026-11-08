@@ -24,6 +24,7 @@ from arc_llama.runtime import (
     extract_archive,
     host_platform,
     install_runtime,
+    resolve_release,
     select_asset,
 )
 
@@ -584,3 +585,87 @@ def test_runtime_tls_respects_platform_and_explicit_ca(monkeypatch, windows, ove
     else:
         assert result is True  # let httpx honour its normal CA/environment policy
         create.assert_not_called()
+
+
+def test_default_install_uses_the_pinned_build(monkeypatch, tmp_path):
+    """New installs get the pinned llama.cpp build, not whatever is newest."""
+    import arc_llama.runtime as rt
+    from arc_llama.config import Config, PathsConfig
+    from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+    fake_archive = _build_fake_archive(tmp_path)
+    requested = []
+
+    def fake_resolve(client, version):
+        requested.append(version)
+        return _fake_release()
+
+    monkeypatch.setattr(rt, "resolve_release", fake_resolve)
+    monkeypatch.setattr(rt, "download_asset", lambda c, a, d, on_progress=None: shutil.copy(fake_archive, d) and d)
+    monkeypatch.setattr(rt, "detect_llama_server_backend", lambda p: Backend.VULKAN)
+    monkeypatch.setattr(rt, "host_platform", lambda: ("linux", "x64"))
+
+    cfg = Config(paths=PathsConfig(state_dir=str(tmp_path), llama_server=""))
+    install_runtime(backend="vulkan", cfg=cfg, set_default=False, config_path=tmp_path / "c.toml")
+    assert requested == [LLAMA_CPP_BUILD]
+
+
+def test_pinned_build_without_the_asset_fails_clearly_without_fallback(monkeypatch, tmp_path):
+    import arc_llama.runtime as rt
+    from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+    monkeypatch.setattr(rt, "resolve_release", lambda client, version: {"tag_name": version, "assets": []})
+    monkeypatch.setattr(rt, "host_platform", lambda: ("windows", "x64"))
+
+    def no_fallback(*_args, **_kwargs):
+        raise AssertionError("the pinned build must not fall back to another build")
+
+    monkeypatch.setattr(rt, "_resolve_release_with_asset", no_fallback)
+    with pytest.raises(RuntimeInstallError) as exc:
+        install_runtime(backend="sycl", dest=tmp_path / "rt", set_default=False)
+    message = str(exc.value)
+    assert f"pinned llama.cpp build {LLAMA_CPP_BUILD}" in message
+    assert "bin-win-sycl-x64.zip" in message
+    assert "--runtime-version" in message
+
+
+def test_latest_still_falls_back_to_a_build_with_the_asset(monkeypatch, tmp_path):
+    import arc_llama.runtime as rt
+
+    monkeypatch.setattr(rt, "resolve_release", lambda client, version: {"tag_name": "v0.9.0", "assets": []})
+    fallback = []
+
+    def fake_fallback(client, os_name, arch, backend):
+        fallback.append((os_name, backend))
+        raise RuntimeInstallError("stop here")
+
+    monkeypatch.setattr(rt, "_resolve_release_with_asset", fake_fallback)
+    monkeypatch.setattr(rt, "host_platform", lambda: ("linux", "x64"))
+    with pytest.raises(RuntimeInstallError, match="stop here"):
+        install_runtime(backend="vulkan", version="latest", dest=tmp_path / "rt", set_default=False)
+    assert fallback == [("linux", "vulkan")]
+
+
+def test_missing_release_tag_is_a_clear_install_error():
+    class Response:
+        status_code = 404
+
+        def raise_for_status(self):
+            raise AssertionError("a missing tag must not surface as a raw HTTP error")
+
+    class Client:
+        def get(self, url):
+            assert url.endswith("/releases/tags/b1")
+            return Response()
+
+    with pytest.raises(RuntimeInstallError, match="build b1 was not found"):
+        resolve_release(Client(), "b1")
+
+
+def test_install_commands_default_to_the_pinned_build():
+    from arc_llama.cli import cli
+    from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+    for name in ("install-runtime", "run", "setup"):
+        option = next(p for p in cli.commands[name].params if p.name == "runtime_version")
+        assert option.default == LLAMA_CPP_BUILD, name
