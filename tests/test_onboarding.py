@@ -119,7 +119,7 @@ def setup(tmp_path, monkeypatch):
 
     def register(c, paths, *, gpu_pci_slot):
         model = ModelConfig(
-            "starter", str(paths[0]), 18080, "gpu", recipe={"ctx": 32768}
+            "starter", str(paths[0]), 18080, "gpu", recipe={"ctx": 131072}
         )
         c.models.append(model)
         return [model]
@@ -176,7 +176,7 @@ async def test_fresh_explicit_setup_prepares_registers_and_loads_exact_model(set
     manager.router.ensure_active.assert_awaited_once_with(
         "starter", allow_eviction=False
     )
-    assert manager.cfg.models[0].recipe == {"ctx": 4096, "parallel": 1}
+    assert manager.cfg.models[0].recipe == {"ctx": 65536, "parallel": 1}
     assert manager.public()["chat_url"] == "/chat?model=starter&welcome=1"
     assert manager.download.bytes_done == manager.download.bytes_total
     await manager.shutdown()
@@ -481,6 +481,8 @@ async def test_full_app_setup_routes_register_into_real_router_without_a_prompt(
             assert status["models"][0]["loaded"] is True
             assert status["gpus"][0]["backend"] == "vulkan"
             assert FakeServer.starts == [actual.model]
+            # A 4 GB card can't hold 64K, so the starter steps down to what loads.
+            assert 4096 <= cfg.models[0].recipe["ctx"] < 65536
             download.assert_called_once()
 
 

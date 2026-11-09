@@ -76,10 +76,23 @@ class FirstAnswerSetup:
         previous = list(self.cfg.models)
         added = register_discovered(self.cfg, [path], gpu_pci_slot=gpu.pci_slot)
         # Registration runs against the same enabled GPU used for the estimate.
-        # A modest context keeps the first load quick; users can change it later.
+        # Give Work room: Hermes refuses under 64,000 tokens and OpenCode's
+        # first request is ~5K. Take the largest step the router will admit.
+        from arc_llama.router import _estimate_model_vram_mb
+
         for model in added:
-            model.recipe["ctx"] = min(model.recipe.get("ctx", 4096), 4096)
+            fitted = model.recipe.get("ctx", 4096)
             model.recipe["parallel"] = 1
+            model.recipe["ctx"] = next(
+                (
+                    ctx
+                    for ctx in (65536, 32768, 16384)
+                    if ctx <= fitted
+                    and (need := _estimate_model_vram_mb(model, ctx=ctx)) is not None
+                    and need <= (gpu.vram_mb or 0)
+                ),
+                4096,
+            )
         if added:
             try:
                 self.cfg.save(self.config_path)
