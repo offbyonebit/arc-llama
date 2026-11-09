@@ -37,6 +37,12 @@ _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _CHAT = re.compile(
     r"(?:^|[^a-z])(instruct(?:ion)?|chat|conversational)(?:$|[^a-z])", re.I
 )
+# Repo names, tags or files that mark a GGUF llama.cpp will not chat with:
+# typed decision models answer only on /v1/systemone, classifiers and
+# rerankers return scores, a draft file only feeds speculative decoding.
+# GGUF headers mark decision models only after the vocabulary, too far in
+# for the bounded header read, so the Hub's names and tags are the check.
+_NOT_CHAT = re.compile(r"decision|classifi|rerank|system-?one|draft", re.I)
 _LIMIT = 32
 # Pinned to the commit used in the Windows 1.1 validation. It goes through the
 # same fit, license and architecture checks as a catalog pick.
@@ -110,6 +116,8 @@ def options(
     )
     if info.get("pipeline_tag") != "text-generation" or not chat:
         return []
+    if _NOT_CHAT.search(str([repo, tags])):
+        return []
     if not isinstance(card, dict) or not isinstance(tags, list):
         return []
     siblings = info.get("siblings", [])
@@ -141,6 +149,8 @@ def options(
     result = []
     for option in grouped:
         if not re.fullmatch(r"Q[4-8](?:_[A-Z0-9]+)*", option.quant):
+            continue
+        if _NOT_CHAT.search(option.file):
             continue
         shards = gguf_shards(option.file)
         prefix = PurePosixPath(option.file).parent

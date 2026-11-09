@@ -82,6 +82,10 @@ async def test_unseen_catalog_identity_changes_without_changing_code(hub):
         "vision",
         "unsafe",
         "unknown_quant",
+        "decision",
+        "decision_name",
+        "systemone_file",
+        "draft_file",
     ],
 )
 def test_ineligible_files_are_not_recommended(defect):
@@ -106,6 +110,16 @@ def test_ineligible_files_are_not_recommended(defect):
         row["siblings"][0]["rfilename"] = "../chat-Q4_K_M.gguf"
     if defect == "unknown_quant":
         row["siblings"][0]["rfilename"] = "chat.gguf"
+    if defect == "decision":
+        # A typed decision model still says text-generation and conversational.
+        row["tags"] += ["conversational", "classification", "decision-model"]
+    if defect == "decision_name":
+        row["id"] = "publisher/OTel-2.0-Decision-26B-A4B-4bit"
+        row["tags"] += ["conversational"]
+    if defect == "systemone_file":
+        row["siblings"][0]["rfilename"] = "chat-Q4_K_M_systemone.gguf"
+    if defect == "draft_file":
+        row["siblings"][0]["rfilename"] = "chat-draft-Q8_0.gguf"
     assert not options(row, 12288)
 
 
