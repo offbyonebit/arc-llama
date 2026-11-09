@@ -44,6 +44,8 @@ _CHAT = re.compile(
 # for the bounded header read, so the Hub's names and tags are the check.
 _NOT_CHAT = re.compile(r"decision|classifi|rerank|system-?one|draft", re.I)
 _LIMIT = 32
+# A first answer should not wait on a huge download; Discover has the rest.
+_MAX_STARTER_BYTES = 10 * 1024**3
 # Pinned to the commit used in the Windows 1.1 validation. It goes through the
 # same fit, license and architecture checks as a catalog pick.
 PINNED_STARTER = ("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "9217f5db79a29953eb74d5343926648285ec7e67")
@@ -158,6 +160,8 @@ def options(
         if not names or any(not files.get(name) for name in names):
             continue
         total = sum(files[name] or 0 for name in names)
+        if total > _MAX_STARTER_BYTES:
+            continue
         if fit_badge(math.ceil(total / 1_048_576), vram_mb, kv_type) == "fits":
             result.append((option.file, total, option.quant))
     # Standard 4-bit first for a modest first download, then larger fitting

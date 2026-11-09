@@ -155,6 +155,12 @@ async def test_revision_size_license_and_architecture_come_from_publisher(
     assert await candidate(rows[0], 12288) is None
 
 
+def test_starter_download_stays_small_on_a_big_card():
+    row = info()
+    row["siblings"].append({"rfilename": "chat-Q4_0.gguf", "size": 12_000_000_000})
+    assert [file for file, _, _ in options(row, 49152)] == ["chat-Q4_K_M.gguf"]
+
+
 async def test_broken_high_rank_does_not_hide_suitable_lower_rank(hub, monkeypatch):
     rows, _ = hub
     rows.insert(0, info("publisher/broken-chat"))
