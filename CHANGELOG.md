@@ -39,9 +39,11 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 - The first-run starter caps its thinking at 512 tokens (`--reasoning-budget 512`), so a reasoning
   starter like Ornith-1.0-9B answers an ordinary prompt inside Chat's 1,024-token default reply
   instead of spending it all on thinking and showing an empty answer. When the cap hits, a short
-  `--reasoning-budget-message` line closes the thinking so the model answers instead of carrying on
-  drafting in the reply. Runtimes without a token `--reasoning-budget` launch without either flag.
-  Remove both from the model's `extra_flags` in config.toml to let it think longer.
+  `--reasoning-budget-message` line closes the thinking so the model writes one final answer with no
+  drafts, word counts or self-checks after it. Runtimes without a token `--reasoning-budget` launch
+  without either flag. Remove both from the model's `extra_flags` in config.toml to let it think
+  longer. The starter also gets the sampling its model card recommends (temperature 0.6, top-p 0.95,
+  top-k 20) instead of llama-server's defaults.
 - Installing OpenCode or Hermes from the Work page failed with "Admin token required". The Work page
   now sends the same credentials as System > Agents for Work.
 - A model with a q8_0 KV cache on Vulkan launched with both `-fa off` and `--flash-attn on`

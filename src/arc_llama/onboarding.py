@@ -54,8 +54,12 @@ STARTER_REASONING_BUDGET = [
     "--reasoning-budget",
     "512",
     "--reasoning-budget-message",
-    " Okay, I've thought about this enough. Now I'll write my final answer directly, without drafts or notes.",
+    " Okay, I've thought about this enough. Now I'll write only the final answer and stop there,"
+    " with no word count, notes or self-checks after it.",
 ]
+#: Sampling the Ornith and Qwen3 thinking cards recommend; llama-server's own
+#: defaults (temp 0.8, top-k 40) leave more room for stray notes after the answer.
+STARTER_SAMPLING = {"temp": 0.6, "top_p": 0.95, "top_k": 20}
 
 
 class FirstAnswerSetup:
@@ -96,6 +100,7 @@ class FirstAnswerSetup:
             # Cap thinking so a reasoning starter still answers inside Chat's
             # 1024-token default reply instead of spending it all on thinking.
             model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_REASONING_BUDGET]
+            model.recipe.update(STARTER_SAMPLING)
             model.recipe["ctx"] = next(
                 (
                     ctx
