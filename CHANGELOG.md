@@ -7,7 +7,7 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
-## [1.1.1] - 2026-11-07
+## [1.1.1] - 2026-11-10
 
 ### Changed
 - New Battlemage (Xe2) models on the Vulkan backend start with an f16 KV cache and flash attention
@@ -22,8 +22,24 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
   build ggml-org published most recently. `--runtime-version latest` (or any tag) still chooses
   another build, the download is still checked against its SHA-256, and a missing pinned download
   now says so plainly.
+- Auto-tune no longer tries a q8_0 KV cache or other flash attention modes for Battlemage models on
+  Vulkan, so the f16 KV, flash attention off default above stays put.
 
 ### Fixed
+- First-run setup no longer picks a starter model that can't chat. The starter search checked fit,
+  quantization and architecture but not whether the model chats, so on Nov 9 it offered a typed decision model on 24 GB cards
+  (llama.cpp refuses chat with it) and a speculative-decoding draft file on smaller ones. Repos,
+  tags and files that mark decision models, classifiers, rerankers or draft models are now skipped
+  before anything downloads. `ARC_LLAMA_STARTER_CATALOG=off` remains the fully repeatable choice.
+- The first-run starter download stays under 10 GiB, so a large card gets a quick first answer
+  instead of a 16 GB download. Discover still offers the larger models.
+- First-run setup gives the starter up to a 64K context (stepping down to 32K or 16K when the card
+  can't hold it) instead of 4,096 tokens, so OpenCode and Hermes can run a Work task on it. Hermes
+  needs at least 64K.
+- Installing OpenCode or Hermes from the Work page failed with "Admin token required". The Work page
+  now sends the same credentials as System > Agents for Work.
+- A model with a q8_0 KV cache on Vulkan launched with both `-fa off` and `--flash-attn on`
+  (llama.cpp used the last one). Each launch now carries one flash attention flag.
 - The demo at the top of the README no longer links to the MP4, which GitHub downloads instead of
   playing.
 
