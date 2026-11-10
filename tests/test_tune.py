@@ -883,3 +883,28 @@ async def test_apply_state_to_recipe_mirrors_endpoint_rules():
     assert m.recipe == {"cache_type_k": "q8_0"}
     _apply_state_to_recipe(m, {"flash_attn": None, "ubatch_size": 1024})
     assert m.recipe == {"cache_type_k": "q8_0", "ubatch_size": 1024}
+
+
+async def test_battlemage_vulkan_keeps_f16_kv_and_fa_off(cfg, monkeypatch):
+    """Battlemage on Vulkan never tries q8_0 KV or a flash-attn mode: q8_0
+    forces FA on, which the scalar FA path makes slower at depth."""
+    cfg.gpus[0].backend = "vulkan"
+    cfg.models[0].recipe = {
+        "ctx": 8192,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16",
+        "flash_attn": "off",
+    }
+    fake = FakeMeasurements({("q8_0", 512, "off"): (5000.0, 99.0)}, cfg)
+    monkeypatch.setattr("arc_llama.tune._apply_edits", fake.apply)
+    monkeypatch.setattr("arc_llama.tune.benchmark_model", fake.bench)
+
+    calls: list[str] = []
+    report = await tune_model(
+        "http://127.0.0.1:11437", "m", cfg=cfg, on_stage=lambda name, i, total: calls.append(name)
+    )
+
+    assert report.error is None
+    assert not any(name.startswith("fa=") for name in calls)
+    assert all(e.get("cache_type_k") != "q8_0" and "flash_attn" not in e for e in fake.edits_seen)
+    assert fake.state["cache_type_k"] == "f16" and fake.state["flash_attn"] == "off"

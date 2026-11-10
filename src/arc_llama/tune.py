@@ -506,10 +506,15 @@ async def tune_model(
     priority = workload.score_priority(cfg)
     deep_tokens = workload.deep_prompt_tokens(cfg, original)
 
+    from arc_llama.recipes import VULKAN_SCALAR_FA_ARCHES
+
+    # Keep the measured f16 KV + FA off default: q8_0 forces FA on, and a short
+    # tune prompt can't see the scalar FA path's cost at depth.
+    scalar_fa = bool(gpu and gpu.backend == "vulkan" and profile.arch in VULKAN_SCALAR_FA_ARCHES)
     stages = build_stages(
         original,
-        safe_kv_q8=profile.safe_kv_q8,
-        fa_supported=caps.supports_flash_attn,
+        safe_kv_q8=profile.safe_kv_q8 and not scalar_fa,
+        fa_supported=caps.supports_flash_attn and not scalar_fa,
         fa_takes_value=caps.flash_attn_takes_value,
         vram_mb=gpu.vram_mb if gpu else None,
         kv_candidates=kv_candidates,

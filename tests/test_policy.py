@@ -64,6 +64,25 @@ class TestApplyLaunchPolicy:
         idx = out.extra_flags.index("--flash-attn")
         assert out.extra_flags[idx + 1] == "on"
 
+    def test_vulkan_q8_with_fa_off_field_launches_one_fa_flag(self):
+        # A tuned recipe can hold q8_0 KV with flash_attn="off"; the launch
+        # used to carry both "-fa off" and "--flash-attn on".
+        recipe = LaunchRecipe(
+            cache_type_k=KVCacheType.Q8_0,
+            cache_type_v=KVCacheType.Q8_0,
+            flash_attn="off",
+        )
+        out = apply_launch_policy(
+            recipe,
+            arch=Arch.BATTLEMAGE,
+            backend=Backend.VULKAN,
+            model_path="/m.gguf",
+        )
+        argv = out.to_argv()
+        fa = [i for i, a in enumerate(argv) if a in ("-fa", "--flash-attn")]
+        assert len(fa) == 1
+        assert argv[fa[0] + 1] == "on"
+
     def test_sycl_leaves_explicit_fa_off_alone(self):
         # SYCL does not force FA; leave user flags alone.
         recipe = LaunchRecipe(
