@@ -1004,3 +1004,12 @@ def test_work_approval_is_truthful_about_paths_outside_the_folder():
     assert "/p/thread/fruit.txt" in out["stray"]["body"] and "not inside /p/thread/work" in out["stray"]["body"]
     assert out["inside"]["outside"] is False and "in your project folder" in out["inside"]["body"]
     assert out["external"]["outside"] is True                          # the harness's own signal is honoured too
+
+
+def test_work_page_harness_installs_send_the_admin_token():
+    """Work hands its request to harnesses.js for /admin/harnesses calls, and
+    the client fetch wrapper only adds credentials to /v1 and /api paths."""
+    chat = (STATIC / "chat.js").read_text(encoding="utf-8")
+    work = chat[chat.index("window.ArcChat.createWork({") :]
+    work = work[: work.index("});")]
+    assert "authHeaders(" in work
