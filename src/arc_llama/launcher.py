@@ -513,6 +513,10 @@ def build_plan(
             "[%s] %s has no --tensor-split; using a single GPU", model.name, binary
         )
         recipe.tensor_split = None
+    if "--reasoning-budget" in recipe.extra_flags and not caps.supports_reasoning_budget:
+        i = recipe.extra_flags.index("--reasoning-budget")
+        log.warning("[%s] %s has no token --reasoning-budget; thinking is uncapped", model.name, binary)
+        recipe.extra_flags = recipe.extra_flags[:i] + recipe.extra_flags[i + 2 :]
 
     argv: list[str] = [
         binary,

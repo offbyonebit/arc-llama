@@ -36,6 +36,11 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 - First-run setup gives the starter up to a 64K context (stepping down to 32K or 16K when the card
   can't hold it) instead of 4,096 tokens, so OpenCode and Hermes can run a Work task on it. Hermes
   needs at least 64K.
+- The first-run starter caps its thinking at 512 tokens (`--reasoning-budget 512`), so a reasoning
+  starter like Ornith-1.0-9B answers an ordinary prompt inside Chat's 1,024-token default reply
+  instead of spending it all on thinking and showing an empty answer. Runtimes whose
+  `--reasoning-budget` only takes -1 or 0 launch without it. Remove it from the model's extra flags
+  to let it think longer.
 - Installing OpenCode or Hermes from the Work page failed with "Admin token required". The Work page
   now sends the same credentials as System > Agents for Work.
 - A model with a q8_0 KV cache on Vulkan launched with both `-fa off` and `--flash-attn on`

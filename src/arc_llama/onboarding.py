@@ -48,6 +48,10 @@ def runtime_path(cfg: Config) -> Path | None:
     return Path(found) if found else None
 
 
+#: llama-server stops thinking after this many tokens, then answers.
+STARTER_REASONING_BUDGET = ["--reasoning-budget", "512"]
+
+
 class FirstAnswerSetup:
     def __init__(self, cfg: Config, config_path: Path, router: Any) -> None:
         self.cfg, self.config_path, self.router = cfg, config_path, router
@@ -83,6 +87,9 @@ class FirstAnswerSetup:
         for model in added:
             fitted = model.recipe.get("ctx", 4096)
             model.recipe["parallel"] = 1
+            # Cap thinking so a reasoning starter still answers inside Chat's
+            # 1024-token default reply instead of spending it all on thinking.
+            model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_REASONING_BUDGET]
             model.recipe["ctx"] = next(
                 (
                     ctx

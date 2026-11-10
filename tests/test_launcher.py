@@ -715,6 +715,16 @@ class TestBuildPlanFlashAttn:
         gpu = GPUConfig(pci_slot="00:00.0", sycl_index=0, arch="battlemage")
         return build_plan(cfg, model, gpu)
 
+    @pytest.mark.parametrize("supported", [True, False])
+    def test_reasoning_budget_needs_a_token_budget_binary(self, monkeypatch, supported):
+        plan = self._plan(
+            {"extra_flags": ["--reasoning-budget", "512", "--jinja"]},
+            {"supports_reasoning_budget": supported, "probed": True},
+            monkeypatch,
+        )
+        assert ("--reasoning-budget" in plan.argv) is supported
+        assert "--jinja" in plan.argv and ("512" in plan.argv) is supported
+
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
         plan = self._plan(
             {"flash_attn": "on"},

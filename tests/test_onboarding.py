@@ -176,7 +176,11 @@ async def test_fresh_explicit_setup_prepares_registers_and_loads_exact_model(set
     manager.router.ensure_active.assert_awaited_once_with(
         "starter", allow_eviction=False
     )
-    assert manager.cfg.models[0].recipe == {"ctx": 65536, "parallel": 1}
+    assert manager.cfg.models[0].recipe == {
+        "ctx": 65536,
+        "parallel": 1,
+        "extra_flags": ["--reasoning-budget", "512"],
+    }
     assert manager.public()["chat_url"] == "/chat?model=starter&welcome=1"
     assert manager.download.bytes_done == manager.download.bytes_total
     await manager.shutdown()
