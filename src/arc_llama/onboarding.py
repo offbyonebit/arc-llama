@@ -48,8 +48,14 @@ def runtime_path(cfg: Config) -> Path | None:
     return Path(found) if found else None
 
 
-#: llama-server stops thinking after this many tokens, then answers.
-STARTER_REASONING_BUDGET = ["--reasoning-budget", "512"]
+#: llama-server stops thinking after this many tokens and adds this line before
+#: closing the thinking, so the model answers instead of drafting in the reply.
+STARTER_REASONING_BUDGET = [
+    "--reasoning-budget",
+    "512",
+    "--reasoning-budget-message",
+    " Okay, I've thought about this enough. Now I'll write my final answer directly, without drafts or notes.",
+]
 
 
 class FirstAnswerSetup:

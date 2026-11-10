@@ -718,11 +718,12 @@ class TestBuildPlanFlashAttn:
     @pytest.mark.parametrize("supported", [True, False])
     def test_reasoning_budget_needs_a_token_budget_binary(self, monkeypatch, supported):
         plan = self._plan(
-            {"extra_flags": ["--reasoning-budget", "512", "--jinja"]},
+            {"extra_flags": ["--reasoning-budget", "512", "--reasoning-budget-message", " Answer now.", "--jinja"]},
             {"supports_reasoning_budget": supported, "probed": True},
             monkeypatch,
         )
         assert ("--reasoning-budget" in plan.argv) is supported
+        assert (" Answer now." in plan.argv) is supported
         assert "--jinja" in plan.argv and ("512" in plan.argv) is supported
 
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
