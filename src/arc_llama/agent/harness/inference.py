@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import secrets
 import socket
 import time
@@ -27,10 +28,21 @@ from arc_llama.stream_metrics import StreamMetricsObserver, generation_rate
 MAX_METRICS_JSON_BYTES = 1024 * 1024
 
 
+class _QuietCancel(logging.Filter):
+    # Closing the relay at the end of a run cancels requests still in flight; that is not a failure.
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.exc_info and isinstance(record.exc_info[1], asyncio.CancelledError))
+
+
+_RELAY_LOG = logging.getLogger("uvicorn.error.relay")
+_RELAY_LOG.addFilter(_QuietCancel())
+
+
 class _HTTPProtocol(H11Protocol):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.access_log = False
+        self.logger = _RELAY_LOG
 
 
 class _Server(uvicorn.Server):

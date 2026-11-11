@@ -121,7 +121,7 @@ async def test_count_failure_does_not_prevent_inference(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_close_cancels_a_model_request_waiting_for_first_token(monkeypatch):
+async def test_close_cancels_a_model_request_waiting_for_first_token(monkeypatch, caplog):
     started, cancelled = asyncio.Event(), asyncio.Event()
 
     async def handler(request):
@@ -156,6 +156,8 @@ async def test_close_cancels_a_model_request_waiting_for_first_token(monkeypatch
         except httpx.HTTPError:
             pass
     assert observer.server_task.done()
+    # The run ending cancels the relay on purpose; that is not logged as a crash.
+    assert not [r for r in caplog.records if r.exc_info and isinstance(r.exc_info[1], asyncio.CancelledError)]
 
 
 @pytest.mark.parametrize("streaming,status,rate,expected", [
