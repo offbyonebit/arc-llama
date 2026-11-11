@@ -322,3 +322,30 @@ def test_env_admin_token_without_file_token_saves_none(tmp_path, monkeypatch):
     cfg = load_config(path)
     cfg.save(path)
     assert "from-env" not in path.read_text()
+
+
+@pytest.mark.parametrize(
+    ("backend", "kv", "saved_fa"),
+    [("vulkan", "q8_0", None), ("vulkan", "f16", "off"), ("sycl", "q8_0", "off")],
+)
+def test_saved_flash_attn_off_only_where_it_runs_off(tmp_path, backend, kv, saved_fa):
+    # Vulkan launch policy forces FA on for a quantized KV cache, so the file
+    # must not claim "off" next to q8_0 there. SYCL and f16 keep the user's off.
+    path = tmp_path / "config.toml"
+    cfg = Config(
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", backend=backend)],
+        models=[
+            ModelConfig(
+                name="m",
+                path=str(tmp_path / "m.gguf"),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                recipe={"ctx": 8192, "cache_type_k": kv, "cache_type_v": kv, "flash_attn": "off"},
+            )
+        ],
+    )
+    cfg.save(path)
+    assert load_config(path).models[0].recipe.get("flash_attn") == saved_fa
+    assert load_config(path).models[0].recipe["cache_type_k"] == kv
+    # Only the file changes; the running config is left alone.
+    assert cfg.models[0].recipe["flash_attn"] == "off"
