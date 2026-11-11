@@ -272,6 +272,12 @@ LIST_DEVICES = {
         "  Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 24000 MiB free)\n"
         "  Vulkan1: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 21994 MiB free)\n"
     ),
+    "sycl": (
+        "ggml_sycl_init: found 2 SYCL devices:\n"
+        "Available devices:\n"
+        "  SYCL0: Intel(R) Arc(TM) B580 Graphics (12216 MiB, 12216 MiB free)\n"
+        "  SYCL1: Intel(R) UHD Graphics 770 (23950 MiB, 23950 MiB free)\n"
+    ),
     "empty": "",
 }
 
@@ -327,4 +333,11 @@ class TestDevicePickFixtures:
         assert devices == []
         assert resolve_vulkan_index([]) is None
         assert pick_intel_by_memory(devices) is None
+
+    def test_parses_sycl_lines_by_prefix(self, monkeypatch, tmp_path):
+        assert _listed(monkeypatch, tmp_path, "sycl", "SYCL") == [
+            (0, "Intel(R) Arc(TM) B580 Graphics", 12216),
+            (1, "Intel(R) UHD Graphics 770", 23950),
+        ]
+        assert _listed(monkeypatch, tmp_path, "sycl") == []
 

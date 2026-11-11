@@ -306,6 +306,80 @@ class TestVulkanDevicePick:
         assert "--device" not in plan.argv
 
 
+class TestSyclDevicePick:
+    """level_zero:N is matched by name, listing each N on its own."""
+
+    @pytest.fixture(autouse=True)
+    def _listing(self, monkeypatch: pytest.MonkeyPatch):
+        import arc_llama.launcher as launcher_mod
+
+        monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
+        monkeypatch.setattr(launcher_mod, "oneapi_runtime_env_needed", lambda: False)
+        # Level Zero order; what each level_zero:N selector shows as SYCL0.
+        self.level_zero: list[tuple[str, int]] = []
+        self.calls: list[str | None] = []
+
+        def fake_list(_binary, backend="Vulkan", env=None, **_k):
+            assert backend == "SYCL"
+            selector = (env or {}).get("ONEAPI_DEVICE_SELECTOR")
+            self.calls.append(selector)
+            if selector is None:  # llama.cpp order: default (biggest) device first
+                ordered = sorted(self.level_zero, key=lambda d: -d[1])
+                return [(i, n, m) for i, (n, m) in enumerate(ordered)]
+            n = int(selector.split(":")[1])
+            return [(0, *self.level_zero[n])] if n < len(self.level_zero) else []
+
+        monkeypatch.setattr(launcher_mod, "list_devices", fake_list)
+        launcher_mod._devices_cached.cache_clear()
+        yield
+        launcher_mod._devices_cached.cache_clear()
+
+    def _env(self, *gpus: GPUConfig, overrides: dict[str, str] | None = None) -> dict[str, str]:
+        from arc_llama.arch import profile_for
+
+        return build_env(
+            profile_for(Arch.BATTLEMAGE), gpus[0], llama_server="/bin/llama-server",
+            extra_gpus=list(gpus[1:]) or None, overrides=overrides,
+        )
+
+    @staticmethod
+    def _sycl_gpu(name: str, sycl_index: int) -> GPUConfig:
+        return GPUConfig(pci_slot=f"0000:0{sycl_index}:00.0", sycl_index=sycl_index, arch="battlemage", name=name)
+
+    def test_igpu_numbered_first_by_level_zero(self):
+        """Windows drops the iGPU from detection, so the Arc's guess is 0."""
+        self.level_zero = [("Intel(R) UHD Graphics 770", 23950), ("Intel(R) Arc(TM) B580 Graphics", 12216)]
+        env = self._env(self._sycl_gpu("Arc B580 Graphics", 0))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1"
+        assert self.calls[0] is None  # first listing runs without a selector
+
+    def test_single_device_is_level_zero_0(self):
+        """Linux keeps an old iGPU Level Zero can't see, so the Arc's guess is 1."""
+        self.level_zero = [("Intel(R) Arc(TM) A770 Graphics", 16225)]
+        env = self._env(self._sycl_gpu("Arc A770 Graphics", 1))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:0"
+        assert self.calls == [None]
+
+    def test_two_arcs_split(self):
+        self.level_zero = [("Intel(R) Arc(TM) B580 Graphics", 12216), ("Intel(R) Arc(TM) Pro B60 Graphics", 24480)]
+        env = self._env(self._sycl_gpu("Arc Pro B60 Graphics", 0), self._sycl_gpu("Arc B580 Graphics", 1))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1,0"
+
+    def test_unknown_name_keeps_sycl_index(self):
+        self.level_zero = [("Intel(R) Arc(TM) B580 Graphics", 12216), ("Intel(R) Arc(TM) Pro B60 Graphics", 24480)]
+        env = self._env(self._sycl_gpu("Arc Pro B-series", 1))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1"
+
+    def test_empty_listing_keeps_sycl_index(self):
+        env = self._env(self._sycl_gpu("Arc Pro B60 Graphics", 2))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:2"
+
+    def test_models_own_selector_skips_probe(self):
+        self.level_zero = [("Intel(R) Arc(TM) Pro B60 Graphics", 24480)]
+        self._env(self._sycl_gpu("Arc Pro B60 Graphics", 1), overrides={"ONEAPI_DEVICE_SELECTOR": "level_zero:3"})
+        assert self.calls == []
+
+
 class TestBuildPlanMtp:
     def test_no_auto_ub_for_mtp(self, metadata_ggufs):
         """MTP detection must not force -ub 8; it regresses prompt-eval throughput."""

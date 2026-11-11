@@ -292,6 +292,29 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env
     return None
 
 
+def _sycl_index_for(gpu: GPUConfig, llama_server: str | Path, probe_env: dict[str, str]) -> int:
+    """Level Zero index of *gpu*, matched by name; its sycl_index when unsure.
+
+    The N of ``SYCLN`` in ``--list-devices`` is not the N of level_zero:N
+    (llama.cpp lists its default device first), so each level_zero:N is
+    listed on its own and the GPU's name is matched against those.
+    """
+    devices = _devices_cached(str(llama_server), "SYCL", tuple(sorted(probe_env.items())))
+    by_selector = [(0, devices[0][1])] if len(devices) == 1 else []
+    for n in range(len(devices) if len(devices) > 1 else 0):
+        selected = {**probe_env, "ONEAPI_DEVICE_SELECTOR": f"level_zero:{n}"}
+        listed = _devices_cached(str(llama_server), "SYCL", tuple(sorted(selected.items())))
+        if len(listed) != 1:
+            return gpu.sycl_index
+        by_selector.append((n, listed[0][1]))
+    index = resolve_vulkan_index(by_selector, gpu_name=gpu.name)
+    if index is None:
+        return gpu.sycl_index
+    if index != gpu.sycl_index:
+        log.info("SYCL: %s is level_zero:%d, not sycl_index %d", gpu.name or gpu.pci_slot, index, gpu.sycl_index)
+    return index
+
+
 def vulkan_device_arg(
     gpus: list[GPUConfig], llama_server: str | Path | None, probe_env: dict[str, str] | None = None
 ) -> str | None:
@@ -416,6 +439,13 @@ def build_env(
                 "found. If llama-server fails to start, source your oneAPI "
                 "setvars.sh before running arc-llama."
             )
+    # sycl_index is a guess from PCI order; ask the runtime which Level Zero
+    # device carries this GPU's name. A selector the model sets itself wins.
+    if llama_server and "ONEAPI_DEVICE_SELECTOR" not in (overrides or {}):
+        probe = {k: v for k, v in {**env, **(overrides or {})}.items() if k != "ONEAPI_DEVICE_SELECTOR"}
+        indices = [_sycl_index_for(g, llama_server, probe) for g in [gpu, *(extra_gpus or [])]]
+        if len(set(indices)) == len(indices):
+            env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:" + ",".join(str(i) for i in indices)
     return env
 
 
