@@ -117,6 +117,16 @@ def startup_device_warning(log_text: str, gpu_name: str = "") -> str | None:
     return None
 
 
+def startup_device_summary(log_text: str) -> str | None:
+    """" on Vulkan0: <GPU name>, 65/65 layers on GPU" from the startup log, or None."""
+    devices = ", ".join(f"{dev}: {desc}" for dev, desc in _used_devices(log_text).items())
+    offloaded = _OFFLOADED_RE.search(log_text)
+    if not devices and not offloaded:
+        return None
+    where = f" on {devices}" if devices else ""
+    return where + (f", {offloaded.group(1)}/{offloaded.group(2)} layers on GPU" if offloaded else "")
+
+
 _IS_WINDOWS = sys.platform == "win32"
 # Not defined on POSIX. Fallback lets the Windows code path stay import-safe
 # when exercised under tests that monkeypatch _IS_WINDOWS on a Linux runner.
@@ -806,17 +816,20 @@ class LlamaServer:
         return False
 
     def _check_startup_device(self) -> None:
-        """Warn when this run's startup log shows a CPU or wrong-GPU load. Never fails a load."""
+        """Log the device this run loaded on; warn on a CPU or wrong-GPU load. Never fails a load."""
         if self._log_path is None:
             return
         try:
             with open(self._log_path, "rb") as fh:
                 fh.seek(self._log_offset)
                 text = fh.read().decode("utf-8", errors="replace")
+            summary = startup_device_summary(text)
             warning = startup_device_warning(text, self.plan.gpu_name or "")
         except Exception:
             log.debug("[%s] could not read the startup log", self.name, exc_info=True)
             return
+        if summary:
+            log.info("Loaded %s%s", self.name, summary)
         if warning:
             log.warning("[%s] %s. It will be slow; see %s", self.name, warning, self._log_path)
 

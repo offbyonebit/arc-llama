@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from arc_llama.config import Config, GPUConfig, ModelConfig
-from arc_llama.launcher import LlamaServer, build_plan, startup_device_warning
+from arc_llama.launcher import (
+    LlamaServer,
+    build_plan,
+    startup_device_summary,
+    startup_device_warning,
+)
 
 LOGS = Path(__file__).parent / "fixtures" / "startup-logs"
 B60 = "Arc Pro B60"
@@ -137,6 +142,34 @@ async def test_unreadable_log_never_fails_the_load(tmp_path, monkeypatch):
         srv._log_path = tmp_path / "missing.log"
         monkeypatch.setattr(httpx.AsyncClient, "get", _healthy)
         assert await srv.wait_ready(timeout=2.0) is True
+    finally:
+        srv.process = None
+        srv.stop()
+
+
+def test_summary_names_device_and_layers():
+    assert startup_device_summary(_log("vulkan-b60-offloaded.txt")) == (
+        " on Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21), 65/65 layers on GPU"
+    )
+    assert startup_device_summary(_log("cpu-fallback.txt")) == ", 0/65 layers on GPU"
+    assert startup_device_summary(_log("no-device-lines.txt")) is None
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_logs_the_device_at_info(tmp_path, monkeypatch, caplog):
+    import httpx
+
+    srv = _server(tmp_path, monkeypatch)
+    try:
+        srv._log_file.write(_log("vulkan-b60-offloaded.txt").encode())
+        srv._log_file.flush()
+        monkeypatch.setattr(httpx.AsyncClient, "get", _healthy)
+        with caplog.at_level(logging.INFO, logger="arc_llama.launcher"):
+            assert await srv.wait_ready(timeout=2.0) is True
+        assert (
+            "Loaded m on Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21), 65/65 layers on GPU"
+            in caplog.messages
+        )
     finally:
         srv.process = None
         srv.stop()
