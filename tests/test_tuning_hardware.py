@@ -12,7 +12,7 @@ from arc_llama.arch import Arch, profile_for
 from arc_llama.benchmark import BenchmarkResult, benchmark_depths, usable_depths
 from arc_llama.cli import cli
 from arc_llama.config import Config, GPUConfig, ModelConfig, PathsConfig, TuneConfig
-from arc_llama.launcher import build_env, build_plan, resolve_split_gpus
+from arc_llama.launcher import build_env, build_plan, resolve_split_gpus, vulkan_device_arg
 from arc_llama.server_caps import ServerCaps
 from arc_llama.speculation import DraftCandidate
 
@@ -235,7 +235,12 @@ def test_split_exposes_every_device() -> None:
     assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:0,1"
     vk = _split_cfg(backend="vulkan")
     env = build_env(profile, vk.gpus[0], extra_gpus=[vk.gpus[1]])
-    assert env["GGML_VK_VISIBLE_DEVICES"] == "1,2"
+    # Vulkan exposes them with --device (list-devices numbering), not the env var.
+    assert "GGML_VK_VISIBLE_DEVICES" not in env
+    assert vulkan_device_arg(vk.gpus, None) == "Vulkan1,Vulkan2"
+    vk = _split_cfg(backend="vulkan", tensor_split=[1, 1], split_gpus=["a", "b"])
+    plan = build_plan(vk, vk.models[0], vk.gpus[0])
+    assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan1,Vulkan2"
 
 
 def test_plan_drops_tensor_split_without_valid_gpus() -> None:

@@ -35,7 +35,7 @@ except ImportError:
 import httpx
 
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
-from arc_llama.binary import list_vulkan_devices, resolve_vulkan_index
+from arc_llama.binary import list_devices, pick_intel_by_memory, resolve_vulkan_index
 from arc_llama.config import Config, GPUConfig, ModelConfig, default_state_dir
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import has_mtp_heads
@@ -244,14 +244,15 @@ _SYCL_ONLY_ENVS: frozenset[str] = frozenset(
 
 
 @lru_cache(maxsize=8)
-def _vulkan_devices_cached(binary_path: str, env_key: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[int, str], ...]:
-    return tuple(list_vulkan_devices(binary_path, env=dict(env_key))) if env_key else tuple(list_vulkan_devices(binary_path))
+def _devices_cached(binary_path: str, backend: str = "Vulkan", env_key: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[int, str, int | None], ...]:
+    return tuple(list_devices(binary_path, backend, env=dict(env_key) if env_key else None))
 
 
 def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env: dict[str, str] | None = None) -> int | None:
     """Resolve the Vulkan device index for *gpu*, or None to leave it unset.
 
-    Returning None means "don't set GGML_VK_VISIBLE_DEVICES at all", which lets
+    The index is the N of ``VulkanN`` in ``--list-devices``, passed as
+    ``--device VulkanN``. Returning None means "pass no --device", which lets
     llama.cpp apply its own default. That is deliberately preferred over
     guessing: a wrong index runs the model on another vendor's GPU and looks
     like success.
@@ -260,21 +261,27 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env
         return gpu.vulkan_index
 
     if llama_server:
-        devices = list(_vulkan_devices_cached(str(llama_server), tuple(sorted(probe_env.items())))) if probe_env else list(_vulkan_devices_cached(str(llama_server)))
-        index = resolve_vulkan_index(devices, gpu_name=gpu.name)
+        devices = list(_devices_cached(str(llama_server), "Vulkan", tuple(sorted(probe_env.items())) if probe_env else ()))
+        index = resolve_vulkan_index([(i, n) for i, n, _ in devices], gpu_name=gpu.name)
+        if index is None and len(devices) > 1:
+            # Several Intel devices and the name fits none or several: the
+            # default would spread the model over every GPU, NVIDIA included.
+            index = pick_intel_by_memory(devices, gpu.vram_mb)
+            if index is not None:
+                log.info("Vulkan: %s matched no single device by name; using Vulkan%d by memory size", gpu.name or gpu.pci_slot, index)
         if index is not None:
             return index
         if len(devices) > 1:
             log.warning(
                 "Vulkan: could not identify which of %d devices is %s (%s). "
-                "Not setting GGML_VK_VISIBLE_DEVICES; llama.cpp will pick its "
+                "Not passing --device; llama.cpp will pick its "
                 "own default, which may be a different vendor's GPU. Set "
                 "vulkan_index for this GPU in the config to be certain. "
                 "Devices: %s",
                 len(devices),
                 gpu.name or "the configured GPU",
                 gpu.pci_slot,
-                ", ".join(f"{i}={n}" for i, n in devices),
+                ", ".join(f"{i}={n}" for i, n, _ in devices),
             )
             return None
         if len(devices) == 1:
@@ -282,6 +289,31 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env
 
     # No binary to ask, so no way to map. Only safe when there is nothing to
     # confuse: a single-vendor box makes index 0 the right answer anyway.
+    return None
+
+
+def vulkan_device_arg(
+    gpus: list[GPUConfig], llama_server: str | Path | None, probe_env: dict[str, str] | None = None
+) -> str | None:
+    """``--device`` value pinning a Vulkan model to its GPU(s), primary first.
+
+    Uses ``VulkanN`` names, which share ``--list-devices`` numbering. The older
+    GGML_VK_VISIBLE_DEVICES indexes the raw Vulkan list instead (before CPU
+    and unsupported devices are dropped), so the same N could name another GPU.
+
+    This must NOT be sycl_index. SYCL enumerates Intel devices only, so
+    sycl_index 0 is the first Arc card; Vulkan enumerates every vendor, so on
+    a box with a discrete NVIDIA/AMD card the Arc can be Vulkan1 while
+    sycl_index is still 0.
+    """
+    indices = [_vulkan_index_for(g, llama_server, probe_env) for g in gpus]
+    if all(i is not None for i in indices) and len(set(indices)) == len(indices):
+        return ",".join(f"Vulkan{i}" for i in indices)
+    if len(gpus) > 1:
+        log.warning(
+            "Vulkan: could not map every split GPU to its own device; set "
+            "vulkan_index for each GPU. Not restricting devices."
+        )
     return None
 
 
@@ -342,24 +374,7 @@ def build_env(
         # Vulkan path: keep the environment clean of SYCL/oneAPI selectors.
         for k in _SYCL_ONLY_ENVS:
             env.pop(k, None)
-        # Restrict visible Vulkan devices to the one this model is bound to.
-        # GGML_VK_VISIBLE_DEVICES accepts a comma-separated list; we expose
-        # exactly one device so the model cannot accidentally land elsewhere.
-        #
-        # This must NOT be sycl_index. SYCL enumerates Intel devices only, so
-        # sycl_index 0 is the first Arc card; Vulkan enumerates every vendor,
-        # so on a box with a discrete NVIDIA/AMD card the Arc can be Vulkan1
-        # while sycl_index is still 0. Using sycl_index there silently ran
-        # models on the other vendor's GPU.
-        probe_env = {**env, **overrides} if overrides else None
-        indices = [_vulkan_index_for(g, llama_server, probe_env) if probe_env else _vulkan_index_for(g, llama_server) for g in [gpu, *(extra_gpus or [])]]
-        if all(i is not None for i in indices):
-            env["GGML_VK_VISIBLE_DEVICES"] = ",".join(str(i) for i in indices)
-        elif extra_gpus:
-            log.warning(
-                "Vulkan: could not map every split GPU to a device index; set "
-                "vulkan_index for each GPU. Not restricting visible devices."
-            )
+        # The device itself is picked with --device in build_plan.
         return env
 
     # SYCL path: apply arch-specific env, stripping known-bad inherited vars.
@@ -584,6 +599,11 @@ def build_plan(
             load_mode_flag=caps.supports_load_mode,
         )
     )
+    # A --device in the model's own flags wins over the automatic pick.
+    if backend == Backend.VULKAN and not any(a in ("--device", "-dev") or a.startswith("--device=") for a in argv):
+        device = vulkan_device_arg([gpu, *(split_gpus[1:] if split_gpus else [])], binary, env if model.env else None)
+        if device:
+            argv += ["--device", device]
     backend_url = f"http://{host}:{model.port}"
     return LaunchPlan(
         argv=argv,

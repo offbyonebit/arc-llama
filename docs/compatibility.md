@@ -99,6 +99,6 @@ A recipe can spread one model over several cards with `tensor_split` (one
 proportion per card, for example `[1, 1]`) and `split_gpus` (the cards' PCI
 slots, including the model's own GPU). Every listed GPU must be enabled and
 use the same backend. The launcher exposes all of them to llama-server
-(`ONEAPI_DEVICE_SELECTOR` or `GGML_VK_VISIBLE_DEVICES`), and the fit check
+(`ONEAPI_DEVICE_SELECTOR` or `--device`), and the fit check
 counts their combined VRAM. An invalid combination falls back to the model's
 single GPU with a warning.

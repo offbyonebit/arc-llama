@@ -12,7 +12,7 @@ import pytest
 
 from arc_llama.arch import Arch, Backend
 from arc_llama.config import Config, GPUConfig, ModelConfig
-from arc_llama.launcher import LaunchPlan, LlamaServer, build_env, build_plan
+from arc_llama.launcher import LaunchPlan, LlamaServer, build_env, build_plan, vulkan_device_arg
 from arc_llama.recipes import KVCacheType
 
 
@@ -68,7 +68,10 @@ class TestBuildEnv:
         gpu = _gpu(sycl_index=2, backend=Backend.VULKAN)
         gpu.vulkan_index = 3
         env = build_env(profile, gpu)
-        assert env["GGML_VK_VISIBLE_DEVICES"] == "3"
+        # Picked with --device (same numbering as --list-devices), not the
+        # env var, which indexes the raw Vulkan list in llama.cpp.
+        assert vulkan_device_arg([gpu], None) == "Vulkan3"
+        assert "GGML_VK_VISIBLE_DEVICES" not in env
         assert "ONEAPI_DEVICE_SELECTOR" not in env
 
     def test_vulkan_never_falls_back_to_sycl_index(self, monkeypatch: pytest.MonkeyPatch):
@@ -86,6 +89,7 @@ class TestBuildEnv:
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=2, backend=Backend.VULKAN))
         assert "GGML_VK_VISIBLE_DEVICES" not in env
+        assert vulkan_device_arg([_gpu(sycl_index=2, backend=Backend.VULKAN)], None) is None
 
     def test_vulkan_strips_sycl_env(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
@@ -229,6 +233,7 @@ class TestBuildPlan:
         # cannot be resolved and the variable is deliberately left unset
         # rather than guessed from sycl_index.
         assert "GGML_VK_VISIBLE_DEVICES" not in plan.env
+        assert "--device" not in plan.argv
 
     def test_vulkan_q8_with_flash_attn_already_set(self):
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
@@ -248,6 +253,57 @@ class TestBuildPlan:
         )
         plan = build_plan(cfg, model, gpu)
         assert plan.argv.count("--flash-attn") == 1
+
+
+class TestVulkanDevicePick:
+    """Vulkan models are pinned with --device VulkanN from --list-devices."""
+
+    @pytest.fixture(autouse=True)
+    def _listing(self, monkeypatch: pytest.MonkeyPatch):
+        import arc_llama.launcher as launcher_mod
+
+        self.listing: list[tuple[int, str, int | None]] = []
+        monkeypatch.setattr(launcher_mod, "list_devices", lambda *_a, **_k: list(self.listing))
+        launcher_mod._devices_cached.cache_clear()
+        yield
+        launcher_mod._devices_cached.cache_clear()
+
+    def _plan(self, name: str = "", vram_mb: int | None = None, extra_flags: list[str] | None = None):
+        cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
+        model = ModelConfig(
+            name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0",
+            recipe={"extra_flags": extra_flags} if extra_flags else None,
+        )
+        gpu = GPUConfig(
+            pci_slot="00:00.0", sycl_index=0, arch="battlemage", backend=Backend.VULKAN.value,
+            name=name, vram_mb=vram_mb,
+        )
+        return build_plan(cfg, model, gpu)
+
+    def test_arc_behind_nvidia(self):
+        self.listing = [(0, "NVIDIA GeForce RTX 4060 Ti", 16380), (1, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480)]
+        plan = self._plan("Arc Pro B60 Graphics")
+        assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan1"
+        assert "GGML_VK_VISIBLE_DEVICES" not in plan.env
+
+    def test_unknown_name_picks_intel_by_memory_not_every_gpu(self):
+        self.listing = [
+            (0, "NVIDIA GeForce RTX 4060 Ti", 16380),
+            (1, "Intel(R) Arc(tm) B580 Graphics (BMG G21)", 12216),
+            (2, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480),
+        ]
+        plan = self._plan("Arc Pro B-series", vram_mb=24576)
+        assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan2"
+
+    def test_users_own_device_flag_wins(self):
+        self.listing = [(0, "NVIDIA GeForce RTX 4060 Ti", 16380), (1, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480)]
+        plan = self._plan("Arc Pro B60 Graphics", extra_flags=["--device", "Vulkan0"])
+        assert plan.argv.count("--device") == 1
+        assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan0"
+
+    def test_empty_listing_passes_no_device(self):
+        plan = self._plan("Arc Pro B60 Graphics")
+        assert "--device" not in plan.argv
 
 
 class TestBuildPlanMtp:

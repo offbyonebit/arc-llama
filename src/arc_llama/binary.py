@@ -162,12 +162,13 @@ def detect_llama_server_backend(binary_path: str | Path) -> Backend | None:
     return None
 
 
-_VULKAN_DEVICE_RE = re.compile(r"^\s*Vulkan(\d+):\s*(.+?)\s*$")
+_DEVICE_RE = re.compile(r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*$")
 # Trailing memory report, e.g. " (24480 MiB, 21994 MiB free)". Stripped so the
 # name keeps its own parentheses: device names legitimately contain them
 # ("Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)"), so we cannot simply cut at
-# the first '(' — that yields the useless name "Intel".
-_VULKAN_MEM_SUFFIX_RE = re.compile(r"\s*\([^()]*MiB[^()]*\)\s*$")
+# the first '(' — that yields the useless name "Intel". The first number is
+# the device's total memory.
+_MEM_SUFFIX_RE = re.compile(r"\s*\(\s*(\d+)?[^()]*MiB[^()]*\)\s*$")
 
 
 def _name_tokens(name: str) -> set[str]:
@@ -181,9 +182,13 @@ def _name_tokens(name: str) -> set[str]:
     return {t for t in re.split(r"[^0-9a-z]+", name.lower()) if t}
 
 
-def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0, env: dict[str, str] | None = None) -> list[tuple[int, str]]:
-    """Return [(vulkan_index, device_name)] as reported by ``--list-devices``.
+def list_devices(
+    binary_path: str | Path, backend: str = "Vulkan", *, timeout: float = 30.0, env: dict[str, str] | None = None
+) -> list[tuple[int, str, int | None]]:
+    """Return [(index, device_name, total_mib)] for *backend*'s ``--list-devices`` lines.
 
+    *backend* is the line prefix llama.cpp prints ("Vulkan", "SYCL"); the index
+    is the N of ``VulkanN``/``SYCLN``, which is the numbering ``--device`` takes.
     Returns an empty list if the binary cannot be run or prints nothing we
     recognise; callers must treat that as "unknown", never as "no GPUs".
     """
@@ -198,13 +203,20 @@ def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0, env: 
     except (OSError, subprocess.SubprocessError):
         return []
 
-    devices: list[tuple[int, str]] = []
+    devices: list[tuple[int, str, int | None]] = []
     for line in (proc.stdout + proc.stderr).splitlines():
-        m = _VULKAN_DEVICE_RE.match(line)
-        if m:
-            name = _VULKAN_MEM_SUFFIX_RE.sub("", m.group(2)).strip()
-            devices.append((int(m.group(1)), name))
+        m = _DEVICE_RE.match(line)
+        if m and m.group(1) == backend:
+            mem = _MEM_SUFFIX_RE.search(m.group(3))
+            name = m.group(3)[: mem.start()].strip() if mem else m.group(3)
+            mib = int(mem.group(1)) if mem and mem.group(1) else None
+            devices.append((int(m.group(2)), name, mib))
     return devices
+
+
+def list_vulkan_devices(binary_path: str | Path, *, timeout: float = 30.0, env: dict[str, str] | None = None) -> list[tuple[int, str]]:
+    """Return [(vulkan_index, device_name)] as reported by ``--list-devices``."""
+    return [(i, n) for i, n, _ in list_devices(binary_path, "Vulkan", timeout=timeout, env=env)]
 
 
 def resolve_vulkan_index(devices: list[tuple[int, str]], *, gpu_name: str = "") -> int | None:
@@ -237,3 +249,20 @@ def resolve_vulkan_index(devices: list[tuple[int, str]], *, gpu_name: str = "") 
             if len(exact) == 1:
                 return exact[0]
     return None
+
+
+def pick_intel_by_memory(devices: list[tuple[int, str, int | None]], vram_mb: int | None = None) -> int | None:
+    """Fallback when names cannot tell several Intel devices apart.
+
+    With the GPU's detected VRAM, pick the Intel device whose total memory is
+    closest to it; without, the one with the most memory. Closest rather than
+    largest because an iGPU reports a share of system RAM, often more than the
+    Arc's own VRAM. A tie (identical cards) returns None.
+    """
+    intel = [(i, mib) for i, n, mib in devices if "intel" in n.lower() and mib]
+    if not intel:
+        return None
+    scores = [(-abs(mib - vram_mb) if vram_mb else mib, i) for i, mib in intel]
+    best = max(score for score, _ in scores)
+    top = [i for score, i in scores if score == best]
+    return top[0] if len(top) == 1 else None
