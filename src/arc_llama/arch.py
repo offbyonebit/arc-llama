@@ -122,9 +122,11 @@ BATTLEMAGE_IDS: dict[int, str] = {
     0xE20D: "Arc B-series (variant)",
     0xE210: "Arc B-series (variant)",
     0xE211: "Arc Pro B60",  # confirmed on real hardware 2026-05-02
-    0xE212: "Arc Pro B-series",  # tentative; reserved
+    0xE212: "Arc Pro B50",  # Intel xe driver table
     0xE215: "Arc Pro B-series",
     0xE216: "Arc Pro B-series",
+    0xE222: "Arc Pro B65",  # Intel xe driver table
+    0xE223: "Arc Pro B70",  # Intel xe driver table
 }
 
 # Lunar Lake iGPU (Xe2-LPG)
@@ -167,7 +169,7 @@ VRAM_BY_DEVICE_ID: dict[int, int] = {
     0xE20B: 12288,  # Arc B580
     0xE20C: 10240,  # Arc B570
     0xE211: 24576,  # Arc Pro B60
-    0xE212: 24576,  # Arc Pro B-series (assumed B60-class)
+    0xE212: 16384,  # Arc Pro B50
 }
 
 # ocloc -device strings for AOT (ahead-of-time) SYCL compilation, keyed by PCI

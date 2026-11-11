@@ -22,6 +22,18 @@ from arc_llama.detect import (
 )
 
 
+def test_battlemage_pro_ids_from_intel_xe_table():
+    from arc_llama.arch import arch_for_device_id, known_vram_mib
+
+    assert arch_for_device_id(0xE212) == (Arch.BATTLEMAGE, "Arc Pro B50")
+    assert known_vram_mib(0xE212) == 16384
+    assert arch_for_device_id(0xE222) == (Arch.BATTLEMAGE, "Arc Pro B65")
+    assert arch_for_device_id(0xE223) == (Arch.BATTLEMAGE, "Arc Pro B70")
+    # No sourced VRAM size for B65/B70 yet: leave it to sysfs/registry/clinfo.
+    assert known_vram_mib(0xE222) is None
+    assert known_vram_mib(0xE223) is None
+
+
 def test_hardware_support_distinguishes_validation_from_detection():
     assert hardware_support(0xE211, Arch.BATTLEMAGE, Backend.SYCL).status == "validated"
     assert hardware_support(0xE20B, Arch.BATTLEMAGE, Backend.SYCL).status == "detected"
