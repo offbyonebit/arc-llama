@@ -2328,7 +2328,9 @@ def create_app(
         model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
-            c.save(config_path or default_config_path())
+            # Auto-tune trials send persist=false: only its final pick is saved.
+            if body.get("persist", True) is not False:
+                c.save(config_path or default_config_path())
         except OSError as e:
             # Previously this was logged and the edit continued, so the caller
             # got a 200 listing the fields it "changed" while the config on

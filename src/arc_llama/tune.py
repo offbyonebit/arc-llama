@@ -638,7 +638,8 @@ async def tune_model(
         if key in measured:
             res, sc = measured[key]
             return res, sc, "same config as an earlier run"
-        err = await _apply_edits(client, model_name, state)
+        # Trials stay in memory; only the final restore below writes config.toml.
+        err = await _apply_edits(client, model_name, {**state, "persist": False})
         if err:
             res = BenchmarkResult(
                 model=model_name,

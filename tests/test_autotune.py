@@ -682,6 +682,37 @@ async def test_deferred_restore_does_not_consume_abort_signal(cfg: Config) -> No
 # ---------------------------------------------------------------------------
 
 
+async def test_shutdown_skipping_deferred_restore_saves_the_final_recipe(cfg: Config) -> None:
+    """Trials are not persisted, so when shutdown skips the deferred restore
+    POST the in-memory recipe must go back to the final pick before the save
+    that follows the sweep, or that save writes the last trial."""
+    router = FakeRouter(cfg)
+    saved: list[dict[str, Any]] = []
+    tuner = Autotuner(
+        cfg,
+        router,
+        version="0.6.0",
+        on_save=lambda: saved.append(dict(cfg.models[0].recipe)),
+    )
+
+    import arc_llama.tune as tune_mod
+
+    async def fake_tune_model(*args, **kwargs):
+        cfg.models[0].recipe["ubatch_size"] = 2048  # the last trial, memory only
+        tuner._stopping = True
+        await kwargs["on_deferred_restore"]({"cache_type_k": "q8_0", "ubatch_size": 512})
+        return TuneReport(model="m", target="balanced", aborted=True)
+
+    original = tune_mod.tune_model
+    tune_mod.tune_model = fake_tune_model
+    try:
+        await tuner._run_sweep(cfg.models[0])
+    finally:
+        tune_mod.tune_model = original
+
+    assert saved and saved[-1]["ubatch_size"] == 512
+
+
 async def test_start_is_noop_while_running(cfg: Config) -> None:
     router = FakeRouter(cfg)
     tuner = _make_tuner(cfg, router)

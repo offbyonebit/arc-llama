@@ -211,6 +211,20 @@ async def test_tune_picks_and_applies_winner(cfg, monkeypatch):
     assert imp["prompt_eval"] == pytest.approx(75.0, abs=0.2)
 
 
+async def test_tune_trials_are_not_persisted_only_the_final_recipe(cfg, monkeypatch):
+    # A crash or abort mid-sweep must not leave a trial in config.toml: every
+    # candidate edit asks the endpoint not to persist, the final restore does.
+    fake = FakeMeasurements({}, cfg)
+    monkeypatch.setattr("arc_llama.tune._apply_edits", fake.apply)
+    monkeypatch.setattr("arc_llama.tune.benchmark_model", fake.bench)
+
+    await tune_model("http://127.0.0.1:11437", "m", cfg=cfg)
+
+    *trials, final = fake.edits_seen
+    assert trials and all(e.get("persist") is False for e in trials)
+    assert "persist" not in final
+
+
 async def test_tune_keeps_baseline_when_nothing_beats_it(cfg, monkeypatch):
     table = {("q8_0", 512, None): (2000.0, 50.0)}  # everything else: (100, 10)
     fake = FakeMeasurements(table, cfg)

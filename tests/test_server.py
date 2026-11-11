@@ -950,6 +950,23 @@ def test_admin_edit_accepts_flash_attn_and_batch_size(monkeypatch, tmp_path):
     assert model.recipe["ubatch_size"] == 1024
 
 
+def test_admin_edit_persist_false_keeps_the_edit_out_of_config_toml(monkeypatch, tmp_path):
+    # Auto-tune trials: the running recipe changes, the file on disk does not.
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    saved = tmp_path / "config" / "arc-llama" / "config.toml"
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit", json={"ubatch_size": 1024, "persist": False}
+        )
+        assert response.status_code == 200
+        assert response.json()["changed"] == ["ubatch_size"]
+        model = next(m for m in cfg.models if m.name == "qwen")
+        assert model.recipe["ubatch_size"] == 1024
+        assert not saved.exists()
+        assert client.post("/admin/models/qwen/edit", json={"ubatch_size": 512}).status_code == 200
+    assert 'ubatch_size = 512' in saved.read_text()
+
+
 def test_admin_edit_flash_attn_null_clears(monkeypatch, tmp_path):
     app, cfg = _edit_app(monkeypatch, tmp_path)
     model = next(m for m in cfg.models if m.name == "qwen")
