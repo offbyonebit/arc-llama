@@ -577,6 +577,7 @@ class Autotuner:
                 model.tune_error = ""
             elif report.error:
                 error = report.error
+                log.warning("autotune: sweep of %s failed: %s", model.name, error)
                 set_tune_failed_state(self.cfg, model, error, self._fingerprint(model))
             else:
                 gpu = self.cfg.find_gpu(model.gpu_pci_slot)
@@ -588,6 +589,12 @@ class Autotuner:
                     workload.fingerprint_key(self.cfg.workload),
                 )
                 set_tuned_state(self.cfg, model, fp)
+                settings = ", ".join(f"{k}={v}" for k, v in report.best_edits.items())
+                log.info(
+                    "autotune: finished tuning %s: %s",
+                    model.name,
+                    settings or "kept the current recipe",
+                )
                 if report.baseline is not None and report.best is not None:
                     self.last_results.pop(model.name, None)
                     self.last_results[model.name] = {

@@ -8,6 +8,7 @@ tuning search implementation — autotune.py owns *when* to run, tune.py owns
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -404,7 +405,7 @@ async def test_multi_resident_core_running_marks_skipped(cfg: Config) -> None:
 
 
 async def test_successful_sweep_sets_tuned_and_fingerprint(
-    cfg: Config, monkeypatch: pytest.MonkeyPatch
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     router = FakeRouter(cfg)
     router.last_activity = -1000.0
@@ -413,18 +414,24 @@ async def test_successful_sweep_sets_tuned_and_fingerprint(
     tuner.bump_use("m")
 
     async def fake_tune_model(*args, **kwargs):  # noqa: ARG001
-        return TuneReport(model="m", target="balanced", applied=True)
+        return TuneReport(
+            model="m", target="balanced", applied=True, best_edits={"ubatch_size": 1024}
+        )
 
     monkeypatch.setattr("arc_llama.tune.tune_model", fake_tune_model)
 
-    await tuner._tick()
+    with caplog.at_level(logging.INFO, logger="arc_llama.autotune"):
+        await tuner._tick()
 
     assert cfg.models[0].tune_state == "tuned"
     assert cfg.models[0].tune_fingerprint
     assert cfg.models[0].tuned_at is not None
+    assert "finished tuning m: ubatch_size=1024" in caplog.text
 
 
-async def test_failed_sweep_sets_failed(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_failed_sweep_sets_failed(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     router = FakeRouter(cfg)
     router.last_activity = -1000.0
     cfg.tune.idle_seconds = 0
@@ -436,10 +443,12 @@ async def test_failed_sweep_sets_failed(cfg: Config, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("arc_llama.tune.tune_model", fake_tune_model)
 
-    await tuner._tick()
+    with caplog.at_level(logging.INFO, logger="arc_llama.autotune"):
+        await tuner._tick()
 
     assert cfg.models[0].tune_state == "failed"
     assert cfg.models[0].tune_error == "boom"
+    assert "sweep of m failed: boom" in caplog.text
 
 
 async def test_aborted_sweep_leaves_untuned(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
