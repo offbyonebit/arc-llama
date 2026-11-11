@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+
+_BUDGET_PATHS = {"/props", "/apply-template", "/tokenize"}
+
+
+class _QuietBudgetRequests(logging.Filter):
+    """httpx logs every request at INFO; the UI counts tokens every few seconds."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args if isinstance(record.args, tuple) else ()
+        path = getattr(args[1], "path", None) if len(args) > 1 else None
+        return path not in _BUDGET_PATHS or logging.getLogger("httpx").isEnabledFor(logging.DEBUG)
+
+
+_QUIET_BUDGET_REQUESTS = _QuietBudgetRequests()
 
 
 def _positive(value: Any) -> int | None:
@@ -93,6 +108,7 @@ async def _native_budget(
 
 def register_context_budget_route(app: FastAPI) -> None:
     slots = asyncio.Semaphore(2)
+    logging.getLogger("httpx").addFilter(_QUIET_BUDGET_REQUESTS)
 
     @app.post("/v1/chat/budget")
     async def context_budget(request: Request) -> dict[str, Any]:
