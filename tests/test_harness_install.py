@@ -195,6 +195,13 @@ def test_opencode_windows_zip_and_latest_is_untested(cfg, monkeypatch):
     assert result.binary.name == "opencode.exe" and result.install_dir.name == "opencode-v9.9.9-windows-x64"
 
 
+def test_hermes_windows_offer_is_not_marked_untested(cfg, monkeypatch):
+    config, _path = cfg
+    monkeypatch.setattr(hi, "host_platform", lambda: ("windows", "x64"))
+    offer = hi.offer(config, "hermes")
+    assert offer["installable"] is True and offer["experimental"] is False
+
+
 def test_opencode_killed_mid_publish_is_recovered_on_next_install(cfg, monkeypatch):
     config, path = cfg
     _linux(monkeypatch)

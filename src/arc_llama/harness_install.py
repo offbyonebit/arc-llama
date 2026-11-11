@@ -110,8 +110,8 @@ UV_ASSETS: dict[tuple[str, str], tuple[str, str, int]] = {
     ),
 }
 
-HERMES_WINDOWS_EXPERIMENTAL = True
-"""Hermes on native Windows has not been validated through Arc Llama yet."""
+HERMES_WINDOWS_EXPERIMENTAL = False
+"""Hermes on native Windows was validated through Arc Llama in 1.1.1."""
 
 COMMAND_TIMEOUT = 1800.0
 """Upper bound for one install subprocess (uv sync downloads ~100 packages)."""

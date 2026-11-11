@@ -73,7 +73,6 @@ A copy can't be removed while a Work task is using it.
   (`UV_NO_CONFIG`).
 - The install counts as complete only after `hermes acp --check` passes, run with a temporary `HERMES_HOME`. A failed
   or cancelled install removes its folder.
-- Hermes on Windows has not yet been validated through Arc Llama, and the dialog says so.
 
 Installing needs `ARC_LLAMA_EXPERIMENTAL_AGENT=1` and the admin token, the same as using external harnesses. One
 install runs at a time and can be cancelled. Disk space is checked first: about 200 MB for OpenCode, and up to 1 GB
