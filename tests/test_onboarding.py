@@ -187,6 +187,21 @@ async def test_fresh_explicit_setup_prepares_registers_and_loads_exact_model(set
     await manager.shutdown()
 
 
+@pytest.mark.parametrize(
+    "arch,expected",
+    [("lunar_lake", "integrated"), ("unknown", "integrated"), ("battlemage", "hardware")],
+)
+async def test_igpu_without_memory_says_integrated_not_supported(setup, arch, expected):
+    manager, *_ = setup
+    manager.cfg.gpus[0].arch = arch
+    manager.cfg.gpus[0].vram_mb = None
+    manager.refresh(force=True)
+    public = manager.public()
+    assert public["discovery"]["status"] == expected
+    assert public["starter"] is None
+    assert manager.discovery_task is None
+
+
 async def test_existing_runtime_preserved(setup):
     manager, installer, _, _ = setup
     binary = Path(manager.cfg.paths.llama_server)

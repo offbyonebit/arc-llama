@@ -31,9 +31,10 @@ window.ArcDashboard.createOnboardingController = function ({ document: doc, requ
       searching: "Searching the current public model catalog…",
       no_match: "No suitable starter found in the current catalog search. Retry, compare models in Discover, or scan for an existing download.",
       unavailable: "The public model catalog is unavailable. Check your connection and retry, or use Discover.",
+      integrated: "Integrated Intel GPUs aren't supported yet, so there's no starter model for this one. Arc Llama is tuned for Arc A-series and B-series cards. You can still pick a model in Discover.",
     };
     $("hardware").textContent = gpu
-      ? `Your device: ${gpu.name || gpu.pci_slot}${gpu.vram_mb ? ` · ${size(gpu.vram_mb)}` : " · memory capacity unavailable"}`
+      ? `Your device: ${gpu.name || gpu.pci_slot}${gpu.vram_mb ? ` · ${size(gpu.vram_mb)}` : data.discovery?.status === "integrated" ? " · integrated GPU (not supported yet)" : " · memory capacity unavailable"}`
       : "No Intel GPU is configured yet.";
     $("model").textContent = starter ? starter.name : discovering ? "Finding a model for your card…" : "Choose a model";
     $("description").textContent = starter
