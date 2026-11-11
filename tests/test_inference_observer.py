@@ -62,6 +62,8 @@ async def test_observer_counts_the_actual_prompt_and_forwards_bytes(monkeypatch)
             "stream": True,
         }
         async with real_client(trust_env=False) as client:
+            title = {"model": "m", "messages": [{"role": "user", "content": "Name this chat"}], "stream": True}
+            assert (await client.post(observer.url + "/v1/chat/completions", json=title)).status_code == 200
             response = await client.post(observer.url + "/v1/chat/completions", json=body)
             assert response.status_code == 200
             assert response.content.endswith(b"data: [DONE]\n\n")
@@ -77,6 +79,7 @@ async def test_observer_counts_the_actual_prompt_and_forwards_bytes(monkeypatch)
         events = []
         while not queue.empty():
             events.append(queue.get_nowait()["event"])
+        assert [e["type"] for e in events].count("context") == 1   # the tool-less side call is not the prompt
         context = next(e for e in events if e["type"] == "context")
         assert (
             context["prompt_tokens"] == 5000

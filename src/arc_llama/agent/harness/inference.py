@@ -69,7 +69,9 @@ class InferenceObserver:
             client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10.0), trust_env=False)
             try:
                 self.emit({"type": "activity", "phase": "generating"})
-                await self.count(client, body)
+                # Side calls such as title generation carry no tools; they are not the agent's prompt.
+                if body.get("tools"):
+                    await self.count(client, body)
                 response = await client.send(
                     client.build_request(
                         "POST",
