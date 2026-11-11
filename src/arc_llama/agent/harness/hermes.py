@@ -353,6 +353,10 @@ async def _stop_gateway(home: Path) -> None:
     could not be removed. ``hermes gateway stop`` takes about ten seconds to start,
     too slow for every run's teardown; the gateway's own record names its PID."""
     for pid in _recorded_gateway_pids(home):
+        if sys.platform != "win32":
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+            continue
         with contextlib.suppress(OSError):
             kill = await asyncio.create_subprocess_exec(
                 "taskkill",
@@ -541,8 +545,7 @@ async def run_hermes(
                             {"method": "session/cancel", "params": {"sessionId": rpc.session}}
                         )
                 await asyncio.shield(_stop(proc))
-                if sys.platform == "win32":
-                    await asyncio.shield(_stop_gateway(home))
+                await asyncio.shield(_stop_gateway(home))
             for job in background:
                 job.cancel()
             if background:
