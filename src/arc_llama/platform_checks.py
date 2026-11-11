@@ -446,6 +446,45 @@ def kernel_module_loaded(name: str) -> bool:
     return Path(f"/sys/module/{name}").exists()
 
 
+# Vulkan on Linux measured about 2x faster with Mesa 26.1+ than with 25.2.8
+# (Arc Pro B60, starter model, same box).
+MESA_FAST_VULKAN = (26, 1)
+_MESA_VERSION_RE = re.compile(r"\bMesa (\d+)\.(\d+)")
+
+
+def parse_mesa_version(text: str) -> tuple[int, int] | None:
+    """Return (major, minor) from vulkaninfo/glxinfo text like ``Mesa 25.2.8``."""
+    m = _MESA_VERSION_RE.search(text or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def mesa_version() -> tuple[int, int] | None:
+    """Best-effort installed Mesa version on Linux; None on Windows or if unknown."""
+    if sys.platform == "win32":
+        return None
+    for cmd in (["vulkaninfo", "--summary"], ["glxinfo", "-B"]):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        version = parse_mesa_version(out.stdout)
+        if version is not None:
+            return version
+    return None
+
+
+def old_mesa_vulkan_warning(version: tuple[int, int] | None) -> str | None:
+    """Warning text when Mesa is known and older than 26.1, else None."""
+    if version is None or version >= MESA_FAST_VULKAN:
+        return None
+    return (
+        f"Mesa {version[0]}.{version[1]} is older than 26.1. Vulkan on Linux ran about "
+        "2x slower on older Mesa in our tests; update Mesa to 26.1 or newer."
+    )
+
+
 def parse_kernel_version(release: str | None = None) -> tuple[int, int] | None:
     """Return (major, minor) from ``uname -r`` style string."""
     if release is None:

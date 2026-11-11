@@ -66,6 +66,8 @@ from arc_llama.models import (
     parse_hf_spec,
 )
 from arc_llama.platform_checks import (
+    mesa_version,
+    old_mesa_vulkan_warning,
     rebar_likely_enabled,
 )
 from arc_llama.runtime_pin import LLAMA_CPP_BUILD
@@ -1166,6 +1168,10 @@ def serve(
             "admin_token is set to something you control (it was auto-generated "
             "if you never set one).[/yellow]"
         )
+    if any(g.enabled and g.backend == Backend.VULKAN.value for g in cfg.gpus):
+        mesa_warning = old_mesa_vulkan_warning(mesa_version())
+        if mesa_warning:
+            console.print(f"[yellow]{mesa_warning}[/yellow]")
     if guided:
         # The local browser UI authenticates itself, so token details would
         # only distract here; they matter to API callers of plain `serve`.

@@ -10,9 +10,12 @@ import pytest
 from arc_llama.platform_checks import (
     format_bytes,
     max_memory_bar_bytes,
+    mesa_version,
+    old_mesa_vulkan_warning,
     oneapi_runtime_env_needed,
     oneapi_setvars_path,
     parse_kernel_version,
+    parse_mesa_version,
     rebar_likely_enabled,
     source_setvars,
 )
@@ -220,3 +223,84 @@ class TestSourceSetvars:
             assert source_setvars(tmp_path / "no-such-setvars.bat") == {}
         else:
             assert source_setvars(tmp_path / "no-such-setvars.sh") == {}
+
+
+# Shaped like `vulkaninfo --summary` on an Arc Pro B60 + NVIDIA box (trimmed).
+VULKANINFO_SUMMARY = """\
+Devices:
+========
+GPU0:
+\tapiVersion         = 1.4.318
+\tdriverVersion      = 25.2.8
+\tvendorID           = 0x8086
+\tdeviceID           = 0xe211
+\tdeviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+\tdeviceName         = Intel(R) Graphics (BMG G21)
+\tdriverID           = DRIVER_ID_INTEL_OPEN_SOURCE_MESA
+\tdriverName         = Intel open-source Mesa driver
+\tdriverInfo         = Mesa 25.2.8-0ubuntu0.24.04.1
+GPU1:
+\tvendorID           = 0x10de
+\tdriverName         = NVIDIA
+\tdriverInfo         = 580.95.05
+"""
+GLXINFO_B = "OpenGL vendor string: Intel\nOpenGL version string: 4.6 (Compatibility Profile) Mesa 26.1.2\n"
+
+
+class TestMesaVersion:
+    def test_parse_vulkaninfo_and_glxinfo(self):
+        assert parse_mesa_version(VULKANINFO_SUMMARY) == (25, 2)
+        assert parse_mesa_version(GLXINFO_B) == (26, 1)
+        assert parse_mesa_version("driverInfo = 580.95.05") is None
+        assert parse_mesa_version("") is None
+
+    def test_warning_only_below_26_1(self):
+        assert "Mesa 25.2" in (old_mesa_vulkan_warning((25, 2)) or "")
+        assert old_mesa_vulkan_warning((26, 0)) is not None
+        assert old_mesa_vulkan_warning((26, 1)) is None
+        assert old_mesa_vulkan_warning((27, 0)) is None
+        assert old_mesa_vulkan_warning(None) is None
+
+    def test_reads_vulkaninfo_then_glxinfo(self, monkeypatch):
+        import subprocess
+
+        import arc_llama.platform_checks as pc
+
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(pc.shutil, "which", lambda name: f"/usr/bin/{name}")
+        outputs = {"vulkaninfo": "no mesa here", "glxinfo": GLXINFO_B}
+        monkeypatch.setattr(
+            pc.subprocess,
+            "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, outputs[cmd[0]], ""),
+        )
+        assert mesa_version() == (26, 1)
+
+    def test_no_op_without_tools_or_on_windows(self, monkeypatch):
+        import arc_llama.platform_checks as pc
+
+        def boom(*a, **k):
+            raise AssertionError("must not run a tool")
+
+        monkeypatch.setattr(pc.subprocess, "run", boom)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(pc.shutil, "which", lambda name: None)
+        assert mesa_version() is None
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(pc.shutil, "which", lambda name: f"C:/bin/{name}.exe")
+        assert mesa_version() is None
+
+
+@pytest.mark.parametrize("backend,shown", [("vulkan", True), ("sycl", False)])
+def test_doctor_warns_on_old_mesa_for_vulkan(tmp_path: Path, monkeypatch, backend, shown):
+    from click.testing import CliRunner
+
+    import arc_llama.cli_diagnostics as diagnostics
+    from arc_llama.cli import cli
+    from arc_llama.config import Config, GPUConfig
+
+    monkeypatch.setattr(diagnostics, "mesa_version", lambda: (25, 2))
+    cfg = Config(gpus=[GPUConfig("0000:03:00.0", 0, "battlemage", vram_mb=24576, backend=backend)])
+    cfg.save(tmp_path / "config.toml")
+    result = CliRunner().invoke(cli, ["-c", str(tmp_path / "config.toml"), "doctor"])
+    assert ("mesa_vulkan" in result.output) is shown
