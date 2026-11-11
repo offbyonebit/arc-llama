@@ -97,8 +97,10 @@ exclude = [
     "docs/release-validation-*/",
     "docs/release-readiness-*.md",
     "docs/incidents/",
-    # The README demo video and the scripts that record it are for GitHub only.
+    # The README demo video, the screenshot tour, and the scripts that record
+    # them are for GitHub only.
     "docs/media/",
+    "docs/showcase/",
     "scripts/demo/",
     # Local-only agent notes, hidden through .git/info/exclude (which hatchling
     # does not read) rather than .gitignore.
