@@ -815,6 +815,27 @@ async def test_measure_rechecks_abort_after_the_edit_await(cfg, monkeypatch):
     assert aborted, "the aborted candidate was not recorded"
 
 
+async def test_chat_during_baseline_aborts_rather_than_fails_the_tune(cfg, monkeypatch):
+    """A user chat lands while the baseline is measuring and evicts the model,
+    so the baseline fails. That is an abort (retry later), not a failed tune."""
+    fake = FakeMeasurements({}, cfg)
+    user_chatted = False
+
+    async def bench(server_url, model_name, **kw):
+        nonlocal user_chatted
+        user_chatted = True
+        return _result(None, None, error="model was unloaded")
+
+    monkeypatch.setattr("arc_llama.tune._apply_edits", fake.apply)
+    monkeypatch.setattr("arc_llama.tune.benchmark_model", bench)
+
+    report = await tune_model(
+        "http://127.0.0.1:11437", "m", cfg=cfg, should_abort=lambda: user_chatted
+    )
+
+    assert report.aborted
+
+
 async def test_restore_final_state_retries_then_succeeds(cfg, monkeypatch):
     """#37: a flaky edit endpoint must not leave the last candidate persisted
     when a retry would have worked."""

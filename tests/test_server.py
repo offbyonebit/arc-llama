@@ -1155,6 +1155,9 @@ def test_local_request_bumps_tuner_use_count(monkeypatch, tmp_path):
         def bump_use(self, name: str) -> None:
             bumped.append(name)
 
+        def abort_sweep(self) -> bool:
+            return False
+
         async def stop(self) -> None:
             pass
 
@@ -1170,6 +1173,58 @@ def test_local_request_bumps_tuner_use_count(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert "qwen" in bumped
+
+
+@pytest.mark.parametrize("from_benchmark", [False, True])
+def test_user_request_aborts_a_running_sweep(monkeypatch, tmp_path, from_benchmark):
+    """A user chat aborts the sweep as it arrives, so one that finishes inside
+    the tune's baseline measurement isn't missed. The tune's own benchmark
+    requests don't abort it."""
+    import arc_llama.server as server_mod
+    from arc_llama.benchmark import BENCHMARK_HEADER
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    cfg = Config(
+        server=ServerConfig(admin_token=None),
+        paths=PathsConfig(models_dir=str(tmp_path / "models")),
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage")],
+        models=[
+            ModelConfig(
+                name="qwen",
+                path=str(tmp_path / "qwen.gguf"),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+            ),
+        ],
+        tune=TuneConfig(auto=False),
+    )
+    aborts: list[bool] = []
+
+    class FakeTuner:
+        def bump_use(self, name: str) -> None:
+            pass
+
+        def abort_sweep(self) -> bool:
+            aborts.append(True)
+            return True
+
+        async def stop(self) -> None:
+            pass
+
+    app = create_app(cfg)
+    app.state.tuner = FakeTuner()
+    headers = {BENCHMARK_HEADER: "1"} if from_benchmark else {}
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert aborts == ([] if from_benchmark else [True])
 
 
 def test_custom_config_path_used_by_autotune_save(monkeypatch, tmp_path):

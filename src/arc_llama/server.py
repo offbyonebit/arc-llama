@@ -76,6 +76,7 @@ from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
 from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
+from arc_llama.benchmark import BENCHMARK_HEADER
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
 from arc_llama.config import Config, default_config_path, load_config
 from arc_llama.failures import StartupFailureError
@@ -2728,6 +2729,12 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     if lease_context is not None:
         await lease_context.__aenter__()
     rt.inflight += 1
+    tuner = getattr(request.app.state, "tuner", None)
+    if tuner is not None and BENCHMARK_HEADER not in request.headers:
+        # Latch the abort: a short chat can start and finish inside one tune
+        # measurement (the baseline is the longest), so inflight is back to
+        # zero by the time the sweep checks it.
+        tuner.abort_sweep()
     streaming_response_started = False
     resolved_at: float | None = None
     # Set once the request has resolved to a local model, so the router can

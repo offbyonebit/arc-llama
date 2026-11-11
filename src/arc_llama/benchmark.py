@@ -26,6 +26,9 @@ log = logging.getLogger("arc_llama.benchmark")
 WARMUP_PROMPT = "The quick brown fox jumps over the lazy dog. "
 # We repeat this to build arbitrary-length prompts without tokenisation.
 
+BENCHMARK_HEADER = "X-Arc-Llama-Benchmark"
+"""Marks benchmark traffic, so the server doesn't take it for a user request."""
+
 DEFAULT_PROMPT_TOKENS = 512
 DEFAULT_GEN_TOKENS = 128
 
@@ -473,6 +476,7 @@ async def benchmark_model(
     headers = (
         {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
     )
+    headers[BENCHMARK_HEADER] = "1"
     async with httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client:
         # Ensure model is loaded
         if load:

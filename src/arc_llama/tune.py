@@ -966,6 +966,10 @@ async def tune_model(
                     client, {**base_state, **best_edits}
                 )
             report.steps.append(baseline_step)
+            if should_abort and should_abort():
+                # A user request during the baseline aborts the tune, even when
+                # it made the baseline fail (e.g. by evicting the model).
+                report.aborted = True
             if baseline_step.score is None and not report.aborted and offload_info is not None:
                 # MoE model whose recipe does not load even from the seeded
                 # minimum (the estimator was optimistic). Run the offload
