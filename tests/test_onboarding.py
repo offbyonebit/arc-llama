@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from arc_llama.api.onboarding import register_onboarding_routes
 from arc_llama.config import Config, GPUConfig, ModelConfig, ServerConfig
-from arc_llama.onboarding import STARTER_REASONING_BUDGET, STARTER_SAMPLING, FirstAnswerSetup
+from arc_llama.onboarding import STARTER_SAMPLING, STARTER_THINKING_OFF, FirstAnswerSetup
 from arc_llama.server import _read_json_body, _require_admin
 from arc_llama.starter_discovery import Starter
 
@@ -179,7 +179,7 @@ async def test_fresh_explicit_setup_prepares_registers_and_loads_exact_model(set
     assert manager.cfg.models[0].recipe == {
         "ctx": 65536,
         "parallel": 1,
-        "extra_flags": STARTER_REASONING_BUDGET,
+        "extra_flags": STARTER_THINKING_OFF,
         **STARTER_SAMPLING,
     }
     assert manager.public()["chat_url"] == "/chat?model=starter&welcome=1"

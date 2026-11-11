@@ -360,8 +360,8 @@ def test_edit_endpoint_accepts_new_fields(monkeypatch, tmp_path) -> None:
         assert "tensor_split" not in cleared.json()["recipe"]
 
 
-def test_reasoning_budget_capability_needs_a_token_count():
-    new = "--reasoning-budget N  token budget for thinking: -1 for unrestricted, 0 for immediate end,\n  N>0 for token budget (default: -1)\n--reasoning-budget-message MESSAGE"
-    old = "--reasoning-budget N  controls the amount of thinking allowed; currently only one of: -1 for\n  unrestricted thinking budget, or 0 to disable thinking (default: -1)"
-    assert _parse_help(new).supports_reasoning_budget
-    assert not _parse_help(old).supports_reasoning_budget
+def test_reasoning_off_capability_needs_the_reasoning_flag():
+    new = "-rea,  --reasoning [on|off|auto]        Use reasoning/thinking in the chat ('on', 'off', or 'auto'"
+    old = "--reasoning-budget N  controls the amount of thinking allowed; currently only one of: -1 for\n  unrestricted thinking budget, or 0 to disable thinking (default: -1)\n--reasoning-format FORMAT"
+    assert _parse_help(new).supports_reasoning_off
+    assert not _parse_help(old).supports_reasoning_off

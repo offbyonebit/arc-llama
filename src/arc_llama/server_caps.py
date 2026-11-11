@@ -57,9 +57,8 @@ class ServerCaps:
     """Whether this binary can serve ``/v1/rerank`` (``--reranking``)."""
     supports_tensor_split: bool = False
     """Whether this binary accepts ``--tensor-split`` / ``--split-mode``."""
-    supports_reasoning_budget: bool = False
-    """Whether ``--reasoning-budget`` takes a token count (older builds only take -1 or 0)
-    and ``--reasoning-budget-message`` exists."""
+    supports_reasoning_off: bool = False
+    """Whether this binary accepts ``--reasoning on|off|auto``."""
 
 
 def format_speculation_capability(caps: ServerCaps) -> str:
@@ -86,7 +85,7 @@ DEFAULT_CAPS = ServerCaps(
     supports_mmproj=True,
     supports_reranking=True,
     supports_tensor_split=True,
-    supports_reasoning_budget=True,
+    supports_reasoning_off=True,
 )
 
 _cache: dict[tuple[str, float, tuple[tuple[str, str], ...]], ServerCaps] = {}
@@ -104,8 +103,7 @@ def _parse_help(help_text: str) -> ServerCaps:
         "supports_mmproj": "--mmproj" in help_text,
         "supports_reranking": "--rerank" in help_text,
         "supports_tensor_split": "--tensor-split" in help_text,
-        "supports_reasoning_budget": "N>0 for token budget" in help_text
-        and "--reasoning-budget-message" in help_text,
+        "supports_reasoning_off": "--reasoning [on|off|auto]" in help_text,
     }
     idx = help_text.find("--flash-attn")
     if idx < 0:

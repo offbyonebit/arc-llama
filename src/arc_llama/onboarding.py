@@ -48,15 +48,9 @@ def runtime_path(cfg: Config) -> Path | None:
     return Path(found) if found else None
 
 
-#: llama-server stops thinking after this many tokens and adds this line before
-#: closing the thinking, so the model answers instead of drafting in the reply.
-STARTER_REASONING_BUDGET = [
-    "--reasoning-budget",
-    "512",
-    "--reasoning-budget-message",
-    " Okay, I've thought about this enough. Now I'll write only the final answer and stop there,"
-    " with no word count, notes or self-checks after it.",
-]
+#: The starter answers without thinking. A capped think still ran out mid-plan
+#: about 1 in 25 chats and the model kept drafting in the reply instead.
+STARTER_THINKING_OFF = ["--reasoning", "off"]
 #: Sampling the Ornith and Qwen3 thinking cards recommend; llama-server's own
 #: defaults (temp 0.8, top-k 40) leave more room for stray notes after the answer.
 STARTER_SAMPLING = {"temp": 0.6, "top_p": 0.95, "top_k": 20}
@@ -97,9 +91,9 @@ class FirstAnswerSetup:
         for model in added:
             fitted = model.recipe.get("ctx", 4096)
             model.recipe["parallel"] = 1
-            # Cap thinking so a reasoning starter still answers inside Chat's
-            # 1024-token default reply instead of spending it all on thinking.
-            model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_REASONING_BUDGET]
+            # Thinking off, so a reasoning starter answers inside Chat's
+            # 1024-token default reply instead of spending it on thinking.
+            model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_THINKING_OFF]
             model.recipe.update(STARTER_SAMPLING)
             model.recipe["ctx"] = next(
                 (
