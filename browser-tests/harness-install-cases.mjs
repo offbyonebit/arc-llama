@@ -93,6 +93,20 @@ export async function testWorkAgentInstallCancelKeepsSelection({ page, origin })
   if (state.posts[0]?.version !== "latest") throw new Error("newest was not requested: " + JSON.stringify(state.posts));
 }
 
+export async function testWorkOffersManagedCopyBesideOwnOpenCode({ page, origin }) {
+  const own = { ...missing, available: true, source: "path", path: "/usr/bin/opencode" };
+  await page.route("**/v1/agent/info", route => route.fulfill(json(info(own))));
+  await openChat(page, origin);
+  await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.waitForSelector('#work-harness option[value="install:opencode"]', { state: "attached" });
+  const before = await page.inputValue("#work-harness");
+  await page.selectOption("#work-harness", "install:opencode");
+  await page.waitForSelector(".harness-dialog:not([hidden])");
+  if (!(await page.locator(".harness-dialog-sheet").textContent()).includes("v1.19.4")) throw new Error("the managed install was not offered");
+  if ((await page.inputValue("#work-harness")) !== before) throw new Error("the install entry stayed selected as an agent");
+}
+
 export async function testSystemAgentsPanel({ page, origin }) {
   const hermes = { id: "hermes", label: "Hermes", available: true, source: "path", path: "/usr/bin/hermes", managed: [],
     install: { ...OFFER, version: "v0.22.5", source: "https://github.com/NousResearch/hermes-agent" } };

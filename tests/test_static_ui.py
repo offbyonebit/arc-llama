@@ -907,6 +907,12 @@ def test_work_view_is_wired_and_ships_behind_the_experimental_switch():
     assert "innerHTML" not in work
 
 
+def test_work_offers_arc_llamas_copy_beside_an_agent_found_on_path():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert 'value: "install:" + h.id' in work and "install Arc Llama’s copy…" in work
+    assert 'h.source === "managed"' in work and "offerInstall(chosen)" in work
+
+
 @pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
 def test_work_step_translation_is_plain_language_and_flags_risk():
     helper = STATIC / "chat" / "work.js"

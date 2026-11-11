@@ -1,6 +1,6 @@
 import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply, testGuidedHidesEmptyLibraryUntilSetupAnswers, testGuidedLibraryReturnsWhenSetupStatusFails, testChatWithoutModelsPointsToSetup, testWorkNavHiddenWhenWorkIsOff, testWorkNavShownWhenWorkIsOn } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
-import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
+import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testWorkOffersManagedCopyBesideOwnOpenCode, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
 import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
@@ -217,6 +217,7 @@ const TESTS = [
   ["work-profiles-stale-discovery", testWorkProfilesIgnoreClosedDiscovery],
   ["work-agent-install-flow", testWorkAgentInstallFlow],
   ["work-agent-install-cancel", testWorkAgentInstallCancelKeepsSelection],
+  ["work-agent-install-beside-own", testWorkOffersManagedCopyBesideOwnOpenCode],
   ["system-agents-panel", testSystemAgentsPanel],
   ["system-agents-off-without-experimental", testSystemAgentsOffWithoutExperimental],
 ];
