@@ -16,6 +16,7 @@ import ctypes
 import errno
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -76,6 +77,45 @@ HEALTH_POLL_INTERVAL = 1.5
 # Log rotation for llama-server subprocess logs.
 _MAX_LOG_BYTES = 50 * 1024 * 1024
 _LOG_BACKUPS = 3
+
+# llama.cpp's own startup lines: which device a model loaded on, how many
+# layers went to it, and where the weights live.
+_USING_DEVICE_RE = re.compile(r"using device (\S+) \((.*)\) - \d+ MiB free")
+_OFFLOADED_RE = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
+_MODEL_BUFFER_RE = re.compile(r"load_tensors:\s+(\S+) model buffer size")
+
+
+def _used_devices(log_text: str) -> dict[str, str]:
+    """{"Vulkan0": "Intel(R) Arc(tm) Pro B60 Graphics", ...} from "using device" lines."""
+    return {
+        m.group(1): re.sub(r"\) \((?:unknown id|[0-9A-Fa-f:.]+)$", "", m.group(2))
+        for m in _USING_DEVICE_RE.finditer(log_text)
+    }
+
+
+def startup_device_warning(log_text: str, gpu_name: str = "") -> str | None:
+    """Why llama-server's startup log looks like a CPU or wrong-GPU load, or None.
+
+    A log without the lines is unknown, never reported as a fallback.
+    """
+    offloaded = _OFFLOADED_RE.search(log_text)  # first one is the main model
+    buffers = _MODEL_BUFFER_RE.findall(log_text)
+    devices = _used_devices(log_text)
+    if offloaded and offloaded.group(1) == "0":
+        return f"0/{offloaded.group(2)} layers were offloaded to the GPU, so the model runs on the CPU"
+    if buffers and all("CPU" in b or b.endswith("_Host") for b in buffers):
+        return "llama.cpp put all model weights in CPU memory, so the model runs on the CPU"
+    wanted = set(re.findall(r"[0-9a-z]+", gpu_name.lower()))
+    wanted_models = {t for t in wanted if re.fullmatch(r"[ab]\d{2,3}[a-z]?", t)}  # b60, a770
+    for dev, desc in devices.items():
+        have = set(re.findall(r"[0-9a-z]+", desc.lower()))
+        if "intel" not in have or (
+            len(devices) == 1
+            and (("arc" in wanted and "arc" not in have) or (wanted_models and not wanted_models & have))
+        ):
+            return f"llama.cpp loaded the model on {dev} ({desc}), not the configured GPU {gpu_name or ''}".rstrip()
+    return None
+
 
 _IS_WINDOWS = sys.platform == "win32"
 # Not defined on POSIX. Fallback lets the Windows code path stay import-safe
@@ -174,6 +214,7 @@ class LaunchPlan:
     # mode is enabled. This coordinates separate arc-llama processes too.
     resident_lock_path: Path | None = None
     gpu_pci_slot: str | None = None
+    gpu_name: str = ""
 
 
 # Environment variables that only make sense for the SYCL backend; they can
@@ -540,6 +581,7 @@ def build_plan(
         backend_url=backend_url,
         health_url=f"{backend_url}/health",
         gpu_pci_slot=gpu.pci_slot,
+        gpu_name=gpu.name,
         resident_lock_path=(
             Path(getattr(cfg.paths, "state_dir", default_state_dir())) / "llama-server.lock"
             if cfg.server.single_resident
@@ -581,6 +623,7 @@ class LlamaServer:
         self.ready: bool = False
         self._log_file: Any = None  # file handle opened in start(), closed in stop()
         self._log_path: Path | None = None
+        self._log_offset = 0  # where this run's output starts in the appended log
         self._resident_lock: Any = None
         self._stop_lock = threading.RLock()
 
@@ -606,6 +649,7 @@ class LlamaServer:
             log_path = log_dir / f"{self.name}.log"
             _rotate_log(log_path)
             self._log_path = log_path
+            self._log_offset = log_path.stat().st_size if log_path.exists() else 0
             log_file = open(log_path, "ab")
             stdout = log_file
             stderr = subprocess.STDOUT
@@ -743,6 +787,7 @@ class LlamaServer:
                         elapsed = time.time() - self.started_at if self.started_at else 0
                         log.info("[%s] ready after %.1fs", self.name, elapsed)
                         self.ready = True
+                        self._check_startup_device()
                         return True
                 except Exception:
                     pass
@@ -759,6 +804,21 @@ class LlamaServer:
                 await asyncio.sleep(HEALTH_POLL_INTERVAL)
         log.warning("[%s] health-check timed out after %.0fs", self.name, timeout)
         return False
+
+    def _check_startup_device(self) -> None:
+        """Warn when this run's startup log shows a CPU or wrong-GPU load. Never fails a load."""
+        if self._log_path is None:
+            return
+        try:
+            with open(self._log_path, "rb") as fh:
+                fh.seek(self._log_offset)
+                text = fh.read().decode("utf-8", errors="replace")
+            warning = startup_device_warning(text, self.plan.gpu_name or "")
+        except Exception:
+            log.debug("[%s] could not read the startup log", self.name, exc_info=True)
+            return
+        if warning:
+            log.warning("[%s] %s. It will be slow; see %s", self.name, warning, self._log_path)
 
     def tail_log(self, lines: int = 50) -> str:
         """Return the last *lines* of the llama-server log, if any."""
