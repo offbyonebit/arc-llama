@@ -916,6 +916,7 @@ def _edit_app(monkeypatch, tmp_path):
 
     # Keep cfg.save() away from the real ~/.config.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))  # Windows config home
     monkeypatch.setattr(server_mod, "Router", FakeRouterWithRebuild)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     cfg = Config(
