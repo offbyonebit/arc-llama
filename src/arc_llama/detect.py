@@ -880,6 +880,13 @@ def _parse_clinfo_devices(text: str) -> list[tuple[str, int | None]]:
     return out
 
 
+def _vram_from_table(gpu: DetectedGPU) -> bool:
+    """True when gpu.vram_mb came from the device-ID table, not a measurement."""
+    return "VRAM from device-ID table" in gpu.name or any(
+        "device-ID fallback table" in n for n in gpu.notes
+    )
+
+
 def _enrich_with_clinfo(gpus: list[DetectedGPU]) -> None:
     """Best-effort: pull OpenCL device names + global memory size from clinfo.
 
@@ -915,8 +922,11 @@ def _enrich_with_clinfo(gpus: list[DetectedGPU]) -> None:
             for i, (n, gmem) in enumerate(intel_arc_devices):
                 if k.lower() in n.lower():
                     gpu.notes.append(f"OpenCL: {n}")
-                    if gpu.vram_mb is None and gmem:
+                    # A measured sysfs/registry size wins; clinfo replaces only a
+                    # missing or table-assumed one (e.g. 8 GB A770 shares 0x56A0).
+                    if gmem and (gpu.vram_mb is None or _vram_from_table(gpu)):
                         gpu.vram_mb = gmem // (1024 * 1024)
+                        gpu.notes.append(f"VRAM {gpu.vram_gb} GB from OpenCL global memory size.")
                     intel_arc_devices.pop(i)
                     break
             else:
