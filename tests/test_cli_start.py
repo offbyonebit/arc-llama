@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 from click.testing import CliRunner
@@ -171,3 +171,32 @@ def test_serve_without_a_config_file_says_the_token_is_temporary(tmp_path, monke
     out = _serve_output(tmp_path, monkeypatch, ["serve"], write_config=False)
     assert "temporary for this run" in out
     assert "saved in" not in out
+
+
+def test_plain_serve_on_an_empty_home_detects_and_saves_the_gpu(tmp_path, monkeypatch):
+    from arc_llama.arch import Arch
+    from arc_llama.detect import DetectedGPU
+
+    path = tmp_path / "config.toml"
+    detected = DetectedGPU(
+        pci_slot="0000:03:00.0", device_id=0xE211, arch=Arch.BATTLEMAGE,
+        name="Intel Arc Pro B60", driver="xe", vram_mb=24576,
+        drm_card="card1", drm_render="renderD129", sysfs_path="/fake",
+    )
+    probe = Mock(return_value=[detected])
+    monkeypatch.setattr("arc_llama.cli.detect_gpus", probe)
+    monkeypatch.setattr("arc_llama.cli._do_scan", lambda cfg, paths: [])
+    monkeypatch.setattr(
+        "arc_llama.server.create_app", lambda *a, **kw: SimpleNamespace(state=SimpleNamespace(router=None))
+    )
+    monkeypatch.setattr("uvicorn.run", Mock())
+    with patch("signal.signal"), patch("atexit.register"):
+        result = CliRunner().invoke(cli, ["--config", str(path), "serve", "--port", "11438"])
+    assert result.exit_code == 0, result.output
+    assert probe.call_args_list[0] == call()  # The banner's later probe is enrich=False.
+    saved = load_config(path)
+    assert [g.pci_slot for g in saved.gpus] == ["0000:03:00.0"] and saved.gpus[0].enabled
+    assert saved.server.port != 11438  # The run-only override is not saved.
+    # A configured GPU is never re-detected.
+    CliRunner().invoke(cli, ["--config", str(path), "serve"])
+    assert probe.call_args_list.count(call()) == 1

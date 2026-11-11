@@ -1004,6 +1004,16 @@ def setup_cmd(
     )
 
 
+def _detect_missing_gpus(cfg: Config) -> None:
+    """Fill an empty GPU list from hardware detection, as on a fresh home."""
+    if not cfg.gpus:
+        try:
+            detected = detect_gpus()
+            cfg.gpus = init_config_from_detection(detected).gpus
+        except Exception as exc:
+            console.print(f"[yellow]Hardware detection needs attention: {exc}[/yellow]")
+
+
 @cli.command("start")
 @click.option("--port", type=click.IntRange(1, 65535), default=None, help="Local web UI port.")
 @click.option("--open/--no-open", "open_browser", default=True, help="Open the browser when ready.")
@@ -1016,12 +1026,7 @@ def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
     """
     path = ctx.obj["config_path"]
     cfg = load_config(path)
-    if not cfg.gpus:
-        try:
-            detected = detect_gpus()
-            cfg.gpus = init_config_from_detection(detected).gpus
-        except Exception as exc:
-            console.print(f"[yellow]Hardware detection needs attention: {exc}[/yellow]")
+    _detect_missing_gpus(cfg)
     _save_or_die(cfg, path)
     browser_path = "/chat" if cfg.models else "/"
     url = f"http://127.0.0.1:{port or cfg.server.port}{browser_path}"
@@ -1091,6 +1096,10 @@ def serve(
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
+    if not cfg.gpus and not ctx.obj.get("guided_start"):
+        _detect_missing_gpus(cfg)
+        if cfg.gpus:
+            _save_or_die(cfg, ctx.obj["config_path"])
     # Command-line overrides apply to this run only. Remember the saved values
     # so a startup-scan save doesn't write them to config.toml (``start``
     # always passes host=127.0.0.1, which used to replace a saved LAN host).
