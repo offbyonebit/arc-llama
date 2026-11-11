@@ -376,6 +376,8 @@ def _xmx_sdpa_worth_it(
     return True
 
 
+# TODO: bench f16/FA-off vs q8_0/FA-on on an A-series card and on Lunar Lake
+# before adding them here (b12193 has no Vulkan coopmat on Alchemist dGPUs).
 VULKAN_SCALAR_FA_ARCHES = frozenset({Arch.BATTLEMAGE})
 """Arches whose Vulkan flash attention runs a slow scalar path.
 
