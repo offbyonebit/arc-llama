@@ -548,11 +548,19 @@ def create_app(
             and rt._servers[m.name].is_running
             and rt._servers[m.name].ready
         ]
+        # A model launch or relaunch (first load, tuner, settings Apply) says
+        # "loading". Still 200: the router itself is up, and clients that only
+        # check the code keep working.
+        loading = sorted(
+            set(rt._loading_futures)
+            | {n for n, s in rt._servers.items() if s.is_running and not s.ready}
+        )
         return {
-            "status": "ok",
+            "status": "loading" if loading else "ok",
             "uptime_seconds": round(uptime, 2),
             "loaded_models": loaded,
             "loaded_model_count": len(loaded),
+            "loading_models": loading,
         }
 
     @app.get("/admin/session-token")

@@ -180,6 +180,7 @@ class FakeRouter:
             aliases=["qwen.gguf"],
         )
         self._servers = {"qwen": FakeBackend()}
+        self._loading_futures = {}
         self.metrics = {
             "loads": 5,
             "stops": 2,
@@ -570,6 +571,7 @@ def test_health_includes_loaded_models_and_uptime(monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "ok"
+    assert data["loading_models"] == []
     assert data["loaded_model_count"] == 1
     assert "qwen" in data["loaded_models"]
     assert data["uptime_seconds"] >= 0
@@ -1714,6 +1716,8 @@ async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
             health = (await client.get("/health")).json()
         assert health["loaded_models"] == [], "cold-starting model reported as loaded"
+        assert health["status"] == "loading"
+        assert health["loading_models"] == ["qwen"]
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
             status = (await client.get("/admin/status")).json()
         entry = next(m for m in status["models"] if m["name"] == "qwen")
