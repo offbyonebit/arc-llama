@@ -60,6 +60,8 @@ class ServerCaps:
     supports_reasoning_off: bool = False
     """Whether this binary accepts ``--reasoning on|off|auto``."""
     supports_verbosity: bool = False
+    supports_cache_ram: bool = False
+    supports_ctx_checkpoints: bool = False
     """Whether this binary accepts ``-lv N`` (log verbosity)."""
 
 
@@ -89,6 +91,8 @@ DEFAULT_CAPS = ServerCaps(
     supports_tensor_split=True,
     supports_reasoning_off=True,
     supports_verbosity=True,
+    supports_cache_ram=True,
+    supports_ctx_checkpoints=True,
 )
 
 _cache: dict[tuple[str, float, tuple[tuple[str, str], ...]], ServerCaps] = {}
@@ -108,6 +112,8 @@ def _parse_help(help_text: str) -> ServerCaps:
         "supports_tensor_split": "--tensor-split" in help_text,
         "supports_reasoning_off": "--reasoning [on|off|auto]" in help_text,
         "supports_verbosity": "--verbosity" in help_text,
+        "supports_cache_ram": "--cache-ram" in help_text,
+        "supports_ctx_checkpoints": "--ctx-checkpoints" in help_text,
     }
     idx = help_text.find("--flash-attn")
     if idx < 0:

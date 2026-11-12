@@ -243,6 +243,11 @@ _SYCL_ONLY_ENVS: frozenset[str] = frozenset(
 )
 
 
+# Production 27B values (Nov 11): RSS stayed flat over long sessions.
+DEFAULT_CACHE_RAM_MIB = 2048
+DEFAULT_CTX_CHECKPOINTS = 8
+
+
 @lru_cache(maxsize=8)
 def _devices_cached(binary_path: str, backend: str = "Vulkan", env_key: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[int, str, int | None], ...]:
     return tuple(list_devices(binary_path, backend, env=dict(env_key) if env_key else None))
@@ -641,6 +646,20 @@ def build_plan(
         for a in argv
     ):
         argv += ["-lv", "4"]
+    # llama-server keeps up to 8 GiB of prompt cache and 32 context checkpoints
+    # per slot in host RAM, so RAM grows over a long session. Cap both unless
+    # the model's flags set them.
+    for supported, names, env_key, value in (
+        (caps.supports_cache_ram, ("-cram", "--cache-ram"), "LLAMA_ARG_CACHE_RAM", DEFAULT_CACHE_RAM_MIB),
+        (
+            caps.supports_ctx_checkpoints,
+            ("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"),
+            "LLAMA_ARG_CTX_CHECKPOINTS",
+            DEFAULT_CTX_CHECKPOINTS,
+        ),
+    ):
+        if supported and env_key not in env and not any(a.split("=", 1)[0] in names for a in argv):
+            argv += [names[1], str(value)]
     backend_url = f"http://{host}:{model.port}"
     return LaunchPlan(
         argv=argv,

@@ -870,6 +870,34 @@ class TestBuildPlanFlashAttn:
         assert lv == expected
         assert plan.argv.count("-lv") <= 1
 
+    @pytest.mark.parametrize(
+        ("extra", "caps", "cram", "ctxcp"),
+        [
+            ([], {"supports_cache_ram": True, "supports_ctx_checkpoints": True}, "2048", "8"),
+            ([], {}, None, None),  # an older binary without the flags
+            (["-cram", "4096", "-ctxcp", "16"], {"supports_cache_ram": True, "supports_ctx_checkpoints": True}, None, None),
+            (["--cache-ram=-1"], {"supports_cache_ram": True, "supports_ctx_checkpoints": True}, None, "8"),
+        ],
+    )
+    def test_prompt_cache_ram_is_capped_unless_the_model_sets_it(self, monkeypatch, extra, caps, cram, ctxcp):
+        argv = self._plan({"extra_flags": extra}, {**caps, "probed": True}, monkeypatch).argv
+
+        def value(flag):
+            return argv[argv.index(flag) + 1] if flag in argv else None
+
+        assert value("--cache-ram") == cram
+        assert value("--ctx-checkpoints") == ctxcp
+
+    @pytest.mark.parametrize(("ngram", "expected"), [(True, "draft-mtp,ngram-mod"), (False, "draft-mtp")])
+    def test_mtp_ngram_list_keeps_mtp_without_ngram_support(self, monkeypatch, ngram, expected):
+        monkeypatch.setattr("arc_llama.launcher.has_mtp_heads", lambda path: True)
+        plan = self._plan(
+            {"spec_type": "draft-mtp,ngram-mod", "spec_draft_n_max": 3},
+            {"supports_speculative": True, "supports_ngram": ngram, "probed": True},
+            monkeypatch,
+        )
+        assert plan.argv[plan.argv.index("--spec-type") + 1] == expected
+
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
         plan = self._plan(
             {"flash_attn": "on"},
