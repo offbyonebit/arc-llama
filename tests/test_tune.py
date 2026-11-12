@@ -920,10 +920,12 @@ async def test_apply_state_to_recipe_mirrors_endpoint_rules():
     assert m.recipe == {"cache_type_k": "q8_0", "ubatch_size": 1024}
 
 
-async def test_battlemage_vulkan_keeps_f16_kv_and_fa_off(cfg, monkeypatch):
+@pytest.mark.parametrize("arch", ["battlemage", "lunar_lake"])
+async def test_battlemage_vulkan_keeps_f16_kv_and_fa_off(cfg, monkeypatch, arch):
     """Battlemage on Vulkan never tries q8_0 KV or a flash-attn mode: q8_0
     forces FA on, which the scalar FA path makes slower at depth."""
     cfg.gpus[0].backend = "vulkan"
+    cfg.gpus[0].arch = arch
     cfg.models[0].recipe = {
         "ctx": 8192,
         "cache_type_k": "f16",

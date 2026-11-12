@@ -779,6 +779,24 @@ class TestBattlemageVulkanFlashAttention:
         argv = r.to_argv(fa_takes_value=True)
         assert argv[argv.index("-fa") + 1] == "off"
 
+    def test_new_lunar_lake_vulkan_model_gets_f16_kv_and_fa_off(self):
+        from arc_llama.arch import Backend
+
+        r = default_recipe(Arch.LUNAR_LAKE, vram_mb=16 * 1024, model_file_mb=4 * 1024, backend=Backend.VULKAN)
+        assert r.cache_type_k == KVCacheType.F16
+        assert r.cache_type_v == KVCacheType.F16
+        assert r.flash_attn == "off"
+        assert "--flash-attn" not in r.extra_flags
+
+    def test_alchemist_vulkan_keeps_q8_kv_and_fa_on(self):
+        from arc_llama.arch import Backend
+
+        r = default_recipe(Arch.ALCHEMIST, vram_mb=16 * 1024, model_file_mb=4 * 1024, backend=Backend.VULKAN)
+        assert r.cache_type_k == KVCacheType.Q8_0
+        assert r.cache_type_v == KVCacheType.Q8_0
+        assert r.flash_attn is None
+        assert r.extra_flags[-2:] == ["--flash-attn", "on"]
+
     def test_context_is_sized_for_f16_kv(self):
         from arc_llama.arch import Backend
         from arc_llama.recipes import suggest_ctx
@@ -799,7 +817,7 @@ class TestBattlemageVulkanFlashAttention:
         for arch, backend in (
             (Arch.BATTLEMAGE, Backend.SYCL),
             (Arch.ALCHEMIST, Backend.VULKAN),
-            (Arch.LUNAR_LAKE, Backend.VULKAN),
+            (Arch.LUNAR_LAKE, Backend.SYCL),
         ):
             r = default_recipe(arch, vram_mb=24 * 1024, model_file_mb=5 * 1024, backend=backend)
             assert r.cache_type_k == KVCacheType.Q8_0, (arch, backend)
@@ -827,6 +845,7 @@ class TestBattlemageVulkanFlashAttention:
         assert new_model_kv_type("battlemage", "vulkan") == KVCacheType.F16
         assert new_model_kv_type(Arch.BATTLEMAGE, Backend.SYCL) == KVCacheType.Q8_0
         assert new_model_kv_type("alchemist", "vulkan") == KVCacheType.Q8_0
-        assert new_model_kv_type("lunar_lake", "vulkan") == KVCacheType.Q8_0
+        assert new_model_kv_type("lunar_lake", "vulkan") == KVCacheType.F16
+        assert new_model_kv_type("lunar_lake", "sycl") == KVCacheType.Q8_0
         assert new_model_kv_type("nonsense", "vulkan") == KVCacheType.Q8_0
         assert memory_need_mb(5000, kv_type=KVCacheType.F16) > memory_need_mb(5000)

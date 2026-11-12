@@ -376,17 +376,18 @@ def _xmx_sdpa_worth_it(
     return True
 
 
-# TODO: bench f16/FA-off vs q8_0/FA-on on an A-series card and on Lunar Lake
-# before adding them here (b12193 has no Vulkan coopmat on Alchemist dGPUs).
-VULKAN_SCALAR_FA_ARCHES = frozenset({Arch.BATTLEMAGE})
+# TODO: bench f16/FA-off vs q8_0/FA-on on an A-series card before adding
+# Alchemist here (b12243 has no Vulkan coopmat on Alchemist dGPUs).
+VULKAN_SCALAR_FA_ARCHES = frozenset({Arch.BATTLEMAGE, Arch.LUNAR_LAKE})
 """Arches whose Vulkan flash attention runs a slow scalar path.
 
 Xe2 drivers report only an 8x16x16 cooperative-matrix shape, so llama.cpp's
 Vulkan FA shader falls back to scalar code (llama.cpp issues 30503, 27638).
 Measured on an Arc Pro B60, Ornith 1.5 9B Q4_K_M, llama.cpp b12193: f16 KV with
 FA off vs q8_0 KV with FA on, pp16384 532 -> 820 tok/s and tg128 at 16K depth
-13.6 -> 19.1 tok/s. New models there start with f16 KV and FA off. Revisit once
-llama.cpp PR 30351 ships."""
+13.6 -> 19.1 tok/s. Lunar Lake (Arc 130V, LFM3 1.7B Q4_0) shows the same:
+prefill ~1.8x faster with FA off, q8_0 decode ~40% slower at depth. New models
+there start with f16 KV and FA off. Revisit once llama.cpp PR 30351 ships."""
 
 
 def new_model_kv_type(arch: Arch | str, backend: Backend | str) -> KVCacheType:
