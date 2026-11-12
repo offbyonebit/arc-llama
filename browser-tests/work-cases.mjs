@@ -311,6 +311,19 @@ export async function testWorkModeOffersClosestFolder({ page, origin }) {
   if (await page.locator("#work-run").isVisible()) throw new Error("the failed run was left on screen");
 }
 
+export async function testWorkModeRemembersTypedFolder({ page, origin }) {
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  await openChat(page, origin);
+  await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  // Typed but never run: it must still be there when the page is opened again.
+  await page.fill("#work-root", "/work/typed");
+  await page.reload();
+  await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.waitForFunction(() => document.querySelector("#work-root").value === "/work/typed");
+}
+
 export async function testWorkModeAutoApprove({ page, origin }) {
   await installAgentStream(page);
   await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));

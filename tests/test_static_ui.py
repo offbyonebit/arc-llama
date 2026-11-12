@@ -959,6 +959,13 @@ def test_work_view_never_defaults_to_the_servers_own_folder():
     assert "body.work-mode .compact-controls" in css      # chat-only controls stay out of the Work view
 
 
+def test_work_view_remembers_a_typed_folder_before_any_run():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    handler = work[work.index('$("#work-root").addEventListener("input"'):]
+    assert 'store(ROOT_KEY, $("#work-root").value.trim())' in handler.splitlines()[0]
+    assert "/chat/work.js?v=paper-23" in (STATIC / "chat.html").read_text(encoding="utf-8")
+
+
 def test_work_view_surfaces_problems_and_waiting_states():
     work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
