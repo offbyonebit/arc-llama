@@ -376,6 +376,32 @@ def _xmx_sdpa_worth_it(
     return True
 
 
+VULKAN_SCALAR_FA_ARCHES = frozenset({Arch.BATTLEMAGE})
+"""Arches whose Vulkan flash attention runs a slow scalar path.
+
+Xe2 drivers report only an 8x16x16 cooperative-matrix shape, so llama.cpp's
+Vulkan FA shader falls back to scalar code (llama.cpp issues 30503, 27638).
+Measured on an Arc Pro B60, Ornith 1.5 9B Q4_K_M, llama.cpp b12193: f16 KV with
+FA off vs q8_0 KV with FA on, pp16384 532 -> 820 tok/s and tg128 at 16K depth
+13.6 -> 19.1 tok/s. New models there start with f16 KV and FA off. Revisit once
+llama.cpp PR 30351 ships."""
+
+
+def new_model_kv_type(arch: Arch | str, backend: Backend | str) -> KVCacheType:
+    """KV cache type that size estimates should assume for a model not yet added.
+
+    Matches what :func:`default_recipe` picks for the common case: f16 on the
+    arches in :data:`VULKAN_SCALAR_FA_ARCHES` with Vulkan, q8_0 everywhere else.
+    """
+    try:
+        arch, backend = Arch(arch), Backend(backend)
+    except ValueError:
+        return KVCacheType.Q8_0
+    if backend == Backend.VULKAN and arch in VULKAN_SCALAR_FA_ARCHES:
+        return KVCacheType.F16
+    return KVCacheType.Q8_0
+
+
 XMX_SDPA_MIN_CTX = 16384
 """Don't trade context for the XMX SDPA path below this.
 
@@ -417,7 +443,11 @@ def default_recipe(
     # the right dialect. Vulkan quantized V-cache still injects via extra_flags
     # (policy also enforces this for older configs without flash_attn set).
     flash_attn: str | None = "auto"
-    if backend == Backend.VULKAN:
+    if backend == Backend.VULKAN and arch in VULKAN_SCALAR_FA_ARCHES:
+        # Scalar FA path on Xe2: f16 KV without FA is faster (see the constant).
+        use_q8 = False
+        flash_attn = "off"
+    elif backend == Backend.VULKAN:
         # Vulkan quantized V-cache needs --flash-attn (llama.cpp requirement).
         # SYCL production configs run fine with q8 V and no FA flag — do not
         # inject it there (verified on B60 production stack).

@@ -139,7 +139,7 @@ def apply_launch_policy(
 
     # Vulkan-only: quantized V-cache needs --flash-attn.
     if needs_flash_attn(backend, out):
-        if _flash_attn_disabled(out.extra_flags):
+        if out.flash_attn == "off" or _flash_attn_disabled(out.extra_flags):
             log.warning(
                 "[%s] Vulkan quantized KV-cache needs --flash-attn; "
                 "overriding explicit flash-attn=off",
@@ -150,8 +150,7 @@ def apply_launch_policy(
                 "[%s] injecting --flash-attn on (Vulkan quantized KV)",
                 label,
             )
-            out = replace(out, extra_flags=_ensure_flash_attn_on(out.extra_flags))
-        elif _flash_attn_disabled(out.extra_flags):
-            out = replace(out, extra_flags=_ensure_flash_attn_on(out.extra_flags))
+        # One flash-attn flag only: the recipe field would add its own -fa.
+        out = replace(out, flash_attn=None, extra_flags=_ensure_flash_attn_on(out.extra_flags))
 
     return out

@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from arc_llama.config import Config
+from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 
 def register_runtime_commands(
@@ -238,7 +239,7 @@ def register_runtime_commands(
     @click.option(
         "--runtime-version",
         "runtime_version",
-        default="latest",
+        default=LLAMA_CPP_BUILD,
         show_default=True,
         help="llama.cpp release tag (e.g. b10092) or 'latest'.",
     )

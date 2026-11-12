@@ -450,7 +450,8 @@ const {
 const workComponent = window.ArcChat.createWork({
   getModelState: id => models.find(m => m.id === id)?.state,
   getContextLimit: id => { const model = models.find(m => m.id === id); return model?.usableCtx || model?.ctx || null; },
-  request: (...args) => fetch(...args),
+  // Work's harness installer calls /admin, which the /v1 fetch wrapper skips.
+  request: (url, options = {}) => fetch(url, { ...options, headers: authHeaders(options.headers || {}) }),
   renderMarkdown,
   storage: { getItem: (...args) => localStorage.getItem(...args), setItem: (...args) => localStorage.setItem(...args) },
 });

@@ -24,6 +24,7 @@ from arc_llama.model_library import (
     DownloadManager,
     fit_badge,
 )
+from arc_llama.recipes import KVCacheType, new_model_kv_type
 from arc_llama.starter_discovery import (
     Starter,
     check_runtime,
@@ -45,6 +46,14 @@ def runtime_path(cfg: Config) -> Path | None:
         return path
     found = shutil.which(cfg.paths.llama_server)
     return Path(found) if found else None
+
+
+#: The starter answers without thinking. A capped think still ran out mid-plan
+#: about 1 in 25 chats and the model kept drafting in the reply instead.
+STARTER_THINKING_OFF = ["--reasoning", "off"]
+#: Sampling the Ornith and Qwen3 thinking cards recommend; llama-server's own
+#: defaults (temp 0.8, top-k 40) leave more room for stray notes after the answer.
+STARTER_SAMPLING = {"temp": 0.6, "top_p": 0.95, "top_k": 20}
 
 
 class FirstAnswerSetup:
@@ -75,10 +84,27 @@ class FirstAnswerSetup:
         previous = list(self.cfg.models)
         added = register_discovered(self.cfg, [path], gpu_pci_slot=gpu.pci_slot)
         # Registration runs against the same enabled GPU used for the estimate.
-        # A modest context keeps the first load quick; users can change it later.
+        # Give Work room: Hermes refuses under 64,000 tokens and OpenCode's
+        # first request is ~5K. Take the largest step the router will admit.
+        from arc_llama.router import _estimate_model_vram_mb
+
         for model in added:
-            model.recipe["ctx"] = min(model.recipe.get("ctx", 4096), 4096)
+            fitted = model.recipe.get("ctx", 4096)
             model.recipe["parallel"] = 1
+            # Thinking off, so a reasoning starter answers inside Chat's
+            # 1024-token default reply instead of spending it on thinking.
+            model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_THINKING_OFF]
+            model.recipe.update(STARTER_SAMPLING)
+            model.recipe["ctx"] = next(
+                (
+                    ctx
+                    for ctx in (65536, 32768, 16384)
+                    if ctx <= fitted
+                    and (need := _estimate_model_vram_mb(model, ctx=ctx)) is not None
+                    and need <= (gpu.vram_mb or 0)
+                ),
+                4096,
+            )
         if added:
             try:
                 self.cfg.save(self.config_path)
@@ -94,6 +120,11 @@ class FirstAnswerSetup:
                 if Path(m.path).resolve() == path.resolve()
             ]
         return names
+
+    def _fit_kv(self, gpu: GPUConfig) -> KVCacheType:
+        """KV cache the starter will get: setup installs Vulkan when no runtime exists yet."""
+        backend = gpu.backend if runtime_path(self.cfg) is not None else Backend.VULKAN.value
+        return new_model_kv_type(gpu.arch, backend)
 
     def _context(self) -> tuple[Any, ...]:
         gpu = enabled_gpu(self.cfg)
@@ -120,11 +151,15 @@ class FirstAnswerSetup:
             self.discovery_at = time.monotonic()
             return
         self.discovery_status = "searching"
-        self.discovery_task = asyncio.create_task(self._discover(context, gpu.vram_mb))
+        self.discovery_task = asyncio.create_task(
+            self._discover(context, gpu.vram_mb, self._fit_kv(gpu))
+        )
 
-    async def _discover(self, context: tuple[Any, ...], vram_mb: int) -> None:
+    async def _discover(
+        self, context: tuple[Any, ...], vram_mb: int, kv_type: KVCacheType = KVCacheType.Q8_0
+    ) -> None:
         try:
-            suggestion = await discover(vram_mb)
+            suggestion = await discover(vram_mb, kv_type=kv_type)
             if context != self._context() or self.starter:
                 return
             self.suggestion = suggestion
@@ -220,7 +255,7 @@ class FirstAnswerSetup:
             gpu is None
             or gpu.pci_slot != self.gpu_slot
             or self.starter is None
-            or fit_badge(self.starter.size_mb, gpu.vram_mb) != "fits"
+            or fit_badge(self.starter.size_mb, gpu.vram_mb, self._fit_kv(gpu)) != "fits"
         ):
             raise ValueError(
                 "The selected GPU or its available capacity changed. Review your hardware and choose another model."
@@ -252,7 +287,7 @@ class FirstAnswerSetup:
                         raise ValueError(
                             "No enabled GPU is configured. Check your hardware and retry."
                         )
-                    await validate(starter, gpu.vram_mb or 0)
+                    await validate(starter, gpu.vram_mb or 0, self._fit_kv(gpu))
                     if self._paused():
                         return
                     self._check_gpu()

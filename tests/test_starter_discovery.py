@@ -82,6 +82,10 @@ async def test_unseen_catalog_identity_changes_without_changing_code(hub):
         "vision",
         "unsafe",
         "unknown_quant",
+        "decision",
+        "decision_name",
+        "systemone_file",
+        "draft_file",
     ],
 )
 def test_ineligible_files_are_not_recommended(defect):
@@ -106,6 +110,16 @@ def test_ineligible_files_are_not_recommended(defect):
         row["siblings"][0]["rfilename"] = "../chat-Q4_K_M.gguf"
     if defect == "unknown_quant":
         row["siblings"][0]["rfilename"] = "chat.gguf"
+    if defect == "decision":
+        # A typed decision model still says text-generation and conversational.
+        row["tags"] += ["conversational", "classification", "decision-model"]
+    if defect == "decision_name":
+        row["id"] = "publisher/OTel-2.0-Decision-26B-A4B-4bit"
+        row["tags"] += ["conversational"]
+    if defect == "systemone_file":
+        row["siblings"][0]["rfilename"] = "chat-Q4_K_M_systemone.gguf"
+    if defect == "draft_file":
+        row["siblings"][0]["rfilename"] = "chat-draft-Q8_0.gguf"
     assert not options(row, 12288)
 
 
@@ -139,6 +153,12 @@ async def test_revision_size_license_and_architecture_come_from_publisher(
     assert (await candidate(rows[0], 12288)).license == "Not stated"
     rows[0]["sha"] = "main"
     assert await candidate(rows[0], 12288) is None
+
+
+def test_starter_download_stays_small_on_a_big_card():
+    row = info()
+    row["siblings"].append({"rfilename": "chat-Q4_0.gguf", "size": 12_000_000_000})
+    assert [file for file, _, _ in options(row, 49152)] == ["chat-Q4_K_M.gguf"]
 
 
 async def test_broken_high_rank_does_not_hide_suitable_lower_rank(hub, monkeypatch):
@@ -224,7 +244,7 @@ async def test_discovery_is_single_flight_cached_retryable_and_discards_changed_
     selected = await candidate(rows, 12288)
     gate = asyncio.Event()
 
-    async def lookup(vram):
+    async def lookup(vram, kv_type=None):
         await gate.wait()
         return selected
 
@@ -261,10 +281,10 @@ async def test_discovery_shutdown_cancels_pending_io(tmp_path, monkeypatch):
 
     gate = asyncio.Event()
     monkeypatch.setattr(
-        "arc_llama.onboarding.discover", AsyncMock(side_effect=lambda vram: None)
+        "arc_llama.onboarding.discover", AsyncMock(side_effect=lambda vram, kv_type=None: None)
     )
 
-    async def slow(vram):
+    async def slow(vram, kv_type=None):
         await gate.wait()
 
     monkeypatch.setattr("arc_llama.onboarding.discover", slow)

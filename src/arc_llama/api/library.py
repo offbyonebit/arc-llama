@@ -66,6 +66,13 @@ def register_library_routes(
         gpu = next((g for g in c.gpus if g.enabled), None)
         return gpu.vram_mb if gpu is not None else None
 
+    def _library_kv(c: Config) -> Any:
+        """KV cache a new model would get on the enabled GPU, for fit estimates."""
+        from arc_llama.recipes import KVCacheType, new_model_kv_type
+
+        gpu = next((g for g in c.gpus if g.enabled), None)
+        return new_model_kv_type(gpu.arch, gpu.backend) if gpu is not None else KVCacheType.Q8_0
+
     def _downloads(request: Request) -> Any:
         manager = getattr(request.app.state, "downloads", None)
         if manager is None:
@@ -109,7 +116,9 @@ def register_library_routes(
             catalog = make_catalog()
             request.app.state.featured = catalog
         gpu = next((g for g in c.gpus if g.enabled), None)
-        return await catalog.get(_library_vram(c), gpu.name if gpu is not None else None)  # type: ignore[no-any-return]
+        return await catalog.get(  # type: ignore[no-any-return]
+            _library_vram(c), gpu.name if gpu is not None else None, _library_kv(c)
+        )
 
     @app.get("/admin/library/repo")
     async def library_repo(
@@ -119,7 +128,7 @@ def register_library_routes(
     ) -> dict[str, Any]:
         c: Config = request.app.state.cfg
         try:
-            return await asyncio.to_thread(repo_options_fn, repo, _library_vram(c))
+            return await asyncio.to_thread(repo_options_fn, repo, _library_vram(c), _library_kv(c))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:  # noqa: BLE001

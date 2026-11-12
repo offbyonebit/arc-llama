@@ -2392,7 +2392,7 @@ def create_app(
         read_json_body=lambda request: _read_json_body(request),
         config_path=config_path,
         search_repos_fn=lambda q, **kwargs: search_repos(q, **kwargs),
-        repo_options_fn=lambda repo, vram: repo_options(repo, vram),
+        repo_options_fn=lambda repo, vram, kv: repo_options(repo, vram, kv_type=kv),
         disk_report_fn=lambda config, last_used: disk_report(config, last_used),
         deletable_files_fn=lambda config, model: deletable_files(config, model),
         download_manager_factory=lambda config, register: DownloadManager(config, register),

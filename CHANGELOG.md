@@ -7,6 +7,48 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-10
+
+### Changed
+- New Battlemage (Xe2) models on the Vulkan backend start with an f16 KV cache and flash attention
+  off, instead of a q8_0 KV cache with flash attention forced on. Xe2 drivers report only an 8x16x16
+  cooperative-matrix shape, so llama.cpp's Vulkan flash attention runs a scalar path (llama.cpp
+  issues 30503 and 27638). Measured on an Arc Pro B60 with Ornith 1.5 9B Q4_K_M and llama.cpp b12193:
+  prompt processing at 16K tokens 532 to 820 tok/s (+54%), generation at 16K depth 13.6 to 19.1 tok/s
+  (+40%). Discover and guided setup size models for the f16 cache on these GPUs. Saved recipes,
+  other GPUs and the SYCL backend are unchanged. To be revisited once llama.cpp PR 30351 ships.
+- Stability: the llama.cpp runtime that `install-runtime`, `run`, `setup` and guided setup install is
+  now a fixed, tested build (b12193) for Vulkan and SYCL on Linux and Windows, instead of whichever
+  build ggml-org published most recently. `--runtime-version latest` (or any tag) still chooses
+  another build, the download is still checked against its SHA-256, and a missing pinned download
+  now says so plainly.
+- Auto-tune no longer tries a q8_0 KV cache or other flash attention modes for Battlemage models on
+  Vulkan, so the f16 KV, flash attention off default above stays put.
+
+### Fixed
+- First-run setup no longer picks a starter model that can't chat. The starter search checked fit,
+  quantization and architecture but not whether the model chats, so on Nov 9 it offered a typed decision model on 24 GB cards
+  (llama.cpp refuses chat with it) and a speculative-decoding draft file on smaller ones. Repos,
+  tags and files that mark decision models, classifiers, rerankers or draft models are now skipped
+  before anything downloads. `ARC_LLAMA_STARTER_CATALOG=off` remains the fully repeatable choice.
+- The first-run starter download stays under 10 GiB, so a large card gets a quick first answer
+  instead of a 16 GB download. Discover still offers the larger models.
+- First-run setup gives the starter up to a 64K context (stepping down to 32K or 16K when the card
+  can't hold it) instead of 4,096 tokens, so OpenCode and Hermes can run a Work task on it. Hermes
+  needs at least 64K.
+- The first-run starter launches with thinking off (`--reasoning off`), so a reasoning starter
+  like Ornith-1.0-9B answers an ordinary prompt inside Chat's 1,024-token default reply instead of
+  spending it all on thinking and showing an empty answer or drafting in the reply. Runtimes without
+  `--reasoning` launch without it. Remove it from the model's `extra_flags` in config.toml to turn
+  thinking back on. The starter also gets the sampling its model card recommends (temperature 0.6,
+  top-p 0.95, top-k 20) instead of llama-server's defaults.
+- Installing OpenCode or Hermes from the Work page failed with "Admin token required". The Work page
+  now sends the same credentials as System > Agents for Work.
+- A model with a q8_0 KV cache on Vulkan launched with both `-fa off` and `--flash-attn on`
+  (llama.cpp used the last one). Each launch now carries one flash attention flag.
+- The demo at the top of the README no longer links to the MP4, which GitHub downloads instead of
+  playing.
+
 ## [1.1.0] - 2026-11-07
 
 Arc Llama 1.1: install OpenCode or Hermes for Work from inside the app, a Linux command sandbox,

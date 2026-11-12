@@ -336,7 +336,7 @@ class TestDefaultRecipe:
         from arc_llama.arch import Backend
 
         r = default_recipe(
-            Arch.BATTLEMAGE,
+            Arch.ALCHEMIST,
             vram_mb=24 * 1024,
             model_file_mb=4 * 1024,
             backend=Backend.VULKAN,
@@ -763,3 +763,70 @@ class TestXmxSdpaGating:
             r = default_recipe(**self.B60, llama_server="/fake/llama-server")
         assert r.cache_type_k is KVCacheType.Q8_0
         assert r.flash_attn == "auto"
+
+
+class TestBattlemageVulkanFlashAttention:
+    """Xe2 Vulkan FA runs a scalar path, so new models there skip it (llama.cpp #30503)."""
+
+    def test_new_battlemage_vulkan_model_gets_f16_kv_and_fa_off(self):
+        from arc_llama.arch import Backend
+
+        r = default_recipe(Arch.BATTLEMAGE, vram_mb=24 * 1024, model_file_mb=5 * 1024, backend=Backend.VULKAN)
+        assert r.cache_type_k == KVCacheType.F16
+        assert r.cache_type_v == KVCacheType.F16
+        assert r.flash_attn == "off"
+        assert "--flash-attn" not in r.extra_flags
+        argv = r.to_argv(fa_takes_value=True)
+        assert argv[argv.index("-fa") + 1] == "off"
+
+    def test_context_is_sized_for_f16_kv(self):
+        from arc_llama.arch import Backend
+        from arc_llama.recipes import suggest_ctx
+
+        # A card where f16 and q8_0 KV give different context sizes.
+        r = default_recipe(Arch.BATTLEMAGE, vram_mb=12 * 1024, model_file_mb=5 * 1024, backend=Backend.VULKAN)
+        sizes = {
+            kv: suggest_ctx(vram_mb=12 * 1024, model_file_mb=5 * 1024, kv_type=kv, compute_buffer_mb=768)
+            for kv in (KVCacheType.F16, KVCacheType.Q8_0)
+        }
+        assert sizes[KVCacheType.F16] < sizes[KVCacheType.Q8_0]
+        # 12 GB keeps the stock ubatch, so the 768 MiB compute buffer applies.
+        assert r.ctx == sizes[KVCacheType.F16]
+
+    def test_other_gpus_and_backends_are_unchanged(self):
+        from arc_llama.arch import Backend
+
+        for arch, backend in (
+            (Arch.BATTLEMAGE, Backend.SYCL),
+            (Arch.ALCHEMIST, Backend.VULKAN),
+            (Arch.LUNAR_LAKE, Backend.VULKAN),
+        ):
+            r = default_recipe(arch, vram_mb=24 * 1024, model_file_mb=5 * 1024, backend=backend)
+            assert r.cache_type_k == KVCacheType.Q8_0, (arch, backend)
+            assert r.flash_attn != "off", (arch, backend)
+
+    def test_saved_recipes_keep_their_kv_and_flash_attention(self):
+        from arc_llama.config import ModelConfig
+
+        model = ModelConfig(
+            name="saved",
+            path="/m.gguf",
+            port=18080,
+            gpu_pci_slot="0000:03:00.0",
+            recipe={"cache_type_k": "q8_0", "cache_type_v": "q8_0", "extra_flags": ["--flash-attn", "on"]},
+        )
+        r = model.launch_recipe()
+        assert r.cache_type_k == KVCacheType.Q8_0
+        assert r.extra_flags == ["--flash-attn", "on"]
+
+    def test_fit_estimates_use_the_new_model_kv_type(self):
+        from arc_llama.arch import Backend
+        from arc_llama.model_library import memory_need_mb
+        from arc_llama.recipes import new_model_kv_type
+
+        assert new_model_kv_type("battlemage", "vulkan") == KVCacheType.F16
+        assert new_model_kv_type(Arch.BATTLEMAGE, Backend.SYCL) == KVCacheType.Q8_0
+        assert new_model_kv_type("alchemist", "vulkan") == KVCacheType.Q8_0
+        assert new_model_kv_type("lunar_lake", "vulkan") == KVCacheType.Q8_0
+        assert new_model_kv_type("nonsense", "vulkan") == KVCacheType.Q8_0
+        assert memory_need_mb(5000, kv_type=KVCacheType.F16) > memory_need_mb(5000)
