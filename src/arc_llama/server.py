@@ -550,11 +550,9 @@ def create_app(
         ]
         # A model launch or relaunch (first load, tuner, settings Apply) says
         # "loading". Still 200: the router itself is up, and clients that only
-        # check the code keep working.
-        loading = sorted(
-            set(rt._loading_futures)
-            | {n for n, s in rt._servers.items() if s.is_running and not s.ready}
-        )
+        # check the code keep working. Every launch goes through ensure_active,
+        # so a running-but-not-ready server outside it is one being stopped.
+        loading = sorted(rt._loading_futures)
         return {
             "status": "loading" if loading else "ok",
             "uptime_seconds": round(uptime, 2),

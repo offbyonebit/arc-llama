@@ -1716,6 +1716,12 @@ async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
             health = (await client.get("/health")).json()
         assert health["loaded_models"] == [], "cold-starting model reported as loaded"
+        # Not loading either: outside ensure_active this is a model being stopped.
+        assert health["status"] == "ok"
+        app.state.router._loading_futures["qwen"] = asyncio.get_running_loop().create_future()
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            health = (await client.get("/health")).json()
+        del app.state.router._loading_futures["qwen"]
         assert health["status"] == "loading"
         assert health["loading_models"] == ["qwen"]
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
