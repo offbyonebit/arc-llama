@@ -21,6 +21,7 @@ from arc_llama.platform_checks import (
     kernel_module_loaded,
     level_zero_loader_present,
     max_memory_bar_bytes,
+    mesa_upgrade_steps,
     mesa_version,
     old_mesa_vulkan_warning,
     oneapi_setvars_path,
@@ -316,7 +317,13 @@ def register_diagnostic_commands(
         if cfg is not None and any(g.enabled and g.backend == Backend.VULKAN.value for g in cfg.gpus):
             mesa_warning = old_mesa_vulkan_warning(mesa_version())
             if mesa_warning:
-                report.add("mesa_vulkan", False, mesa_warning, severity="warn")
+                report.add(
+                    "mesa_vulkan",
+                    False,
+                    mesa_warning,
+                    severity="warn",
+                    hint="\n".join(mesa_upgrade_steps()),
+                )
 
         # Config
         console.print("\n  config:")

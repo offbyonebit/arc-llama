@@ -66,6 +66,7 @@ from arc_llama.models import (
     parse_hf_spec,
 )
 from arc_llama.platform_checks import (
+    mesa_upgrade_steps,
     mesa_version,
     old_mesa_vulkan_warning,
     rebar_likely_enabled,
@@ -1172,6 +1173,8 @@ def serve(
         mesa_warning = old_mesa_vulkan_warning(mesa_version())
         if mesa_warning:
             console.print(f"[yellow]{mesa_warning}[/yellow]")
+            for line in mesa_upgrade_steps():
+                console.print(line, markup=False, highlight=False)
     if guided:
         # The local browser UI authenticates itself, so token details would
         # only distract here; they matter to API callers of plain `serve`.

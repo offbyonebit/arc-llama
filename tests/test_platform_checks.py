@@ -10,6 +10,7 @@ import pytest
 from arc_llama.platform_checks import (
     format_bytes,
     max_memory_bar_bytes,
+    mesa_upgrade_steps,
     mesa_version,
     old_mesa_vulkan_warning,
     oneapi_runtime_env_needed,
@@ -304,3 +305,51 @@ def test_doctor_warns_on_old_mesa_for_vulkan(tmp_path: Path, monkeypatch, backen
     cfg.save(tmp_path / "config.toml")
     result = CliRunner().invoke(cli, ["-c", str(tmp_path / "config.toml"), "doctor"])
     assert ("mesa_vulkan" in result.output) is shown
+
+
+@pytest.mark.parametrize(
+    "release,base",
+    [
+        (
+            {
+                "ID": "ubuntu",
+                "ID_LIKE": "debian",
+                "VERSION_CODENAME": "noble",
+                "UBUNTU_CODENAME": "noble",
+            },
+            "noble",
+        ),
+        (
+            {
+                "ID": "linuxmint",
+                "ID_LIKE": "ubuntu debian",
+                "VERSION_CODENAME": "zena",
+                "UBUNTU_CODENAME": "noble",
+            },
+            "noble",
+        ),
+        ({"ID": "fedora"}, None),
+        ({}, None),
+    ],
+)
+def test_mesa_upgrade_steps_print_the_ppa_and_undo_for_ubuntu_bases(release, base):
+    text = "\n".join(mesa_upgrade_steps(release))
+    if base is None:
+        assert "package manager" in text and "ppa" not in text
+    else:
+        assert "sudo add-apt-repository ppa:kisak/kisak-mesa" in text
+        assert f"sudo ppa-purge -d {base} ppa:kisak/kisak-mesa" in text
+        assert "zena" not in text
+
+
+def test_os_release_parses_quoted_values(tmp_path):
+    from arc_llama.platform_checks import _os_release
+
+    f = tmp_path / "os-release"
+    f.write_text('ID=linuxmint\nID_LIKE="ubuntu debian"\nUBUNTU_CODENAME=noble\n# comment\n')
+    assert _os_release(f) == {
+        "ID": "linuxmint",
+        "ID_LIKE": "ubuntu debian",
+        "UBUNTU_CODENAME": "noble",
+    }
+    assert _os_release(tmp_path / "missing") == {}

@@ -258,6 +258,10 @@ def test_serve_warns_once_on_old_mesa_for_vulkan(runner, tmp_path, monkeypatch, 
     cfg.gpus[0].backend = backend
     monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
     monkeypatch.setattr("arc_llama.cli.mesa_version", lambda: (25, 2))
+    monkeypatch.setattr(
+        "arc_llama.cli.mesa_upgrade_steps",
+        lambda: ["  sudo add-apt-repository ppa:kisak/kisak-mesa"],
+    )
 
     with (
         patch("arc_llama.server.create_app", return_value=_fake_app()),
@@ -271,3 +275,4 @@ def test_serve_warns_once_on_old_mesa_for_vulkan(runner, tmp_path, monkeypatch, 
 
     assert result.exit_code == 0, result.output
     assert result.output.count("Mesa 25.2 is older than 26.1") == (1 if shown else 0)
+    assert result.output.count("ppa:kisak/kisak-mesa") == (1 if shown else 0)
