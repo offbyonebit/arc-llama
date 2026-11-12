@@ -501,7 +501,7 @@ def build_plan(
     # 2. Validate the draft-mtp wiring. A model may carry MTP heads either
     #    embedded in its own GGUF, or in a sidecar draft (--spec-draft-model).
     #    Warn only when neither source actually provides them.
-    if recipe.spec_type == "draft-mtp":
+    if "draft-mtp" in (recipe.spec_type or "").split(","):
         if recipe.spec_draft_model:
             draft_path = Path(recipe.spec_draft_model)
             if not draft_path.exists():
@@ -572,17 +572,16 @@ def build_plan(
         )
         recipe.spec_type = None
         recipe.spec_draft_model = None
-    elif (
-        recipe.spec_type is not None
-        and recipe.spec_type.startswith("ngram-")
-        and not caps.supports_ngram
-    ):
+    elif recipe.spec_type is not None and "ngram-" in recipe.spec_type and not caps.supports_ngram:
+        # Keep draft-mtp from a "draft-mtp,ngram-mod" list; drop the n-gram part.
+        kept = ",".join(t for t in recipe.spec_type.split(",") if not t.startswith("ngram-"))
         log.warning(
-            "[%s] %s has no n-gram speculation; starting target-only",
+            "[%s] %s has no n-gram speculation; starting %s",
             model.name,
             binary,
+            kept or "target-only",
         )
-        recipe.spec_type = None
+        recipe.spec_type = kept or None
     elif recipe.spec_draft_model and not caps.supports_draft_model:
         log.warning(
             "[%s] %s has no --spec-draft-model; starting target-only",

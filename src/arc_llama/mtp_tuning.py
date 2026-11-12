@@ -89,7 +89,7 @@ def snapshot(recipe: dict[str, Any]) -> dict[str, Any]:
 def mtp_state(original: dict[str, Any], length: int, confidence: float) -> dict[str, Any]:
     return dict(
         original,
-        spec_type="draft-mtp",
+        spec_type=original.get("spec_type") or "draft-mtp",
         spec_draft_n_max=length,
         spec_draft_p_min=confidence,
         speculation_result=None,
@@ -100,7 +100,7 @@ def validate_mtp(model: ModelConfig, caps: ServerCaps) -> None:
     if not (caps.probed and caps.supports_mtp and caps.supports_draft_confidence):
         raise ValueError("MTP tuning requires a probed build with draft-mtp and confidence support")
     recipe = model.recipe
-    if recipe.get("spec_type") not in (None, "draft-mtp") or recipe.get("spec_draft_name"):
+    if recipe.get("spec_type") not in (None, "draft-mtp", "draft-mtp,ngram-mod") or recipe.get("spec_draft_name"):
         raise ValueError("MTP tuning requires embedded MTP heads or an MTP sidecar recipe")
     # Unstructured overrides could silently defeat the candidate or off baseline.
     for flag in recipe.get("extra_flags", []):

@@ -193,26 +193,7 @@ def add_local_model(
     # Measured B60/Qwen3.6-27B-MTP: draft-mtp n_max 1–4 ≈ +20% gen vs none;
     # n_max 5–6 regresses. Pin n_max=3 (llama default / mid of the good band).
     if has_mtp_heads(p):
-        if is_hybrid_ssm(p):
-            # Hybrid SSM+attention families (qwen35*) carry MTP heads but are
-            # documented right on is_hybrid_ssm() as performing poorly with
-            # SYCL MTP speculative decoding on Xe2 — enabling it here would
-            # auto-configure a known regression. Leave spec_type unset; the
-            # user can still opt in per model.
-            log.info(
-                "model %s has MTP heads but is a hybrid SSM architecture; "
-                "NOT auto-enabling draft-mtp (known slow on Xe2)",
-                name,
-            )
-        else:
-            recipe_dict["spec_type"] = "draft-mtp"
-            recipe_dict["spec_draft_n_max"] = DEFAULT_SPEC_DRAFT_N_MAX
-            log.info(
-                "model %s has embedded MTP heads; auto-enabling spec_type=draft-mtp "
-                "spec_draft_n_max=%d (B60 measured band 1–4)",
-                name,
-                DEFAULT_SPEC_DRAFT_N_MAX,
-            )
+        recipe_dict.update(auto_mtp_recipe(p, backend.value, name))
     else:
         draft = find_draft_model(p)
         if draft is not None:
@@ -303,6 +284,31 @@ _QUANT_TIER_RE = re.compile(
 _DRAFT_PREFIX_RE = re.compile(r"^(mtp|draft|eagle|medusa)[-_.]", re.IGNORECASE)
 
 DEFAULT_SPEC_DRAFT_N_MAX = 3  # B60-measured good band is 1–4; 5–6 regress.
+# Dense qwen35 (Qwen3.6/3.8 27B) with an embedded MTP head on SYCL, b12243,
+# B60: short chat 25.4 -> 29.2 t/s median with this preset.
+HYBRID_MTP_SPEC_TYPE = "draft-mtp,ngram-mod"
+HYBRID_MTP_P_MIN = 0.75
+
+
+def auto_mtp_recipe(path: Path, backend: str, name: str) -> dict[str, Any]:
+    """Speculation settings for a GGUF with embedded MTP heads, or {} for none.
+
+    Clear spec_type in the model's recipe to switch it off.
+    """
+    if not is_hybrid_ssm(path):
+        log.info("model %s has embedded MTP heads; auto-enabling draft-mtp n_max=%d", name, DEFAULT_SPEC_DRAFT_N_MAX)
+        return {"spec_type": "draft-mtp", "spec_draft_n_max": DEFAULT_SPEC_DRAFT_N_MAX}
+    if backend != "sycl" or is_moe(path):
+        # Measured only for the dense hybrid on SYCL; MoE hybrids lost speed
+        # with MTP and Vulkan MTP on Intel is untested.
+        log.info("model %s has MTP heads; not auto-enabling MTP on %s for this architecture", name, backend)
+        return {}
+    log.info("model %s has embedded MTP heads; auto-enabling %s on SYCL", name, HYBRID_MTP_SPEC_TYPE)
+    return {
+        "spec_type": HYBRID_MTP_SPEC_TYPE,
+        "spec_draft_n_max": DEFAULT_SPEC_DRAFT_N_MAX,
+        "spec_draft_p_min": HYBRID_MTP_P_MIN,
+    }
 DEFAULT_SPEC_DRAFT_NGL = 999  # fully offload the (small) draft to the GPU.
 
 
@@ -738,23 +744,7 @@ def register_discovered(
         # Auto-enable draft-mtp for discovered models that carry MTP heads.
         # n_max=3 pinned from B60 measurements (see bench_results/SUMMARY.md).
         if has_mtp_heads(rp):
-            if is_hybrid_ssm(rp):
-                # Same guard as add_local_model: hybrid SSM + SYCL MTP is a
-                # documented regression on Xe2, so discovery must not
-                # auto-enable it either.
-                log.info(
-                    "discovered %s has MTP heads but is a hybrid SSM architecture; "
-                    "NOT auto-enabling draft-mtp (known slow on Xe2)",
-                    rp.name,
-                )
-            else:
-                recipe_dict["spec_type"] = "draft-mtp"
-                recipe_dict["spec_draft_n_max"] = DEFAULT_SPEC_DRAFT_N_MAX
-                log.info(
-                    "discovered %s has embedded MTP heads; auto-enabling draft-mtp n_max=%d",
-                    rp.name,
-                    DEFAULT_SPEC_DRAFT_N_MAX,
-                )
+            recipe_dict.update(auto_mtp_recipe(rp, backend.value, rp.name))
         else:
             draft = find_draft_model(rp)
             if draft is not None:
