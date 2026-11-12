@@ -862,3 +862,61 @@ def print_sweep_table(results: list[BenchmarkResult]) -> None:
             fit,
         )
     console.print(table)
+
+
+# ------------------------------------------------------------------
+# `arc-llama bench`: one fixed run whose numbers compare across setups
+# ------------------------------------------------------------------
+
+BENCH_DEPTHS = (512, 16384)
+
+
+def llama_cpp_build(binary: str) -> str | None:
+    """``b12243 (abc1234)`` from ``llama-server --version``, or None."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=20
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"version: (\d+) \((\w+)\)", (out.stdout or "") + (out.stderr or ""))
+    return f"b{m.group(1)} ({m.group(2)})" if m else None
+
+
+def bench_lines(
+    cfg: Config, model_name: str, results: list[DepthResult], skipped: list[int]
+) -> list[str]:
+    """Plain text for `arc-llama bench`. No paths, user names or host names."""
+    from arc_llama import __version__
+    from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+    model = cfg.find_model(model_name)
+    assert model is not None
+    recipe = model.recipe or {}
+    gpu = next((g for g in cfg.gpus if g.pci_slot == model.gpu_pci_slot), None)
+    binary = model.llama_server or cfg.paths.llama_server
+    build = (llama_cpp_build(binary) if binary else None) or f"unknown (pinned {LLAMA_CPP_BUILD})"
+    kv = f"{recipe.get('cache_type_k', 'f16')}/{recipe.get('cache_type_v', 'f16')}"
+    spec = recipe.get("spec_type") or "off"
+    lines = [
+        f"Arc Llama: {__version__}",
+        f"Model: {model.name} ({Path(model.path).name})",
+        f"Backend: {gpu.backend if gpu else 'unknown'} on "
+        + (f"{gpu.name or 'Intel GPU'} ({gpu.arch}, {gpu.vram_mb or '?'} MiB)" if gpu else "unknown GPU"),
+        f"llama.cpp: {build}",
+        f"Settings: ctx {recipe.get('ctx', 'default')}, KV {kv}, speculation {spec}",
+    ]
+    for r in results:
+        label = f"Prompt {r.measured_depth or r.depth}"
+        if r.error:
+            lines.append(f"{label}: failed ({r.error})")
+            continue
+        pp = f"{r.prompt_eval_tok_s:.1f}" if r.prompt_eval_tok_s else "?"
+        tg = f"{r.generation_tok_s:.1f}" if r.generation_tok_s else "?"
+        lines.append(f"{label}: prefill {pp} tok/s, decode {tg} tok/s")
+    lines += [f"Prompt {d}: skipped, larger than the model's context" for d in skipped]
+    if "ngram" in str(spec):
+        lines.append("Note: the bench prompt repeats, so n-gram speculation reads high.")
+    return lines
