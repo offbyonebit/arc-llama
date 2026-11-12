@@ -10,6 +10,7 @@ benchmark inherits the correct SYCL env, arch profile, and router policy.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import statistics
 import time
@@ -205,6 +206,28 @@ def _build_prompt(target_tokens: int) -> str:
     repeats = max(1, needed_chars // len(word))
     prompt = (word + " ") * repeats
     return prompt[:needed_chars]
+
+
+_VARIED_WORDS = (
+    "time year people way day man thing woman life child world school state family "
+    "student group country problem hand part place case week company system program "
+    "question work government number night point home water room mother area money "
+    "story fact month lot right study book eye job word business issue side kind head "
+    "house service friend father power hour game line end member law car city name "
+    "team minute idea kid body face others level office door health person art war "
+    "history party result change morning reason research girl guy moment air teacher "
+    "force education foot boy age policy music market sense nation plan college"
+).split()
+
+
+def _varied_prompt(target_tokens: int, seed: int = 0) -> str:
+    """About *target_tokens* seeded random common words (most are one token).
+
+    Unlike :func:`_build_prompt`, nothing repeats, so n-gram speculation
+    (which needs a 24-token match) has nothing to copy and decode isn't inflated.
+    """
+    rng = random.Random(seed)
+    return " ".join(rng.choice(_VARIED_WORDS) for _ in range(target_tokens))
 
 
 # ------------------------------------------------------------------
@@ -725,7 +748,7 @@ async def benchmark_depths(
         await _warmup(http, model_name)
         for depth in depths:
             row = DepthResult(depth=depth)
-            prompt = _build_prompt(depth) if depth > 0 else "Hello"
+            prompt = _varied_prompt(depth, seed=depth) if depth > 0 else "Hello"
             try:
                 wall, obj = await _complete(
                     http,
@@ -917,6 +940,4 @@ def bench_lines(
         tg = f"{r.generation_tok_s:.1f}" if r.generation_tok_s else "?"
         lines.append(f"{label}: prefill {pp} tok/s, decode {tg} tok/s")
     lines += [f"Prompt {d}: skipped, larger than the model's context" for d in skipped]
-    if "ngram" in str(spec):
-        lines.append("Note: the bench prompt repeats, so n-gram speculation reads high.")
     return lines

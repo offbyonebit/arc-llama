@@ -125,7 +125,7 @@ async def test_benchmark_depths_reports_engine_timings() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = __import__("json").loads(request.content)
         seen.append(body)
-        depth = len(body.get("prompt", "")) // 4
+        depth = len(body.get("prompt", "").split())  # about one token per word
         return httpx.Response(
             200,
             json={

@@ -543,3 +543,13 @@ class TestMeasureGeneration:
         summary = await _measure_prompt_eval_summary(UsageClient(), "qwen", 512, repeats=1)
         assert summary.token_count == 777
         assert summary.tok_s > 0
+
+
+def test_varied_prompt_never_repeats_a_24_word_run():
+    from arc_llama.benchmark import _varied_prompt
+
+    words = _varied_prompt(16384, seed=16384).split()
+    assert len(words) == 16384
+    runs = {tuple(words[i : i + 24]) for i in range(len(words) - 23)}
+    assert len(runs) == len(words) - 23
+    assert _varied_prompt(64, seed=1) == _varied_prompt(64, seed=1)

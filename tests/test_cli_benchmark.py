@@ -99,7 +99,6 @@ def test_bench_runs_on_the_loaded_model_and_prints_plain_text(monkeypatch, tmp_p
     assert "Settings: ctx 8192, KV q4_0/q4_0, speculation draft-mtp,ngram-mod" in out
     assert "Prompt 512: prefill 900.0 tok/s, decode 29.2 tok/s" in out
     assert "Prompt 16384: skipped" in out
-    assert "n-gram speculation reads high" in out
     assert "secret-user" not in out and str(tmp_path) not in out
 
 
