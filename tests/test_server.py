@@ -810,6 +810,16 @@ async def test_failed_startup_reports_error_instead_of_hanging(monkeypatch):
             assert (await client.get("/v1/models")).status_code == 503
 
 
+async def test_failed_startup_calls_the_serve_exit_hook(monkeypatch):
+    app = _blocking_startup_app(monkeypatch, error=RuntimeError("mcp broke"))
+    calls = []
+    app.state.on_startup_failure = lambda: calls.append(app.state.startup_error)
+    BlockingMCPClientManager.release.set()
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(app.state.started.wait(), 5)
+    assert calls == ["mcp broke"]
+
+
 class AgentFakeAsyncClient:
     """httpx.AsyncClient stand-in that lets /v1/agent complete without a real LLM."""
 

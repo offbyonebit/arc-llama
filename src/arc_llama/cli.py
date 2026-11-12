@@ -1217,6 +1217,15 @@ def serve(
 
     atexit.register(_shutdown_subprocesses)
 
+    def _exit_on_startup_failure() -> None:
+        # The port is already open, so uvicorn won't exit on its own; keep the
+        # old exit code 3 that systemd's Restart=on-failure acts on.
+        _shutdown_subprocesses()
+        logging.shutdown()
+        os._exit(3)
+
+    app.state.on_startup_failure = _exit_on_startup_failure
+
     def _on_signal(signum: int, _frame) -> None:  # noqa: ANN001
         _shutdown_subprocesses()
         # Re-raise as default so uvicorn's own handler (or python) finishes the job.

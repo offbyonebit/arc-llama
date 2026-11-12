@@ -414,6 +414,11 @@ def create_app(
                     raise
                 log.exception("arc-llama startup failed")
                 app.state.startup_error = str(exc) or type(exc).__name__
+                # `arc-llama serve` sets this so a failed startup still exits
+                # with code 3 and systemd's Restart=on-failure retries it.
+                on_failure = getattr(app.state, "on_startup_failure", None)
+                if on_failure is not None:
+                    on_failure()
             finally:
                 started.set()
 
