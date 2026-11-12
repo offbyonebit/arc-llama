@@ -105,7 +105,7 @@
           <div class="s-note">Applies only to this model. Empty fields use the defaults. Values are literal; no shell expansion.</div>
         </details>
         <button class="s-apply" id="s-apply">Apply</button>
-        <div class="s-note">Takes effect on next model load.</div>
+        <div class="s-note">A loaded model restarts with the new settings.</div>
       `;
       ctx.$("#s-llama-server").value = m.llama_server || "";
       ctx.$("#s-llama-server").placeholder = m.effective_llama_server || "Use the global runtime";
@@ -166,6 +166,7 @@
         cache_type_v: ctx.$("#s-ctv").value,
         parallel:     parseInt(ctx.$("#s-par").value, 10),
         kv_class:     ctx.$("#s-kvc").value,
+        reload:       true,
         ...(runtimeBinaryDirty ? { llama_server: ctx.$("#s-llama-server").value.trim() } : {}),
         ...(runtimeEnvDirty ? { env } : {}),
       };
@@ -186,7 +187,7 @@
         if (Object.hasOwn(body, "env")) m.env = body.env;
         if (ctx.selectedModel !== modelId) return;
         ctx.sFeedback.style.color = "var(--accent-bright)";
-        ctx.sFeedback.textContent = "Saved.";
+        ctx.sFeedback.textContent = data.reloading ? "Saved. Reloading the model..." : "Saved.";
         settingsDirty = false;
         runtimeBinaryDirty = false; runtimeEnvDirty = false;
         // The VRAM estimate depends on ctx/KV; refresh status so the settings

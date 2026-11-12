@@ -968,6 +968,95 @@ def test_admin_edit_persist_false_keeps_the_edit_out_of_config_toml(monkeypatch,
     assert 'ubatch_size = 512' in saved.read_text()
 
 
+class FakeRouterRunningRebuild(FakeRouterWithRebuild):
+    loads: list[str] = []
+
+    async def rebuild_model(self, name):
+        return True, True
+
+    async def ensure_active(self, query, *, acquire: bool = False):
+        self.loads.append(query)
+        if query == "broken":
+            raise RuntimeError("llama-server exited")
+        return await super().ensure_active(query, acquire=acquire)
+
+
+def _wait_for(predicate):
+    import time
+
+    for _ in range(200):
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_admin_edit_reload_restarts_a_loaded_model(monkeypatch, tmp_path):
+    # Settings Apply (e.g. KV cache to q8_0) brings the model straight back.
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(server_mod, "Router", FakeRouterRunningRebuild)
+    monkeypatch.setattr(FakeRouterRunningRebuild, "loads", [])
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit",
+            json={"cache_type_k": "q8_0", "cache_type_v": "q8_0", "reload": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["reloading"] is True
+        assert _wait_for(lambda: FakeRouterRunningRebuild.loads == ["qwen"])
+
+
+def test_admin_edit_without_reload_leaves_the_model_stopped(monkeypatch, tmp_path):
+    # Tuner trials load the model themselves; the edit must not load it too.
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(server_mod, "Router", FakeRouterRunningRebuild)
+    monkeypatch.setattr(FakeRouterRunningRebuild, "loads", [])
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit", json={"ubatch_size": 1024, "persist": False}
+        )
+        assert response.status_code == 200
+        assert response.json()["reloading"] is False
+        assert response.json()["stopped_running_instance"] is True
+    assert FakeRouterRunningRebuild.loads == []
+
+
+def test_admin_edit_reload_skips_a_model_that_was_not_loaded(monkeypatch, tmp_path):
+    app, _cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"ctx": 4096, "reload": True})
+    assert response.status_code == 200
+    assert response.json()["reloading"] is False
+
+
+def test_admin_edit_reload_failure_is_logged(monkeypatch, tmp_path, caplog):
+    import logging
+
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    cfg.models[0].name = "broken"
+    monkeypatch.setattr(server_mod, "Router", FakeRouterRunningRebuild)
+    monkeypatch.setattr(FakeRouterRunningRebuild, "loads", [])
+    app = create_app(cfg)
+    with caplog.at_level(logging.ERROR, logger="arc_llama.server"):
+        with TestClient(app) as client:
+            response = client.post("/admin/models/broken/edit", json={"ctx": 4096, "reload": True})
+            assert response.status_code == 200
+            assert response.json()["reloading"] is True
+            assert _wait_for(
+                lambda: any(
+                    "reload with the new settings failed" in r.message for r in caplog.records
+                )
+            )
+
+
 def test_admin_edit_flash_attn_null_clears(monkeypatch, tmp_path):
     app, cfg = _edit_app(monkeypatch, tmp_path)
     model = next(m for m in cfg.models if m.name == "qwen")

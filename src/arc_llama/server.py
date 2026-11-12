@@ -1992,6 +1992,14 @@ def create_app(
 
         return {"filename": file.filename, "text": text}
 
+    reload_tasks: set[asyncio.Task[None]] = set()
+
+    async def _reload_after_edit(rt: Router, name: str) -> None:
+        try:
+            await rt.ensure_active(name)
+        except Exception:
+            log.exception("edit %s: reload with the new settings failed", name)
+
     @app.post("/admin/models/{name}/edit")
     async def admin_edit_model(
         name: str, request: Request, _auth: None = Depends(_require_admin)
@@ -2008,8 +2016,10 @@ def create_app(
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
         cleared and vice versa: the two flags are alternative means to the
         same end and applying both would double-count the offload.
-        If the model is currently loaded, the server is stopped first; callers
-        decide whether to reload it afterwards via /admin/load.
+        If the model is currently loaded, the server is stopped first. With
+        `"reload": true` (the settings panel's Apply) a model that was loaded
+        is started again in the background with the new recipe; otherwise it
+        comes back on the next request or /admin/load.
         """
         from arc_llama.config import validate_model_runtime
         from arc_llama.gguf_meta import validate_override_patterns, weight_tensor_table
@@ -2360,6 +2370,12 @@ def create_app(
                 detail=f"Could not persist config; edit rolled back: {e}",
             ) from e
         rebuilt, was_running = await rt.rebuild_model(name)
+        # Tuners leave reload unset: they load each trial themselves.
+        reloading = body.get("reload") is True and rebuilt and was_running
+        if reloading:
+            task = asyncio.create_task(_reload_after_edit(rt, name))
+            reload_tasks.add(task)
+            task.add_done_callback(reload_tasks.discard)
         return {
             "name": name,
             "changed": changed,
@@ -2369,6 +2385,7 @@ def create_app(
             "kv_class": model.kv_class,
             "stopped_running_instance": was_running,
             "rebuilt": rebuilt,
+            "reloading": reloading,
         }
 
     @app.post("/admin/scan")

@@ -38,6 +38,8 @@ def test_apply_settings_refreshes_the_fit_line():
     # After saving recipe edits the status is refetched so the fit line and
     # loaded state re-render instead of showing stale estimates.
     assert "fetchStatus().catch" in body
+    # Apply asks the server to restart a loaded model with the new settings.
+    assert "reload:       true" in body
 
 
 def test_chat_status_css_exists_for_fit_line():

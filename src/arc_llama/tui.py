@@ -426,7 +426,7 @@ class ArcLlamaTUI(App):
         try:
             r = await self._client.post(
                 f"/admin/models/{name}/edit",
-                json=payload,
+                json={**payload, "reload": True},
                 timeout=15.0,
             )
             r.raise_for_status()
@@ -435,7 +435,7 @@ class ArcLlamaTUI(App):
             return
         msg = f"updated {name}"
         if was_loaded:
-            msg += " (was running — stopped)"
+            msg += " (was running — reloading)"
         bar.update_status(srv_info, msg)
         await self._refresh()
 
