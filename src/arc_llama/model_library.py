@@ -185,6 +185,13 @@ class DownloadJob:
         return asdict(self)
 
 
+def _warm_gguf_caches(path: Path) -> None:
+    from arc_llama.gguf_meta import read_gguf_meta, scan_weight_tensors
+
+    read_gguf_meta(path)
+    scan_weight_tensors(path)
+
+
 def _dir_bytes(path: Path) -> int:
     total = 0
     try:
@@ -296,6 +303,9 @@ class DownloadManager:
             path = task.result()
             job.bytes_done = job.bytes_total or job.bytes_done
             job.status = "registering"
+            # Registration reads the GGUF on the event loop, and parsing a large
+            # vocabulary takes seconds; fill the read caches in a thread first.
+            await asyncio.to_thread(_warm_gguf_caches, Path(path))
             job.registered = await self.on_registered(Path(path))
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 - surface every failure on the job

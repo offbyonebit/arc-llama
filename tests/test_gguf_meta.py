@@ -460,6 +460,22 @@ class TestFusedExpertProjections:
             scan_weight_tensors(f)
         assert "implausibly low" in caplog.text
 
+    def test_scan_is_parsed_once_per_file_and_hands_out_copies(self, tmp_path, monkeypatch):
+        f = tmp_path / "cached.gguf"
+        f.write_bytes(b"x")
+        reads = []
+        monkeypatch.setattr(
+            "arc_llama.gguf_meta.gguf.GGUFReader",
+            lambda path: reads.append(path) or _FakeReader(_moe_tensors(), "qwen3moe"),
+        )
+        _total, by_layer = scan_weight_tensors(f)
+        by_layer.clear()
+        assert scan_weight_tensors(f)[1] == {0: 600, 1: 1200}
+        assert len(reads) == 1
+        f.write_bytes(b"xy")  # a changed file is parsed again
+        scan_weight_tensors(f)
+        assert len(reads) == 2
+
     def test_healthy_moe_does_not_warn(self, tmp_path, monkeypatch, caplog):
         f = tmp_path / "gemma.gguf"
         f.write_bytes(b"x")

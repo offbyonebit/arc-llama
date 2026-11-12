@@ -790,6 +790,26 @@ def gguf_total_bytes(path: Path | str) -> int:
 
 
 def scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
+    """Cached :func:`_scan_weight_tensors`: parsing a GGUF with a large vocabulary
+    takes seconds, and the VRAM estimate asks for the same file again and again."""
+    try:
+        p = Path(path).resolve()
+        stat = p.stat()
+    except OSError:
+        return None
+    scan = _scan_weight_tensors_cached(str(p), stat.st_size, stat.st_mtime_ns)
+    return None if scan is None else (scan[0], dict(scan[1]))
+
+
+@lru_cache(maxsize=128)
+def _scan_weight_tensors_cached(
+    path: str, file_size: int, mtime_ns: int
+) -> tuple[int, dict[int, int]] | None:
+    del file_size, mtime_ns  # Stat values participate in cache invalidation.
+    return _scan_weight_tensors(path)
+
+
+def _scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
     """One pass over the GGUF tensor table.
 
     Returns ``(total_weight_bytes, {layer_idx: routed_expert_bytes})``, or
