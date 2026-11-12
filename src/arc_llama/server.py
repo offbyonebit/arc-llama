@@ -1278,6 +1278,18 @@ def create_app(
             ],
         }
 
+    @app.get("/v1/agent/folder")
+    async def agent_folder(path: str = "", _auth: None = Depends(_require_admin)) -> dict[str, str]:
+        """The remembered Work folder if it still exists here, otherwise the home folder."""
+        folder = Path(path).expanduser()
+        if not folder.is_absolute():
+            folder = Path.home() / folder
+        try:
+            exists = bool(path.strip()) and os.path.isdir(folder)
+        except (OSError, ValueError):
+            exists = False
+        return {"folder": path if exists else str(Path.home())}
+
     @app.get("/v1/agent/{run_id}/changes/{path:path}")
     async def agent_change_diff(
         run_id: str, path: str, request: Request, _auth: None = Depends(_require_admin)

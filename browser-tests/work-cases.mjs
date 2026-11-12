@@ -324,6 +324,16 @@ export async function testWorkModeRemembersTypedFolder({ page, origin }) {
   await page.waitForFunction(() => document.querySelector("#work-root").value === "/work/typed");
 }
 
+export async function testWorkModeDeletedFolderFallsBackToHome({ page, origin }) {
+  await page.addInitScript(() => localStorage.setItem("arc-llama-work-root", "/work/deleted"));
+  await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  await page.route("**/v1/agent/folder?**", route => route.fulfill(json({ folder: "/home/demo" })));
+  await openChat(page, origin);
+  await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  await page.waitForFunction(() => document.querySelector("#work-root").value === "/home/demo");
+}
+
 export async function testWorkModeAutoApprove({ page, origin }) {
   await installAgentStream(page);
   await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));

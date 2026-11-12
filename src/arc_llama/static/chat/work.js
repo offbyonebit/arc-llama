@@ -1682,7 +1682,10 @@
       harness.value = lastHarness = pick.id;
       updateHarnessControls();
       // Default to the user's home folder (never the server's own working directory), then remember their choice.
-      $("#work-root").value = recall(ROOT_KEY) || info.home || "";
+      const savedRoot = $("#work-root").value = recall(ROOT_KEY) || info.home || "";
+      // A remembered folder deleted since falls back to home; only the server can see its disk.
+      if (savedRoot !== info.home) ctx.request(`/v1/agent/folder?path=${encodeURIComponent(savedRoot)}`).then((r) => r.ok ? r.json() : null)
+        .then((d) => { if (d && d.folder && $("#work-root").value === savedRoot) { $("#work-root").value = d.folder; folderNote(); } }).catch(() => {});
       folderNote();
       syncModels();
       loadRecent();

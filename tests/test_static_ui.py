@@ -966,6 +966,11 @@ def test_work_view_remembers_a_typed_folder_before_any_run():
     assert "/chat/work.js?v=paper-23" in (STATIC / "chat.html").read_text(encoding="utf-8")
 
 
+def test_work_view_checks_the_remembered_folder_still_exists():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert "/v1/agent/folder?path=" in work and "$(\"#work-root\").value === savedRoot" in work
+
+
 def test_work_view_surfaces_problems_and_waiting_states():
     work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
     html = (STATIC / "chat.html").read_text(encoding="utf-8")
