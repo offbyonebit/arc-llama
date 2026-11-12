@@ -307,7 +307,7 @@ def create_app(
         app_plugins = list(plugins)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def services(app: FastAPI):
         app.state.router = Router(cfg, log_dir=state_dir)
         app.state.upstream_mgr = UpstreamManager(cfg.upstreams)
         app.state.cfg = cfg
@@ -392,6 +392,42 @@ def create_app(
             await app.state.mcp_manager.stop()
             await app.state.router.shutdown()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # uvicorn binds the port only after startup returns, so run the slow
+        # startup in a task and let /health answer "starting" meanwhile. The
+        # task also runs the teardown: MCP sessions must close in the task
+        # that opened them.
+        ready = app.state.ready = asyncio.Event()
+        started = app.state.started = asyncio.Event()
+        app.state.startup_error = None
+        stop = asyncio.Event()
+
+        async def run() -> None:
+            try:
+                async with services(app):
+                    ready.set()
+                    started.set()
+                    await stop.wait()
+            except Exception as exc:
+                if ready.is_set():
+                    raise
+                log.exception("arc-llama startup failed")
+                app.state.startup_error = str(exc) or type(exc).__name__
+            finally:
+                started.set()
+
+        task = asyncio.create_task(run())
+        try:
+            yield
+        finally:
+            stop.set()
+            if not ready.is_set():
+                task.cancel()
+            await asyncio.wait({task})
+            if not task.cancelled():
+                task.result()
+
     app = FastAPI(title="arc-llama", version=__version__, lifespan=lifespan)
     app.state.plugin_discovery = discovery
 
@@ -406,6 +442,25 @@ def create_app(
     app.state.api_keys = (
         ApiKeyStore.for_state_dir(cfg.paths.state_dir) if cfg.paths.state_dir else None
     )
+
+    def _startup_pending(request: Request) -> JSONResponse | None:
+        ready = getattr(request.app.state, "ready", None)
+        if ready is None or ready.is_set():
+            return None
+        error = request.app.state.startup_error
+        body = {"status": "error", "detail": error} if error else {"status": "starting"}
+        return JSONResponse(status_code=503, content=body)
+
+    @app.middleware("http")
+    async def wait_for_startup(request: Request, call_next):
+        # Everything but /health waits for startup rather than reach half-built state.
+        started = getattr(request.app.state, "started", None)
+        if started is not None and request.url.path != "/health":
+            await started.wait()
+            pending = _startup_pending(request)
+            if pending is not None:
+                return pending
+        return await call_next(request)
 
     @app.middleware("http")
     async def require_client_key(request: Request, call_next):
@@ -469,9 +524,12 @@ def create_app(
         allow_headers=["*"],
     )
 
-    @app.get("/health")
-    async def health(request: Request) -> dict[str, Any]:
-        """Liveness probe for the arc-llama router itself."""
+    @app.get("/health", response_model=None)
+    async def health(request: Request) -> dict[str, Any] | JSONResponse:
+        """Liveness probe for the arc-llama router itself; 503 "starting" until startup ends."""
+        pending = _startup_pending(request)
+        if pending is not None:
+            return pending
         rt: Router = request.app.state.router
         uptime = time.time() - request.app.state.started_at
         # "Loaded" means the health check passed, not merely that a process

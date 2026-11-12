@@ -398,6 +398,7 @@ async def test_disconnect_while_sending_headers_still_finalizes(app):
         raise OSError("client disconnected before headers")
 
     async with app.router.lifespan_context(app):
+        await app.state.ready.wait()
         response = await _proxy_post(Request(scope, receive), "/v1/chat/completions")
         with pytest.raises(ClientDisconnect):
             await response(scope, receive, disconnected)

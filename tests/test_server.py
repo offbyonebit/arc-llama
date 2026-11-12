@@ -728,9 +728,86 @@ async def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
 
     app = create_app(cfg)
     async with app.router.lifespan_context(app):
-        pass
+        await app.state.ready.wait()
 
     assert [s.name for s in CapturingMCPClientManager.started_servers] == ["fs"]
+
+
+class BlockingMCPClientManager:
+    """MCP start that holds startup open until the test releases it."""
+
+    release: asyncio.Event
+    error: Exception | None = None
+    stopped = False
+
+    def __init__(self, servers):
+        pass
+
+    async def start(self):
+        await BlockingMCPClientManager.release.wait()
+        if BlockingMCPClientManager.error is not None:
+            raise BlockingMCPClientManager.error
+
+    async def stop(self):
+        BlockingMCPClientManager.stopped = True
+
+
+def _blocking_startup_app(monkeypatch, error: Exception | None = None):
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod, "MCPClientManager", BlockingMCPClientManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    BlockingMCPClientManager.release = asyncio.Event()
+    BlockingMCPClientManager.error = error
+    BlockingMCPClientManager.stopped = False
+    return create_app(Config(server=ServerConfig(admin_token=None)), plugins=[])
+
+
+async def test_health_answers_starting_until_startup_finishes(monkeypatch):
+    app = _blocking_startup_app(monkeypatch)
+    async with app.router.lifespan_context(app):
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/health")
+            assert r.status_code == 503
+            assert r.json() == {"status": "starting"}
+            # Other routes wait for startup instead of touching half-built state.
+            models = asyncio.create_task(client.get("/v1/models"))
+            await asyncio.sleep(0.05)
+            assert not models.done()
+
+            BlockingMCPClientManager.release.set()
+            assert (await asyncio.wait_for(models, 5)).status_code == 200
+            r = await client.get("/health")
+            assert r.status_code == 200
+            assert r.json()["status"] == "ok"
+
+
+async def test_shutdown_during_startup_cancels_and_cleans_up(monkeypatch):
+    app = _blocking_startup_app(monkeypatch)
+
+    async def enter_and_leave():
+        async with app.router.lifespan_context(app):
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(enter_and_leave(), 5)
+    assert not app.state.ready.is_set()
+    assert BlockingMCPClientManager.stopped
+
+
+async def test_failed_startup_reports_error_instead_of_hanging(monkeypatch):
+    app = _blocking_startup_app(monkeypatch, error=RuntimeError("mcp broke"))
+    BlockingMCPClientManager.release.set()
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(app.state.started.wait(), 5)
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/health")
+            assert r.status_code == 503
+            assert r.json() == {"status": "error", "detail": "mcp broke"}
+            assert (await client.get("/v1/models")).status_code == 503
 
 
 class AgentFakeAsyncClient:
@@ -1621,6 +1698,7 @@ async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
     app = create_app(Config(server=ServerConfig(admin_token=None)))
 
     async with app.router.lifespan_context(app):
+        await app.state.ready.wait()
         app.state.router._servers["qwen"] = ColdStartBackend()
         transport = _ASGITransport(app=app)
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
