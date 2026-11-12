@@ -16,6 +16,7 @@ Two destinations are supported:
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import sys
@@ -71,6 +72,7 @@ class ReportContext:
     model_count: int | None = None
     log_name: str = ""
     log_lines: list[str] = field(default_factory=list)
+    hardware: list[str] = field(default_factory=list)
 
     def environment_text(self) -> str:
         lines = [
@@ -81,7 +83,7 @@ class ReportContext:
         ]
         if self.model_count is not None:
             lines.append(f"Registered models: {self.model_count}")
-        return redact("\n".join(lines))
+        return redact("\n".join(lines + self.hardware))
 
     def gpu_text(self) -> str:
         return redact("\n".join(self.gpus)) if self.gpus else "No Intel GPU detected."
@@ -118,6 +120,90 @@ def gpu_lines_from_config(gpus: Iterable[Any]) -> list[str]:
         state = "" if gpu.enabled else ", disabled"
         lines.append(f"{gpu.name or 'Intel GPU'} ({gpu.arch}, {vram}, {gpu.backend}{state})")
     return lines
+
+
+def hardware_lines(cfg: Any | None) -> list[str]:
+    """Runtime pin, driver stack, RAM and the device llama-server would get.
+
+    Runs vulkaninfo and llama-server --list-devices, so it is for the CLI only.
+    """
+    from arc_llama.autotune import driver_stack_key
+    from arc_llama.platform_checks import mesa_version
+    from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+    lines = [f"Pinned llama.cpp: {LLAMA_CPP_BUILD}"]
+    if sys.platform != "win32":
+        mesa = mesa_version()
+        lines.append(f"Mesa: {'.'.join(map(str, mesa)) if mesa else 'unknown'}")
+    lines.append(f"Driver stack: {driver_stack_key().replace('|', ', ')}")
+    ram = _total_ram_mib()
+    lines.append(f"RAM: {ram} MiB" if ram else "RAM: unknown")
+    try:
+        lines += _device_lines(cfg)
+    except Exception as exc:  # noqa: BLE001 - the rest of the report still helps
+        lines.append(f"Chosen device: could not ask llama-server ({type(exc).__name__})")
+    return lines
+
+
+def _total_ram_mib() -> int | None:
+    if sys.platform == "win32":
+        import ctypes
+
+        class _MemoryStatus(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong)
+                for name in ("total", "avail", "page", "page_avail", "virt", "virt_avail", "ext")
+            ]
+
+        status = _MemoryStatus()
+        status.dwLength = ctypes.sizeof(_MemoryStatus)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.total) // 2**20
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 2**20
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _device_lines(cfg: Any | None) -> list[str]:
+    from arc_llama.arch import Arch, profile_for
+    from arc_llama.binary import list_devices
+    from arc_llama.launcher import build_env, vulkan_device_arg
+    from arc_llama.onboarding import runtime_path
+
+    gpu = next((g for g in cfg.gpus if g.enabled), None) if cfg is not None else None
+    if cfg is None or gpu is None:
+        return ["Chosen device: no enabled GPU in the config"]
+    binary = runtime_path(cfg)
+    if binary is None:
+        return [f"Chosen device: none yet, no llama.cpp runtime installed ({gpu.backend})"]
+    if gpu.backend == "vulkan":
+        devices = list_devices(binary, "Vulkan")
+        device = vulkan_device_arg([gpu], binary)
+        if gpu.vulkan_index is not None:
+            why = "vulkan_index in the config"
+        elif device:
+            why = "matched to the GPU by name or memory size"
+        else:
+            why = "no --device passed, so llama.cpp picks its default"
+        chosen = device or "llama.cpp default"
+        prefix = "Vulkan"
+    else:
+        arch = Arch(gpu.arch) if gpu.arch in {a.value for a in Arch} else Arch.UNKNOWN
+        env = build_env(
+            profile_for(arch), gpu, llama_server=binary, oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None)
+        )
+        devices = list_devices(binary, "SYCL", env=env)
+        chosen = env.get("ONEAPI_DEVICE_SELECTOR", "unset")
+        same = chosen == f"level_zero:{gpu.sycl_index}"
+        why = f"sycl_index {gpu.sycl_index} in the config" if same else "matched to the GPU by name"
+        prefix = "SYCL"
+    listed = "; ".join(f"{prefix}{i} {name}" + (f" ({mib} MiB)" if mib else "") for i, name, mib in devices)
+    return [
+        f"llama.cpp {prefix} devices: {listed or 'none listed'}",
+        f"Chosen device: {chosen} for {gpu.name or 'the configured GPU'} ({why})",
+    ]
 
 
 def newest_log(log_dir: Path | None, lines: int = DEFAULT_LOG_LINES) -> tuple[str, list[str]]:

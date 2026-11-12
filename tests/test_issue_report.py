@@ -130,6 +130,31 @@ def test_report_command_prints_link_without_browser(tmp_path, monkeypatch):
     assert f"{REPO_URL}/issues/new?" in result.output
 
 
+def test_report_text_names_the_chosen_device_without_home_paths(tmp_path, monkeypatch):
+    import arc_llama.cli as cli_mod
+
+    cfg_path = tmp_path / "config.toml"
+    cfg = Config(gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage",
+                                 vram_mb=24576, name="Intel(R) Arc(TM) Pro B60 Graphics", backend="vulkan")])
+    cfg.save(cfg_path)
+    runtime = Path.home() / "arc" / "llama-server"
+    monkeypatch.setattr(cli_mod, "detect_gpus", lambda enrich=True: [_gpu()], raising=False)
+    monkeypatch.setattr("arc_llama.onboarding.runtime_path", lambda c: runtime)
+    monkeypatch.setattr(
+        "arc_llama.binary.list_devices",
+        lambda binary, backend, env=None: [(0, "NVIDIA GeForce RTX 4060 Ti", 8188),
+                                           (1, "Intel(R) Arc(TM) Pro B60 Graphics", 24480)],
+    )
+    monkeypatch.setattr("arc_llama.launcher.vulkan_device_arg", lambda gpus, binary, env=None: "Vulkan1")
+    result = CliRunner().invoke(cli_mod.cli, ["--config", str(cfg_path), "report", "--text"])
+    assert result.exit_code == 0, result.output
+    assert "Pinned llama.cpp: b12" in result.output
+    assert "RAM: " in result.output
+    assert "Vulkan1 Intel(R) Arc(TM) Pro B60 Graphics (24480 MiB)" in result.output
+    assert "Chosen device: Vulkan1 for Intel(R) Arc(TM) Pro B60 Graphics (matched" in result.output
+    assert str(Path.home()) not in result.output and "issues/new" not in result.output
+
+
 async def test_admin_report_link_endpoint(tmp_path):
     from arc_llama.server import create_app
 

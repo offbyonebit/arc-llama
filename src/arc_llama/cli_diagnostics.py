@@ -395,17 +395,24 @@ def register_diagnostic_commands(
         is_flag=True,
         help="Print the link instead of opening a browser.",
     )
+    @click.option(
+        "--text",
+        "as_text",
+        is_flag=True,
+        help="Print a plain hardware report to paste anywhere instead of opening GitHub.",
+    )
     @click.pass_context
-    def report_cmd(ctx: click.Context, discussion: bool, title: str, no_open: bool) -> None:
+    def report_cmd(ctx: click.Context, discussion: bool, title: str, no_open: bool, as_text: bool) -> None:
         """Open a prefilled GitHub problem report in your browser.
 
-        Version, OS, Python, GPU, backend, and the end of the newest
-        llama-server log are filled in after removing home paths and tokens.
-        Nothing is sent until you review it and submit it on GitHub.
+        Version, OS, Python, GPU, driver stack, Mesa, RAM, the device
+        llama-server would use, and the end of the newest llama-server log are
+        filled in after removing home paths and tokens. Nothing is sent until
+        you review it and submit it on GitHub.
         """
         import webbrowser
 
-        from arc_llama.issue_report import build_report_link, collect_context
+        from arc_llama.issue_report import build_report_link, collect_context, hardware_lines
 
         config_path: Path = ctx.obj["config_path"]
         try:
@@ -417,6 +424,11 @@ def register_diagnostic_commands(
         except Exception:
             gpus = []
         context = collect_context(cfg, detected_gpus=gpus)
+        context.hardware = hardware_lines(cfg)
+        if as_text:
+            click.echo(context.environment_text())
+            click.echo(context.gpu_text())
+            return
         link = build_report_link(context, kind="discussion" if discussion else "issue", title=title)
         if link.trimmed:
             console.print(
