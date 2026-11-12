@@ -326,11 +326,18 @@ def test_env_admin_token_without_file_token_saves_none(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("backend", "kv", "saved_fa"),
-    [("vulkan", "q8_0", None), ("vulkan", "f16", "off"), ("sycl", "q8_0", "off")],
+    [
+        ("vulkan", "q8_0", None),
+        ("vulkan", "f16", "off"),
+        ("sycl", "q8_0", None),
+        ("sycl", "q4_0", None),
+        ("sycl", "f16", "off"),
+    ],
 )
 def test_saved_flash_attn_off_only_where_it_runs_off(tmp_path, backend, kv, saved_fa):
-    # Vulkan launch policy forces FA on for a quantized KV cache, so the file
-    # must not claim "off" next to q8_0 there. SYCL and f16 keep the user's off.
+    # llama.cpp refuses a quantized V cache with FA off on every backend, so
+    # launch policy overrides it and the file must not claim "off" next to
+    # q8_0. f16 keeps the user's off.
     path = tmp_path / "config.toml"
     cfg = Config(
         gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", backend=backend)],
@@ -349,3 +356,22 @@ def test_saved_flash_attn_off_only_where_it_runs_off(tmp_path, backend, kv, save
     assert load_config(path).models[0].recipe["cache_type_k"] == kv
     # Only the file changes; the running config is left alone.
     assert cfg.models[0].recipe["flash_attn"] == "off"
+
+
+def test_saved_flash_attn_off_kept_for_quantized_k_only_on_sycl(tmp_path):
+    # Only a quantized V cache needs FA; SYCL runs q8_0 K with FA off.
+    path = tmp_path / "config.toml"
+    cfg = Config(
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", backend="sycl")],
+        models=[
+            ModelConfig(
+                name="m",
+                path=str(tmp_path / "m.gguf"),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                recipe={"cache_type_k": "q8_0", "cache_type_v": "f16", "flash_attn": "off"},
+            )
+        ],
+    )
+    cfg.save(path)
+    assert load_config(path).models[0].recipe.get("flash_attn") == "off"

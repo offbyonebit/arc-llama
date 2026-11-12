@@ -603,10 +603,11 @@ class Config:
 
 
 def _drop_forced_flash_attn_off(cfg: Config, models: list[dict[str, Any]]) -> None:
-    """Don't save flash_attn = "off" beside a quantized KV cache on Vulkan.
+    """Don't save flash_attn = "off" where launch policy overrides it.
 
-    Launch policy forces flash-attn on there (llama.cpp needs it for a
-    quantized V cache), so a saved "off" would misreport what actually runs.
+    That is a quantized V cache on any backend (llama.cpp refuses it with FA
+    off) and a quantized K cache on Vulkan, so a saved "off" would misreport
+    what actually runs.
     """
     from arc_llama.policy import _QUANT_KV
 
@@ -614,11 +615,9 @@ def _drop_forced_flash_attn_off(cfg: Config, models: list[dict[str, Any]]) -> No
     for m in models:
         recipe = m.get("recipe") or {}
         gpu = cfg.find_gpu(m.get("gpu_pci_slot", ""))
-        if (
-            recipe.get("flash_attn") == "off"
-            and gpu is not None
-            and gpu.backend == Backend.VULKAN.value
-            and {recipe.get("cache_type_k"), recipe.get("cache_type_v")} & quant
+        vulkan = gpu is not None and gpu.backend == Backend.VULKAN.value
+        if recipe.get("flash_attn") == "off" and (
+            recipe.get("cache_type_v") in quant or (vulkan and recipe.get("cache_type_k") in quant)
         ):
             m["recipe"] = {k: v for k, v in recipe.items() if k != "flash_attn"}
 
