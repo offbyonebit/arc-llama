@@ -365,3 +365,8 @@ def test_reasoning_off_capability_needs_the_reasoning_flag():
     old = "--reasoning-budget N  controls the amount of thinking allowed; currently only one of: -1 for\n  unrestricted thinking budget, or 0 to disable thinking (default: -1)\n--reasoning-format FORMAT"
     assert _parse_help(new).supports_reasoning_off
     assert not _parse_help(old).supports_reasoning_off
+
+
+def test_parse_help_detects_log_verbosity():
+    assert _parse_help("-lv,   --verbosity, --log-verbosity N   set the verbosity threshold").supports_verbosity
+    assert not _parse_help("-v,    --verbose   print verbose information").supports_verbosity

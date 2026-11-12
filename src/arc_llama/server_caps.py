@@ -59,6 +59,8 @@ class ServerCaps:
     """Whether this binary accepts ``--tensor-split`` / ``--split-mode``."""
     supports_reasoning_off: bool = False
     """Whether this binary accepts ``--reasoning on|off|auto``."""
+    supports_verbosity: bool = False
+    """Whether this binary accepts ``-lv N`` (log verbosity)."""
 
 
 def format_speculation_capability(caps: ServerCaps) -> str:
@@ -86,6 +88,7 @@ DEFAULT_CAPS = ServerCaps(
     supports_reranking=True,
     supports_tensor_split=True,
     supports_reasoning_off=True,
+    supports_verbosity=True,
 )
 
 _cache: dict[tuple[str, float, tuple[tuple[str, str], ...]], ServerCaps] = {}
@@ -104,6 +107,7 @@ def _parse_help(help_text: str) -> ServerCaps:
         "supports_reranking": "--rerank" in help_text,
         "supports_tensor_split": "--tensor-split" in help_text,
         "supports_reasoning_off": "--reasoning [on|off|auto]" in help_text,
+        "supports_verbosity": "--verbosity" in help_text,
     }
     idx = help_text.find("--flash-attn")
     if idx < 0:

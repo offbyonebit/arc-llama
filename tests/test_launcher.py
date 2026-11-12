@@ -855,6 +855,21 @@ class TestBuildPlanFlashAttn:
         assert ("--reasoning" in plan.argv) is supported
         assert "--jinja" in plan.argv and ("off" in plan.argv) is supported
 
+    @pytest.mark.parametrize(
+        ("extra", "caps", "expected"),
+        [
+            ([], {"supports_verbosity": True}, ["-lv", "4"]),
+            ([], {"supports_verbosity": False}, []),
+            (["-lv", "2"], {"supports_verbosity": True}, ["-lv", "2"]),
+            (["--verbose"], {"supports_verbosity": True}, []),
+        ],
+    )
+    def test_trace_verbosity_for_the_startup_device_lines(self, monkeypatch, extra, caps, expected):
+        plan = self._plan({"extra_flags": extra}, {**caps, "probed": True}, monkeypatch)
+        lv = plan.argv[plan.argv.index("-lv") : plan.argv.index("-lv") + 2] if "-lv" in plan.argv else []
+        assert lv == expected
+        assert plan.argv.count("-lv") <= 1
+
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
         plan = self._plan(
             {"flash_attn": "on"},

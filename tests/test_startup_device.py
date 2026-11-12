@@ -149,7 +149,7 @@ async def test_unreadable_log_never_fails_the_load(tmp_path, monkeypatch):
 
 def test_summary_names_device_and_layers():
     assert startup_device_summary(_log("vulkan-b60-offloaded.txt")) == (
-        " on Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21), 65/65 layers on GPU"
+        " on Vulkan1: Intel(R) Arc(TM) Pro B60 Graphics, 33/33 layers on GPU"
     )
     assert startup_device_summary(_log("cpu-fallback.txt")) == ", 0/65 layers on GPU"
     assert startup_device_summary(_log("no-device-lines.txt")) is None
@@ -167,7 +167,7 @@ async def test_wait_ready_logs_the_device_at_info(tmp_path, monkeypatch, caplog)
         with caplog.at_level(logging.INFO, logger="arc_llama.launcher"):
             assert await srv.wait_ready(timeout=2.0) is True
         assert (
-            "Loaded m on Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21), 65/65 layers on GPU"
+            "Loaded m on Vulkan1: Intel(R) Arc(TM) Pro B60 Graphics, 33/33 layers on GPU"
             in caplog.messages
         )
     finally:

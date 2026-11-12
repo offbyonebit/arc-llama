@@ -634,6 +634,14 @@ def build_plan(
         device = vulkan_device_arg([gpu, *(split_gpus[1:] if split_gpus else [])], binary, env if model.env else None)
         if device:
             argv += ["--device", device]
+    # llama.cpp prints the device, offload and buffer lines the startup check
+    # reads only at trace level (-lv 4); a verbosity in the model's flags wins.
+    if caps.supports_verbosity and not any(
+        a in ("-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose")
+        or a.startswith(("--verbosity=", "--log-verbosity="))
+        for a in argv
+    ):
+        argv += ["-lv", "4"]
     backend_url = f"http://{host}:{model.port}"
     return LaunchPlan(
         argv=argv,
