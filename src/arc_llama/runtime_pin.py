@@ -6,4 +6,4 @@ Linux and Windows, to a newer build; ``--runtime-version latest`` still asks for
 the newest build that has the needed download.
 """
 
-LLAMA_CPP_BUILD = "b12193"
+LLAMA_CPP_BUILD = "b12243"

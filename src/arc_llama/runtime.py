@@ -125,7 +125,7 @@ def resolve_release(client: httpx.Client, version: str) -> dict:
     if version not in ("latest", "", None) and getattr(r, "status_code", None) == 404:
         raise RuntimeInstallError(
             f"llama.cpp build {version} was not found on GitHub ({LLAMA_CPP_REPO}). "
-            "Choose another build with --runtime-version (a tag such as b12193, or 'latest')."
+            "Choose another build with --runtime-version (a tag such as b12243, or 'latest')."
         )
     r.raise_for_status()
     return r.json()
