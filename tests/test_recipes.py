@@ -492,6 +492,11 @@ class TestLaunchRecipeArgv:
         assert argv[argv.index("--spec-draft-ngl") + 1] == "999"
         assert argv[argv.index("--spec-draft-n-max") + 1] == "3"
 
+    def test_draft_tuning_flags_dropped_when_speculation_is_off(self):
+        argv = LaunchRecipe(spec_draft_n_max=3, spec_draft_p_min=0.75).to_argv()
+        assert "--spec-draft-n-max" not in argv
+        assert "--spec-draft-p-min" not in argv
+
     def test_spec_draft_model_omitted_when_none(self):
         r = LaunchRecipe(spec_type="draft-mtp")
         argv = r.to_argv()

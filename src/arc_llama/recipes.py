@@ -171,7 +171,7 @@ class LaunchRecipe:
             argv += ["--spec-draft-model", self.spec_draft_model]
         if self.spec_draft_ngl is not None:
             argv += ["--spec-draft-ngl", str(self.spec_draft_ngl)]
-        if self.spec_draft_n_max is not None:
+        if self.spec_type and self.spec_draft_n_max is not None:
             argv += ["--spec-draft-n-max", str(self.spec_draft_n_max)]
         if self.ubatch_size is not None:
             argv += ["-ub", str(self.ubatch_size)]
@@ -219,7 +219,7 @@ class LaunchRecipe:
             if self.split_mode in SPLIT_MODES:
                 argv += ["--split-mode", self.split_mode]
         extra = list(self.extra_flags)
-        if self.spec_draft_p_min is not None:
+        if self.spec_type and self.spec_draft_p_min is not None:
             from arc_llama.speculation import confidence_value, without_confidence_flags
 
             value = confidence_value(self.spec_draft_p_min)

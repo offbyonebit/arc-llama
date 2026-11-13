@@ -374,6 +374,7 @@ def register_model_commands(
     def model_runtime(ctx, name, llama_server, variables, unset_env, reset):
         """Show or configure one model's runtime without changing global defaults."""
         from arc_llama.config import validate_model_runtime
+        from arc_llama.launcher import model_backend
 
         cfg = load_config(ctx.obj["config_path"])
         model = cfg.find_model(name)
@@ -396,6 +397,12 @@ def register_model_commands(
             raise click.ClickException(str(exc)) from exc
         if reset or llama_server is not None or variables or unset_env:
             model.llama_server, model.env = binary, env
+            gpu = cfg.find_gpu(model.gpu_pci_slot)
+            recipe = model.recipe or {}
+            if gpu is not None and recipe.get("flash_attn") == "off" and model_backend(cfg, model, gpu) == Backend.SYCL:
+                # A recipe sized for Vulkan's scalar FA; SYCL needs FA for its compute buffer to fit.
+                model.recipe = {**recipe, "flash_attn": "on"}
+                console.print("Flash attention set to on for this model's SYCL runtime.", markup=False)
             save_or_die(cfg, ctx.obj["config_path"])
             console.print("[green]Saved. Reload the service config to activate; only this model's override changes.[/green]")
         console.print(f"Runtime: {cfg.model_llama_server(model)}", markup=False)

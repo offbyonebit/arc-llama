@@ -1163,6 +1163,14 @@ def serve(
                 f"guided setup, drop a GGUF in {cfg.paths.models_dir}, or run "
                 "`arc-llama add`.[/yellow]"
             )
+    if not guided and any(not m.llama_server for m in cfg.models):
+        from arc_llama.onboarding import runtime_path
+
+        if runtime_path(cfg) is None:
+            # Exit like a failed startup so systemd's Restart=on-failure sees it.
+            console.print(f"[red]llama-server binary not found: {cfg.paths.llama_server}[/red]")
+            console.print("Run `arc-llama install-runtime` or fix paths.llama_server in config.toml.")
+            sys.exit(3)
     if cfg.server.host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
             f"[yellow]Binding to {cfg.server.host!r}, not loopback -- make sure "

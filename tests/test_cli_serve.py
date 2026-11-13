@@ -13,8 +13,10 @@ from arc_llama.config import Config, GPUConfig, ModelConfig, PathsConfig
 
 def _cfg(models_dir: Path) -> Config:
     models_dir.mkdir(parents=True, exist_ok=True)
+    server = models_dir.parent / "llama-server"
+    server.write_bytes(b"")
     return Config(
-        paths=PathsConfig(models_dir=str(models_dir)),
+        paths=PathsConfig(models_dir=str(models_dir), llama_server=str(server)),
         gpus=[
             GPUConfig(
                 pci_slot="0000:03:00.0",
@@ -276,3 +278,15 @@ def test_serve_warns_once_on_old_mesa_for_vulkan(runner, tmp_path, monkeypatch, 
     assert result.exit_code == 0, result.output
     assert result.output.count("Mesa 25.2 is older than 26.1") == (1 if shown else 0)
     assert result.output.count("ppa:kisak/kisak-mesa") == (1 if shown else 0)
+
+
+def test_serve_exits_3_when_llama_server_is_missing(runner, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path / "models")
+    cfg.paths.llama_server = str(tmp_path / "gone" / "llama-server")
+    cfg.models = [ModelConfig(name="m", path=str(tmp_path / "m.gguf"), port=18080, gpu_pci_slot="0000:03:00.0")]
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
+    with patch("uvicorn.run") as run:
+        result = runner.invoke(cli, ["--config", str(tmp_path / "config.toml"), "serve", "--no-scan"])
+    assert result.exit_code == 3, result.output
+    assert "llama-server binary not found" in result.output
+    run.assert_not_called()

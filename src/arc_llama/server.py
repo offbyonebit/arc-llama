@@ -2177,11 +2177,11 @@ def create_app(
             if v is None or v == "":
                 recipe.pop("spec_type", None)
             elif (
-                isinstance(v, str) and len(v) <= 64 and all(ch.isalnum() or ch in "-_" for ch in v)
+                isinstance(v, str) and len(v) <= 64 and all(ch.isalnum() or ch in "-_," for ch in v)
             ):
                 # llama.cpp adds speculation strategies faster than arc-llama
                 # releases. Keep this future-compatible while rejecting values
-                # that cannot be one argv atom.
+                # that cannot be one argv atom; commas list several (draft-mtp,ngram-mod).
                 recipe["spec_type"] = v
             else:
                 raise HTTPException(

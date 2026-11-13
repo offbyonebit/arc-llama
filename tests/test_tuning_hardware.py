@@ -144,8 +144,9 @@ async def test_benchmark_depths_reports_engine_timings() -> None:
     ) as client:
         rows = await benchmark_depths("http://t", "m", [0, 8000], gen_tokens=32, client=client)
     assert [r.depth for r in rows] == [0, 8000]
-    assert rows[1].generation_tok_s == pytest.approx(22.0)
-    assert rows[1].measured_depth == 8000
+    # the prose lead adds a few dozen words after the 8000
+    assert rows[1].generation_tok_s == pytest.approx(22.0, abs=0.1)
+    assert 8000 <= rows[1].measured_depth < 8100
     measured = [b for b in seen if b.get("ignore_eos")]
     assert all(b["cache_prompt"] is False and b["max_tokens"] == 32 for b in measured)
 

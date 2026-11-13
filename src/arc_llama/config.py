@@ -503,7 +503,6 @@ class Config:
             "mcp_servers": [asdict(s) for s in self.mcp_servers],
             "profiles": [asdict(p) for p in self.profiles],
         }
-        _drop_forced_flash_attn_off(self, d["models"])
         return _restore_unknown_keys(_strip_none(d), self.unknown_keys)
 
     def save(self, path: Path | None = None) -> Path:
@@ -600,26 +599,6 @@ class Config:
                     "could not fsync config directory", exc_info=True
                 )
         return path
-
-
-def _drop_forced_flash_attn_off(cfg: Config, models: list[dict[str, Any]]) -> None:
-    """Don't save flash_attn = "off" where launch policy overrides it.
-
-    That is a quantized V cache on any backend (llama.cpp refuses it with FA
-    off) and a quantized K cache on Vulkan, so a saved "off" would misreport
-    what actually runs.
-    """
-    from arc_llama.policy import _QUANT_KV
-
-    quant = {kv.value for kv in _QUANT_KV}
-    for m in models:
-        recipe = m.get("recipe") or {}
-        gpu = cfg.find_gpu(m.get("gpu_pci_slot", ""))
-        vulkan = gpu is not None and gpu.backend == Backend.VULKAN.value
-        if recipe.get("flash_attn") == "off" and (
-            recipe.get("cache_type_v") in quant or (vulkan and recipe.get("cache_type_k") in quant)
-        ):
-            m["recipe"] = {k: v for k, v in recipe.items() if k != "flash_attn"}
 
 
 def _strip_none(obj: Any) -> Any:

@@ -48,7 +48,7 @@ def test_confidence_rejects_invalid(value):
 def test_legacy_confidence_and_typed_override_roundtrip(tmp_path):
     flags = ["--reasoning", "auto", "--draft-p-min=0.2", "--spec-draft-p-min", "0.75"]
     assert effective_confidence({"extra_flags": flags}) == 0.75
-    recipe = LaunchRecipe(spec_draft_p_min=0.5, extra_flags=flags)
+    recipe = LaunchRecipe(spec_type="draft-mtp", spec_draft_p_min=0.5, extra_flags=flags)
     argv = recipe.to_argv()
     assert argv.count("--spec-draft-p-min") == 1
     assert "--draft-p-min=0.2" not in argv

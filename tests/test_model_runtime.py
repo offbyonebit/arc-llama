@@ -257,3 +257,17 @@ def test_ui_layout_rejects_invalid_json_with_400(runtime_cfg, tmp_path):
     with TestClient(app) as client:
         assert client.put("/admin/ui/layout", content=b"{not json", headers=auth).status_code == 400
         assert client.put("/admin/ui/layout", content=b"[]", headers=auth).status_code == 400
+
+
+def test_cli_sycl_runtime_on_a_vulkan_gpu_turns_flash_attention_on(runtime_cfg, tmp_path, monkeypatch):
+    from arc_llama.arch import Backend
+
+    cfg = runtime_cfg
+    cfg.gpus[0].backend = "vulkan"
+    cfg.models[0].recipe = {"flash_attn": "off", "cache_type_k": "f16", "cache_type_v": "f16"}
+    sycl = executable(tmp_path / "sycl-server", "usage")
+    monkeypatch.setattr("arc_llama.launcher.detect_backends", lambda path: {Backend.SYCL})
+    path = cfg.save(tmp_path / "config.toml")
+    result = CliRunner().invoke(cli, ["--config", str(path), "model-runtime", "ornith", "--llama-server", sycl])
+    assert result.exit_code == 0, result.output
+    assert load_config(path).models[0].recipe["flash_attn"] == "on"

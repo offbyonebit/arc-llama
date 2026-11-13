@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -35,7 +35,12 @@ except ImportError:
 import httpx
 
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
-from arc_llama.binary import list_devices, pick_intel_by_memory, resolve_vulkan_index
+from arc_llama.binary import (
+    detect_backends,
+    list_devices,
+    pick_intel_by_memory,
+    resolve_vulkan_index,
+)
 from arc_llama.config import Config, GPUConfig, ModelConfig, default_state_dir
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import has_mtp_heads
@@ -243,9 +248,18 @@ _SYCL_ONLY_ENVS: frozenset[str] = frozenset(
 )
 
 
-# Production 27B values (Nov 11): RSS stayed flat over long sessions.
-DEFAULT_CACHE_RAM_MIB = 2048
+# -ctxcp 8 is what kept the production 27B's RSS flat (Nov 11). A 2048 MiB
+# prompt cache was too small: a hybrid 27B's saved state passes it near 14K
+# tokens, and a side request evicted the main chat's state at 6K.
 DEFAULT_CTX_CHECKPOINTS = 8
+
+
+def default_cache_ram_mib() -> int:
+    """llama.cpp's own 8 GiB, or a quarter of RAM on smaller machines."""
+    from arc_llama.issue_report import _total_ram_mib
+
+    ram = _total_ram_mib()
+    return min(8192, ram // 4) if ram else 4096
 
 
 @lru_cache(maxsize=8)
@@ -454,9 +468,31 @@ def build_env(
     return env
 
 
+@lru_cache(maxsize=32)
+def _backends_cached(binary: str, mtime: float) -> frozenset[Backend]:
+    return frozenset(detect_backends(binary))
+
+
+def model_backend(cfg: Config, model: ModelConfig, gpu: GPUConfig) -> Backend:
+    """The GPU's backend, unless this model's own runtime carries only the other one."""
+    backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
+    if model.llama_server:
+        binary = cfg.model_llama_server(model)
+        try:
+            found = _backends_cached(binary, Path(binary).stat().st_mtime)
+        except OSError:
+            return backend
+        if found and backend not in found:
+            return Backend.SYCL if Backend.SYCL in found else Backend.VULKAN
+    return backend
+
+
 def build_model_env(cfg: Config, model: ModelConfig, gpu: GPUConfig) -> dict[str, str]:
     """Automatic GPU/oneAPI defaults followed by explicit model-only overrides."""
     split_gpus = resolve_split_gpus(cfg, model)
+    backend = model_backend(cfg, model, gpu)
+    if backend.value != gpu.backend:
+        gpu = replace(gpu, backend=backend.value)
     env = build_env(
         profile_for(Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN), gpu,
         llama_server=cfg.model_llama_server(model),
@@ -488,7 +524,7 @@ def build_plan(
     cfg: Config, model: ModelConfig, gpu: GPUConfig, host: str = "127.0.0.1"
 ) -> LaunchPlan:
     arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
-    backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
+    backend = model_backend(cfg, model, gpu)
     split_gpus = resolve_split_gpus(cfg, model)
     binary = cfg.model_llama_server(model)
     env = build_model_env(cfg, model, gpu)
@@ -647,10 +683,10 @@ def build_plan(
     ):
         argv += ["-lv", "4"]
     # llama-server keeps up to 8 GiB of prompt cache and 32 context checkpoints
-    # per slot in host RAM, so RAM grows over a long session. Cap both unless
-    # the model's flags set them.
+    # per slot in host RAM, so RAM grows over a long session. Cap both (the cache
+    # to a quarter of RAM) unless the model's flags set them.
     for supported, names, env_key, value in (
-        (caps.supports_cache_ram, ("-cram", "--cache-ram"), "LLAMA_ARG_CACHE_RAM", DEFAULT_CACHE_RAM_MIB),
+        (caps.supports_cache_ram, ("-cram", "--cache-ram"), "LLAMA_ARG_CACHE_RAM", default_cache_ram_mib()),
         (
             caps.supports_ctx_checkpoints,
             ("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"),

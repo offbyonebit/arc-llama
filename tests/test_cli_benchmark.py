@@ -96,7 +96,7 @@ def test_bench_runs_on_the_loaded_model_and_prints_plain_text(monkeypatch, tmp_p
     out = result.output
     assert "Backend: sycl on Arc Pro B60 (battlemage, 24576 MiB)" in out
     assert "llama.cpp: b12243 (abc1234)" in out
-    assert "Settings: ctx 8192, KV q4_0/q4_0, speculation draft-mtp,ngram-mod" in out
+    assert "Settings: ctx 8192, KV q4_0/q4_0, flash attention auto, speculation draft-mtp,ngram-mod" in out
     assert "Prompt 512: prefill 900.0 tok/s, decode 29.2 tok/s" in out
     assert "Prompt 16384: skipped" in out
     assert "secret-user" not in out and str(tmp_path) not in out
@@ -136,5 +136,24 @@ def test_llama_cpp_build_reads_version_output(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert llama_cpp_build("llama-server") == "b12243 (8f1d2e3)"
+    out = "version: 0.9.0-dev (build 12243, commit 8f1d2e3)\nbuilt with gcc"
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=""))
+    assert llama_cpp_build("llama-server") == "b12243 (8f1d2e3)"
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
     assert llama_cpp_build("llama-server") is None
+
+
+def test_bench_backend_follows_the_models_own_runtime(tmp_path, monkeypatch):
+    from arc_llama import launcher
+    from arc_llama.arch import Backend
+    from arc_llama.benchmark import bench_lines
+
+    cfg = _bench_config(tmp_path)
+    cfg.gpus[0].backend = "vulkan"
+    binary = tmp_path / "sycl" / "llama-server"
+    binary.parent.mkdir()
+    binary.write_bytes(b"")
+    cfg.models[0].llama_server = str(binary)
+    monkeypatch.setattr(launcher, "detect_backends", lambda path: {Backend.SYCL})
+    monkeypatch.setattr("arc_llama.benchmark.llama_cpp_build", lambda binary: None)
+    assert any(line.startswith("Backend: sycl on") for line in bench_lines(cfg, cfg.models[0].name, [], []))

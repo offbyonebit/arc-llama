@@ -230,6 +230,14 @@ def _varied_prompt(target_tokens: int, seed: int = 0) -> str:
     return " ".join(rng.choice(_VARIED_WORDS) for _ in range(target_tokens))
 
 
+# Decode continues this as ordinary prose, so MTP drafts what a real answer
+# looks like instead of more random words.
+_PROSE_LEAD = (
+    "\n\nThat was a list of words. Here is a short story, told plainly, about a "
+    "lighthouse keeper and the night the fog came in.\n\nThe"
+)
+
+
 # ------------------------------------------------------------------
 # Core measurement
 # ------------------------------------------------------------------
@@ -748,7 +756,7 @@ async def benchmark_depths(
         await _warmup(http, model_name)
         for depth in depths:
             row = DepthResult(depth=depth)
-            prompt = _varied_prompt(depth, seed=depth) if depth > 0 else "Hello"
+            prompt = _varied_prompt(depth, seed=depth) + _PROSE_LEAD if depth > 0 else "Hello"
             try:
                 wall, obj = await _complete(
                     http,
@@ -898,14 +906,26 @@ def llama_cpp_build(binary: str) -> str | None:
     """``b12243 (abc1234)`` from ``llama-server --version``, or None."""
     import subprocess
 
-    try:
-        out = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, timeout=20
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    m = re.search(r"version: (\d+) \((\w+)\)", (out.stdout or "") + (out.stderr or ""))
-    return f"b{m.group(1)} ({m.group(2)})" if m else None
+    from arc_llama.server_caps import _env_with_oneapi
+
+    env = None
+    for _ in range(2):
+        try:
+            out = subprocess.run(
+                [binary, "--version"], capture_output=True, text=True, timeout=20, env=env
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        text = (out.stdout or "") + (out.stderr or "")
+        # "version: 12243 (abc1234)" before b12243, "version: 0.9.0-dev (build 12243, commit abc1234)" after
+        m = re.search(r"version: (\d+) \((\w+)\)", text) or re.search(r"\(build (\d+), commit (\w+)\)", text)
+        if m:
+            return f"b{m.group(1)} ({m.group(2)})"
+        # A SYCL build outside a oneAPI shell can't load its libraries; source setvars once.
+        env = _env_with_oneapi(None) if "error while loading shared libraries" in text else None
+        if env is None:
+            return None
+    return None
 
 
 def bench_lines(
@@ -913,12 +933,14 @@ def bench_lines(
 ) -> list[str]:
     """Plain text for `arc-llama bench`. No paths, user names or host names."""
     from arc_llama import __version__
+    from arc_llama.launcher import model_backend
     from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
     model = cfg.find_model(model_name)
     assert model is not None
     recipe = model.recipe or {}
     gpu = next((g for g in cfg.gpus if g.pci_slot == model.gpu_pci_slot), None)
+    backend = model_backend(cfg, model, gpu).value if gpu else "unknown"
     binary = model.llama_server or cfg.paths.llama_server
     build = (llama_cpp_build(binary) if binary else None) or f"unknown (pinned {LLAMA_CPP_BUILD})"
     kv = f"{recipe.get('cache_type_k', 'f16')}/{recipe.get('cache_type_v', 'f16')}"
@@ -926,10 +948,11 @@ def bench_lines(
     lines = [
         f"Arc Llama: {__version__}",
         f"Model: {model.name} ({Path(model.path).name})",
-        f"Backend: {gpu.backend if gpu else 'unknown'} on "
+        f"Backend: {backend} on "
         + (f"{gpu.name or 'Intel GPU'} ({gpu.arch}, {gpu.vram_mb or '?'} MiB)" if gpu else "unknown GPU"),
         f"llama.cpp: {build}",
-        f"Settings: ctx {recipe.get('ctx', 'default')}, KV {kv}, speculation {spec}",
+        f"Settings: ctx {recipe.get('ctx', 'default')}, KV {kv}, "
+        f"flash attention {recipe.get('flash_attn', 'auto')}, speculation {spec}",
     ]
     for r in results:
         label = f"Prompt {r.measured_depth or r.depth}"

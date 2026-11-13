@@ -1190,6 +1190,9 @@ def test_admin_edit_can_set_and_clear_speculation(monkeypatch, tmp_path):
             },
         )
         assert response.status_code == 200
+        response = client.post("/admin/models/qwen/edit", json={"spec_type": "draft-mtp,ngram-mod"})
+        assert response.status_code == 200
+        assert cfg.find_model("qwen").recipe["spec_type"] == "draft-mtp,ngram-mod"
         response = client.post(
             "/admin/models/qwen/edit",
             json={
