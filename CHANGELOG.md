@@ -7,6 +7,69 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+### Changed
+- The portable llama.cpp runtime installed by `install-runtime`, `run`, `setup` and guided setup is
+  now pinned to b12243 for Vulkan and SYCL on Linux and Windows. `--runtime-version` still lets you
+  choose another build.
+- New Lunar Lake models on Vulkan start with an f16 KV cache and flash attention off, matching the
+  Battlemage defaults. Saved recipes and the SYCL backend keep their existing settings.
+- Newly registered dense hybrid models with embedded MTP heads on SYCL start with `draft-mtp,ngram-mod`,
+  a maximum draft length of 3 and a draft confidence threshold of 0.75. Hybrid MoE models and hybrid
+  models on Vulkan do not get this preset automatically.
+- Models with their own llama-server override use the backend that runtime provides when it does
+  not support the GPU's configured backend. Device selection, oneAPI setup and `bench` follow that
+  choice. Changing a model's runtime through the CLI turns flash attention on when switching an
+  FA-off recipe to SYCL.
+- Prompt-cache RAM defaults to a quarter of system RAM, up to 8 GiB, and context checkpoints default
+  to 8 when the runtime supports these controls. Explicit model flags and environment settings win.
+- Linux Vulkan users on Mesa older than 26.1 see a warning and upgrade guidance at startup and in
+  `doctor`, so an older graphics stack is easier to spot before comparing performance.
+- Token-budget polling no longer fills the INFO log with internal requests. Auto-tune logs when a
+  sweep finishes or fails, and Work relay cancellation no longer prints an error traceback.
+
+### Fixed
+- Vulkan models select their configured GPU with llama.cpp's `--device` names instead of using a
+  different device-numbering scheme. SYCL matches GPU names to Level Zero devices instead of relying
+  only on PCI order, helping avoid selecting an integrated GPU or another vendor's card.
+- Model startup logs show the device and offloaded layers reported by llama.cpp, and warn when the
+  available log lines indicate CPU execution or the wrong GPU. Logs without device information are
+  treated as unknown rather than reported as CPU fallback.
+- GPU detection recognises Arc Pro B50, B65 and B70 IDs, with the B50's fallback VRAM size set to
+  16 GiB. OpenCL measurements can replace a device-table VRAM guess, including on an 8 GiB A770.
+- `serve` detects GPUs when the configuration has none, as `start` already does. Guided setup now
+  explains when a detected integrated GPU has no supported starter instead of only saying its
+  memory capacity is unavailable.
+- Applying settings in Chat or the terminal UI restarts a model that was already loaded, so the
+  new settings take effect without another manual load.
+- Auto-tune trial edits stay in memory instead of saving each trial through the edit endpoint;
+  the final recipe is saved at the end. A chat request arriving during the baseline now aborts the
+  sweep even if the request finishes before the measurement does.
+- A saved flash-attention-off preference is preserved for later use with an f16 cache, while launch
+  policy handles a quantized V cache's flash-attention requirement. Combined speculative strategies
+  are accepted by the model edit API, and draft length and confidence flags are omitted when
+  speculation is disabled.
+- Work remembers a folder as it is typed, before a task is sent, and falls back to the home folder
+  when the remembered folder no longer exists on the server.
+- Work stops the detached Hermes gateway after Linux runs too. OpenCode's side requests, such as
+  title generation, no longer replace the agent prompt's token count.
+- A newly downloaded GGUF has its metadata parsed in a worker thread before registration, keeping
+  that parsing work off the server's event loop.
+- The HTTP port opens while service startup is still in progress. `/health` returns HTTP 503 with
+  `starting` until startup completes, and HTTP 200 with `loading` while a model launches or reloads.
+  A model being stopped is not reported as loading. Failed service startup and a missing required
+  global runtime make `serve` exit with code 3 so service managers can retry.
+- Source distributions no longer include the screenshot tour and demo media or the scripts used
+  to record them.
+
+### Added
+- `arc-llama bench` runs a short standard benchmark through the running server and prints model,
+  GPU, backend, runtime and settings alongside prefill and decode rates. It checks short and 16K
+  prompt depths when they fit the model's context, using non-repeating input followed by prose.
+- `arc-llama report --text` prints a hardware report to paste into a problem report. Reports now
+  include RAM, Mesa, driver-stack information and the device llama.cpp would select.
+- Work offers to install Arc Llama's tested OpenCode copy even when another OpenCode is already
+  available on PATH. The Hermes installer no longer labels its validated Windows support untested.
+
 ## [1.1.1] - 2026-11-10
 
 ### Changed
