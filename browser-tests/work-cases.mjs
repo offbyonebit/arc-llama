@@ -313,6 +313,7 @@ export async function testWorkModeOffersClosestFolder({ page, origin }) {
 
 export async function testWorkModeRemembersTypedFolder({ page, origin }) {
   await page.route("**/v1/agent/info", route => route.fulfill(json(INFO)));
+  await page.route("**/v1/agent/folder?**", route => route.fulfill(json({ folder: new URL(route.request().url()).searchParams.get("path") })));
   await openChat(page, origin);
   await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
   await page.locator('.paper-rail a[aria-label="Work"]').click();
@@ -322,6 +323,19 @@ export async function testWorkModeRemembersTypedFolder({ page, origin }) {
   await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
   await page.locator('.paper-rail a[aria-label="Work"]').click();
   await page.waitForFunction(() => document.querySelector("#work-root").value === "/work/typed");
+  const windowsFolder = String.raw`C:\Projects\Local Models`;
+  await page.fill("#work-root", windowsFolder);
+  await page.locator('.paper-rail a[aria-label="Chat"]').click();
+  await page.locator('.paper-rail a[aria-label="Work"]').click();
+  if ((await page.inputValue("#work-root")) !== windowsFolder) throw new Error("navigation changed the Windows folder");
+  for (const blank of ["", "   "]) {
+    await page.fill("#work-root", blank);
+    if ((await page.evaluate(() => localStorage.getItem("arc-llama-work-root"))) !== windowsFolder) throw new Error("blank field overwrote the saved folder");
+    await page.reload();
+    await page.waitForSelector("#mode-switch:not([hidden])", { state: "attached" });
+    await page.locator('.paper-rail a[aria-label="Work"]').click();
+    await page.waitForFunction(folder => document.querySelector("#work-root").value === folder, windowsFolder);
+  }
 }
 
 export async function testWorkModeDeletedFolderFallsBackToHome({ page, origin }) {

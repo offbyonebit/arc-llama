@@ -1584,8 +1584,8 @@
       $("#work-manager").addEventListener("mousedown", (e) => { if (e.target === e.currentTarget) closeManager(); });
       document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#work-manager").hidden) closeManager(); });
       $("#work-root").addEventListener("change", () => { commandsKey = ""; });
-      // Remember the folder as it is typed, so leaving the page keeps it; a cleared field means "back to home".
-      $("#work-root").addEventListener("input", () => { problem(""); notice(""); store(ROOT_KEY, $("#work-root").value.trim()); refreshWorkContext(); });
+      // Remember a chosen folder without clearing it while the field is being edited.
+      $("#work-root").addEventListener("input", () => { problem(""); notice(""); const folder = $("#work-root").value; if (folder.trim()) store(ROOT_KEY, folder); refreshWorkContext(); });
       $("#work-root").addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
       });
