@@ -923,6 +923,21 @@ class TestBuildPlanFlashAttn:
         )
         assert plan.argv[plan.argv.index("--spec-type") + 1] == expected
 
+    @pytest.mark.parametrize("spec_type", ["ngram-mod", "draft-mtp,ngram-mod"])
+    def test_unsupported_ngram_and_draft_model_both_fall_back(self, monkeypatch, tmp_path, spec_type):
+        draft = tmp_path / "draft.gguf"
+        draft.write_bytes(b"test")
+        monkeypatch.setattr("arc_llama.launcher.has_mtp_heads", lambda path: True)
+        plan = self._plan(
+            {"spec_type": spec_type, "spec_draft_model": str(draft), "spec_draft_n_max": 3},
+            {"supports_speculative": True, "supports_ngram": False,
+             "supports_draft_model": False, "probed": True},
+            monkeypatch,
+        )
+        assert "--spec-type" not in plan.argv
+        assert "--spec-draft-model" not in plan.argv
+        assert "--spec-draft-n-max" not in plan.argv
+
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
         plan = self._plan(
             {"flash_attn": "on"},
