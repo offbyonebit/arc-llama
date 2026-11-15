@@ -19,7 +19,7 @@ That opens a browser page that walks you from "card detected" to your first
 answer. Prefer the terminal? `arc-llama run unsloth/Qwen3-8B-GGUF:Q4_K_M`
 does the same in one line. See [Quick start](#quick-start) for more.
 
-**Detects:** Arc B-series (Battlemage), A-series (Alchemist) and Lunar Lake,
+**Works with:** Arc B-series (Battlemage), A-series (Alchemist) and Lunar Lake,
 on Linux and Windows 11, Python 3.10 or newer. Validated hardware is listed in
 [Tested hardware](#tested-hardware). Integrated GPUs without a known VRAM
 budget get no guided starter; choose a model manually in Discover.
@@ -304,7 +304,7 @@ or make an existing installation available to the process running Arc Llama.
 | Hermes Agent | Installed `hermes` with ACP support | Streamed replies and thought activity, file-edit and flagged-command approvals; no auto-approve |
 
 Arc Llama uses `agent.opencode_bin` first, then `ARC_LLAMA_OPENCODE_BIN` or PATH.
-Its managed installer is also offered beside an external copy. OpenCode
+The Agent menu offers managed copies beside external OpenCode or Hermes installations. OpenCode
 uses its existing project/user tool setup. Named tool profiles let you choose
 which MCP servers, skills, web tools, and other tools a task can use.
 Type `/` in the composer to see available commands, including Work's `/compact`.
@@ -518,8 +518,10 @@ authoritative. Cross-vendor or cross-GPU draft/target pipelines are not
 implemented; verification remains inside one llama-server process.
 
 `arc-llama init` registers every Intel GPU it finds. Each model in the config
-is bound to a specific PCI slot. Vulkan is pinned with `--device`, matched
-by GPU name and, if needed, memory size. SYCL probes Level Zero devices by
+is bound to a specific PCI slot. Vulkan uses `--device` for a configured index,
+a unique name/memory match, or the only listed device. Without a resolved index,
+llama.cpp chooses its default; ambiguous multi-device lists produce a warning.
+SYCL probes Level Zero devices by
 name before setting `ONEAPI_DEVICE_SELECTOR=level_zero:N`; if no unique match
 is found, it keeps the configured SYCL index. Explicit model selectors win. Add your second card,
 re-run `arc-llama init --force` to refresh `[[gpus]]`, then add models against

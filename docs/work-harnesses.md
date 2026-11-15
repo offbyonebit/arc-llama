@@ -35,7 +35,7 @@ If OpenCode or Hermes isn't installed, Work's Agent menu shows it as **(installâ
 shows the version, the source repository, the license (both are MIT), the download size and where the copy will be
 kept. Nothing is downloaded until you choose Install. **System â†’ Agents for Work** lists each harness and where Work
 will find it, and lets you install, update or remove the copies Arc Llama manages. The same is available from the
-command line. The Agent menu also offers Arc Llama's managed OpenCode copy when an external copy is already available:
+command line:
 
 ```bash
 arc-llama install-harness opencode
@@ -43,6 +43,9 @@ arc-llama install-harness hermes
 arc-llama install-harness opencode --list
 arc-llama install-harness opencode --remove v2.2.5
 ```
+
+The Agent menu also offers Arc Llama's managed copy of an installable harness
+when an external OpenCode or Hermes copy is already available.
 
 **Tested versions:** Arc Llama installs the version it was verified against (OpenCode v2.2.5, Hermes v0.22.5).
 Work also runs OpenCode 1.x (verified with v1.19.5): it asks each OpenCode which API it speaks and uses that one.
