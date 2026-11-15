@@ -623,7 +623,7 @@ def build_plan(
             kept or "target-only",
         )
         recipe.spec_type = kept or None
-    elif recipe.spec_draft_model and not caps.supports_draft_model:
+    if recipe.spec_draft_model and not caps.supports_draft_model:
         log.warning(
             "[%s] %s has no --spec-draft-model; starting target-only",
             model.name,
