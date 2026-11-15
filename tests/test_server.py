@@ -1057,6 +1057,57 @@ def test_admin_edit_persist_false_keeps_the_edit_out_of_config_toml(monkeypatch,
     assert 'ubatch_size = 512' in saved.read_text()
 
 
+@pytest.mark.parametrize("fail_final_save", [False, True])
+def test_trial_survives_unrelated_save_without_leaking(monkeypatch, tmp_path, fail_final_save):
+    from arc_llama.config import load_config
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    original = cfg.models[0]
+    original.llama_server = "original-server"
+    original.env = {"TEST_RUNTIME": "original"}
+    cfg.models.append(ModelConfig(
+        name="other", path="/models/other.gguf", port=18081,
+        gpu_pci_slot="0000:03:00.0", recipe={"ctx": 4096},
+    ))
+    saved = tmp_path / "config" / "arc-llama" / "config.toml"
+    cfg.save(saved)
+    with TestClient(app) as client:
+        for ubatch in (1024, 2048):
+            assert client.post("/admin/models/qwen/edit", json={
+                "ubatch_size": ubatch, "kv_class": "moe_a3b", "persist": False,
+                "llama_server": "trial-server", "env": {"TEST_RUNTIME": "trial"},
+            }).status_code == 200
+        assert original.recipe["ubatch_size"] == 2048
+        assert original.llama_server == "trial-server"
+        assert client.post("/admin/models/other/edit", json={"ctx": 16384}).status_code == 200
+        disk = load_config(saved)
+        assert disk.models[0].recipe == {"ctx": 8192}
+        assert disk.models[0].kv_class == "default"
+        assert disk.models[0].llama_server == "original-server"
+        assert disk.models[0].env == {"TEST_RUNTIME": "original"}
+        assert disk.models[1].recipe["ctx"] == 16384
+
+        with monkeypatch.context() as patch:
+            if fail_final_save:
+                def fail_save(self, path=None):
+                    raise OSError("disk full")
+                patch.setattr(Config, "save", fail_save)
+            final = client.post("/admin/models/qwen/edit", json={"ubatch_size": 512})
+        assert final.status_code == (500 if fail_final_save else 200)
+        # A subsequent settings/scan save must respect either the rollback or final pick.
+        cfg.save(saved)
+        disk = load_config(saved)
+        if fail_final_save:
+            assert disk.models[0].recipe == {"ctx": 8192}
+            assert disk.models[0].env == {"TEST_RUNTIME": "original"}
+            assert original.recipe["ubatch_size"] == 2048
+        else:
+            assert disk.models[0].recipe["ubatch_size"] == 512
+            assert disk.models[0].kv_class == "moe_a3b"
+            assert disk.models[0].llama_server == "trial-server"
+            assert disk.models[0].env == {"TEST_RUNTIME": "trial"}
+
+
 class FakeRouterRunningRebuild(FakeRouterWithRebuild):
     loads: list[str] = []
 
