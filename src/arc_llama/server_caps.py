@@ -174,6 +174,8 @@ def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -
             [llama_server, "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_HELP_TIMEOUT_S,
             env=env,
         )
@@ -185,6 +187,8 @@ def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -
                     [llama_server, "--help"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=_HELP_TIMEOUT_S,
                     env=oneapi_env,
                 )

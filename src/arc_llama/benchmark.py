@@ -912,7 +912,8 @@ def llama_cpp_build(binary: str) -> str | None:
     for _ in range(2):
         try:
             out = subprocess.run(
-                [binary, "--version"], capture_output=True, text=True, timeout=20, env=env
+                [binary, "--version"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=20, env=env
             )
         except (OSError, subprocess.SubprocessError):
             return None
