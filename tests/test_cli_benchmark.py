@@ -99,7 +99,7 @@ def test_bench_runs_on_the_loaded_model_and_prints_plain_text(monkeypatch, tmp_p
     monkeypatch.setattr(benchmark, "llama_cpp_build", lambda binary: "b12243 (abc1234)")
     seen = {}
 
-    async def fake_depths(url, model, depths, *, gen_tokens):
+    async def fake_depths(url, model, depths, *, gen_tokens, headers=None):
         seen.update(model=model, depths=depths)
         return [
             benchmark.DepthResult(depth=d, measured_depth=d, prompt_eval_tok_s=900.0,
@@ -134,6 +134,40 @@ def test_bench_stops_cleanly_without_a_server(monkeypatch, tmp_path, cli_runner)
     result = cli_runner.invoke(cli, ["--config", str(tmp_path / "c.toml"), "bench"])
     assert result.exit_code == 1
     assert "No arc-llama server answered" in result.output
+
+
+@pytest.mark.parametrize("token", ["test-admin-token", ""])
+@pytest.mark.parametrize("command", [["bench"], ["benchmark", "qwen-27b", "--depths", "512"]])
+def test_depth_commands_send_the_admin_token(monkeypatch, tmp_path, cli_runner, token, command):
+    import httpx
+
+    from arc_llama import benchmark
+
+    cfg = _bench_config(tmp_path)
+    cfg.server.admin_token = token
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
+    monkeypatch.setattr("httpx.get", lambda *a, **k: _Health(["qwen-27b"]))
+    monkeypatch.setattr(benchmark, "llama_cpp_build", lambda binary: None)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"timings": {"predicted_per_second": 1.0}})
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    result = cli_runner.invoke(
+        cli, ["--config", str(tmp_path / "c.toml"), *command, "--server", "https://remote.example"],
+    )
+    assert result.exit_code == 0, result.output
+    assert {r.url.path for r in requests} == {"/v1/chat/completions", "/v1/completions"}
+    assert all(r.url.host == "remote.example" for r in requests)
+    expected = f"Bearer {token}" if token else None
+    assert [r.headers.get("Authorization") for r in requests] == [expected] * len(requests)
+    assert not token or token not in result.output
 
 
 def test_bench_needs_a_model_when_none_is_loaded(monkeypatch, tmp_path, cli_runner):
