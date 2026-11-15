@@ -56,6 +56,8 @@ def _scan_with_strings(path: Path) -> set[Backend]:
         [strings_bin, "-n", "4", str(path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if proc.returncode != 0:
@@ -197,6 +199,8 @@ def list_devices(
             [str(binary_path), "--list-devices"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=env,
         )
