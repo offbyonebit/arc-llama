@@ -9,6 +9,25 @@ from arc_llama.cli import cli
 from arc_llama.config import Config, GPUConfig, PathsConfig
 
 
+def test_llama_cpp_build_replaces_undecodable_output(monkeypatch):
+    import subprocess
+    import sys
+
+    from arc_llama.benchmark import llama_cpp_build
+
+    run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        program = (
+            "import sys; sys.stdout.buffer.write(b'version: 12243 (8f1d2e3)\\n\\x81\\n'); "
+            "sys.stderr.buffer.write(b'backend path \\x9d\\x98\\n')"
+        )
+        return run([sys.executable, "-c", program], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert llama_cpp_build("llama-server") == "b12243 (8f1d2e3)"
+
+
 def _make_test_config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(models_dir=str(tmp_path / "models")),
