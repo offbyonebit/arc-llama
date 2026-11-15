@@ -889,6 +889,24 @@ class TestBuildPlanFlashAttn:
         assert value("--cache-ram") == cram
         assert value("--ctx-checkpoints") == ctxcp
 
+    @pytest.mark.parametrize(
+        ("key", "flag", "value"),
+        [("LLAMA_ARG_CACHE_RAM", "--cache-ram", "0"),
+         ("LLAMA_ARG_CTX_CHECKPOINTS", "--ctx-checkpoints", "24")],
+    )
+    def test_memory_control_environment_wins_over_automatic_flags(self, monkeypatch, key, flag, value):
+        monkeypatch.delenv("LLAMA_ARG_CACHE_RAM", raising=False)
+        monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising=False)
+        monkeypatch.setenv(key, value)
+        monkeypatch.setattr("arc_llama.issue_report._total_ram_mib", lambda: 16000)
+        plan = self._plan({}, {
+            "supports_cache_ram": True, "supports_ctx_checkpoints": True, "probed": True,
+        }, monkeypatch)
+        assert plan.env[key] == value
+        assert flag not in plan.argv
+        other = "--ctx-checkpoints" if flag == "--cache-ram" else "--cache-ram"
+        assert other in plan.argv
+
     def test_prompt_cache_ram_stops_at_llama_cpps_own_default(self, monkeypatch):
         from arc_llama.launcher import default_cache_ram_mib
 
