@@ -300,6 +300,7 @@ async def _restore_final_state(
                 from arc_llama.config import default_config_path
 
                 _apply_state_to_recipe(model, final_state)
+                cfg.model_saved_settings.pop(model_name, None)
                 cfg.save(default_config_path())
                 log.warning(
                     "tune %s: restored the final recipe via a direct config "

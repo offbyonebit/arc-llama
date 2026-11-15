@@ -854,12 +854,16 @@ async def test_restore_final_state_retries_then_succeeds(cfg, monkeypatch):
     assert calls == 3
 
 
-async def test_restore_final_state_direct_write_fallback(cfg, monkeypatch):
+@pytest.mark.parametrize("active_trial", [False, True])
+async def test_restore_final_state_direct_write_fallback(cfg, monkeypatch, active_trial):
     """#37: endpoint permanently down → the intended recipe is written to the
     local config directly rather than leaving the last candidate on disk.
     XDG_CONFIG_HOME is redirected to tmp by conftest."""
     from arc_llama.config import default_config_path, load_config
     from arc_llama.tune import _restore_final_state
+
+    if active_trial:
+        cfg.model_saved_settings["m"] = {"recipe": dict(cfg.models[0].recipe)}
 
     async def dead(client, name, edits):
         return "connection refused"
