@@ -115,7 +115,9 @@ The portable Vulkan runtime that `arc-llama setup` installs does not use SYCL,
 so this SYCL warm-up does not apply to it. Vulkan is the default because it
 needs no oneAPI install and no build. SYCL is the option to reach for when
 your own benchmarks show it is faster on your model. Compare them with
-`arc-llama benchmark`.
+`arc-llama benchmark`. New Battlemage and Lunar Lake Vulkan recipes use f16
+KV with flash attention off. On Linux, `doctor` and `serve` warn when Mesa is
+older than 26.1 and print upgrade guidance; they do not run it.
 
 ## Also required: Resizable BAR
 

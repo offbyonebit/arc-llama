@@ -6,8 +6,8 @@ without overrides continue using `paths.llama_server` and the service environmen
 Open the model's **Model settings → Runtime for this model**. Set its executable
 path and enter environment variables as `KEY=value`, one per line. Click **Apply**.
 Only that model's instance is drained and rebuilt; other models keep their launch
-plans. The selected model loads on the next request. Clear both fields and Apply
-to return to the defaults.
+plans. If the model was running, Apply reloads it in the background; otherwise
+it loads on the next request. Clear both fields and Apply to return to the defaults.
 
 For example, Ornith can use a patched build while every other model keeps the
 normal runtime:
@@ -30,8 +30,9 @@ The executable path is a single value and may contain spaces. Commands and envir
 values are literal: no shell, variable interpolation, or command substitution runs.
 Use a wrapper executable if startup needs more involved preparation.
 
-GPU assignment and backend remain in the GPU configuration; choose a binary
-compatible with that backend. Overrides apply after automatic GPU/oneAPI defaults, so an explicit environment
+GPU assignment remains in the GPU configuration. If a model-only executable
+carries just the other backend, Arc Llama uses that backend for the model without
+changing the GPU configuration. Overrides apply after automatic GPU/oneAPI defaults, so an explicit environment
 variable wins. They do not modify Arc Llama's own process or another model.
 Environment values remain local configuration; tune fingerprints hash them, and
 recipe submissions never include them.
