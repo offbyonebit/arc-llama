@@ -8,7 +8,7 @@ Arc Llama keeps two kinds of state, and they move between versions differently:
 
 - **Configuration:** the TOML file above.
 - **Application data:** under `paths.state_dir`, which defaults to `~/.local/state/arc-llama` (or
-  `$XDG_STATE_HOME/arc-llama`). It includes:
+  `$XDG_STATE_HOME/arc-llama`), or `%LOCALAPPDATA%\arc-llama` on Windows. It includes:
   - chats (`chats/`);
   - Work projects and jobs (`work/work.sqlite3` plus job copies);
   - Work conversations, profiles and Undo backups;

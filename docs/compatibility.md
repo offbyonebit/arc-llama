@@ -37,6 +37,11 @@ by a particular llama.cpp build remains conditional on that build. The `/admin`,
 `/v1/agent`, and `/v1/chats` routes are Arc Llama extensions and are versioned
 with this project rather than the OpenAI API.
 
+`GET /health` returns HTTP 503 with `status: starting` until startup completes,
+or `status: error` after a startup failure. Once ready it returns HTTP 200;
+`status: loading` identifies a model launch, while `status: ok` means no model
+launch is in progress.
+
 ### Model capabilities
 
 Each local entry in `GET /v1/models` carries `metadata.capabilities`:

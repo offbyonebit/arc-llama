@@ -44,6 +44,9 @@ arc-llama install-harness opencode --list
 arc-llama install-harness opencode --remove v2.2.5
 ```
 
+The Agent menu also offers Arc Llama's managed copy of an installable harness
+when an external OpenCode or Hermes copy is already available.
+
 **Tested versions:** Arc Llama installs the version it was verified against (OpenCode v2.2.5, Hermes v0.22.5).
 Work also runs OpenCode 1.x (verified with v1.19.5): it asks each OpenCode which API it speaks and uses that one.
 *Install newest instead* (`--latest`) installs the newest upstream release, which is recorded as untested.
@@ -86,9 +89,10 @@ Each task starts Hermes through its ACP stdio protocol, with the selected local 
 
 Hermes runs in default ACP approval mode. File edits and commands flagged by Hermes's native checks ask in Work. Routine terminal commands can run under Hermes's own policy. Work shows this policy when Hermes is selected. Auto-approve is unavailable for Hermes and the API rejects requests that try to enable it. The client grants only individual approvals, never a persistent permission. Native file-edit approvals for paths outside the chosen project are denied; this is not an OS sandbox for terminal commands.
 
-The initial integration uses a temporary, isolated Hermes home. It does not change the user's Hermes installation or import its global credentials, MCP configuration, skills, or memory. Primary and auxiliary inference use the same Arc Llama endpoint, with cloud fallback disabled. OpenCode tool profiles and native slash commands are unavailable for Hermes; Work's own `/compact` remains available.
+The initial integration uses a temporary, isolated Hermes home. It does not change the user's Hermes installation or import its global credentials, MCP configuration, skills, or memory. Primary and auxiliary inference use the same Arc Llama endpoint, with cloud fallback disabled. On teardown, Arc Llama stops the gateway recorded
+for that task's private home on Linux and Windows before removing the home. OpenCode tool profiles and native slash commands are unavailable for Hermes; Work's own `/compact` remains available.
 
-Before the first request, Work can only estimate the user's composed prompt for an external harness. Once Hermes makes an inference request, the private relay counts the full prompt including Hermes instructions and tools. Exactness still depends on whether the local runtime can tokenize that request.
+Before the first request, Work can only estimate the user's composed prompt for an external harness. Once Hermes makes an agent inference request containing tools, the private relay counts the full prompt including Hermes instructions and tools. Auxiliary calls without tools do not replace that count. Exactness still depends on whether the local runtime can tokenize that request.
 
 ## Verification
 
