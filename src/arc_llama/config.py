@@ -321,6 +321,8 @@ class ModelConfig:
     recipe: dict[str, Any] = field(default_factory=dict)
     aliases: list[str] = field(default_factory=list)
     """Extra strings that should match this model in the OpenAI `model` field."""
+    import_source: str = ""
+    """Other-app provenance: imported files are never deleted by the library."""
     tune_state: str = "untuned"  # untuned | tuned | failed | skipped
     tuned_at: float | None = None
     tune_fingerprint: str = ""

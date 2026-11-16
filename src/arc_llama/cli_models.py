@@ -133,6 +133,39 @@ def register_model_commands(
     # add
     # ===========================================================================
 
+    @cli.command("import")
+    @click.option("--from", "source", type=click.Choice(["ollama", "lmstudio"]), required=True)
+    @click.option("--root", type=click.Path(path_type=Path, exists=True, file_okay=False), default=None,
+                  help="Override the other app's models folder.")
+    @click.option("--dry-run", is_flag=True, help="List candidates without changing config or files.")
+    @click.option("--gpu", default=None, help="Configured GPU PCI slot (default: first enabled GPU).")
+    @click.pass_context
+    def import_models_cmd(ctx: click.Context, source: str, root: Path | None, dry_run: bool, gpu: str | None) -> None:
+        """Import other apps' GGUFs without downloading or copying weights."""
+        from arc_llama.model_import import discover, import_models
+
+        candidates, skipped = discover(source, [root] if root else None)
+        for reason in skipped:
+            console.print(f"Skipped: {reason}", markup=False)
+        for candidate in candidates:
+            console.print(f"{'Would import' if dry_run else 'Found'}: {candidate.name} -> {candidate.path}", markup=False)
+        if dry_run:
+            console.print(f"Dry run: {len(candidates)} candidate(s); no config or file changes.")
+            return
+        if not candidates:
+            console.print("No importable GGUF models found.")
+            return
+        path = ctx.obj["config_path"]
+        cfg = load_config(path)
+        try:
+            added = import_models(cfg, source, candidates, gpu)
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        save_or_die(cfg, path)
+        for model in added:
+            console.print(f"Imported: {model.name} -> {model.path}", markup=False)
+        console.print(f"Added {len(added)} model(s); existing entries reused. Imported files are protected from library deletion.")
+
     @cli.command("add")
     @click.argument("source")
     @click.option("--name", default=None, help="Short name (default: derived from source).")

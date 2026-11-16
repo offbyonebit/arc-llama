@@ -390,7 +390,7 @@ def disk_report(cfg: Config, last_used: dict[str, float] | None = None) -> dict[
                 "size_mb": size // 1_048_576,
                 "files": len(files),
                 "missing": not Path(model.path).expanduser().exists(),
-                "managed": _inside(Path(model.path).expanduser(), models_dir),
+                "managed": not model.import_source and _inside(Path(model.path).expanduser(), models_dir),
                 "last_used": (last_used or {}).get(model.name),
             }
         )
@@ -419,6 +419,8 @@ def deletable_files(cfg: Config, model: ModelConfig) -> list[Path]:
     user's own folder is never touched) and not shared with another
     registered model (a projector can serve several quants).
     """
+    if model.import_source:
+        return []
     root = Path(cfg.paths.models_dir).expanduser()
     shared: set[Path] = set()
     for other in cfg.models:
