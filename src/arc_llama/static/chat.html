@@ -164,7 +164,8 @@
     </button>
     <div id="command-palette" class="command-palette" role="listbox" aria-label="Slash commands"></div>
   </div>
-  <div class="hint" id="chat-hint">Enter to send · Shift+Enter for a new line</div>
+  <div id="queued-message" class="queued-message" role="status" hidden><span id="queued-message-text"></span><button id="queued-message-remove" type="button" aria-label="Remove queued message">Remove</button></div>
+  <div class="hint" id="chat-hint">Enter to send · Shift+Enter for a new line <button id="stop-reply" type="button" hidden>Stop reply</button></div>
 </div>
 
 <div id="history-panel">

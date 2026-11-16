@@ -339,12 +339,42 @@ const compactor = window.ArcChat.compaction;
 function effectiveConversation(entries = conversation) { return compactor.effective(entries, compactionState); }
 function chatBusy() { return generating || sendingMessage || generatingImage || compacting; }
 function allowChatChange() {
+  restoreQueuedMessage();
   if (!chatBusy()) return true;
   showError("Finish or stop the current request before changing chats or models.");
   return false;
 }
 // Abort handle for the generation in flight; the send button stops it.
 let activeAbort = null;
+let queuedMessage = null;
+
+function renderQueuedMessage() {
+  $("#queued-message").hidden = !queuedMessage;
+  $("#queued-message-text").textContent = queuedMessage ? `Queued: ${queuedMessage.text}` : "";
+  if (generating && activeAbort) setStopMode(true);
+}
+
+function restoreQueuedMessage(message = queuedMessage) {
+  if (!message) return;
+  if (message === queuedMessage) queuedMessage = null;
+  input.value = input.value && input.value !== message.text ? `${message.text}\n\n${input.value}` : message.text;
+  renderQueuedMessage();
+  input.dispatchEvent(new Event("input"));
+}
+
+function queueMessage() {
+  const text = input.value.trim();
+  if (!text) return;
+  if (getAttachments().length) {
+    showError("Queue text only. Send attachments after the current reply.");
+    return;
+  }
+  // One slot: sending another message replaces the queued text.
+  queuedMessage = { text, chatId: currentChatId, model: selectedModel };
+  input.value = "";
+  input.dispatchEvent(new Event("input"));
+  renderQueuedMessage();
+}
 // DOM of the latest exchange, for Regenerate / Edit.
 let lastUserDiv = null;
 let lastAssistantDiv = null;
@@ -1076,9 +1106,11 @@ function offerBudgetChoices(budget, retry) {
 }
 
 function setStopMode(on) {
-  sendButton.classList.toggle("stop", on);
-  sendButton.setAttribute("aria-label", on ? "Stop generating" : "Send");
-  sendButton.title = on ? "Stop generating" : "";
+  const queue = on && !!input.value.trim();
+  sendButton.classList.toggle("stop", on && !queue);
+  sendButton.setAttribute("aria-label", queue ? (queuedMessage ? "Replace queued message" : "Queue message") : on ? "Stop generating" : "Send");
+  sendButton.title = queue ? "Send after this reply" : on ? "Stop generating" : "";
+  $("#stop-reply").hidden = !on;
   if (on) sendButton.disabled = false;
 }
 
@@ -1163,11 +1195,13 @@ function renderUserImages(div, images) {
   div.appendChild(strip);
 }
 
-async function sendMessage() {
+async function sendMessage(queuedText = null) {
+  const fromQueue = typeof queuedText === "string";
+  if (generating) { queueMessage(); return; }
   if (compacting) return;
-  if (isComposerActionActive()) { sendComposerAction(); return; }
+  if (!fromQueue && isComposerActionActive()) { sendComposerAction(); return; }
   if (chatBusy()) return;
-  const text = input.value.trim();
+  const text = fromQueue ? queuedText : input.value.trim();
   if (!text && !hasReadyAttachments()) return;
   if (!selectedModel) {
     // The message stays in the composer for when a model is ready.
@@ -1176,25 +1210,27 @@ async function sendMessage() {
     if (!(last?.classList.contains("error-card") && last.textContent.includes(note))) showError(note);
     return;
   }
-  if (hasProcessingAttachments()) {
+  if (!fromQueue && hasProcessingAttachments()) {
     showError("Please wait for attachments to finish processing.");
     return;
   }
 
-  const images = getAttachments().filter(a => a.image && !a.error && !a.processing);
+  const images = fromQueue ? [] : getAttachments().filter(a => a.image && !a.error && !a.processing);
   if (images.length && !modelCanSeeImages(selectedModel)) {
     showError(`${selectedModel} cannot read images. Pick a vision model or remove the image.`);
     return;
   }
-  const attachmentText = buildAttachmentText();
+  const attachmentText = fromQueue ? "" : buildAttachmentText();
   const fullText = text
     ? attachmentText ? `${text}\n\n${attachmentText}` : text
     : attachmentText;
 
-  input.value = "";
-  input.style.height = "auto";
-  clearAttachments();
-  clearDraft();
+  if (!fromQueue) {
+    input.value = "";
+    input.style.height = "auto";
+    clearAttachments();
+    clearDraft();
+  }
   const userEntry = { role: "user", content: fullText };
   if (images.length) userEntry.images = images.map(a => a.image);
   conversation.push(userEntry);
@@ -1292,6 +1328,7 @@ async function runSend() {
   let lastDisplayedContent = "";
   let currentThinking = "";
   let replyFinished = false;
+  let succeeded = false;
 
   try {
     const r = await fetch("/v1/chat/completions", {
@@ -1387,6 +1424,7 @@ async function runSend() {
     await saveCurrentChat();
     renderTurnActions();
     if (replyFinished) window.ArcFirstAnswer?.completed(selectedModel, finalParsed.content, m);
+    succeeded = replyFinished && !controller.signal.aborted;
   } catch (e) {
     const partial = parseThinking(streamRaw);
     if (partial.content.trim() || partial.thinking.trim()) {
@@ -1418,7 +1456,7 @@ async function runSend() {
     lastUsage = null;
     streamStartTime = null;
     streamTokenCount = 0;
-    finishGeneration();
+    finishGeneration(succeeded);
   }
 }
 
@@ -1431,7 +1469,7 @@ function renderResponseStatus(div, status) {
   div.appendChild(note);
 }
 
-function finishGeneration() {
+function finishGeneration(succeeded = false) {
   generating = false;
   refreshCompactionControls();
   setStopMode(false);
@@ -1450,6 +1488,18 @@ function finishGeneration() {
     }
   }
   input.focus();
+  const queued = queuedMessage;
+  if (queued) {
+    queuedMessage = null;
+    renderQueuedMessage();
+    if (succeeded) {
+      // The parent send releases its persistence lock before this next turn starts.
+      setTimeout(() => {
+        if (chatBusy() || document.body.classList.contains("work-mode") || currentChatId !== queued.chatId || selectedModel !== queued.model) restoreQueuedMessage(queued);
+        else sendMessage(queued.text);
+      }, 0);
+    } else restoreQueuedMessage(queued);
+  }
 }
 
 
@@ -1754,6 +1804,12 @@ $("#compact-undo").addEventListener("click", undoCompaction);
 $("#compact-cancel").addEventListener("click", () => compactAbort?.abort());
 
 input.addEventListener("keydown", async (e) => {
+  if (generating && e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    hideCommandPalette();
+    queueMessage();
+    return;
+  }
   if (commandPalette.classList.contains("open")) {
     const items = commandPalette.querySelectorAll(".command-item");
     if (e.key === "ArrowDown") {
@@ -1800,8 +1856,9 @@ input.addEventListener("keydown", async (e) => {
 });
 
 sendButton.addEventListener("click", async () => {
-  if (generating && activeAbort) {
-    activeAbort.abort();
+  if (generating) {
+    if (input.value.trim()) queueMessage();
+    else if (activeAbort) activeAbort.abort();
     return;
   }
   const text = input.value.trim();
@@ -1822,12 +1879,16 @@ sendButton.addEventListener("click", async () => {
 $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 
 input.addEventListener("input", () => {
+  if (generating && activeAbort) setStopMode(true);
   refreshBudget();
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 96) + "px";
   updateCommandPalette();
   saveDraft();
 });
+
+$("#stop-reply").addEventListener("click", () => activeAbort?.abort());
+$("#queued-message-remove").addEventListener("click", () => { queuedMessage = null; renderQueuedMessage(); });
 
 // Draft persistence: an unsent composer draft survives a page refresh, per
 // model, so a reload never eats what the user already typed. Cleared on a
@@ -1859,6 +1920,7 @@ function restoreDraft() {
   settingsComponent.start();
   historyComponent.start();
   workComponent.start();
+  window.addEventListener("beforeunload", () => restoreQueuedMessage());
   window.addEventListener("arc-paper-work-mode", syncPaperModels);
   $("#work-model").addEventListener("change", syncPaperModels);
   await loadPluginActions();
