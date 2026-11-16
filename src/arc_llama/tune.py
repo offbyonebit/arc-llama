@@ -41,6 +41,7 @@ from arc_llama.gguf_meta import (
     validate_override_patterns,
     weight_tensor_table,
 )
+from arc_llama.idle import hold_model
 from arc_llama.recipes import FLASH_ATTN_VALUES, PERF_COMPUTE_BUFFER_MB, KVCacheType
 from arc_llama.router import (
     _VRAM_COMPUTE_BUFFER_MB,
@@ -704,7 +705,10 @@ async def tune_model(
         measured[key] = (res, sc)
         return res, sc, None
 
-    async with httpx.AsyncClient(base_url=server_url, timeout=600.0, headers=headers) as client:
+    async with (
+        httpx.AsyncClient(base_url=server_url, timeout=600.0, headers=headers) as client,
+        hold_model(client, model_name, enabled=bool(model.idle_unload_minutes)),
+    ):
         # Baseline = the recipe as it stands today (base_state is exactly the
         # current effective config, just spelled explicitly — plus the
         # minimum-feasible-offload seed when one was needed to load at all).

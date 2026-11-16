@@ -20,6 +20,7 @@ import httpx
 from arc_llama.benchmark import _complete
 from arc_llama.config import Config, ModelConfig, load_config
 from arc_llama.gguf_meta import has_mtp_heads
+from arc_llama.idle import hold_model
 from arc_llama.server_caps import ServerCaps
 from arc_llama.speculation import effective_confidence
 from arc_llama.tune import _restore_final_state
@@ -268,7 +269,10 @@ async def tune_mtp(
             client, model.name, repeats=repeats, gen_tokens=gen_tokens, prompt=prompt
         )
 
-    async with httpx.AsyncClient(base_url=server_url, timeout=600, headers=headers) as client:
+    async with (
+        httpx.AsyncClient(base_url=server_url, timeout=600, headers=headers) as client,
+        hold_model(client, model.name, enabled=bool(model.idle_unload_minutes)),
+    ):
         # Fail before any edits when the service is still starting or unreachable.
         readiness = await client.get("/health", timeout=10)
         readiness.raise_for_status()

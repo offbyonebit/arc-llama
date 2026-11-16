@@ -8,7 +8,7 @@ export async function testPerModelRuntimeSettings({ page, origin }) {
   await page.route('**/admin/models/*/edit', route => {
     const name = new URL(route.request().url()).pathname.split('/')[3];
     const body = route.request().postDataJSON();
-    runtime.set(name, { ...runtime.get(name), ...(Object.hasOwn(body, "llama_server") ? { llama_server: body.llama_server } : {}), ...(Object.hasOwn(body, "env") ? { env: body.env } : {}) });
+    runtime.set(name, { ...runtime.get(name), idle_unload_minutes: body.idle_unload_minutes, ...(Object.hasOwn(body, "llama_server") ? { llama_server: body.llama_server } : {}), ...(Object.hasOwn(body, "env") ? { env: body.env } : {}) });
     editCount++;
     return route.fulfill(json({ changed: ['llama_server', 'env'] }));
   });
@@ -18,6 +18,8 @@ export async function testPerModelRuntimeSettings({ page, origin }) {
   await page.waitForFunction(() => document.querySelector('#s-llama-server')?.value === '/patched/ornith server');
   if (await page.inputValue('#s-runtime-env') !== 'LD_LIBRARY_PATH=/patched/lib\nFLAG=literal=value') throw new Error('stored overrides not restored');
   await page.fill('#s-llama-server', '/new patched/server');
+  if (await page.inputValue('#s-idle') !== '0') throw new Error('idle unload must default off');
+  await page.fill('#s-idle', '5');
   await page.fill('#s-runtime-env', 'LD_LIBRARY_PATH=/new/lib\nFLAG=$(literal); value=1\nEMPTY=');
   await page.evaluate(() => document.activeElement.blur());
   await page.evaluate(() => fetchStatus());
@@ -25,6 +27,7 @@ export async function testPerModelRuntimeSettings({ page, origin }) {
   await page.click('#s-apply');
   await page.waitForFunction(() => document.querySelector('#s-feedback').textContent === 'Saved.');
   const saved = runtime.get('qwen');
+  if (saved.idle_unload_minutes !== 5) throw new Error('idle setting was not saved');
   if (saved.llama_server !== '/new patched/server' || saved.env.FLAG !== '$(literal); value=1' || saved.env.EMPTY !== '') throw new Error('runtime values changed');
   if (runtime.get('gemma').llama_server !== '' || Object.keys(runtime.get('gemma').env).length) throw new Error('other model changed');
   await page.locator('.s-runtime summary').click();

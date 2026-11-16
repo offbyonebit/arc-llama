@@ -280,6 +280,24 @@ def client_allowed(request: Request) -> bool:
     return store.verify(provided) is not None
 
 
+def _idle_busy(app: FastAPI, *, now: float | None = None) -> bool:
+    """Protect whole turns and sweeps, including pauses between HTTP requests."""
+    state = app.state
+    now = time.monotonic() if now is None else now
+    state.idle_holds = {
+        key: value for key, value in state.idle_holds.items() if value[1] > now
+    }
+    tuner = getattr(state, "tuner", None)
+    work = getattr(state, "work", None)
+    return bool(
+        state.idle_holds
+        or (tuner and tuner.is_sweep_running)
+        or state.cfg.model_saved_settings
+        or any(state.active_harness_runs.values())
+        or (work and work.active is not None)
+    )
+
+
 def create_app(
     cfg: Config | None = None,
     config_path: Path | None = None,
@@ -333,6 +351,7 @@ def create_app(
         app.state.pending_questions = {}
         app.state.work_runs = {}
         app.state.active_harness_runs = collections.Counter()
+        app.state.idle_holds = {}
         app.state.harness_installs = HarnessInstallManager(cfg, config_path or default_config_path())
         app.state.work_profiles = ProfileStore((state_dir / "work-profiles.json") if state_dir else Path(".arc_llama_work_profiles.json"))
         app.state.work_sessions = SessionStore((state_dir / "work-sessions") if state_dir else Path(".arc_llama_work_sessions"))
@@ -367,11 +386,26 @@ def create_app(
                 cfg, app.state.router, version=__version__, on_save=_save_cfg
             )
             app.state.tuner = tuner
+        async def idle_loop() -> None:
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    if any(m.idle_unload_minutes for m in cfg.models):
+                        await app.state.router.unload_idle(lambda: _idle_busy(app))
+                except Exception:
+                    log.exception("idle unload check failed")
+
+        idle_task = asyncio.create_task(idle_loop())
         try:
             await app.state.mcp_manager.start()
             await startup_plugins(app_plugins, app)
             yield
         finally:
+            idle_task.cancel()
+            try:
+                await idle_task
+            except asyncio.CancelledError:
+                pass
             for tracker in app.state.work_runs.values():
                 tracker.close()
             if getattr(app.state, "work", None) is not None:
@@ -1778,6 +1812,7 @@ def create_app(
                     "ubatch_size": r.get("ubatch_size"),
                     "batch_size": r.get("batch_size"),
                     "kv_class": m.kv_class,
+                    "idle_unload_minutes": m.idle_unload_minutes,
                     "aliases": list(m.aliases),
                     "capabilities": model_capabilities(m),
                     "mmproj": r.get("mmproj"),
@@ -1938,6 +1973,29 @@ def create_app(
         # the accurate claim here; is_running would also report a server that
         # crashed between readiness and this line.
         return {"name": model.name, "loaded": bool(srv.is_running and srv.ready)}
+
+    @app.post("/admin/idle-hold/{name}")
+    async def admin_idle_hold(
+        name: str, request: Request, _auth: None = Depends(_require_admin)
+    ) -> dict:
+        if request.app.state.cfg.find_model(name) is None:
+            raise HTTPException(status_code=404, detail="Unknown model")
+        body = await _read_json_body(request)
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be an object")
+        holds = request.app.state.idle_holds
+        identity = body.get("id")
+        if identity is not None and (not isinstance(identity, str) or identity not in holds):
+            raise HTTPException(status_code=404, detail="Idle hold expired or unknown")
+        if identity is not None and holds[identity][0] != name:
+            raise HTTPException(status_code=400, detail="Idle hold belongs to another model")
+        identity = identity or secrets.token_hex(16)
+        if body.get("release"):
+            holds.pop(identity, None)
+        else:
+            holds[identity] = (name, time.monotonic() + 120)
+        request.app.state.router.last_activity = time.time()
+        return {"id": identity}
 
     @app.post("/admin/stop/{name}")
     async def admin_stop(
@@ -2125,6 +2183,11 @@ def create_app(
         }
         recipe = dict(model.recipe or {})
         changed: list[str] = []
+        idle_minutes = body.get("idle_unload_minutes", model.idle_unload_minutes)
+        if isinstance(idle_minutes, bool) or not isinstance(idle_minutes, int) or not 0 <= idle_minutes <= 10080:
+            raise HTTPException(status_code=400, detail="idle_unload_minutes must be 0..10080")
+        if "idle_unload_minutes" in body:
+            changed.append("idle_unload_minutes")
         runtime_binary = body.get("llama_server", model.llama_server)
         runtime_env = body.get("env", model.env)
         try:
@@ -2418,6 +2481,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
+        previous_idle = model.idle_unload_minutes
         saved_settings = c.model_saved_settings.get(name)
         persist = body.get("persist", True) is not False
         if not persist and saved_settings is None:
@@ -2427,6 +2491,7 @@ def create_app(
             })
         model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
+        model.idle_unload_minutes = idle_minutes
         try:
             # Auto-tune trials send persist=false: only its final pick is saved.
             if persist:
@@ -2442,6 +2507,7 @@ def create_app(
             # that silently un-applies later is not.
             model.recipe, model.kv_class = previous_recipe, previous_kv_class
             model.llama_server, model.env = previous_runtime
+            model.idle_unload_minutes = previous_idle
             if saved_settings is not None:
                 c.model_saved_settings[name] = saved_settings
             log.warning("edit %s: persist failed: %s", name, e)

@@ -134,6 +134,7 @@ def register_performance_commands(
                 rows = await benchmark_mod.benchmark_depths(
                     url, model, runnable, gen_tokens=gen_tokens,
                     headers={"Authorization": f"Bearer {token}"} if token else None,
+                    idle_unload_minutes=model_cfg.idle_unload_minutes,
                 )
                 if as_json:
                     click.echo(
@@ -224,6 +225,7 @@ def register_performance_commands(
             benchmark_mod.benchmark_depths(
                 url, model_cfg.name, runnable, gen_tokens=gen,
                 headers={"Authorization": f"Bearer {token}"} if token else None,
+                idle_unload_minutes=model_cfg.idle_unload_minutes,
             )
         )
         click.echo("\n".join(benchmark_mod.bench_lines(cfg, model_cfg.name, rows, skipped)))

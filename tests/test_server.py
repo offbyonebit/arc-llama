@@ -1024,6 +1024,54 @@ def _edit_app(monkeypatch, tmp_path):
     return create_app(cfg), cfg
 
 
+def test_idle_setting_and_operation_holds(monkeypatch, tmp_path):
+    from arc_llama.server import _idle_busy
+
+    monkeypatch.setattr(FakeRouterWithRebuild, "all_models", lambda self: self.cfg.models)
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        edited = client.post("/admin/models/qwen/edit", json={"idle_unload_minutes": 5})
+        assert edited.status_code == 200
+        assert cfg.models[0].idle_unload_minutes == 5
+        models = client.get("/admin/status").json()["models"]
+        assert models[0]["idle_unload_minutes"] == 5
+        hold = client.post("/admin/idle-hold/qwen", json={})
+        assert hold.status_code == 200
+        identity = hold.json()["id"]
+        assert _idle_busy(app)
+        assert client.post("/admin/idle-hold/qwen", json={"id": identity}).status_code == 200
+        assert client.post("/admin/idle-hold/qwen", json={
+            "id": identity, "release": True,
+        }).status_code == 200
+        assert not _idle_busy(app)
+        identity = client.post("/admin/idle-hold/qwen", json={}).json()["id"]
+        app.state.idle_holds[identity] = ("qwen", -1)
+        assert not _idle_busy(app, now=0)
+        assert client.post("/admin/idle-hold/qwen", json={"id": identity}).status_code == 404
+
+
+@pytest.mark.parametrize("value", [-1, 10081, 1.5, True, "5", None])
+def test_idle_setting_rejects_invalid_values(monkeypatch, tmp_path, value):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        assert client.post("/admin/models/qwen/edit", json={
+            "idle_unload_minutes": value,
+        }).status_code == 400
+    assert cfg.models[0].idle_unload_minutes == 0
+
+
+def test_idle_setting_rolls_back_when_save_fails(monkeypatch, tmp_path):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    def fail_save(self, path=None):
+        raise OSError("disk full")
+    monkeypatch.setattr(Config, "save", fail_save)
+    with TestClient(app) as client:
+        assert client.post("/admin/models/qwen/edit", json={
+            "idle_unload_minutes": 5,
+        }).status_code == 500
+    assert cfg.models[0].idle_unload_minutes == 0
+
+
 def test_admin_edit_accepts_flash_attn_and_batch_size(monkeypatch, tmp_path):
     app, cfg = _edit_app(monkeypatch, tmp_path)
     with TestClient(app) as client:

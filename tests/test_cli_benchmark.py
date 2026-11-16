@@ -99,7 +99,7 @@ def test_bench_runs_on_the_loaded_model_and_prints_plain_text(monkeypatch, tmp_p
     monkeypatch.setattr(benchmark, "llama_cpp_build", lambda binary: "b12243 (abc1234)")
     seen = {}
 
-    async def fake_depths(url, model, depths, *, gen_tokens, headers=None):
+    async def fake_depths(url, model, depths, *, gen_tokens, headers=None, idle_unload_minutes=0):
         seen.update(model=model, depths=depths)
         return [
             benchmark.DepthResult(depth=d, measured_depth=d, prompt_eval_tok_s=900.0,
