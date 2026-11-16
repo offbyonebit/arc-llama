@@ -179,7 +179,7 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-dashboard :is(.library-card,.library-job,.library-result,.plugin-card,.system-readiness,.measurement-card,.measure-card) { background:var(--pn); border-color:var(--ln); border-radius:12px; box-shadow:none; }
 .paper-dashboard .system-readiness-section { max-width:980px; margin:0 auto; }
 .paper-dashboard .system-readiness { padding:18px; }
-.paper-dashboard :is(.plugins-section,.measurements-section,.harnesses-section) { max-width:980px; margin:0 auto; }
+.paper-dashboard :is(.plugins-section,.measurements-section,.harnesses-section,.network-section) { max-width:980px; margin:0 auto; }
 .paper-dashboard #status-footer { background:var(--bg); border-color:var(--ln); color:var(--t3); margin:0 32px 16px; padding:8px 0; font-size:11px; }
 .paper-dashboard .frontend-dialog { background:var(--pn); color:var(--tx); border:1px solid var(--ln); border-radius:12px; }
 /* Work: existing event/permission handlers, paper step timeline and optional review. */

@@ -1263,24 +1263,14 @@ def serve(
 
 
 def _lan_addresses() -> list[str]:
-    """Best-guess LAN IPv4 addresses (no packets are sent)."""
-    import socket
+    """LAN IPv4 addresses from local interfaces, without DNS or route probes."""
+    from urllib.parse import urlsplit
 
-    found: list[str] = []
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("192.0.2.1", 9))  # TEST-NET-1: routing lookup only
-            found.append(sock.getsockname()[0])
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            addr = str(info[4][0])
-            if not addr.startswith("127.") and addr not in found:
-                found.append(addr)
-    except OSError:
-        pass
-    return found
+    from arc_llama.config import ServerConfig
+    from arc_llama.network_info import local_addresses, network_payload
+
+    rows = network_payload(ServerConfig(host="0.0.0.0"), local_addresses())["addresses"]
+    return [host for row in rows if (host := urlsplit(row["url"]).hostname)]
 
 
 def _prepare_lan(cfg: Config, port: int, assume_yes: bool) -> None:

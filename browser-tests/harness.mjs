@@ -32,6 +32,7 @@ const MIME = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
   ".svg": "image/svg+xml",
   ".ttf": "font/ttf",
   ".md": "text/markdown; charset=utf-8",
@@ -196,6 +197,8 @@ function installApiMocks(context) {
             return route.fulfill(json({ admin_token: "browser-test-token" }));
           case "/admin/integration":
             return route.fulfill(json({}));
+          case "/admin/network":
+            return route.fulfill(json({ enabled: false, addresses: [], hint: "Run arc-llama serve --lan to enable phone access." }));
           case "/admin/ui/layout":
             return route.fulfill(json({ layout: { toolbar: [], plugins: [], chat: [] }, actions: [], hidden: [] }));
           case "/v1/chats":

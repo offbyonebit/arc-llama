@@ -59,3 +59,49 @@ export async function testRuntimeOverridesSurviveUnrelatedEdits({ page, origin }
   await page.waitForFunction(() => document.querySelector('#s-feedback').textContent === 'Saved.');
   if (edited.ctx !== 16384 || Object.hasOwn(edited, 'env') || Object.hasOwn(edited, 'llama_server')) throw new Error('unrelated edit overwrote unobserved runtime settings');
 }
+
+export async function testPhoneNetworkAndManifest({ page, origin }) {
+  let payload = { enabled: false, addresses: [], hint: 'Run arc-llama serve --lan to enable phone access.' };
+  const headers = [];
+  await page.route('**/admin/network', route => {
+    headers.push(route.request().headers().authorization);
+    return route.fulfill(json(payload));
+  });
+  await page.goto(`${origin}/#system`);
+  await page.getByText('Run arc-llama serve --lan to enable phone access.', { exact: true }).waitFor();
+  if (await page.locator('.network-qr svg').count()) throw new Error('Loopback-only server displayed QR');
+  await page.evaluate(() => {
+    const make = window.qrcode;
+    window.qrInputs = [];
+    window.qrcode = (...args) => {
+      const qr = make(...args);
+      const add = qr.addData;
+      qr.addData = (text, ...rest) => { window.qrInputs.push(text); return add(text, ...rest); };
+      return qr;
+    };
+  });
+  payload = { enabled: true, hint: 'Connect your phone to this LAN or Tailscale.',
+    admin_token: 'never-render-this-key', addresses: [
+      { url: 'http://192.168.1.8:11437/chat', kind: 'lan', interface: 'Ethernet' },
+      { url: 'http://100.101.102.103:11437/chat', kind: 'tailscale', interface: 'Tailscale' },
+      { url: 'http://192.168.1.8:11437/chat?api_key=never-render-this-key', kind: 'lan' },
+    ] };
+  await page.click('#network-refresh');
+  await page.locator('.network-qr svg').nth(1).waitFor();
+  const links = await page.locator('.network-address a').evaluateAll(nodes => nodes.map(n => n.href));
+  const inputs = await page.evaluate(() => window.qrInputs);
+  if (JSON.stringify(links) !== JSON.stringify(inputs) || inputs.length !== 2) throw new Error('QR input differed from clean address');
+  if (inputs.some(value => value.includes('?') || value.includes('key'))) throw new Error('QR contains credentials');
+  if ((await page.locator('body').innerText()).includes('never-render-this-key')) throw new Error('Network panel rendered a key');
+  if (!headers.every(value => value === 'Bearer browser-test-token')) throw new Error('Network request happened before token initialization');
+  const manifest = await page.evaluate(async () => {
+    const link = document.querySelector('link[rel="manifest"]');
+    const response = await fetch(link.href);
+    return { type: response.headers.get('content-type'), body: await response.json() };
+  });
+  if (!manifest.type.includes('application/manifest+json') || manifest.body.start_url !== '/chat' || manifest.body.display !== 'standalone') throw new Error('App manifest missing/wrong');
+  await page.setViewportSize({width:390,height:844});
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('Phone panel overflowed');
+  await page.goto(`${origin}/chat`);
+  if (await page.locator('link[rel="manifest"]').count() !== 1 || await page.locator('link[rel="apple-touch-icon"]').count() !== 1) throw new Error('Chat lacks install metadata');
+}

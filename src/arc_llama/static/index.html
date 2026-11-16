@@ -2,6 +2,10 @@
 <html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/assets/app-icon-192.png" />
+<meta name="theme-color" content="#163c36" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>arc-llama: Local inference</title>
 <link rel="icon" type="image/png" href="/assets/arc-llama-logo.png?v=ui-0.15" />
@@ -125,6 +129,15 @@
       <summary>Disk usage</summary>
       <div id="library-disk" class="library-disk"></div>
     </details>
+  </section>
+
+  <section class="flow-section network-section" data-area="system" aria-labelledby="network-title">
+    <div class="section-head compact"><div>
+      <h2 id="network-title">Use Chat from your phone</h2>
+      <p id="network-hint" class="section-copy" role="status">Reading local addresses…</p>
+    </div><button id="network-refresh" class="ghost" type="button">Refresh addresses</button></div>
+    <div id="network-addresses" class="network-addresses"></div>
+    <p class="section-copy">On your phone, open the address and choose Share → Add to Home Screen on iPhone, or Install app / Add to Home screen in your Android browser. An HTTPS address is required for promoted app installation; plain HTTP LAN links still open Chat. No offline cache is added.</p>
   </section>
 
   <section class="flow-section harnesses-section" data-area="system" aria-labelledby="harnesses-title">
@@ -271,6 +284,7 @@
   <p class="frontend-hint">Prefer to type it yourself? The API listens on OpenAI paths under <span id="frontend-port-hint" class="frontend-port">…</span>.</p>
 </dialog>
 
+    <script src="/vendor/qrcode-generator-1.4.4.min.js"></script>
     <script src="/dashboard/library.js?v=discover-1"></script>
     <script src="/dashboard/measurements.js?v=ui-0.25"></script>
     <script src="/dashboard/plugins.js?v=ui-0.21"></script>
