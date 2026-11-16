@@ -99,6 +99,33 @@ def test_builtin_harness_is_unaffected_by_flag(tmp_path, monkeypatch):
         assert r.status_code == 400 and "max_turns" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("resident,expected", [(False, 16384), (True, 32768)])
+def test_opencode_context_comes_from_model_launch(tmp_path, monkeypatch, resident, expected):
+    from types import SimpleNamespace
+
+    from arc_llama.config import ModelConfig
+
+    monkeypatch.setenv("ARC_LLAMA_EXPERIMENTAL_AGENT", "1")
+    seen = {}
+
+    async def fake_run(**kwargs):
+        seen.update(kwargs)
+        yield {"type": "done"}
+
+    monkeypatch.setattr(server_mod, "run_opencode", fake_run)
+    app = _app(tmp_path, monkeypatch)
+    app.state.cfg.models.append(ModelConfig("qwen", "m.gguf", 9000, "", aliases=["alias"],
+                                           recipe={"ctx": 8192, "extra_flags": ["-c", "16384"]}))
+    with TestClient(app) as client:
+        if resident:
+            app.state.router._servers["qwen"] = SimpleNamespace(plan=SimpleNamespace(argv=["server", "-c", "32768"]))
+        response = client.post("/v1/agent", json={**BODY, "model": "alias", "root": str(tmp_path)})
+        assert response.status_code == 200
+        assert seen["context_tokens"] == expected
+        if resident:
+            app.state.router._servers.clear()
+
+
 def test_agent_info_reports_flag_and_harnesses(tmp_path, monkeypatch):
     with TestClient(_app(tmp_path, monkeypatch)) as client:
         info = client.get("/v1/agent/info").json()

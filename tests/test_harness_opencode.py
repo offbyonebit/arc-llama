@@ -98,6 +98,28 @@ def test_find_binary(monkeypatch, tmp_path):
     assert find_binary() == str(FAKE)
 
 
+@pytest.mark.parametrize("context", [2, 1024, 8192, 65536])
+def test_config_reports_real_context_and_smaller_output(context):
+    model = build_config("http://local", "m", context_tokens=context)["provider"]["arc-llama"]["models"]["m"]
+    assert model["limit"]["context"] == context
+    assert 0 < model["limit"]["output"] < context
+    assert model["limit"]["output"] <= 2048
+
+
+@pytest.mark.parametrize("context", [None, 0, -1, True])
+def test_config_omits_unknown_context(context):
+    assert build_config("http://local", "m", context_tokens=context)["provider"]["arc-llama"]["models"]["m"] == {"name": "m"}
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["-c", "8192"], 8192), (["-c", "8192", "--ctx-size=16384"], 16384),
+    (["-c", "8192", "--ctx-size", "32768"], 32768),
+    (["-c", "8192", "-c", "0"], None), (["-c"], None), (["-c", "auto"], None), ([], None),
+])
+def test_context_limit_uses_final_launch_flag(argv, expected):
+    assert oc.context_limit(argv) == expected
+
+
 @pytest.fixture(autouse=True)
 def _stop_fake_without_signals(monkeypatch):
     """The suite forbids real signals; the fake exits on request instead."""
@@ -140,7 +162,7 @@ async def test_opencode_1x_refuses_stdio_and_starts_without_it(tmp_path, monkeyp
 
 
 async def test_run_end_to_end_auto_confirm(tmp_path, monkeypatch):
-    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True)
+    events, log = await _run(tmp_path, monkeypatch, auto_confirm=True, context_tokens=32768)
     kinds = [e["type"] for e in events]
     assert kinds[0] == "status" and kinds[-1] == "done" and "error" not in kinds
     assert [e["name"] for e in events if e["type"] == "tool_call"] == ["bash"]
@@ -148,6 +170,7 @@ async def test_run_end_to_end_auto_confirm(tmp_path, monkeypatch):
     assert boot["argv"][:1] == ["serve"] and "127.0.0.1" in boot["argv"]
     assert Path(boot["cwd"]).resolve() == tmp_path.resolve()
     cfg = json.loads(boot["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert cfg["provider"]["arc-llama"]["models"]["m"]["limit"] == {"context": 32768, "output": 2048}
     assert cfg["enabled_providers"] == ["arc-llama"] and boot["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
     prompt = next(e for e in log if "prompt_async" in e.get("path", ""))
     assert prompt["body"]["model"] == {"providerID": "arc-llama", "modelID": "m"} and prompt["auth"]

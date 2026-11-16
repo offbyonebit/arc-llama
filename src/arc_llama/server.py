@@ -62,6 +62,7 @@ from arc_llama.agent.harness import (
     run_hermes,
     run_opencode,
 )
+from arc_llama.agent.harness.opencode import context_limit
 from arc_llama.agent.harness_history import (
     NativeHistoryError,
     get_native_session,
@@ -1011,6 +1012,10 @@ def create_app(
             if tracker is not None:
                 await asyncio.to_thread(tracker.begin)
             if harness == "opencode":
+                local_model = cfg.find_model(model)
+                backend = request.app.state.router._servers.get(local_model.name) if local_model else None
+                context_argv = (backend.plan.argv if backend else
+                                local_model.launch_recipe().to_argv() if local_model else [])
                 runner = run_opencode(
                     task=prompt,
                     model=model,
@@ -1025,6 +1030,7 @@ def create_app(
                     tool_profile=tool_profile,
                     session_title=task,
                     binary=cfg.agent.opencode_bin,
+                    context_tokens=context_limit(context_argv),
                 )
             elif harness == "hermes":
                 runner = run_hermes(

@@ -140,6 +140,21 @@ def mcp_server_names(root: Path | str | None = None, extra_files: tuple[Path, ..
     return names
 
 
+def context_limit(argv: list[str]) -> int | None:
+    """Read the final llama-server context flag, including extra-flag overrides."""
+    value = None
+    for i, arg in enumerate(argv):
+        if arg in ("-c", "--ctx-size"):
+            value = argv[i + 1] if i + 1 < len(argv) else None
+        elif arg.startswith(("--ctx-size=", "-c=")):
+            value = arg.split("=", 1)[1]
+    try:
+        parsed = int(value) if value is not None else 0
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def build_config(
     base_url: str,
     model: str,
@@ -149,6 +164,7 @@ def build_config(
     mcp_servers: tuple[str, ...] | list[str] = (),
     profile: dict[str, Any] | None = None,
     questions: bool = False,
+    context_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Inline OpenCode config that routes every request through arc-llama.
 
@@ -178,6 +194,12 @@ def build_config(
         "share": "disabled",
         "autoupdate": False,
     }
+    if type(context_tokens) is int and context_tokens > 1:
+        # No Work output-token setting exists. Reserve at most 2048 tokens, or a quarter
+        # of small windows, leaving room for the prompt. Unknown/automatic context stays unset.
+        config["provider"][PROVIDER_ID]["models"][model]["limit"] = {
+            "context": context_tokens, "output": min(2048, max(1, context_tokens // 4)),
+        }
     if profile:
         rules = config["permission"]
         config["mcp"] = {name: {"enabled": name in allowed_servers} for name in mcp_servers}
@@ -812,6 +834,7 @@ async def run_opencode(
     arguments: str = "",
     tool_profile: dict[str, Any] | None = None,
     session_title: str | None = None,
+    context_tokens: int | None = None,
     **_ignored: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     """Drive OpenCode for one task, yielding ``run_agent``-shaped events.
@@ -842,7 +865,7 @@ async def run_opencode(
         "OPENCODE_CONFIG_CONTENT": json.dumps(
             build_config(inference.url, model, auto_confirm=auto_confirm, local_only=local_only,
                          mcp_servers=mcp_server_names(root), profile=tool_profile,
-                         questions=question_callback is not None)
+                         questions=question_callback is not None, context_tokens=context_tokens)
         ),
         "OPENCODE_DISABLE_AUTOUPDATE": "1",
         "OPENCODE_DISABLE_SHARE": "1",
