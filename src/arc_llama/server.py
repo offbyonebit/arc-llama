@@ -1822,6 +1822,16 @@ def create_app(
             "upstreams": mgr.upstreams_status(),
         }
 
+    @app.get("/admin/network")
+    async def admin_network(request: Request, _auth: None = Depends(_require_admin)) -> dict:
+        from arc_llama.network_info import local_addresses, network_payload
+
+        server = request.app.state.cfg.server
+        result = network_payload(server, [])
+        if not result["enabled"]:
+            return result
+        return network_payload(server, await asyncio.to_thread(local_addresses))
+
     register_work_routes(app, require_admin=_require_admin, read_json_body=_read_json_body)
     from arc_llama.api.onboarding import register_onboarding_routes
     register_onboarding_routes(app, require_admin=_require_admin,
@@ -2514,6 +2524,11 @@ def create_app(
     # Static web UI (optional; only mounted if the static dir is present)
     # ------------------------------------------------------------------
     static_dir = Path(__file__).parent / "static"
+
+    @app.get("/manifest.webmanifest")
+    async def web_manifest() -> Response:
+        return FileResponse(static_dir / "manifest.webmanifest", media_type="application/manifest+json",
+                            headers={"Cache-Control": "no-cache"})
 
     @app.get("/ui-flags.js")
     async def ui_flags() -> Response:

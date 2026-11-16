@@ -933,3 +933,33 @@ output hashes even across identical requests on this SYCL runtime, so the
 strict comparison guard rejected the candidates. The original draft length 3
 and effective confidence 0.75 were restored. No additional verified speedup
 is claimed for this validation; DeepSeek is credited for the tuning approach.
+
+### Chat from a phone
+
+Run `arc-llama serve --lan` and open **System → Use Chat from your phone** on
+this computer. The panel shows addresses for the actual bind interface and a QR
+code for each address. It includes a Tailscale adapter when one is present.
+The code contains only the chat address: no API/admin key, query parameter or
+login token. `--lan` keeps its existing one-time key creation; enter that key in
+Chat on the phone when prompted. Create another with `arc-llama keys create NAME`
+if needed. Connect the phone to the same LAN or Tailscale network.
+
+Address discovery reads local adapter configuration (Linux interface ioctl and
+`/proc/net/if_inet6`, or Windows `Get-NetIPAddress`); it does not send probes or
+perform DNS lookups. The CLI uses the same discovery. A specific bind IP shows
+only that address; wildcard IPv4 and IPv6 binds show addresses in that family.
+No QR appears for a loopback-only bind. Addresses describe configuration, not a
+measured phone-to-server connectivity test.
+
+Chat includes a manifest and 192/512-pixel icons for a standalone home-screen
+window. Use **Share → Add to Home Screen** on iPhone, or **Install app / Add to
+Home screen** in the Android browser. Promoted PWA installation requires HTTPS
+(or localhost on the same device); an HTTP LAN address still opens Chat but
+may only offer a shortcut. To install over the network, open your trusted HTTPS
+reverse-proxy/Tailscale Serve address. The panel does not configure TLS or guess
+a proxy hostname. No service worker or offline API cache is added.
+
+Install behavior references: [MDN PWA installability](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable)
+and [Tailscale Serve HTTPS proxy](https://tailscale.com/docs/reference/tailscale-cli/serve),
+accessed 2026-11-16. QR rendering uses the locally vendored MIT-licensed
+qrcode-generator 1.4.4; its original header and license are in `static/vendor`.

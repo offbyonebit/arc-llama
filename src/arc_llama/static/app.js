@@ -987,8 +987,49 @@ function startStatusPolling() {
   scheduleStatusPoll();
 }
 
+async function fetchNetworkInfo() {
+  const list = $("#network-addresses");
+  const hint = $("#network-hint");
+  const refresh = $("#network-refresh");
+  if (!list || !hint) return;
+  if (refresh) refresh.disabled = true;
+  list.replaceChildren();
+  try {
+    const response = await fetch("/admin/network", { headers: authHeaders() });
+    if (!response.ok) throw new Error("Local addresses unavailable");
+    const data = await response.json();
+    hint.textContent = data.hint || "Run arc-llama serve --lan to enable phone access.";
+    if (!data.enabled) return;
+    for (const item of data.addresses || []) {
+      const url = new URL(item.url);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/chat") continue;
+      const card = document.createElement("div");
+      card.className = "network-address";
+      const label = document.createElement("strong");
+      label.textContent = item.kind === "tailscale" ? "Tailscale" : "LAN";
+      const link = document.createElement("a");
+      link.href = url.href;
+      link.textContent = url.href;
+      const code = document.createElement("div");
+      code.className = "network-qr";
+      const qr = window.qrcode(0, "M");
+      qr.addData(url.href, "Byte");
+      qr.make();
+      code.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 16, scalable: true });
+      code.firstElementChild?.setAttribute("aria-label", `QR code for ${url.href}`);
+      card.append(label, link, code);
+      list.appendChild(card);
+    }
+  } catch (_) {
+    hint.textContent = "Could not read local addresses. Run arc-llama serve --lan, then refresh addresses.";
+  } finally {
+    if (refresh) refresh.disabled = false;
+  }
+}
+
 // Dashboard event binding and bootstrap.
 integrationController.bind();
+$("#network-refresh")?.addEventListener("click", fetchNetworkInfo);
 
 // Dashboard views; ordinary modified/middle clicks retain native link behavior.
 for (const link of document.querySelectorAll("[data-view-link]")) {
@@ -1013,6 +1054,7 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
 (async () => {
   libraryController.bind();
   await initAdminToken();
+  void fetchNetworkInfo();
   await fetchStatus(true);
   await pluginsController.start();
   pluginsController.bind();

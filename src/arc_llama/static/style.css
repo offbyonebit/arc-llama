@@ -298,3 +298,9 @@ footer.error .status-dot { background: var(--red); }
 .library-folder label { font-size: 12px; font-weight: 600; }
 .library-folder-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; font-family: ui-monospace, monospace; font-size: 12px; }
 .library-folder .plugin-meta { margin: 0; }
+
+.network-addresses { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:20px; }
+.network-address { display:grid; gap:10px; justify-items:start; min-width:0; }
+.network-address a { overflow-wrap:anywhere; }
+.network-qr { width:192px; max-width:100%; padding:0; background:white; }
+.network-qr svg { display:block; width:100%; height:auto; }
