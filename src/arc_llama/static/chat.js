@@ -17,6 +17,7 @@ applyTheme(typeof localStorage === "undefined" ? "dark" : (localStorage.getItem(
   if (typeof ResizeObserver !== "undefined") new ResizeObserver(publish).observe(header);
 })();
 const chatLog = $("#chat-log");
+const replyAnnouncement = $("#reply-announcement");
 const emptyState = $("#empty-state");
 const modelSelect = $("#model-select");
 const modelStatus = $("#model-status");
@@ -1221,6 +1222,7 @@ async function sendMessage() {
 // here directly, so a retried send never duplicates the user turn.
 async function runSend() {
   if (generating || compacting || !selectedModel || !conversation.length) return false;
+  if (replyAnnouncement) replyAnnouncement.textContent = "";
   const retryChatId = currentChatId;
   const retryModel = selectedModel;
   const retryTranscript = conversation;
@@ -1386,7 +1388,10 @@ async function runSend() {
     await serverAppendMessages(currentChatId, [{ role: "assistant", content: conversation[convoIndex].content }]);
     await saveCurrentChat();
     renderTurnActions();
-    if (replyFinished) window.ArcFirstAnswer?.completed(selectedModel, finalParsed.content, m);
+    if (replyFinished) {
+      if (replyAnnouncement && finalParsed.content.trim()) replyAnnouncement.textContent = "Reply ready";
+      window.ArcFirstAnswer?.completed(selectedModel, finalParsed.content, m);
+    }
   } catch (e) {
     const partial = parseThinking(streamRaw);
     if (partial.content.trim() || partial.thinking.trim()) {
