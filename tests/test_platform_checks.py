@@ -361,7 +361,7 @@ def test_os_release_parses_quoted_values(tmp_path):
     ('16.0 GT/s PCIe', '8', '16.0 GT/s PCIe', '8', None),
     ('2.5 GT/s PCIe', '1', '16.0 GT/s PCIe', '8', 'Gen1 x1, card supports Gen4 x8'),
     ('16.0 GT/s PCIe', '4', '16.0 GT/s PCIe', '8', 'Gen4 x4, card supports Gen4 x8'),
-    ('8.0 GT/s PCIe', '8', '16.0 GT/s PCIe', '8', 'Gen3 x8, card supports Gen4 x8'),
+    ('8.0 GT/s PCIe', '8', '16.0 GT/s PCIe', '8', None),
     ('Unknown speed', '8', '16.0 GT/s PCIe', '8', None),
     ('nan', '8', '16.0 GT/s PCIe', '8', None),
     ('16.0 GT/s PCIe', '0', '16.0 GT/s PCIe', '8', None),
@@ -445,3 +445,42 @@ def test_doctor_link_and_driver_checks_are_platform_specific_warnings(tmp_path, 
     assert calls == ([] if windows else ['gpu0'])
     assert 'FAIL' not in text
     assert ('Update the Arc graphics driver from Intel' in text) is windows
+
+
+def _write_pcie_link(path, speed, width, max_speed, max_width):
+    path.mkdir(parents=True, exist_ok=True)
+    for name, value in zip(('current_link_speed', 'current_link_width', 'max_link_speed', 'max_link_width'),
+                           (speed, width, max_speed, max_width), strict=True):
+        (path / name).write_text(str(value))
+
+
+def test_pcie_checks_card_upstream_port_instead_of_internal_switch_link(tmp_path):
+    root = tmp_path / 'root-port'
+    upstream = root / 'card-upstream'
+    downstream = upstream / 'card-downstream'
+    gpu = downstream / 'gpu'
+    _write_pcie_link(root, '8.0 GT/s PCIe', 4, '8.0 GT/s PCIe', 4)
+    _write_pcie_link(upstream, '8.0 GT/s PCIe', 4, '16.0 GT/s PCIe', 8)
+    _write_pcie_link(downstream, '16.0 GT/s PCIe', 16, '16.0 GT/s PCIe', 16)
+    _write_pcie_link(gpu, '16.0 GT/s PCIe', 16, '16.0 GT/s PCIe', 16)
+    for bridge in (root, upstream, downstream):
+        (bridge / 'class').write_text('0x060400')
+    (gpu / 'class').write_text('0x030000')
+    slot = str(gpu.relative_to(tmp_path))
+    assert 'Gen3 x4, card supports Gen4 x8' in pcie_link_warning(slot, tmp_path)
+    # The internal endpoint and root port are both full width. Only the card's
+    # upstream port reveals the slot-width restriction, and idle speed is benign.
+    (upstream / 'current_link_width').write_text('8')
+    (upstream / 'current_link_speed').write_text('2.5 GT/s PCIe')
+    assert pcie_link_warning(slot, tmp_path) is None
+    (upstream / 'current_link_width').unlink()
+    assert pcie_link_warning(slot, tmp_path) is None
+
+
+def test_direct_gpu_uses_its_own_slot_facing_link(tmp_path):
+    root = tmp_path / 'root-port'
+    gpu = root / 'gpu'
+    _write_pcie_link(root, '16.0 GT/s PCIe', 8, '16.0 GT/s PCIe', 8)
+    (root / 'class').write_text('0x060400')
+    _write_pcie_link(gpu, '16.0 GT/s PCIe', 4, '16.0 GT/s PCIe', 8)
+    assert 'Gen4 x4, card supports Gen4 x8' in pcie_link_warning(str(gpu.relative_to(tmp_path)), tmp_path)

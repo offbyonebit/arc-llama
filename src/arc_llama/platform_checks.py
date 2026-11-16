@@ -36,9 +36,21 @@ def old_windows_arc_driver_warning(version: str | None) -> str | None:
     return None
 
 
+def _pci_bridge(device: Path) -> bool:
+    try:
+        return int((device / "class").read_text().strip(), 16) >> 8 == 0x0604
+    except (OSError, ValueError):
+        return False
+
+
 def pcie_link_warning(pci_slot: str, sysfs_root: Path = Path("/sys/bus/pci/devices")) -> str | None:
-    """Read four small sysfs attributes; missing/unknown data is a silent skip."""
-    device = sysfs_root / pci_slot
+    """Inspect the slot-facing link, resolving sysfs aliases past on-card switches."""
+    device = (sysfs_root / pci_slot).resolve()
+    parent = device.parent
+    # The root/chipset port is the top PCI bridge. Its child is the card's
+    # upstream port; lower bridges and the GPU describe internal switch links.
+    while _pci_bridge(parent) and _pci_bridge(parent.parent):
+        device, parent = parent, parent.parent
     try:
         speed = float((device / "current_link_speed").read_text().split()[0])
         width = int((device / "current_link_width").read_text().strip())
@@ -48,7 +60,8 @@ def pcie_link_warning(pci_slot: str, sysfs_root: Path = Path("/sys/bus/pci/devic
         return None
     if not (0 < speed <= 256 and 0 < max_speed <= 256 and width > 0 and max_width > 0):
         return None
-    if speed >= max_speed and width >= max_width:
+    # Speed alone falls at idle with ASPM; it is not evidence of a bad slot.
+    if width >= max_width:
         return None
     generations = {2.5: 1, 5: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7}
 
