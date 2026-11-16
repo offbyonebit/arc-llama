@@ -75,6 +75,7 @@ from arc_llama.agent.sessions import SESSION_ID, SessionStore
 from arc_llama.api.context_budget import register_context_budget_route
 from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
+from arc_llama.api.updates import register_update_routes
 from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
 from arc_llama.benchmark import BENCHMARK_HEADER
@@ -1830,6 +1831,7 @@ def create_app(
                                config_path=config_path or default_config_path())
     register_context_budget_route(app)
     register_integration_route(app, require_admin=_require_admin)
+    register_update_routes(app, require_admin=_require_admin)
 
     @app.get("/admin/plugins")
     async def admin_plugins(

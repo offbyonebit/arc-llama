@@ -298,3 +298,6 @@ footer.error .status-dot { background: var(--red); }
 .library-folder label { font-size: 12px; font-weight: 600; }
 .library-folder-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; font-family: ui-monospace, monospace; font-size: 12px; }
 .library-folder .plugin-meta { margin: 0; }
+/* A package update is informational; it never blocks the model controls. */
+.update-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; }
+.update-notice[hidden] { display: none; }

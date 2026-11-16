@@ -61,6 +61,7 @@ import {
 } from "./work-cases.mjs";
 import {
   testDashboardMeasurements,
+  testPackageUpdateNotice,
   testDashboardFitAndEmptyMeasurements,
   testDashboardPluginLayoutController,
   testFrontendIntegrationController,
@@ -175,6 +176,7 @@ const TESTS = [
   ["per-model-runtime-unrelated-edits", testRuntimeOverridesSurviveUnrelatedEdits],
   ["retry-original-turn-once", testRetrySendsOriginalTurnOnce],
   ["dashboard-measurements", testDashboardMeasurements],
+  ["package-update-notice", testPackageUpdateNotice],
   ["memory-fit-and-saved-settings", testMemoryFitAndSavedSettings],
   ["dashboard-fit-and-empty-measurements", testDashboardFitAndEmptyMeasurements],
   ["dashboard-navigation-and-blocked-model", testDashboardNavigationAndBlockedModel],

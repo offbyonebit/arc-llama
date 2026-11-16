@@ -589,6 +589,7 @@ version = 1
 host = "127.0.0.1"
 port = 11437
 single_resident = true
+check_updates = true   # false disables the daily PyPI version check
 
 [paths]
 llama_server = "/usr/local/bin/llama-server"   # Windows: "C:\\...\\llama-server.exe"
@@ -629,6 +630,15 @@ extra_flags      = []
 name = "ollama"
 url  = "http://127.0.0.1:11434"
 ```
+
+When the dashboard opens and daily while it remains open, `server.check_updates`
+(default `true`) allows a background request to PyPI at most once every 24 hours.
+A newer stable release
+shows a dismissible notice with `pip install -U arc-llama`; dismissal lasts for
+that version in this browser. Network failures are silent and share the daily
+limit. `arc-llama doctor` shows the cached notice without making a network
+request. Set `check_updates = false` under `[server]` to disable requests and
+notices. Nothing is installed automatically.
 
 > [!NOTE]
 > The optional agent/coding-assistant mode is experimental. Enable it by setting

@@ -135,8 +135,12 @@ class ServerConfig:
     """Header/first-byte deadline after loading completes. Zero means unlimited."""
     inference_stream_idle_seconds: float = 120.0
     """Maximum gap between streamed chunks. Zero means unlimited."""
+    check_updates: bool = True
+    """Allow a daily background PyPI version check when the dashboard opens."""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.check_updates, bool):
+            raise ValueError("server.check_updates must be a boolean")
         for name in ("inference_first_response_seconds", "inference_stream_idle_seconds"):
             value = getattr(self, name)
             if (
