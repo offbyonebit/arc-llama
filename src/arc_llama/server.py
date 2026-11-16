@@ -272,6 +272,8 @@ def client_allowed(request: Request) -> bool:
     if store is None or not store:
         return True
     provided = _bearer(request)
+    if not provided and request.url.path == "/v1/messages":
+        provided = request.headers.get("x-api-key", "").strip()
     if not provided:
         return False
     token = request.app.state.cfg.server.admin_token
@@ -471,6 +473,10 @@ def create_app(
     @app.middleware("http")
     async def require_client_key(request: Request, call_next):
         if request.url.path.startswith(_CLIENT_PROTECTED_PREFIXES) and not client_allowed(request):
+            if request.url.path == "/v1/messages":
+                from arc_llama.messages_api import error_response
+
+                return error_response("An API key is required for remote access. Send x-api-key or Authorization: Bearer <key>.", 401)
             return JSONResponse(
                 status_code=401,
                 content={
@@ -737,6 +743,19 @@ def create_app(
     @app.post("/v1/completions")
     async def chat_or_completions(request: Request):
         return await _proxy_post(request, request.url.path)
+
+    @app.post("/v1/messages")
+    async def messages_api(request: Request):
+        from arc_llama.messages_api import error_response, from_openai, to_openai
+
+        try:
+            body = await _read_json_body(request)
+            payload = to_openai(body)
+            request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
+            response = await _proxy_post(request, "/v1/chat/completions")
+            return await from_openai(response, body["model"])
+        except HTTPException as exc:
+            return error_response(str(exc.detail), exc.status_code)
 
     @app.post("/v1/rerank")
     async def rerank(request: Request):
