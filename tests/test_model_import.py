@@ -124,8 +124,39 @@ def test_windows_same_volume_uses_hardlink_without_symlink(tmp_path, monkeypatch
     assert linked != original and linked.samefile(original)
     assert not linked.is_symlink()
     assert added[0].import_source == "lmstudio"
-    assert deletable_files(cfg, added[0]) == []
+    assert added[0].import_link_path == str(linked)
+    assert deletable_files(cfg, added[0]) == [linked]
+    assert disk_report(cfg)["models"][0]["managed"] is True
     assert len(import_models(cfg, "lmstudio", [ImportCandidate("tiny", original)])) == 0
+    cfg.save(tmp_path / "config.toml")
+    loaded = load_config(tmp_path / "config.toml")
+    assert deletable_files(loaded, loaded.models[0]) == [linked]
+
+
+def test_source_under_imports_is_not_owned_and_shared_link_is_protected(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import arc_llama.model_import as importer
+
+    cfg = config(tmp_path)
+    original = model_file(Path(cfg.paths.models_dir) / "imports" / "lmstudio" / "source.gguf")
+    monkeypatch.setattr(importer, "_is_windows", lambda: False)
+    model = import_models(cfg, "lmstudio", [ImportCandidate("source", original)])[0]
+    assert deletable_files(cfg, model) == []
+    assert not disk_report(cfg)["models"][0]["managed"]
+    cfg.models.clear()
+    monkeypatch.setattr(importer, "_is_windows", lambda: True)
+    model = import_models(cfg, "lmstudio", [ImportCandidate("source", original)])[0]
+    link = Path(model.path)
+    other = replace(model, name="other")
+    cfg.models.append(other)
+    assert deletable_files(cfg, model) == []
+    cfg.models.remove(other)
+    # Same inode is insufficient: pointing at the source must never delete it.
+    model.path = str(original)
+    assert deletable_files(cfg, model) == []
+    model.path = str(link)
+    assert deletable_files(cfg, model) == [link]
 
 
 def test_windows_cross_volume_or_denied_link_falls_back_to_reference(tmp_path, monkeypatch):
@@ -219,6 +250,45 @@ def test_library_delete_only_unregisters_imported_source_files(tmp_path, monkeyp
         assert response.json()["deleted_files"] == 0
     assert original.is_file()
     assert load_config(path).models == []
+
+
+@pytest.mark.parametrize("remove_original", [False, True])
+def test_library_delete_removes_only_arc_created_hardlink(tmp_path, monkeypatch, remove_original):
+    from fastapi.testclient import TestClient
+    from helpers import ConfigRouter
+
+    import arc_llama.model_import as importer
+    import arc_llama.server as server
+    from arc_llama.config import ServerConfig
+
+    class Router(ConfigRouter):
+        async def stop_one(self, name):
+            return False
+    monkeypatch.setattr(importer, "_is_windows", lambda: True)
+    monkeypatch.setattr(server, "Router", Router)
+    original = model_file(tmp_path / "source" / "tiny.gguf")
+    before = original.read_bytes(), original.stat().st_mtime_ns
+    cfg = config(tmp_path)
+    cfg.server = ServerConfig(admin_token="test-import-token")
+    cfg.tune.auto = False
+    model = import_models(cfg, "lmstudio", [ImportCandidate("tiny", original)])[0]
+    link = Path(model.path)
+    assert link != original and link.samefile(original)
+    if remove_original:
+        original.unlink()  # The other app removes its own directory entry.
+    config_path = tmp_path / "arc.toml"
+    cfg.save(config_path)
+    with TestClient(server.create_app(cfg, config_path=config_path, plugins=[])) as client:
+        response = client.delete(f"/admin/library/models/{model.name}?delete_files=true",
+                                 headers={"Authorization": "Bearer test-import-token"})
+        assert response.status_code == 200
+        assert response.json()["deleted_files"] == 1
+        assert response.json()["failed"] == []
+    assert not link.exists()
+    if not remove_original:
+        assert (original.read_bytes(), original.stat().st_mtime_ns) == before
+        assert response.json()["freed_mb"] == 0
+    assert load_config(config_path).models == []
 
 
 def test_ollama_manifest_list_selects_installed_gguf_variant(tmp_path):

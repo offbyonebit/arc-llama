@@ -133,9 +133,9 @@ def _same_file(left: Path, right: Path) -> bool:
         return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
 
 
-def _registration_path(candidate: ImportCandidate, cfg: Config, source: str) -> Path:
+def _registration_path(candidate: ImportCandidate, cfg: Config, source: str) -> tuple[Path, bool]:
     if not _is_windows():
-        return candidate.path
+        return candidate.path, False
     # Linking does not copy weights or need symlink privileges. Cross-volume,
     # permissions and unsupported filesystems fall back to the source reference.
     key = hashlib.sha256(str(candidate.path).encode()).hexdigest()[:12]
@@ -144,11 +144,11 @@ def _registration_path(candidate: ImportCandidate, cfg: Config, source: str) -> 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
-            return target if _same_file(target, candidate.path) else candidate.path
+            return (target if _same_file(target, candidate.path) else candidate.path), False
         os.link(candidate.path, target)
-        return target.resolve()
+        return target.resolve(), True
     except OSError:
-        return candidate.path
+        return candidate.path, False
 
 
 def import_models(cfg: Config, source: str, candidates: list[ImportCandidate], gpu: str | None = None) -> list[ModelConfig]:
@@ -171,10 +171,11 @@ def import_models(cfg: Config, source: str, candidates: list[ImportCandidate], g
         name, index = base, 2
         while any(model.name == name for model in cfg.models):
             name, index = f"{base}-{index}", index + 1
-        path = _registration_path(candidate, cfg, source)
+        path, linked = _registration_path(candidate, cfg, source)
         model = add_local_model(cfg, name=name, path=str(path), gpu_pci_slot=gpu,
                                 display_name=f"{source}: {candidate.name}", aliases=[candidate.name],
                                 recipe_overrides={"mmproj": str(candidate.projector)} if candidate.projector else None)
         model.import_source = source
+        model.import_link_path = str(path) if linked else ""
         added.append(model)
     return added

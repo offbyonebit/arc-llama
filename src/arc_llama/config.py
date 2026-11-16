@@ -322,7 +322,9 @@ class ModelConfig:
     aliases: list[str] = field(default_factory=list)
     """Extra strings that should match this model in the OpenAI `model` field."""
     import_source: str = ""
-    """Other-app provenance: imported files are never deleted by the library."""
+    """Other-app provenance: original imported files are never deleted."""
+    import_link_path: str = ""
+    """Only a hardlink created by Arc, eligible for library cleanup."""
     tune_state: str = "untuned"  # untuned | tuned | failed | skipped
     tuned_at: float | None = None
     tune_fingerprint: str = ""

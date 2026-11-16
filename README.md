@@ -162,10 +162,10 @@ variant, preferring the llama.cpp runner. No model bytes are downloaded or copie
 Linux registers the original path. Windows prefers an ordinary hardlink in the
 Arc models directory on the same volume and falls back to the original path
 when linking is unavailable, including across volumes; no symlinks are created.
-Imported entries are protected: removing them from the library unregisters them
-and keeps their files, including any imported hardlink. Moving/removing the
-source can break a referenced model; a hardlinked model keeps its own directory
-entry.
+Imported source files are protected. Library deletion can remove only a hardlink
+Arc created under its `models/imports` directory; it never deletes the other
+app's original file or projector. Moving/removing the source can break a
+referenced model; a hardlinked model keeps its own directory entry until deleted.
 
 The individual steps remain available when you want explicit control:
 
