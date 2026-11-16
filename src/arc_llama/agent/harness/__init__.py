@@ -6,6 +6,10 @@ same SSE-shaped events as :func:`arc_llama.agent.loop.run_agent`, so a UI
 written against that vocabulary works with any harness.
 """
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from arc_llama.config import Config
 
 from arc_llama.agent.harness.hermes import find_hermes_binary, run_hermes
 from arc_llama.agent.harness.opencode import (
@@ -73,9 +77,9 @@ def compose_prompt(task: str, history: list[dict[str, str]], root: str | None = 
     )
 
 
-def experimental_enabled() -> bool:
+def experimental_enabled(config: "Config | None" = None) -> bool:
     """External harnesses ship behind the same switch as the built-in agent."""
-    return os.environ.get("ARC_LLAMA_EXPERIMENTAL_AGENT", "").lower() in ("1", "true", "yes")
+    return bool(config and config.server.work_mode) or os.environ.get("ARC_LLAMA_EXPERIMENTAL_AGENT", "").lower() in ("1", "true", "yes")
 
 __all__ = [
     "HARNESSES",

@@ -150,6 +150,26 @@
   function createPanel({ document: doc, request, container }) {
     let info = null;
     const installer = createInstaller({ document: doc, request, onInstalled: () => refresh() });
+    const toggle = doc.getElementById("work-mode-enabled");
+    const status = doc.getElementById("work-mode-status");
+    let saving = false;
+    toggle?.addEventListener("change", async () => {
+      saving = true;
+      toggle.disabled = true;
+      try {
+        const response = await request("/admin/settings", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_mode: toggle.checked }),
+        });
+        if (!response.ok) throw new Error(await detail(response));
+        const saved = await response.json();
+        info = { ...info, ...saved };
+        status.textContent = "Saved. Reload this page to update Work navigation. No server restart needed."
+          + (saved.experimental && !saved.work_mode ? " The environment variable still enables Work." : "");
+      } catch (error) {
+        status.textContent = `Work setting was not saved: ${error.message}`;
+      } finally { saving = false; render(); }
+    });
 
     function describe(h) {
       if (!h.available) return "Not installed.";
@@ -168,10 +188,11 @@
 
     function render() {
       if (!container) return;
+      if (toggle) { toggle.checked = !!info?.work_mode; toggle.disabled = !info || saving; }
       if (!info) { container.replaceChildren(el(doc, "p", { class: "section-copy" }, "Agent status is unavailable.")); return; }
       const external = (info.harnesses || []).filter((h) => h.id !== "builtin");
       if (!info.experimental) {
-        container.replaceChildren(el(doc, "p", { class: "section-copy" }, "OpenCode and Hermes in Work are experimental. Start the server with ARC_LLAMA_EXPERIMENTAL_AGENT=1 to install and use them."));
+        container.replaceChildren(el(doc, "p", { class: "section-copy" }, "Enable Work above to install and use OpenCode and Hermes. ARC_LLAMA_EXPERIMENTAL_AGENT=1 also enables Work."));
         return;
       }
       container.replaceChildren(...external.map((h) => {

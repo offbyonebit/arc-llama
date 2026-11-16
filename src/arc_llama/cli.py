@@ -17,7 +17,7 @@ Top-level commands:
   arc-llama systemd    Print a systemd --user service unit for `arc-llama serve`.
 
 The agent/coding-assistant commands (`agent`, `code`, `agent-tui`) are
-experimental and only appear when ARC_LLAMA_EXPERIMENTAL_AGENT=1 is set.
+experimental and appear when server.work_mode or ARC_LLAMA_EXPERIMENTAL_AGENT is enabled.
 
 A small static web UI is bundled and served at `/` on the same port as
 `arc-llama serve` — open it in a browser for a model-picker + load/stop view.
@@ -167,7 +167,29 @@ def _configured_runtime(cfg: Config) -> Path | None:
 # ===========================================================================
 
 
-@click.group()
+class _WorkGroup(click.Group):
+    """Resolve opt-in at invocation time, including an explicit --config path."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # --help is eager: retain the config option before its callback lists commands.
+        options, _, _ = self.make_parser(ctx).parse_args(list(args))
+        value = options.get("config_path")
+        ctx.meta["work_config_path"] = Path(value) if value else None
+        return super().parse_args(ctx, args)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        commands = super().list_commands(ctx)
+        if not _experimental_agent_enabled(ctx.meta.get("work_config_path")):
+            commands = [name for name in commands if name not in ("agent", "code", "agent-tui")]
+        return commands
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        if cmd_name in ("agent", "code", "agent-tui") and not _experimental_agent_enabled(ctx.meta.get("work_config_path")):
+            return None
+        return super().get_command(ctx, cmd_name)
+
+
+@click.group(cls=_WorkGroup)
 @click.version_option(__version__)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging.")
 @click.option(
@@ -1549,13 +1571,13 @@ def arcllama_main(
     base_url: str | None,
 ) -> None:
     """Entry point for the `arcllama` command."""
-    if not _experimental_agent_enabled():
+    cfg = load_config()
+    if not _experimental_agent_enabled(cfg):
         console.print(
             "[red]The arcllama agent TUI is experimental. "
-            "Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable it.[/red]"
+            "Enable Work in System settings or set ARC_LLAMA_EXPERIMENTAL_AGENT=1.[/red]"
         )
         sys.exit(1)
-    cfg = load_config()
     try:
         from arc_llama.agent_tui import run_agent_tui
 
@@ -1599,15 +1621,10 @@ def tui_cmd(ctx: click.Context, server_url: str | None) -> None:
     run_tui(server_url)
 
 
-def _experimental_agent_enabled() -> bool:
-    """Return True if the experimental coding-agent commands should be exposed."""
-    return os.environ.get("ARC_LLAMA_EXPERIMENTAL_AGENT", "").lower() in ("1", "true", "yes")
+def _experimental_agent_enabled(config: Config | Path | None = None) -> bool:
+    from arc_llama.agent.harness import experimental_enabled
 
-
-# Hide the experimental agent commands unless the user explicitly opts in.
-if not _experimental_agent_enabled():
-    for _experimental_agent_cmd in ("agent", "code", "agent-tui"):
-        cli.commands.pop(_experimental_agent_cmd, None)
+    return experimental_enabled(config if isinstance(config, Config) else load_config(config))
 
 
 def main() -> None:
