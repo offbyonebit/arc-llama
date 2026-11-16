@@ -87,7 +87,7 @@ def test_json_is_one_redacted_document_with_shared_check_results(environment, mo
         assert len(check["message"]) <= 500
         if check["status"] in ("warn", "fail"):
             assert check["name"] in human.output
-    assert "~/config.toml" in checks["config"]["message"]
+    assert "~/config.toml" in checks["config"]["message"].replace("\\", "/")
     assert str(environment.home) not in result.output
     assert "probe output" not in result.output
     assert all(secret not in result.output for secret in environment.secrets)
