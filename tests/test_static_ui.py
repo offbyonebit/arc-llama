@@ -408,17 +408,18 @@ def test_dashboard_offers_connect_a_frontend_action():
     assert 'doc.querySelector("#frontend-dialog").showModal()' in js
 
 
-def test_frontend_dialog_lists_three_guided_choices():
+def test_frontend_dialog_lists_four_guided_choices():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     assert 'id="tab-openwebui"' in html
     assert 'id="tab-ollama"' in html
     assert 'id="tab-generic"' in html
+    assert 'id="tab-recipes"' in html
     assert "Open WebUI" in html
     assert "Ollama" in html
     # Panels are tabpanels controlled by the tabs, one visible by default.
     assert 'role="tabpanel"' in html
-    assert html.count('role="tabpanel"') == 3
+    assert html.count('role="tabpanel"') == 4
 
 
 def test_frontend_dialog_uses_no_external_assets():
@@ -490,7 +491,7 @@ def test_frontend_tabs_are_keyboard_accessible():
     js = (STATIC / "dashboard" / "integration.js").read_text(encoding="utf-8")
 
     assert 'role="tablist"' in html
-    assert html.count('role="tab"') == 3
+    assert html.count('role="tab"') == 4
     assert 'aria-selected="true"' in html
     assert 'aria-selected="false"' in html
     assert 'tab.setAttribute("aria-selected"' in js

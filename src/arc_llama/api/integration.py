@@ -24,7 +24,12 @@ def register_integration_route(app: FastAPI, *, require_admin: Callable[..., Any
         imported lazily so importing ``arc_llama.server`` stays cheap.
         """
         from arc_llama.integration import integration_payload, probe_ollama
+        from arc_llama.server import model_capabilities
 
         cfg = request.app.state.cfg
         ollama = await probe_ollama()
-        return integration_payload(cfg, ollama)
+        router = request.app.state.router
+        loaded = next((model for model in router.all_models()
+                       if (srv := router._servers.get(model.name)) is not None
+                       and srv.is_running and srv.ready and "chat" in model_capabilities(model)), None)
+        return integration_payload(cfg, ollama, loaded_model=loaded, request_host=request.url.hostname)

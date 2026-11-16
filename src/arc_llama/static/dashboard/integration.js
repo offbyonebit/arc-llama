@@ -4,7 +4,9 @@ window.ArcDashboard.createIntegrationController = function createIntegrationCont
   document: doc, request, authHeaders, browserNavigator, scheduleTimeout = setTimeout,
 }) {
   let integrationLoaded = false;
+  let integrationLoading = false;
   let activeFrontendTab = "openwebui";
+  let recipes = [];
 
   // Connect-a-frontend guided panel. The endpoint returns only locally computed
   // discovery data (base URL from the configured host/port, loopback Ollama
@@ -14,6 +16,7 @@ window.ArcDashboard.createIntegrationController = function createIntegrationCont
     ["#tab-openwebui", "#panel-openwebui"],
     ["#tab-ollama", "#panel-ollama"],
     ["#tab-generic", "#panel-generic"],
+    ["#tab-recipes", "#panel-recipes"],
   ];
 
   function isWindows() {
@@ -88,6 +91,34 @@ window.ArcDashboard.createIntegrationController = function createIntegrationCont
     registered.hidden = !ollama?.already_registered;
   }
 
+  function renderRecipe() {
+    const select = doc.querySelector("#recipe-select");
+    const recipe = recipes.find(item => item.id === select?.value);
+    const steps = doc.querySelector("#recipe-steps");
+    const snippet = doc.querySelector("#recipe-snippet");
+    const label = doc.querySelector("#recipe-label");
+    const docs = doc.querySelector("#recipe-docs");
+    const copy = doc.querySelector("#copy-recipe");
+    if (!steps || !snippet) return;
+    steps.replaceChildren();
+    for (const text of recipe?.steps || []) {
+      const step = doc.createElement("li");
+      step.textContent = text;
+      steps.appendChild(step);
+    }
+    snippet.textContent = recipe?.snippet || "";
+    if (label) label.textContent = recipe?.snippet_label || "";
+    if (docs) {
+      docs.hidden = !recipe;
+      if (recipe) docs.href = recipe.docs_url;
+    }
+    if (copy) {
+      copy.disabled = !recipe;
+      copy.textContent = "Copy snippet";
+      copy.classList.remove("copied");
+    }
+  }
+
   function renderIntegration(data) {
     const openwebuiUrl = doc.querySelector("#openwebui-url");
     const genericUrl = doc.querySelector("#generic-url");
@@ -112,17 +143,41 @@ window.ArcDashboard.createIntegrationController = function createIntegrationCont
       apiKeyNote.textContent = `API Key: ${data.api_key_guidance}`;
     }
     renderOllamaStatus(data.ollama);
+    recipes = Array.isArray(data.recipes) ? data.recipes : [];
+    const select = doc.querySelector("#recipe-select");
+    if (select) {
+      const selected = select.value;
+      select.replaceChildren();
+      for (const recipe of recipes) {
+        const option = doc.createElement("option");
+        option.value = recipe.id;
+        option.textContent = recipe.name;
+        select.appendChild(option);
+      }
+      select.disabled = !recipes.length;
+      if (recipes.some(recipe => recipe.id === selected)) select.value = selected;
+      doc.querySelector("#recipe-status").textContent = data.recipe_note || "";
+      renderRecipe();
+    }
     integrationLoaded = true;
   }
 
   async function loadIntegration(force = false) {
-    if (integrationLoaded && !force) return;
+    if (integrationLoading || (integrationLoaded && !force)) return;
+    integrationLoading = true;
+    const refresh = doc.querySelector("#refresh-recipes");
+    if (refresh) refresh.disabled = true;
     try {
       const response = await request("/admin/integration", { headers: authHeaders() });
       if (!response.ok) throw new Error(`status ${response.status}`);
       renderIntegration(await response.json());
     } catch (_) {
       renderIntegration(null);
+      const status = doc.querySelector("#recipe-status");
+      if (status) status.textContent = "Could not refresh connection details. Try again; any previous example is from the last refresh.";
+    } finally {
+      integrationLoading = false;
+      if (refresh) refresh.disabled = false;
     }
   }
 
@@ -144,6 +199,9 @@ window.ArcDashboard.createIntegrationController = function createIntegrationCont
     bindCopyButton("#copy-ollama-command", () => doc.querySelector("#ollama-command")?.textContent);
     bindCopyButton("#copy-generic-url", () => doc.querySelector("#generic-url")?.textContent);
     bindCopyButton("#copy-generic-curl", () => doc.querySelector("#generic-curl")?.textContent);
+    bindCopyButton("#copy-recipe", () => doc.querySelector("#recipe-snippet")?.textContent);
+    doc.querySelector("#recipe-select")?.addEventListener("change", renderRecipe);
+    doc.querySelector("#refresh-recipes")?.addEventListener("click", () => loadIntegration(true));
   }
 
   return { bind, open: openFrontendDialog, load: loadIntegration };

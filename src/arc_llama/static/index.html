@@ -230,6 +230,7 @@
     <button role="tab" id="tab-openwebui" class="frontend-tab" aria-controls="panel-openwebui" aria-selected="true">Open WebUI</button>
     <button role="tab" id="tab-ollama" class="frontend-tab" aria-controls="panel-ollama" aria-selected="false">Ollama</button>
     <button role="tab" id="tab-generic" class="frontend-tab" aria-controls="panel-generic" aria-selected="false">OpenAI-compatible client</button>
+    <button role="tab" id="tab-recipes" class="frontend-tab" aria-controls="panel-recipes" aria-selected="false">App recipes</button>
   </div>
   <div class="frontend-panels">
     <section id="panel-openwebui" role="tabpanel" aria-labelledby="tab-openwebui" class="frontend-panel">
@@ -265,6 +266,22 @@
       <pre id="generic-curl" class="frontend-code"><code>Detecting…</code></pre>
       <div class="frontend-field">
         <button id="copy-generic-curl" class="secondary frontend-copy">Copy curl command</button>
+      </div>
+    </section>
+    <section id="panel-recipes" role="tabpanel" aria-labelledby="tab-recipes" class="frontend-panel" hidden>
+      <p class="frontend-note">These apps use the OpenAI-compatible API. Refresh after switching models.</p>
+      <p id="recipe-status" class="frontend-note" role="status"></p>
+      <div class="frontend-field recipe-controls">
+        <label for="recipe-select">App</label>
+        <select id="recipe-select" aria-label="Frontend recipe" disabled></select>
+        <button id="refresh-recipes" class="ghost" type="button">Refresh details</button>
+      </div>
+      <ol id="recipe-steps" class="frontend-steps"></ol>
+      <p id="recipe-label" class="frontend-note"></p>
+      <pre class="frontend-code"><code id="recipe-snippet"></code></pre>
+      <div class="frontend-field">
+        <button id="copy-recipe" class="secondary frontend-copy" type="button" disabled>Copy snippet</button>
+        <a id="recipe-docs" target="_blank" rel="noopener noreferrer" hidden>Official setup docs</a>
       </div>
     </section>
   </div>

@@ -427,3 +427,61 @@ export async function testHiddenTabPolling({ page, origin }) {
   const activeDelays = await page.evaluate(() => window.optimizationDelays.slice(3));
   for (const delay of [2000, 5000, 15000]) if (!activeDelays.includes(delay)) throw new Error(`active polling cadence not restored: ${delay}`);
 }
+
+export async function testFrontendRecipes({ page, origin }) {
+  const apps = [
+    ['continue', 'Continue', 'https://docs.continue.dev/customize/model-providers/top-level/openai'],
+    ['cline', 'Cline', 'https://docs.cline.bot/provider-config/openai-compatible'],
+    ['zed', 'Zed', 'https://zed.dev/docs/ai/use-api-access#openai-compatible-endpoints'],
+    ['sillytavern', 'SillyTavern', 'https://docs.sillytavern.app/usage/api-connections/openai/#custom-openai-compatible-endpoint'],
+    ['anythingllm', 'AnythingLLM', 'https://docs.anythingllm.com/setup/llm-configuration/cloud/openai-generic'],
+    ['jan', 'Jan', 'https://docs.jan.ai/desktop/remote-models/custom-endpoint'],
+  ];
+  let model = 'loaded-second', url = 'http://192.168.1.50:11437/v1', failed = false;
+  const requests = [];
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', {
+    configurable: true, value: { writeText: async value => { window.recipeCopied = value; } },
+  }));
+  await page.route('**/admin/integration', route => {
+    requests.push(route.request());
+    if (failed) return route.fulfill({status:503,json:{detail:'offline'}});
+    return route.fulfill({json:{
+      base_url:url, server:{port:11437}, model_id:model, recipe_note:'Using loaded model ' + model,
+      api_key_guidance:'Use a real LAN key from arc-llama keys create <name>.',
+      curl_example:'curl placeholder', curl_example_windows:'curl placeholder', ollama:{reachable:false},
+      recipes:apps.map(([id,name,docs_url]) => ({
+        id,name,docs_url,format:'text',snippet_label:'Settings values',
+        steps:['Open ' + name + ' settings.', 'Select ' + model],
+        snippet:name + '\nBase URL: ' + url + '\nModel ID: ' + model + '\nAPI Key: YOUR_ARC_API_KEY',
+      })),
+    }});
+  });
+  await page.goto(origin + '/#system');
+  await page.getByRole('button', {name:'Connect a frontend'}).click();
+  await page.click('#tab-recipes');
+  await page.waitForFunction(() => document.querySelector('#recipe-select')?.options.length === 6);
+  if (await page.locator('#tab-recipes').getAttribute('aria-selected') !== 'true') throw new Error('Recipe tab inaccessible');
+  for (const [id,name,docs] of apps) {
+    await page.selectOption('#recipe-select', id);
+    const snippet = await page.locator('#recipe-snippet').innerText();
+    if (![name,url,model,'YOUR_ARC_API_KEY'].every(text => snippet.includes(text))) throw new Error('Wrong recipe values for ' + name);
+    if (await page.locator('#recipe-docs').getAttribute('href') !== docs) throw new Error('Wrong docs for ' + name);
+    if (!(await page.locator('#recipe-docs').getAttribute('rel')).includes('noopener')) throw new Error('Docs link lacks opener protection');
+    await page.click('#copy-recipe');
+    await page.waitForFunction(expected => window.recipeCopied === expected, snippet);
+  }
+  if (!requests.every(r => r.headers().authorization === 'Bearer browser-test-token') || requests.some(r => r.method() !== 'GET')) throw new Error('Recipe discovery changed auth or mutated state');
+  model = '<img id="recipe-injection" src=x onerror=alert(1)>';
+  url = 'http://100.101.102.103:11437/v1';
+  await page.click('#refresh-recipes');
+  await page.waitForFunction(() => document.querySelector('#recipe-snippet')?.textContent.includes('http://100.101.102.103'));
+  if (await page.locator('#recipe-select').inputValue() !== 'jan') throw new Error('Refresh changed recipe selection');
+  if (await page.locator('#recipe-injection').count()) throw new Error('Recipe data rendered as HTML');
+  await page.click('#copy-recipe');
+  await page.waitForFunction(() => window.recipeCopied.includes('http://100.101.102.103'));
+  failed = true;
+  await page.click('#refresh-recipes');
+  await page.waitForFunction(() => document.querySelector('#recipe-status').textContent.includes('Could not refresh'));
+  await page.setViewportSize({width:390,height:844});
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('Recipes overflowed on phone');
+}
