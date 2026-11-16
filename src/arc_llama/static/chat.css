@@ -1777,3 +1777,10 @@ header > * { position: relative; z-index: 1; }
 @media (max-width: 600px) { .compact-controls { padding: 6px 12px; } }
 
 .budget-warning button { margin: .5rem .5rem 0 0; padding: .4rem .6rem; }
+
+/* One unsent follow-up stays visible beside the chat composer. */
+.queued-message { margin: 4px auto; max-width: 700px; padding: 6px 10px; border: 1px solid var(--border-subtle); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.queued-message[hidden] { display: none; }
+.queued-message button, #stop-reply { margin-left: 8px; font: inherit; cursor: pointer; }
+body.work-mode .queued-message { display: none; }
+#queued-message-text { display: inline-block; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
