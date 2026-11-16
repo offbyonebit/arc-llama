@@ -241,7 +241,7 @@
         <code id="openwebui-url" class="frontend-value">Detecting…</code>
         <button id="copy-openwebui-url" class="secondary frontend-copy">Copy</button>
       </div>
-      <p id="openwebui-key-note" class="frontend-note">API Key: any non-empty string; arc-llama does not validate client keys.</p>
+      <p id="openwebui-key-note" class="frontend-note">On localhost, clients can use any non-empty API key string. For LAN callers, create a key with <code>arc-llama keys create &lt;name&gt;</code> and use it as the API key; remote keys are validated once any key exists (<code>arc-llama serve --lan</code> creates one automatically).</p>
       <p id="openwebui-lan-note" class="frontend-note lan-note" hidden></p>
       <p class="frontend-note">Models then appear automatically in the Open WebUI model picker. arc-llama never signs in to or modifies your Open WebUI account; you add the connection yourself.</p>
     </section>
