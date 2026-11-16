@@ -13,10 +13,12 @@ from arc_llama.platform_checks import (
     mesa_upgrade_steps,
     mesa_version,
     old_mesa_vulkan_warning,
+    old_windows_arc_driver_warning,
     oneapi_runtime_env_needed,
     oneapi_setvars_path,
     parse_kernel_version,
     parse_mesa_version,
+    pcie_link_warning,
     rebar_likely_enabled,
     source_setvars,
 )
@@ -353,3 +355,93 @@ def test_os_release_parses_quoted_values(tmp_path):
         "UBUNTU_CODENAME": "noble",
     }
     assert _os_release(tmp_path / "missing") == {}
+
+
+@pytest.mark.parametrize('speed,width,max_speed,max_width,expected', [
+    ('16.0 GT/s PCIe', '8', '16.0 GT/s PCIe', '8', None),
+    ('2.5 GT/s PCIe', '1', '16.0 GT/s PCIe', '8', 'Gen1 x1, card supports Gen4 x8'),
+    ('16.0 GT/s PCIe', '4', '16.0 GT/s PCIe', '8', 'Gen4 x4, card supports Gen4 x8'),
+    ('8.0 GT/s PCIe', '8', '16.0 GT/s PCIe', '8', 'Gen3 x8, card supports Gen4 x8'),
+    ('Unknown speed', '8', '16.0 GT/s PCIe', '8', None),
+    ('nan', '8', '16.0 GT/s PCIe', '8', None),
+    ('16.0 GT/s PCIe', '0', '16.0 GT/s PCIe', '8', None),
+])
+def test_pcie_link_from_fake_sysfs(tmp_path, speed, width, max_speed, max_width, expected):
+    # A portable component name lets the same parser tests run on Windows.
+    device = tmp_path / 'gpu0'
+    device.mkdir()
+    for name, value in zip(('current_link_speed', 'current_link_width', 'max_link_speed', 'max_link_width'),
+                           (speed, width, max_speed, max_width), strict=True):
+        (device / name).write_text(value + '\n')
+    warning = pcie_link_warning('gpu0', tmp_path)
+    if expected:
+        assert expected in warning
+    else:
+        assert warning is None
+    (device / 'max_link_width').unlink()
+    assert pcie_link_warning('gpu0', tmp_path) is None
+    assert pcie_link_warning('absent', tmp_path) is None
+
+
+@pytest.mark.parametrize('version,warning', [
+    ('31.0.101.9999', True), ('32.0.101.8734', True),
+    ('32.0.101.8735', False), ('32.0.101.9000', False),
+    ('33.0.0.0', False), ('unknown', False), ('32.0.101', False), (None, False),
+])
+def test_windows_arc_driver_version_warning(version, warning):
+    text = old_windows_arc_driver_warning(version)
+    assert (text is not None) is warning
+    if warning:
+        assert '32.0.101.8735' in text
+
+
+@pytest.mark.parametrize('windows', [False, True])
+def test_doctor_link_and_driver_checks_are_platform_specific_warnings(tmp_path, monkeypatch, windows):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    import click
+    from click.testing import CliRunner
+    from rich.console import Console
+
+    import arc_llama.cli_diagnostics as diagnostics
+    import arc_llama.plugins as plugins
+    from arc_llama.agent import landlock
+    from arc_llama.arch import Arch
+
+    gpu = SimpleNamespace(name='Test Arc', pci_slot='gpu0', device_id=0x56A0,
+                          arch=Arch.ALCHEMIST, driver='32.0.101.8734',
+                          vram_gb=16, notes=[], sysfs_path='')
+    calls = []
+    def link(slot):
+        calls.append(slot)
+        return 'gpu0 running at Gen1 x1, card supports Gen4 x8'
+    monkeypatch.setattr(diagnostics, 'pcie_link_warning', link)
+    monkeypatch.setattr(diagnostics.sys, 'platform', 'win32' if windows else 'linux')
+    monkeypatch.setattr(diagnostics, 'kernel_module_loaded', lambda name: True)
+    monkeypatch.setattr(diagnostics, 'level_zero_loader_present', lambda: (True, 'fake loader'))
+    monkeypatch.setattr(diagnostics, 'user_in_groups', lambda *names: dict.fromkeys(names, True))
+    monkeypatch.setattr(diagnostics, 'oneapi_setvars_path', lambda: None)
+    monkeypatch.setattr(diagnostics.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(diagnostics.platform, 'uname', lambda: SimpleNamespace(release='6.14.0'))
+    monkeypatch.setattr(diagnostics.platform, 'release', lambda: 'test')
+    monkeypatch.setattr(landlock, 'status', lambda: 'available')
+    monkeypatch.setattr(landlock, 'abi_version', lambda: 6)
+    monkeypatch.setattr(plugins, 'plugin_health', lambda: [])
+    output = StringIO()
+    @click.group()
+    @click.pass_context
+    def group(ctx):
+        ctx.obj = {'config_path': tmp_path / 'absent.toml'}
+    diagnostics.register_diagnostic_commands(
+        group, console=Console(file=output, width=180), load_config=lambda _: None,
+        detect_gpus=lambda **kw: [gpu], is_windows=lambda: windows,
+    )
+    result = CliRunner().invoke(group, ['doctor'])
+    assert result.exit_code == 0, result.exception
+    text = output.getvalue()
+    assert ('windows_arc_driver:' in text) is windows
+    assert ('pcie_link:' in text) is not windows
+    assert calls == ([] if windows else ['gpu0'])
+    assert 'FAIL' not in text
+    assert ('Update the Arc graphics driver from Intel' in text) is windows

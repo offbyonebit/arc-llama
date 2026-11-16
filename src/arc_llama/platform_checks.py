@@ -22,6 +22,42 @@ _IORESOURCE_MEM = 0x00000200
 _REBAR_OFF_MAX = 512 * 1024 * 1024
 _REBAR_ON_MIN = 1024 * 1024 * 1024
 
+# Review threshold, not a claim that every older driver is incompatible.
+MIN_WINDOWS_ARC_DRIVER = "32.0.101.8735"
+
+
+def old_windows_arc_driver_warning(version: str | None) -> str | None:
+    if not version or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", version.strip()):
+        return None
+    current = tuple(int(part) for part in version.strip().split("."))
+    minimum = tuple(int(part) for part in MIN_WINDOWS_ARC_DRIVER.split("."))
+    if current < minimum:
+        return f"Intel Arc driver {version.strip()} is older than recommended {MIN_WINDOWS_ARC_DRIVER}"
+    return None
+
+
+def pcie_link_warning(pci_slot: str, sysfs_root: Path = Path("/sys/bus/pci/devices")) -> str | None:
+    """Read four small sysfs attributes; missing/unknown data is a silent skip."""
+    device = sysfs_root / pci_slot
+    try:
+        speed = float((device / "current_link_speed").read_text().split()[0])
+        width = int((device / "current_link_width").read_text().strip())
+        max_speed = float((device / "max_link_speed").read_text().split()[0])
+        max_width = int((device / "max_link_width").read_text().strip())
+    except (OSError, ValueError, IndexError):
+        return None
+    if not (0 < speed <= 256 and 0 < max_speed <= 256 and width > 0 and max_width > 0):
+        return None
+    if speed >= max_speed and width >= max_width:
+        return None
+    generations = {2.5: 1, 5: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7}
+
+    def label(rate: float, lanes: int) -> str:
+        generation = generations.get(rate)
+        return f"Gen{generation} x{lanes}" if generation else f"{rate:g} GT/s x{lanes}"
+
+    return f"{pci_slot} running at {label(speed, width)}, card supports {label(max_speed, max_width)}"
+
 
 @dataclass
 class CheckResult:
