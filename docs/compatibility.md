@@ -70,10 +70,36 @@ when a projector is attached, or only `rerank` for a reranker.
 Arc Llama also provides a small compatibility surface for Ollama-aware clients:
 
 - `GET /api/tags` returns registered local and upstream models.
-- `POST /api/chat` accepts Ollama `messages` requests and supports JSON or
-  newline-delimited streaming responses.
-- `POST /api/generate` accepts an Ollama `prompt` and supports JSON or
-  newline-delimited streaming responses.
+- `POST /api/chat` translates text, base64 PNG/JPEG/GIF/WebP images, function
+  tools and tool-result history to the OpenAI chat path. Tool arguments return
+  as JSON objects. Streamed argument fragments are assembled before a complete
+  tool-call event is emitted; ordinary text streams immediately as NDJSON.
+- `POST /api/generate` translates `prompt`, `system` and optional images to the
+  same chat path, returning Ollama `response` text in JSON or NDJSON.
+- Both accept `format: "json"` or a JSON schema object through OpenAI
+  `response_format`. Sampling options supported here are `temperature`,
+  `top_p`, `top_k`, `min_p`, `stop`, `seed`, `repeat_penalty` and `num_predict`.
+  Actual tool, vision and schema enforcement still depends on the model and
+  active llama-server build.
+- `POST /api/show` returns basic local-library details, known GGUF architecture
+  and context metadata, configured context parameters and capability tags.
+  Unavailable templates, licenses, quantization/parameter counts and full
+  tokenizer metadata are omitted; `verbose: true` is refused explicitly.
+- `GET /api/ps` lists ready local models with known file sizes and basic
+  details. It omits unmeasured VRAM allocation, content digests and per-request
+  expiration times. Upstream-server residency is not observable here.
+
+Unsupported controls, including `keep_alive`, `think`, raw/templates/suffixes,
+legacy encoded context and dynamic `num_ctx`, return clear errors. Configure
+model lifetime/context in Arc Llama's controls. Load-only empty requests are
+refused rather than being treated as chat generation. Unknown request fields
+are not silently dropped. Invalid upstream tool arguments or truncated streams
+return errors; a failed stream does not emit a successful completion marker.
+
+Field names and response shapes follow the
+[public Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
+(accessed 2026-11-16). Tests exercise controlled upstream responses; they do not
+establish native GPU inference, model tool quality or JSON-schema enforcement.
 
 The Ollama routes translate requests into Arc Llama's existing model router;
 they do not implement Ollama model storage, Modelfiles, or runtime management.
