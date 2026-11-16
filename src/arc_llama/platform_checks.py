@@ -47,9 +47,16 @@ def pcie_link_warning(pci_slot: str, sysfs_root: Path = Path("/sys/bus/pci/devic
     """Inspect the slot-facing link, resolving sysfs aliases past on-card switches."""
     device = (sysfs_root / pci_slot).resolve()
     parent = device.parent
-    # The root/chipset port is the top PCI bridge. Its child is the card's
-    # upstream port; lower bridges and the GPU describe internal switch links.
-    while _pci_bridge(parent) and _pci_bridge(parent.parent):
+    # Arc's on-card downstream/upstream ports are Intel bridges. Bound the
+    # walk so a chipset switch/uplink can never become the card's slot link.
+    for _ in range(2):
+        if not (_pci_bridge(parent) and _pci_bridge(parent.parent)):
+            break
+        try:
+            if int((parent / "vendor").read_text().strip(), 16) != 0x8086:
+                break
+        except (OSError, ValueError):
+            break
         device, parent = parent, parent.parent
     try:
         speed = float((device / "current_link_speed").read_text().split()[0])

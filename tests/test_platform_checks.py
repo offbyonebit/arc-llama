@@ -465,6 +465,8 @@ def test_pcie_checks_card_upstream_port_instead_of_internal_switch_link(tmp_path
     _write_pcie_link(gpu, '16.0 GT/s PCIe', 16, '16.0 GT/s PCIe', 16)
     for bridge in (root, upstream, downstream):
         (bridge / 'class').write_text('0x060400')
+    for bridge in (upstream, downstream):
+        (bridge / 'vendor').write_text('0x8086')
     (gpu / 'class').write_text('0x030000')
     slot = str(gpu.relative_to(tmp_path))
     assert 'Gen3 x4, card supports Gen4 x8' in pcie_link_warning(slot, tmp_path)
@@ -484,3 +486,22 @@ def test_direct_gpu_uses_its_own_slot_facing_link(tmp_path):
     (root / 'class').write_text('0x060400')
     _write_pcie_link(gpu, '16.0 GT/s PCIe', 4, '16.0 GT/s PCIe', 8)
     assert 'Gen4 x4, card supports Gen4 x8' in pcie_link_warning(str(gpu.relative_to(tmp_path)), tmp_path)
+
+
+def test_pcie_stops_at_card_above_non_intel_chipset(tmp_path):
+    root = tmp_path / 'cpu-root'
+    chipset = root / 'chipset-switch'
+    upstream = chipset / 'card-upstream'
+    downstream = upstream / 'card-downstream'
+    gpu = downstream / 'gpu'
+    for bridge in (root, chipset, upstream, downstream):
+        _write_pcie_link(bridge, '8.0 GT/s PCIe', 4, '8.0 GT/s PCIe', 4)
+        (bridge / 'class').write_text('0x060400')
+        (bridge / 'vendor').write_text('0x1022' if bridge == chipset else '0x8086')
+    _write_pcie_link(upstream, '2.5 GT/s PCIe', 1, '16.0 GT/s PCIe', 8)
+    _write_pcie_link(gpu, '16.0 GT/s PCIe', 16, '16.0 GT/s PCIe', 16)
+    assert 'Gen1 x1, card supports Gen4 x8' in pcie_link_warning(str(gpu.relative_to(tmp_path)), tmp_path)
+
+    # Even an all-Intel motherboard must not extend the walk past two levels.
+    (chipset / 'vendor').write_text('0x8086')
+    assert 'Gen1 x1, card supports Gen4 x8' in pcie_link_warning(str(gpu.relative_to(tmp_path)), tmp_path)
