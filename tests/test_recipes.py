@@ -23,8 +23,8 @@ class TestEstimateKvBytes:
         assert estimate_kv_bytes(1024, KVCacheType.F16, "default") == 1024 * 70 * 1024
 
     def test_moe_a3b_q8(self):
-        # 20 KiB/token f16, q8_0 halves it
-        assert estimate_kv_bytes(4096, KVCacheType.Q8_0, "moe_a3b") == 4096 * 20 * 1024 * 0.5
+        # Each q8_0 block uses 34 bytes for the 32 values that take 64 bytes at f16.
+        assert estimate_kv_bytes(4096, KVCacheType.Q8_0, "moe_a3b") == 4096 * 20 * 1024 * 34 // 64
 
     def test_gemma_swa_f16(self):
         assert estimate_kv_bytes(8192, KVCacheType.F16, "gemma_swa") == 8192 * 16 * 1024
@@ -47,6 +47,23 @@ class TestEstimateKvBytes:
 
 
 class TestSuggestCtx:
+    def test_q8_context_accounts_for_block_scale_bytes(self):
+        f16_per_token = 64 * 1024
+        ctx = suggest_ctx(
+            vram_mb=8 * 1024,
+            model_file_mb=6 * 1024,
+            kv_type=KVCacheType.Q8_0,
+            f16_bytes_per_token=f16_per_token,
+        )
+        # After the default compute/safety reserves, KV has exactly 1 GiB.
+        assert ctx == 28672
+        assert estimate_kv_bytes(
+            ctx, KVCacheType.Q8_0, f16_bytes_per_token=f16_per_token,
+        ) == ctx * f16_per_token * 34 // 64
+        assert estimate_kv_bytes(
+            ctx + 4096, KVCacheType.Q8_0, f16_bytes_per_token=f16_per_token,
+        ) > 1024**3
+
     def test_basic_fit(self):
         # 24 GB VRAM, 4 GB model, q8_0 KV
         ctx = suggest_ctx(

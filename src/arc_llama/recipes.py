@@ -244,7 +244,7 @@ def estimate_kv_bytes(
     scale = {
         KVCacheType.F32: 2.0,
         KVCacheType.F16: 1.0,
-        KVCacheType.Q8_0: 0.5,
+        KVCacheType.Q8_0: 0.53125,
         KVCacheType.Q5_1: 0.375,
         KVCacheType.Q5_0: 0.375,
         KVCacheType.Q4_1: 0.3125,
@@ -292,7 +292,7 @@ def suggest_ctx(
     scale = {
         KVCacheType.F32: 2.0,
         KVCacheType.F16: 1.0,
-        KVCacheType.Q8_0: 0.5,
+        KVCacheType.Q8_0: 0.53125,
         KVCacheType.Q5_1: 0.375,
         KVCacheType.Q5_0: 0.375,
         KVCacheType.Q4_1: 0.3125,
