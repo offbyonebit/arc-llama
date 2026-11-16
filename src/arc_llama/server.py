@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import copy
 import io
 import json
 import logging
@@ -2417,11 +2418,19 @@ def create_app(
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
+        saved_settings = c.model_saved_settings.get(name)
+        persist = body.get("persist", True) is not False
+        if not persist and saved_settings is None:
+            c.model_saved_settings[name] = copy.deepcopy({
+                "recipe": previous_recipe, "kv_class": previous_kv_class,
+                "llama_server": model.llama_server, "env": model.env,
+            })
         model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
             # Auto-tune trials send persist=false: only its final pick is saved.
-            if body.get("persist", True) is not False:
+            if persist:
+                c.model_saved_settings.pop(name, None)
                 c.save(config_path or default_config_path())
         except OSError as e:
             # Previously this was logged and the edit continued, so the caller
@@ -2433,6 +2442,8 @@ def create_app(
             # that silently un-applies later is not.
             model.recipe, model.kv_class = previous_recipe, previous_kv_class
             model.llama_server, model.env = previous_runtime
+            if saved_settings is not None:
+                c.model_saved_settings[name] = saved_settings
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(
                 status_code=500,

@@ -392,6 +392,10 @@ class Config:
     file_admin_token: str | None = field(default=None, repr=False, compare=False)
     """The file's own admin_token while ARC_LLAMA_ADMIN_TOKEN overrides it; saved instead of the env value."""
     admin_token_from_env: bool = field(default=False, repr=False, compare=False)
+    # Runtime-only trial settings must never be serialized by an unrelated save.
+    model_saved_settings: dict[str, dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     # ------------------------------------------------------------------
     # Lookup helpers
@@ -503,6 +507,8 @@ class Config:
             "mcp_servers": [asdict(s) for s in self.mcp_servers],
             "profiles": [asdict(p) for p in self.profiles],
         }
+        for model in d["models"]:
+            model.update(self.model_saved_settings.get(model["name"], {}))
         return _restore_unknown_keys(_strip_none(d), self.unknown_keys)
 
     def save(self, path: Path | None = None) -> Path:
