@@ -398,6 +398,7 @@ const attachmentsComponent = window.ArcChat.createAttachments({
   attachButton,
   pdfInput,
   inputWrap,
+  input,
   authHeaders,
   request: (...args) => fetch(...args),
   escapeHtml,
@@ -543,7 +544,7 @@ function openSettingsFromLink() {
 async function saveCurrentChat({ strict = false, state = compactionState } = {}) {
   if (conversation.length === 0 && !currentChatId) return;
   const firstUser = conversation.find(m => m.role === "user");
-  const savedTitle = strict ? loadChats().find(c => c.id === currentChatId)?.title : null;
+  const savedTitle = loadChats().find(c => c.id === currentChatId)?.title;
   const title = savedTitle || truncateTitle(firstUser ? firstUser.content : "New chat");
   const now = Date.now();
   if (!currentChatId) {

@@ -1352,6 +1352,10 @@ main {
   color: var(--fg-mute);
 }
 
+.h-rename { flex: none; color: var(--fg-mute); background: transparent; border: 0; cursor: pointer; }
+.h-rename:hover { color: var(--fg); }
+.h-rename-input { flex: 1 1 auto; min-width: 0; width: 100%; font-size: 16px; }
+
 .h-card-meta {
   display: flex;
   align-items: center;

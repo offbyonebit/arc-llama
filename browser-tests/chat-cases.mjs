@@ -89,6 +89,58 @@ export async function testChatSend({ page, origin }) {
   });
 }
 
+export async function testChatRename({ page, origin }) {
+  const chat = { id: "rename-chat", title: "Original title", created_at: 1, updated_at: 2,
+    messages: [{ role: "user", content: "Original prompt" }] };
+  const patches = [], puts = [];
+  let failSave = false;
+  await page.route("**/v1/chats", route => route.fulfill({ status: 200, contentType: "application/json",
+    body: JSON.stringify({ data: [chat] }) }));
+  await page.route("**/v1/chats/rename-chat", route => {
+    const method = route.request().method();
+    if (method === "PATCH") {
+      const body = route.request().postDataJSON();
+      patches.push(body);
+      if (failSave) return route.fulfill({ status: 500, body: "save failed" });
+      chat.title = body.title;
+    }
+    if (method === "PUT") puts.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(chat) });
+  });
+  await openChat(page, origin);
+  await page.click("#history-toggle");
+  const rename = page.locator('.h-card[data-id="rename-chat"] .h-rename');
+  await rename.focus();
+  await page.keyboard.press("Enter");
+  const editor = page.getByRole("textbox", { name: "Chat title", exact: true });
+  await editor.fill("Keep <these> notes");
+  await editor.press("Enter");
+  await page.waitForFunction(() => document.querySelector(".h-card-title")?.textContent === "Keep <these> notes");
+  if (patches.length !== 1 || patches[0].title !== chat.title) throw new Error("rename did not PATCH the title");
+  if (!(await rename.evaluate(el => el === document.activeElement))) throw new Error("rename did not restore keyboard focus");
+  const cached = await page.evaluate(() => JSON.parse(localStorage.getItem("arc-llama-chats")));
+  if (cached[0].title !== chat.title) throw new Error("renamed title was not cached");
+  await rename.press("Enter");
+  await editor.fill("Discard this title");
+  await editor.press("Escape");
+  if (patches.length !== 1 || !(await page.locator("#history-panel").evaluate(el => el.classList.contains("open")))) {
+    throw new Error("Escape saved the rename or closed history");
+  }
+  failSave = true;
+  await rename.press("Enter");
+  await editor.fill("Failed rename");
+  await editor.press("Enter");
+  await page.waitForSelector(".message.error");
+  if (chat.title !== "Keep <these> notes") throw new Error("failed save changed title");
+  await editor.press("Escape");
+  await page.locator('.h-card[data-id="rename-chat"] .h-card-title').click();
+  await page.waitForSelector(".message.user");
+  await page.fill("#message-input", "A follow-up");
+  await page.press("#message-input", "Enter");
+  await page.waitForFunction(() => document.querySelector(".message.assistant .turn-action"));
+  if (!puts.length || puts.some(body => body.title !== "Keep <these> notes")) throw new Error("sending overwrote the custom title");
+}
+
 export async function testStructuredLoadFailure({ page, origin }) {
   await openChat(page, origin, { model: "gemma" });
   let releaseLoad;
@@ -352,7 +404,7 @@ export async function testTextAttachmentExtensionFallback({ page, origin }) {
   });
   await openChat(page, origin);
   await page.setInputFiles("#pdf-input", {
-    name: "notes.md", mimeType: "", buffer: Buffer.from("# Field notes\nKeep the blue folder."),
+    name: "settings.toml", mimeType: "", buffer: Buffer.from('folder = "blue"'),
   });
   await page.waitForFunction(() => {
     const chip = document.querySelector(".attachment-chip");
@@ -362,8 +414,48 @@ export async function testTextAttachmentExtensionFallback({ page, origin }) {
   await page.press("#message-input", "Enter");
   await page.waitForSelector(".message.assistant .turn-action");
   const user = requests[0]?.messages.find(message => message.role === "user");
-  if (!user?.content.includes("[Attachment: notes.md]") || !user.content.includes("Keep the blue folder.")) {
+  if (!user?.content.includes("[Attachment: settings.toml]") || !user.content.includes('folder = "blue"')) {
     throw new Error("text extension fallback did not include the attachment content");
+  }
+}
+
+export async function testPasteImage({ page, origin }) {
+  const requests = [];
+  await page.route("**/v1/models", route => {
+    const models = JSON.parse(JSON.stringify(MODELS));
+    models.data[0].metadata.capabilities = ["chat", "completion", "vision"];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(models) });
+  });
+  await page.route("**/v1/chat/completions", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "text/event-stream", body: ASSISTANT_REPLY });
+  });
+  await openChat(page, origin);
+  const textPrevented = await page.evaluate(() => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", "ordinary text");
+    const event = new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true });
+    document.querySelector("#message-input").dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  if (textPrevented || await page.locator(".attachment-chip").count()) throw new Error("text paste was intercepted");
+  await page.evaluate(bytes => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array(bytes)], "clipboard.png", { type: "image/png" }));
+    document.querySelector("#message-input").dispatchEvent(new ClipboardEvent("paste", {
+      clipboardData, bubbles: true, cancelable: true,
+    }));
+  }, Array.from(PNG_1PX));
+  await page.waitForFunction(() => {
+    const chip = document.querySelector(".attachment-chip");
+    return chip && !chip.classList.contains("processing") && !chip.classList.contains("error");
+  });
+  await page.fill("#message-input", "Describe the pasted image");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.user .message-images img");
+  await page.waitForSelector(".message.assistant .turn-action");
+  if (!requests[0]?.messages[0]?.content?.some(part => part.type === "image_url" && part.image_url.url.startsWith("data:image/png;base64,"))) {
+    throw new Error("clipboard image did not use the existing image payload");
   }
 }
 

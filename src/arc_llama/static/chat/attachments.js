@@ -2,7 +2,11 @@
   const ArcChat = root.ArcChat = root.ArcChat || {};
   ArcChat.createAttachments = function (ctx) {
     const IMAGE_LIMIT_BYTES = 10 * 1024 * 1024;
-    const TEXT_EXTENSIONS = new Set([".txt", ".md", ".py", ".json", ".yaml", ".yml", ".csv"]);
+    const TEXT_EXTENSIONS = new Set([
+      ".txt", ".md", ".py", ".json", ".yaml", ".yml", ".csv",
+      ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".xml", ".toml", ".ini", ".log",
+      ".sh", ".ps1", ".bat", ".sql", ".java", ".c", ".h", ".cpp", ".rs", ".go",
+    ]);
     let attachments = [];
     function isTextFile(file) {
       if (file.type.startsWith("text/")) return true;
@@ -130,6 +134,15 @@
     function start() {
       if (started) return;
       started = true;
+          if (ctx.pdfInput) ctx.pdfInput.accept = [".pdf", ...TEXT_EXTENSIONS, "text/plain", "application/pdf", "image/*"].join(",");
+          ctx.input?.addEventListener("paste", (event) => {
+            const images = Array.from(event.clipboardData?.items || [])
+              .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+              .map(item => item.getAsFile()).filter(Boolean);
+            if (!images.length) return;
+            event.preventDefault();
+            for (const image of images) addAttachment(image);
+          });
           ctx.attachButton?.addEventListener("click", () => ctx.pdfInput?.click());
           ctx.pdfInput?.addEventListener("change", () => { const files = Array.from(ctx.pdfInput.files || []); ctx.pdfInput.value = ""; for (const file of files) addAttachment(file); });
           ctx.inputWrap?.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); ctx.inputWrap.style.borderColor = "var(--accent-bright)"; });
