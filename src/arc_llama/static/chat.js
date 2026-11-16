@@ -22,6 +22,9 @@ const modelSelect = $("#model-select");
 const modelStatus = $("#model-status");
 const statusText = $("#status-text");
 const input = $("#message-input");
+const thinkToggle = $("#think-toggle");
+let thinkingEnabled = true;
+let savingThinking = false;
 const sendButton = $("#send-button");
 const inputWrap = $("#input-wrap");
 const commandPalette = $("#command-palette");
@@ -337,7 +340,7 @@ let compacting = false;
 let compactAbort = null;
 const compactor = window.ArcChat.compaction;
 function effectiveConversation(entries = conversation) { return compactor.effective(entries, compactionState); }
-function chatBusy() { return generating || sendingMessage || generatingImage || compacting; }
+function chatBusy() { return generating || sendingMessage || generatingImage || compacting || savingThinking; }
 function allowChatChange() {
   if (!chatBusy()) return true;
   showError("Finish or stop the current request before changing chats or models.");
@@ -457,6 +460,8 @@ const workComponent = window.ArcChat.createWork({
 });
 
 const historyComponent = window.ArcChat.createHistory({
+  get thinkingEnabled() { return thinkingEnabled; },
+  set thinkingEnabled(value) { setThinkingEnabled(value); },
   allowChatChange,
   refreshBudget,
   get compactionState() { return compactionState; },
@@ -557,6 +562,7 @@ async function saveCurrentChat({ strict = false, state = compactionState } = {})
     messages: conversation.map(m => ({ role: m.role, content: m.content,
       ...(m.images?.length ? { images: m.images } : {}), ...(m.thinking ? { thinking: m.thinking } : {}), ...(m.status ? { status: m.status } : {}) })),
     compaction: state,
+    thinking_enabled: thinkingEnabled,
     createdAt: now,
     updatedAt: now,
   };
@@ -570,6 +576,7 @@ async function saveCurrentChat({ strict = false, state = compactionState } = {})
         title,
         messages: chatDoc.messages,
         compaction: state,
+        thinking_enabled: thinkingEnabled,
       }),
     });
     if (strict && (state
@@ -603,6 +610,7 @@ async function newChat() {
   lastUserDiv = null;
   lastAssistantDiv = null;
   currentChatId = null;
+  setThinkingEnabled(true);
   chatLog.innerHTML = "";
   chatLog.appendChild(emptyState);
   emptyState.style.display = "";
@@ -980,8 +988,42 @@ let budgetSequence = 0;
 let countedBudget = null;
 
 function budgetPayload(entries) {
-  return { model: selectedModel, messages: toApiMessages(entries), max_tokens: presetFor(selectedModel).max_tokens };
+  return { model: selectedModel, messages: toApiMessages(entries), max_tokens: presetFor(selectedModel).max_tokens, ...thinkingOptions() };
 }
+
+function thinkingOptions() {
+  return thinkingEnabled ? {} : { chat_template_kwargs: { enable_thinking: false } };
+}
+
+function setThinkingEnabled(value) {
+  thinkingEnabled = value !== false;
+  if (thinkToggle) thinkToggle.checked = thinkingEnabled;
+  refreshBudget();
+}
+
+thinkToggle?.addEventListener("change", async () => {
+  const previous = thinkingEnabled;
+  if (!allowChatChange()) { thinkToggle.checked = previous; return; }
+  setThinkingEnabled(thinkToggle.checked);
+  if (!currentChatId) return; // The first send persists the new chat's choice.
+  savingThinking = true;
+  thinkToggle.disabled = true;
+  try {
+    await apiRequest(`/v1/chats/${encodeURIComponent(currentChatId)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thinking_enabled: thinkingEnabled }),
+    });
+    const chats = loadChats();
+    const chat = chats.find(c => c.id === currentChatId);
+    if (chat) { chat.thinking_enabled = thinkingEnabled; saveChats(chats); }
+  } catch (error) {
+    setThinkingEnabled(previous);
+    showError("Could not save Think setting: " + error.message);
+  } finally {
+    savingThinking = false;
+    thinkToggle.disabled = false;
+  }
+});
 
 function draftEntries() {
   const attachments = buildAttachmentText();
@@ -1304,6 +1346,7 @@ async function runSend() {
         stream: true,
         max_tokens: preset.max_tokens,
         stream_options: { include_usage: true },
+        ...thinkingOptions(),
         ...(preset.temperature != null ? { temperature: preset.temperature } : {}),
       }),
     });

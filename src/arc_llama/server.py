@@ -1466,6 +1466,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        if "thinking_enabled" in body and not isinstance(body["thinking_enabled"], bool):
+            raise HTTPException(status_code=400, detail="thinking_enabled must be a boolean")
         return body
 
     def _chat_messages(body: dict[str, Any]) -> list[ChatMessage]:
@@ -1525,7 +1527,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="folder must be a string")
         store: ChatStore = request.app.state.chat_store
         try:
-            chat = store.create(chat_id, title, folder=folder)
+            chat = store.create(chat_id, title, folder=folder, thinking_enabled=body.get("thinking_enabled", True))
         except FileExistsError:
             raise HTTPException(status_code=409, detail=f"Chat already exists: {chat_id}") from None
         except ValueError as exc:
@@ -1620,6 +1622,8 @@ def create_app(
 
         if "title" in body:
             chat.title = str(body["title"])
+        if "thinking_enabled" in body:
+            chat.thinking_enabled = body["thinking_enabled"]
         if "messages" in body:
             chat.messages = _chat_messages(body)
             # A replacement transcript invalidates an old summary unless the
@@ -1656,6 +1660,8 @@ def create_app(
 
         if "title" in body:
             chat.title = str(body["title"])
+        if "thinking_enabled" in body:
+            chat.thinking_enabled = body["thinking_enabled"]
         if "folder" in body and body["folder"] is not None:
             chat.folder = str(body["folder"])
         if "messages" in body:

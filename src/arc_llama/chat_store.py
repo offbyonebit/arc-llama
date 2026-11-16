@@ -116,6 +116,7 @@ class Chat:
     messages: list[ChatMessage] = field(default_factory=list)
     folder: str = ""
     compaction: dict[str, Any] | None = None
+    thinking_enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +127,7 @@ class Chat:
             "messages": [m.to_dict() for m in self.messages],
             "folder": self.folder,
             "compaction": self.compaction,
+            "thinking_enabled": self.thinking_enabled,
         }
 
     @classmethod
@@ -135,6 +137,8 @@ class Chat:
             raise ValueError("folder must be a string")
         if not isinstance(data.get("messages", []), list):
             raise ValueError("messages must be an array")
+        if not isinstance(data.get("thinking_enabled", True), bool):
+            raise ValueError("thinking_enabled must be a boolean")
         return cls(
             id=data.get("id", ""),
             title=data.get("title", "Untitled chat"),
@@ -143,6 +147,7 @@ class Chat:
             messages=[ChatMessage.from_dict(m) for m in data.get("messages", [])],
             folder=data.get("folder", "") or "",
             compaction=validate_compaction(data.get("compaction"), len(data.get("messages", []))),
+            thinking_enabled=data.get("thinking_enabled", True),
         )
 
     def summary(self) -> dict[str, Any]:
@@ -219,6 +224,7 @@ class ChatStore:
         messages: list[ChatMessage] | None = None,
         *,
         folder: str = "",
+        thinking_enabled: bool = True,
     ) -> Chat:
         """Create a new chat. Raises ``FileExistsError`` if it already exists."""
         if self._find_chat_path(chat_id) is not None:
@@ -231,6 +237,7 @@ class ChatStore:
             updated_at=now,
             messages=list(messages or []),
             folder=folder,
+            thinking_enabled=thinking_enabled,
         )
         self._save(chat)
         return chat
