@@ -213,7 +213,7 @@ class DownloadManager:
 
     One at a time keeps disk and network use predictable and stops two jobs
     racing on the same repo folder. Progress is the folder's size against
-    the expected total, polled while the blocking download runs in a thread.
+    the expected total, polled while the download runs in a child process.
     """
 
     def __init__(self, cfg: Config, on_registered: Any) -> None:
@@ -388,14 +388,21 @@ class DownloadManager:
             job.finished_at = time.time()
 
     async def shutdown(self) -> None:
-        for job in list(self.jobs.values()):
-            if job.status in {"queued", "downloading", "cancelling"}:
-                await self.cancel(job.id)
-        if self._worker is not None and not self._worker.done():
-            try:
-                await self._worker
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        async with self._cancel_lock:
+            # Stop the queue and reap its writer, but keep staged bytes for
+            # resume. Only an explicit user Cancel removes partial downloads.
+            tasks: list[asyncio.Task[Any]] = list(self._transfers.values())
+            if self._worker is not None:
+                tasks.append(self._worker)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for job in self.jobs.values():
+                if job.status in {"queued", "downloading", "registering"}:
+                    job.status = "error"
+                    job.error = "Interrupted by shutdown; retry resumes retained partial files."
+                    job.finished_at = time.time()
 
 
 def resolve_download_dir(raw: str) -> Path:
