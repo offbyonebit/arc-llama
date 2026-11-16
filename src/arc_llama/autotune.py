@@ -399,6 +399,10 @@ class Autotuner:
         if not self.cfg.tune.auto:
             return
 
+        resources = getattr(self.router, "resources", None)
+        if resources is not None and resources.active_leases.get("watchdog"):
+            return
+
         idle = self.cfg.tune.idle_seconds
         now = _now()
         if self.router.inflight > 0 or now - self.router.last_activity < idle:

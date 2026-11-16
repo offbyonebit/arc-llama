@@ -111,6 +111,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 11437
     single_resident: bool = True
+    watchdog: bool = True
     admin_token: str | None = None
     """Bearer token required for destructive admin endpoints (load, stop, edit, scan).
     Set via `arc-llama serve --admin-token` or env var ARC_LLAMA_ADMIN_TOKEN."""
@@ -137,6 +138,8 @@ class ServerConfig:
     """Maximum gap between streamed chunks. Zero means unlimited."""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.watchdog, bool):
+            raise ValueError("server.watchdog must be a boolean")
         for name in ("inference_first_response_seconds", "inference_stream_idle_seconds"):
             value = getattr(self, name)
             if (

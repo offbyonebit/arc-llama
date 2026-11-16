@@ -502,6 +502,9 @@ class Router:
         # scheme marked the model only after the bounded drain slept, which
         # let a concurrent arrival acquire and restart the teardown clock.
         self._stopping: set[str] = set()
+        from arc_llama.watchdog import ServerWatchdog
+
+        self.watchdog = ServerWatchdog(self)
         self._build_servers()
 
     def _emit(self, event: str, **payload: Any) -> None:
@@ -811,6 +814,7 @@ class Router:
                     )
                     raise failure
                 self.metrics["loads"] += 1
+                self.watchdog.loaded(target_model.name)
                 self.metrics["last_load_at"] = time.time()
                 self.metrics["last_error"] = None
                 self.timings.record_cold_start(
@@ -951,7 +955,7 @@ class Router:
             if name == target.name:
                 continue
             if not srv.is_running:
-                if getattr(srv, "process", None) is not None:
+                if srv.ready or getattr(srv, "process", None) is not None:
                     await srv.astop()  # release ownership retained until exit
                 continue
             other_model = next((m for m in self.cfg.models if m.name == name), None)
@@ -1073,8 +1077,9 @@ class Router:
                 return False
             if not force and srv.is_running:
                 self._refuse_if_busy([name])
+            self.watchdog.forget(name)
             if not srv.is_running:
-                if getattr(srv, "process", None) is not None:
+                if srv.ready or getattr(srv, "process", None) is not None:
                     await srv.astop()
                 return False
             await srv.astop()
@@ -1089,11 +1094,12 @@ class Router:
         async with self._lock:
             if not force:
                 self._refuse_if_busy([n for n, s in self._servers.items() if s.is_running])
+            self.watchdog.states.clear()
             stopped = 0
             failure = None
             for name, srv in self._servers.items():
                 running = srv.is_running
-                if running or getattr(srv, "process", None) is not None:
+                if running or srv.ready or getattr(srv, "process", None) is not None:
                     try:
                         await srv.astop()
                     except StartupFailureError as exc:
@@ -1124,6 +1130,7 @@ class Router:
         """
         async with self._lock:
             old = self._servers.get(name)
+            self.watchdog.forget(name)
             was_running = bool(old and old.is_running)
             if old is not None and old.is_running:
                 drain = (
@@ -1166,6 +1173,7 @@ class Router:
             return True, was_running
 
     async def shutdown(self) -> None:
+        await self.watchdog.close()
         async with self._lock:
             for srv in self._servers.values():
                 await srv.astop()

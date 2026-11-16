@@ -776,3 +776,15 @@ async def test_completed_sweep_retains_measured_before_after(cfg, monkeypatch):
     monkeypatch.setattr("arc_llama.tune.tune_model", aborted_report)
     await tuner._run_sweep(cfg.models[0])
     assert tuner.last_results["m"] == result
+
+
+async def test_watchdog_recovery_lease_defers_tuning(cfg: Config, monkeypatch):
+    from types import SimpleNamespace
+
+    router = FakeRouter(cfg)
+    router.resources = SimpleNamespace(active_leases={"watchdog": 1})
+    tuner = _make_tuner(cfg, router)
+    calls = []
+    monkeypatch.setattr(tuner, "_pick_candidate", lambda: calls.append("picked"))
+    await tuner._tick()
+    assert calls == []

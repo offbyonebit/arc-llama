@@ -59,3 +59,16 @@ export async function testRuntimeOverridesSurviveUnrelatedEdits({ page, origin }
   await page.waitForFunction(() => document.querySelector('#s-feedback').textContent === 'Saved.');
   if (edited.ctx !== 16384 || Object.hasOwn(edited, 'env') || Object.hasOwn(edited, 'llama_server')) throw new Error('unrelated edit overwrote unobserved runtime settings');
 }
+
+export async function testWatchdogRecoveryWarning({ page, origin }) {
+  const message = 'Watchdog stopped automatic recovery for qwen: three restarts within an hour. Check the model log, then stop and load it manually.';
+  let error = message;
+  await page.route('**/admin/status', route => route.fulfill(json({ ...ADMIN_STATUS,
+    models: ADMIN_STATUS.models.map(m => ({ ...m, watchdog_error: m.name === 'qwen' ? error : null })) })));
+  await page.goto(`${origin}/#models`);
+  await page.locator('#readiness-card .model-card-file-warning[role="status"]').waitFor();
+  if (await page.locator('#readiness-card .model-card-file-warning[role="status"]').innerText() !== message) throw new Error('Watchdog recovery reason missing');
+  error = null;
+  await page.evaluate(() => fetchStatus(true));
+  if (await page.locator('#readiness-card .model-card-file-warning[role="status"]').count()) throw new Error('Watchdog recovery warning stayed after manual recovery');
+}

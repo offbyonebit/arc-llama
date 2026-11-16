@@ -367,6 +367,10 @@ def create_app(
                 cfg, app.state.router, version=__version__, on_save=_save_cfg
             )
             app.state.tuner = tuner
+        watchdog = getattr(app.state.router, "watchdog", None)
+        if watchdog is not None:
+            watchdog.busy = lambda: bool(tuner and tuner.is_sweep_running)
+            watchdog.start()
         try:
             await app.state.mcp_manager.start()
             await startup_plugins(app_plugins, app)
@@ -1785,6 +1789,9 @@ def create_app(
                     "tune_state": m.tune_state,
                     "tuned_at": m.tuned_at,
                     "tune_error": m.tune_error,
+                    "watchdog_error": (
+                        rt.watchdog.error(m.name) if hasattr(rt, "watchdog") else None
+                    ),
                     "tune_fingerprint": m.tune_fingerprint,
                     "vram_estimate": fit_info,
                 }
