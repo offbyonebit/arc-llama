@@ -44,7 +44,7 @@ def _doctor_json(report: DoctorReport, gpus: list[Any], cfg: Config | None) -> d
     sources = [os.environ, *(model.env for model in cfg.models)] if cfg else [os.environ]
     secret_values = {
         value for source in sources for key, value in source.items()
-        if re.search(r"key|token|secret|password|credential", key, re.I) and isinstance(value, str) and value
+        if re.search(r"key|token|secret|password|credential", key, re.I) and isinstance(value, str) and len(value) >= 8
     }
     if cfg:
         secret_values.update(value for value in (cfg.server.admin_token, cfg.file_admin_token)

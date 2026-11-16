@@ -127,3 +127,29 @@ def test_json_redacts_windows_home_spellings_and_url_credentials(monkeypatch):
     assert message.count("~") == 3
     assert "user:password" not in message
     assert "[REDACTED]@example.test" in message
+
+
+def test_short_environment_flags_do_not_redact_versions_or_messages(environment, monkeypatch):
+    from arc_llama.cli_diagnostics import _doctor_json
+
+    monkeypatch.setenv("FOO_TOKEN", "1")
+    monkeypatch.setenv("FEATURE_KEY", "true")
+    monkeypatch.setenv("SEVEN_SECRET", "abcdefg")
+    environment.cfg.models[0].env["MODEL_TOKEN"] = "1"
+    report = DoctorReport()
+    message = "Version 1.1.1: true flag, abcdefg unchanged"
+    report.add("flags", True, message)
+    data = _doctor_json(report, [], environment.cfg)
+    assert data["arc_llama_version"] == __version__
+    assert data["checks"][0]["message"] == message
+
+
+def test_eight_character_env_secret_and_short_admin_tokens_still_redact(environment, monkeypatch):
+    from arc_llama.cli_diagnostics import _doctor_json
+
+    monkeypatch.setenv("EIGHT_TOKEN", "abcdefgh")
+    environment.cfg.server.admin_token = "adm"
+    environment.cfg.file_admin_token = "fil"
+    report = DoctorReport()
+    report.add("tokens", True, "abcdefgh adm fil")
+    assert _doctor_json(report, [], environment.cfg)["checks"][0]["message"] == "[REDACTED] [REDACTED] [REDACTED]"
