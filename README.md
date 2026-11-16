@@ -589,6 +589,7 @@ version = 1
 host = "127.0.0.1"
 port = 11437
 single_resident = true
+watchdog = true         # idle health checks; set false to disable automatic recovery
 
 [paths]
 llama_server = "/usr/local/bin/llama-server"   # Windows: "C:\\...\\llama-server.exe"
@@ -933,3 +934,20 @@ output hashes even across identical requests on this SYCL runtime, so the
 strict comparison guard rejected the candidates. The original draft length 3
 and effective confidence 0.75 were restored. No additional verified speedup
 is claimed for this validation; DeepSeek is credited for the tuning approach.
+
+The model watchdog checks ready local llama-server processes every 60 seconds,
+using a 2-second HTTP timeout. It skips active inference (including benchmark
+requests), model loads, tuning and GPU resource leases, and checks again after a
+probe before stopping anything. Three consecutive failed health checks, or an
+exited process, triggers a restart with the existing launch plan. A successful
+health check resets the failure count. `/health` cannot detect an empty reply
+when the runtime still reports healthy; this is process/health recovery, not
+validation of generated answers.
+
+Recovery attempts back off for 60, 120 and 240 seconds. After three attempts in
+one hour, further automatic recovery pauses until you explicitly stop and load
+the model (or restart Arc Llama). Recovery failures and the pause reason appear
+on the model card. Set `[server] watchdog = false` in config and restart Arc
+Llama to disable all watchdog probes and restarts. Recovery history is local to
+the running router, not persisted across restarts. Long-running B60 soak tests
+on Linux and Windows are still required before shipping this feature.

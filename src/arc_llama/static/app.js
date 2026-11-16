@@ -371,6 +371,13 @@ function renderReadiness() {
     : fileState.available === true ? "The first message loads this model. File contents and inference have not been checked."
     : "File availability has not been reported. The first message attempts to load this model.";
   container.append(heading, metrics, note);
+  if (model.watchdog_error) {
+    const warning = document.createElement("p");
+    warning.className = "model-card-file-warning";
+    warning.setAttribute("role", "status");
+    warning.textContent = model.watchdog_error;
+    container.appendChild(warning);
+  }
   if (fileState.available === false) {
     const problem = document.createElement("p");
     problem.className = "model-card-file-warning";
