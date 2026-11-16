@@ -87,6 +87,20 @@
     </div>
   </section>
 
+  <section class="flow-section runtime-section" data-area="system" aria-labelledby="runtime-title">
+    <div class="section-head compact"><div><h2 id="runtime-title">Runtime</h2></div><button id="runtime-refresh" class="ghost" type="button">Refresh history</button></div>
+    <p id="runtime-current" class="section-copy">Loading runtime history…</p>
+    <ul id="runtime-builds" class="section-copy"></ul>
+    <p id="runtime-busy-reason" class="section-copy"></p>
+    <button id="runtime-rollback" class="secondary" type="button" hidden></button>
+    <div id="runtime-confirm" class="runtime-confirm" role="group" aria-label="Confirm runtime rollback" hidden>
+      <p>Roll back the runtime? Loaded models will stop and restart with the previous build.</p>
+      <button id="runtime-confirm-yes" class="danger" type="button">Roll back and restart models</button>
+      <button id="runtime-confirm-cancel" class="ghost" type="button">Cancel</button>
+    </div>
+    <p id="runtime-action-status" class="section-copy" role="status" aria-live="polite"></p>
+  </section>
+
   <section class="flow-section library-section" data-area="models" aria-labelledby="library-title">
     <div class="section-head compact">
       <div>

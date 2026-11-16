@@ -81,6 +81,22 @@ def router(cfg: Config):
     return FakeRouter()
 
 
+async def test_tick_does_not_start_a_sweep_during_exclusive_maintenance(cfg, router, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    router.resources = SimpleNamespace(exclusive_active=True)
+    tuner = Autotuner(cfg, router, version="test")
+    sweep = AsyncMock()
+    monkeypatch.setattr(tuner, "_run_sweep", sweep)
+    monkeypatch.setattr(tuner, "_pick_candidate", lambda: cfg.models[0])
+    await tuner._tick()
+    sweep.assert_not_awaited()
+    router.resources.exclusive_active = False
+    await tuner._tick()
+    sweep.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # 1. Fingerprint changes when inputs change; stable otherwise.
 # ---------------------------------------------------------------------------

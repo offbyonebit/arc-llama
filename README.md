@@ -215,6 +215,14 @@ arc-llama runtime update --dry-run       # check and canary, keep current
 arc-llama runtime rollback               # undo the last switch
 ```
 
+**System → Runtime** lists the current runtime and earlier files still on disk.
+Dates come from recorded update history or a labeled install-marker timestamp;
+unrecorded dates remain unknown. **Roll back to …** asks for confirmation, then
+stops and restarts loaded models with the previous runtime. Loading, downloads,
+setup, active requests and tuning must finish first. A successful switch with a
+model reload failure is reported separately, so retrying does not accidentally
+roll back another build. The admin endpoints require the configured admin token.
+
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
 

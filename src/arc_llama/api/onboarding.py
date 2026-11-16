@@ -42,6 +42,8 @@ def register_onboarding_routes(
         body = await read_json_body(request)
         manager = setup(request)
         action = body.get("action", "start")
+        if action in {"start", "detect"} and getattr(request.app.state, "runtime_rollback_running", False):
+            raise HTTPException(status_code=409, detail="A runtime rollback is running. Wait before starting setup.")
         try:
             if action == "pause":
                 manager.pause()
