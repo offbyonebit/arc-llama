@@ -89,12 +89,16 @@ Arc Llama also provides a small compatibility surface for Ollama-aware clients:
   details. It omits unmeasured VRAM allocation, content digests and per-request
   expiration times. Upstream-server residency is not observable here.
 
-Unsupported controls, including `keep_alive`, `think`, raw/templates/suffixes,
-legacy encoded context and dynamic `num_ctx`, return clear errors. Configure
-model lifetime/context in Arc Llama's controls. Load-only empty requests are
-refused rather than being treated as chat generation. Unknown request fields
-are not silently dropped. Invalid upstream tool arguments or truncated streams
-return errors; a failed stream does not emit a successful completion marker.
+Common client settings `keep_alive`, `think` and server load options such as
+`num_ctx`, `num_gpu`, `num_thread`, `num_batch`, `main_gpu`, `use_mmap`,
+`use_mlock`, `numa`, `low_vram`, `f16_kv`, `logits_all`, `vocab_only` and
+`num_gqa` are accepted and ignored. Configure model lifetime, context and runtime
+settings in Arc Llama's controls; `think` does not change reasoning behavior.
+Unmappable prompt controls (raw/templates/suffixes and legacy encoded context)
+and unknown options return clear errors. Load-only empty requests are refused
+rather than being treated as chat generation. Invalid upstream tool arguments
+or truncated streams return errors; a failed stream does not emit a successful
+completion marker.
 
 Field names and response shapes follow the
 [public Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)

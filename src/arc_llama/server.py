@@ -2694,7 +2694,7 @@ def _ollama_messages(messages: list[Any]) -> list[dict[str, Any]]:
 
 
 def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any], generate: bool = False) -> dict[str, Any]:
-    allowed = {"model", "stream", "options", "format"} | (
+    allowed = {"model", "stream", "options", "format", "keep_alive", "think"} | (
         {"prompt", "system", "images", "raw"} if generate else {"messages", "tools"}
     )
     unknown = {key for key, value in body.items() if key not in allowed and value is not None}
@@ -2715,11 +2715,16 @@ def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any], generate: bo
         raise ValueError("options must be an object")
     mapping = {"temperature": "temperature", "top_p": "top_p", "stop": "stop", "num_predict": "max_tokens",
                "seed": "seed", "top_k": "top_k", "min_p": "min_p", "repeat_penalty": "repeat_penalty"}
-    if set(options) - mapping.keys():
-        raise ValueError(f"Unsupported Ollama options: {', '.join(sorted(set(options) - mapping.keys()))}")
+    # These are commonly sent by clients; Arc Llama's model config owns the
+    # runtime settings. keep_alive and think above are likewise not forwarded.
+    load_options = {"num_ctx", "num_batch", "num_gpu", "main_gpu", "num_thread", "numa",
+                    "low_vram", "f16_kv", "logits_all", "vocab_only", "use_mmap", "use_mlock", "num_gqa"}
+    unknown_options = set(options) - mapping.keys() - load_options
+    if unknown_options:
+        raise ValueError(f"Unsupported Ollama options: {', '.join(sorted(unknown_options))}")
     payload: dict[str, Any] = {
         "model": body["model"], "messages": _ollama_messages(messages), "stream": body.get("stream", True),
-        **{mapping[key]: value for key, value in options.items()},
+        **{mapping[key]: value for key, value in options.items() if key in mapping},
     }
     if body.get("format") is not None:
         fmt = body["format"]

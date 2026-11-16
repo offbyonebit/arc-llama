@@ -251,8 +251,26 @@ def test_invalid_upstream_tool_arguments_are_clear_errors(ollama_client, stream)
         assert response.status_code == 502 and 'error' in response.json()
 
 
-@pytest.mark.parametrize('extra', [{'keep_alive': 0}, {'format': 'xml'}, {'options': {'num_ctx': 1024}},
-                                 {'options': []}, {'think': 'high'}, {'tools': [{}]}])
+@pytest.mark.parametrize('endpoint', ['chat', 'generate'])
+def test_client_lifetime_and_load_options_are_accepted_without_forwarding(ollama_client, endpoint):
+    client, wire, _ = ollama_client
+    body = {'model': 'demo', 'stream': False, 'keep_alive': '5m', 'think': 'high', 'options': {
+        'num_ctx': 8192, 'num_gpu': -1, 'num_thread': 8, 'num_batch': 512,
+        'use_mmap': True, 'use_mlock': False, 'main_gpu': 0, 'numa': False,
+        'low_vram': False, 'f16_kv': True, 'logits_all': False, 'vocab_only': False,
+        'num_gqa': 1, 'temperature': 0.2, 'num_predict': 42,
+    }}
+    body.update({'messages': [{'role': 'user', 'content': 'hi'}]} if endpoint == 'chat' else {'prompt': 'hi'})
+    response = client.post('/api/' + endpoint, json=body)
+    assert response.status_code == 200
+    assert wire.calls == [('/v1/chat/completions', {
+        'model': 'demo', 'stream': False, 'messages': [{'role': 'user', 'content': 'hi'}],
+        'temperature': 0.2, 'max_tokens': 42,
+    })]
+
+
+@pytest.mark.parametrize('extra', [{'format': 'xml'}, {'options': {'unknown_sampling': 1}},
+                                 {'options': []}, {'suffix': 'fill'}, {'context': [1]}, {'tools': [{}]}])
 def test_unmappable_request_fields_return_errors(ollama_client, extra):
     client, wire, _ = ollama_client
     response = client.post('/api/chat', json={'model': 'demo', 'messages': [{'role': 'user', 'content': 'hi'}], **extra})
