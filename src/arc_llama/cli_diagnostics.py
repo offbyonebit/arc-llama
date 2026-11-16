@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import os
 import platform
+import re
 import shutil
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import click
 from rich.console import Console
 
+from arc_llama import __version__
 from arc_llama.arch import Arch, Backend, aot_arch_for, hardware_support
 from arc_llama.binary import detect_backends, detect_llama_server_backend
 from arc_llama.config import Config
@@ -29,6 +35,50 @@ from arc_llama.platform_checks import (
     rebar_likely_enabled,
     user_in_groups,
 )
+from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+
+def _doctor_json(report: DoctorReport, gpus: list[Any], cfg: Config | None) -> dict[str, Any]:
+    from arc_llama.issue_report import redact
+
+    sources = [os.environ, *(model.env for model in cfg.models)] if cfg else [os.environ]
+    secret_values = {
+        value for source in sources for key, value in source.items()
+        if re.search(r"key|token|secret|password|credential", key, re.I) and isinstance(value, str) and value
+    }
+    if cfg:
+        secret_values.update(value for value in (cfg.server.admin_token, cfg.file_admin_token)
+                             if isinstance(value, str) and value)
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, str):
+            value = redact(value).replace("$HOME", "~")
+            value = re.sub(r"(https?://)[^/@\s]+:[^/@\s]+@", r"\1[REDACTED]@", value)
+            for secret in sorted(secret_values, key=len, reverse=True):
+                value = value.replace(secret, "[REDACTED]")
+            return value
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items()}
+        return value
+
+    data = clean({
+        "schema_version": 1,
+        "arc_llama_version": __version__,
+        "os": platform.platform(),
+        "python": platform.python_version(),
+        "pinned_runtime_build": LLAMA_CPP_BUILD,
+        "gpus": [{"name": g.name, "pci_slot": g.pci_slot, "device_id": f"0x{g.device_id:04x}",
+                  "arch": g.arch.value, "driver": g.driver, "vram_mb": g.vram_mb} for g in gpus],
+        "checks": [{"name": c.name,
+                    "status": "ok" if c.ok is True else "skipped" if c.ok is None else
+                        "fail" if c.severity == "fail" else "warn",
+                    "message": c.detail, **({"hint": c.hint} if c.hint else {})} for c in report.checks],
+    })
+    for check in data["checks"]:
+        check["message"] = check["message"][:500]
+    return data
 
 
 def register_diagnostic_commands(
@@ -54,9 +104,22 @@ def register_diagnostic_commands(
         return "[yellow]warn[/yellow]"
 
     @cli.command()
+    @click.option("--json", "as_json", is_flag=True, help="Print a redacted JSON report for bug reports.")
     @click.pass_context
-    def doctor(ctx: click.Context) -> None:
+    def doctor(ctx: click.Context, as_json: bool) -> None:
         """Diagnose the local environment for competitive Arc inference."""
+        if as_json:
+            # Third-party probes can print directly as well as through Rich.
+            with console.capture(), redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                report, gpus, cfg = collect_doctor(ctx)
+            click.echo(json.dumps(_doctor_json(report, gpus, cfg), ensure_ascii=False))
+        else:
+            report, _, _ = collect_doctor(ctx)
+        if report.failures:
+            # Non-zero so scripts/CI can gate on a healthy Arc host.
+            sys.exit(2)
+
+    def collect_doctor(ctx: click.Context) -> tuple[DoctorReport, list[Any], Config | None]:
         config_path: Path = ctx.obj["config_path"]
         console.print("[bold]arc-llama doctor[/bold]\n")
         report = DoctorReport()
@@ -72,6 +135,8 @@ def register_diagnostic_commands(
         if is_windows():
             console.print(f"  platform:      Windows {platform.release()}")
             console.print("  [dim]Kernel/driver checks are not available on Windows.[/dim]")
+            report.add("gpu_driver", None, "Kernel/driver checks are not available on Windows.")
+            report.add("command_sandbox", None, "Landlock is Linux-only.")
         else:
             uname = platform.uname()
             console.print(f"  kernel:        {uname.release}")
@@ -195,6 +260,7 @@ def register_diagnostic_commands(
         for tool in ("clinfo", "sycl-ls", "vulkaninfo", "intel_gpu_top", "nvtop", "lspci"):
             path = shutil.which(tool)
             console.print(f"    {tool:<14} {path or '— missing —'}")
+            report.add(f"tool_{tool}", True if path else None, path or "Optional tool not found")
 
         # Level Zero loader (required for SYCL)
         console.print("\n  Level Zero:")
@@ -219,6 +285,8 @@ def register_diagnostic_commands(
         if is_windows():
             console.print("\n  user groups:")
             console.print("    [dim]Group checks are not available on Windows.[/dim]")
+            for group in ("render", "video"):
+                report.add(f"group_{group}", None, "Group checks are not available on Windows.")
         else:
             console.print("\n  user groups:")
             membership = user_in_groups("render", "video")
@@ -312,6 +380,7 @@ def register_diagnostic_commands(
                 )
         else:
             console.print("    [dim]no config loaded[/dim]")
+            report.add("llama_server", None, "No config loaded")
 
         # Mesa: old releases make Vulkan on Linux much slower (no-op on Windows).
         if cfg is not None and any(g.enabled and g.backend == Backend.VULKAN.value for g in cfg.gpus):
@@ -329,6 +398,7 @@ def register_diagnostic_commands(
         console.print("\n  config:")
         if cfg is not None:
             console.print(f"    [green]found[/green] at {config_path}")
+            report.add("config", True, f"found at {config_path}")
             if cfg.gpus:
                 console.print("    GPUs in config:")
                 for gpu_cfg in cfg.gpus:
@@ -374,6 +444,8 @@ def register_diagnostic_commands(
                     severity="warn",
                     hint="Update or uninstall the plugin, or exclude it with ARC_LLAMA_PLUGINS.",
                 )
+            else:
+                report.add(f"plugin_{entry['name']}", True, f"{entry['status']}{version}")
 
         # Summary of competitive-inference gates
         fails = report.failures
@@ -386,9 +458,7 @@ def register_diagnostic_commands(
                 console.print(f"    {_doctor_marker(c.ok, c.severity)}  {c.name}: {c.detail}")
                 if c.hint:
                     console.print(f"        → {c.hint}")
-        if fails:
-            # Non-zero so scripts/CI can gate on a healthy Arc host.
-            sys.exit(2)
+        return report, gpus, cfg
 
     @cli.command("report")
     @click.option(
