@@ -87,6 +87,9 @@ body.paper-chat { height:100dvh; min-height:0; display:flex; flex-direction:colu
 .paper-chat .message.user .role { display:none; }
 .paper-chat .message .role { font:500 12px var(--font-ui); color:var(--t3); text-transform:none; letter-spacing:0; padding:0; margin:0 0 8px; }
 .paper-chat .message .content { font-size:var(--fs-message); line-height:var(--lh-message); color:var(--tx); }
+.paper-chat .copy-reply { margin-top:8px; padding:4px 8px; background:var(--pn); color:var(--t2); border:1px solid var(--ln); border-radius:6px; cursor:pointer; }
+.paper-chat .copy-reply:hover, .paper-chat .copy-reply:focus-visible { color:var(--tx); border-color:var(--ac); }
+.paper-chat .h-search { width:100%; box-sizing:border-box; margin:8px 0; padding:8px; color:var(--tx); background:var(--pn); border:1px solid var(--ln); border-radius:6px; }
 .paper-chat .message.system, .paper-chat .message.error-card { border:1px solid var(--ln); padding:12px 16px; border-radius:12px; background:var(--pn); }
 .paper-chat .message.error-card { border-color:var(--bdl); color:var(--bd); }
 .paper-chat .message pre, .paper-chat .code-block-wrapper { border:1px solid var(--ln); border-radius:12px; background:var(--pn); }

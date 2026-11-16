@@ -1571,10 +1571,33 @@ def create_app(
         }
 
     @app.get("/v1/chats/export")
-    async def export_chats(request: Request) -> dict[str, Any]:
-        """Export every chat as a portable JSON document."""
+    async def export_chats(
+        request: Request, chat_id: str | None = None, format: str = "json"
+    ) -> Any:
+        """Export JSON, or one saved chat's transcript as Markdown."""
         store: ChatStore = request.app.state.chat_store
-        return {"version": 1, "exported_at": time.time(), "chats": store.export_all()}
+        if format not in {"json", "markdown"}:
+            raise HTTPException(status_code=400, detail="format must be json or markdown")
+        try:
+            chat = store.get(chat_id) if chat_id else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid chat_id") from exc
+        if chat_id and chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        if format == "markdown":
+            if chat is None:
+                raise HTTPException(status_code=400, detail="chat_id is required for Markdown")
+            parts = [f"# {' '.join(chat.title.splitlines())}"]
+            safe_id = re.sub("[^A-Za-z0-9_-]", "_", chat.id)[:100]
+            for message in chat.messages:
+                parts.append(f"## {message.role.capitalize()}\n\n{message.content}")
+                if message.images:
+                    parts.append(f"[{len(message.images)} image attachment(s) omitted from Markdown.]")
+            return Response(
+                "\n\n".join(parts) + "\n", media_type="text/markdown",
+                headers={"Content-Disposition": f'attachment; filename="arc-llama-chat-{safe_id}.md"'},
+            )
+        return {"version": 1, "exported_at": time.time(), "chats": [chat.to_dict()] if chat else store.export_all()}
 
     @app.post("/v1/chats/import")
     async def import_chats(request: Request) -> dict[str, Any]:
