@@ -37,18 +37,18 @@ def test_config_survives_a_failure_midway_through_serialising(tmp_path):
     original = path.read_bytes()
     assert original
 
-    real_dump = cfgmod.tomli_w.dump
+    real_dump = cfgmod.tomlkit.dump
 
     def exploding_dump(obj, f):
-        f.write(b"[server]\n")  # a partial write reaches the file
+        f.write("[server]\n")  # a partial write reaches the file
         raise OSError(28, "No space left on device")
 
-    cfgmod.tomli_w.dump = exploding_dump
+    cfgmod.tomlkit.dump = exploding_dump
     try:
         with pytest.raises(OSError):
             cfg.save(path)
     finally:
-        cfgmod.tomli_w.dump = real_dump
+        cfgmod.tomlkit.dump = real_dump
 
     assert path.read_bytes() == original, "a failed save destroyed the existing config"
 
@@ -68,17 +68,17 @@ def test_truncated_config_would_have_loaded_clean(tmp_path):
 
 def test_no_temp_file_is_left_behind_when_saving_fails(tmp_path):
     cfg, path = _saved(tmp_path)
-    real_dump = cfgmod.tomli_w.dump
+    real_dump = cfgmod.tomlkit.dump
 
     def exploding_dump(obj, f):
         raise OSError(28, "No space left on device")
 
-    cfgmod.tomli_w.dump = exploding_dump
+    cfgmod.tomlkit.dump = exploding_dump
     try:
         with pytest.raises(OSError):
             cfg.save(path)
     finally:
-        cfgmod.tomli_w.dump = real_dump
+        cfgmod.tomlkit.dump = real_dump
 
     # Only the save's own scratch files matter here; the shared test fixture
     # puts an isolated .config/ tree in tmp_path too.
