@@ -20,6 +20,7 @@ import logging
 import math
 import statistics
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -502,6 +503,7 @@ class Router:
         # scheme marked the model only after the bounded drain slept, which
         # let a concurrent arrival acquire and restart the teardown clock.
         self._stopping: set[str] = set()
+        self._idle_unloaded: set[str] = set()
         self._build_servers()
 
     def _emit(self, event: str, **payload: Any) -> None:
@@ -515,6 +517,7 @@ class Router:
         self.model_inflight[name] = self.model_inflight.get(name, 0) + 1
 
     def release_model(self, name: str) -> None:
+        self.last_activity = time.time()
         current = self.model_inflight.get(name, 0)
         if current <= 1:
             self.model_inflight.pop(name, None)
@@ -812,11 +815,15 @@ class Router:
                     raise failure
                 self.metrics["loads"] += 1
                 self.metrics["last_load_at"] = time.time()
+                self.last_activity = time.time()
                 self.metrics["last_error"] = None
                 self.timings.record_cold_start(
                     target_model.name, time.monotonic() - load_started_at
                 )
                 self._emit("model_loaded", model=target_model.name, gpu=target_gpu.pci_slot)
+                if target_model.name in self._idle_unloaded:
+                    self._idle_unloaded.discard(target_model.name)
+                    log.info("reloaded %s after idle unload", target_model.name)
                 result = (target_model, target_srv)
                 future.set_result(result)
                 if acquire:
@@ -1063,11 +1070,37 @@ class Router:
                 details={"inflight": busy},
             )
 
-    async def stop_one(self, name: str, *, force: bool = False) -> bool:
+    async def unload_idle(self, busy: Callable[[], bool]) -> int:
+        """Reuse Stop for idle models, rechecking safety under the swap lock."""
+        stopped = 0
+        for model in self.cfg.models:
+            def eligible(model: ModelConfig = model) -> bool:
+                srv = self._servers.get(model.name)
+                return bool(
+                    model.idle_unload_minutes > 0
+                    and time.time() - self.last_activity >= model.idle_unload_minutes * 60
+                    and not self.inflight and not self.model_inflight
+                    and not self._loading_futures
+                    and not (self.resources and self.resources.active_leases)
+                    and srv is not None and srv.ready
+                    and not busy()
+                )
+
+            if model.idle_unload_minutes and await self.stop_one(model.name, idle_check=eligible):
+                self._idle_unloaded.add(model.name)
+                log.info("idle-unloaded %s after %d minutes", model.name, model.idle_unload_minutes)
+                stopped += 1
+        return stopped
+
+    async def stop_one(
+        self, name: str, *, force: bool = False, idle_check: Callable[[], bool] | None = None
+    ) -> bool:
         """Stop a single model's llama-server. Returns True if it was running.
 
         Refuses with ``model_busy`` while the model is serving requests, unless ``force``."""
         async with self._lock:
+            if idle_check is not None and not idle_check():
+                return False
             srv = self._servers.get(name)
             if srv is None:
                 return False
@@ -1077,7 +1110,11 @@ class Router:
                 if getattr(srv, "process", None) is not None:
                     await srv.astop()
                 return False
-            await srv.astop()
+            self._stopping.add(name)
+            try:
+                await srv.astop()
+            finally:
+                self._stopping.discard(name)
             self.metrics["stops"] += 1
             self._emit("model_stopped", model=name, reason="stopped")
             return True

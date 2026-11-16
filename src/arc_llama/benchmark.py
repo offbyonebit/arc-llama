@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from arc_llama.config import Config, load_config
+from arc_llama.idle import hold_model
 
 log = logging.getLogger("arc_llama.benchmark")
 
@@ -508,7 +509,10 @@ async def benchmark_model(
         {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
     )
     headers[BENCHMARK_HEADER] = "1"
-    async with httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client:
+    async with (
+        httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client,
+        hold_model(client, model_name, enabled=bool(model.idle_unload_minutes)),
+    ):
         # Ensure model is loaded
         if load:
             log.info("loading %s ...", model_name)
@@ -618,7 +622,10 @@ async def benchmark_sweep(
     headers = (
         {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
     )
-    async with httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client:
+    async with (
+        httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client,
+        hold_model(client, model_name, enabled=bool(model.idle_unload_minutes)),
+    ):
         for ctx in ctx_values:
             for kv in kv_types:
                 # Apply config
@@ -741,6 +748,7 @@ async def benchmark_depths(
     gen_tokens: int = DEFAULT_GEN_TOKENS,
     client: httpx.AsyncClient | None = None,
     headers: dict[str, str] | None = None,
+    idle_unload_minutes: int = 0,
 ) -> list[DepthResult]:
     """Measure generation speed after prefilling ``depth`` tokens.
 
@@ -754,42 +762,43 @@ async def benchmark_depths(
     http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0, headers=headers)
     results: list[DepthResult] = []
     try:
-        await _warmup(http, model_name)
-        for depth in depths:
-            row = DepthResult(depth=depth)
-            prompt = _varied_prompt(depth, seed=depth) + _PROSE_LEAD if depth > 0 else "Hello"
-            try:
-                wall, obj = await _complete(
-                    http,
-                    model_name,
-                    prompt,
-                    max_tokens=gen_tokens,
-                    ignore_eos=True,
-                    cache_prompt=False,
-                    is_chat=False,
+        async with hold_model(http, model_name, enabled=bool(idle_unload_minutes)):
+            await _warmup(http, model_name)
+            for depth in depths:
+                row = DepthResult(depth=depth)
+                prompt = _varied_prompt(depth, seed=depth) + _PROSE_LEAD if depth > 0 else "Hello"
+                try:
+                    wall, obj = await _complete(
+                        http,
+                        model_name,
+                        prompt,
+                        max_tokens=gen_tokens,
+                        ignore_eos=True,
+                        cache_prompt=False,
+                        is_chat=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 - report per depth, keep going
+                    row.error = str(exc)[:200]
+                    results.append(row)
+                    continue
+                timings = obj.get("timings") or {}
+                row.measured_depth = _measured_tokens(obj, "prompt_n", "prompt_tokens", depth)
+                row.generated_tokens = _measured_tokens(
+                    obj, "predicted_n", "completion_tokens", gen_tokens
                 )
-            except Exception as exc:  # noqa: BLE001 - report per depth, keep going
-                row.error = str(exc)[:200]
+                if timings.get("prompt_per_second"):
+                    row.prompt_eval_tok_s = float(timings["prompt_per_second"])
+                if timings.get("predicted_per_second"):
+                    row.generation_tok_s = float(timings["predicted_per_second"])
+                elif wall > 0 and row.generated_tokens:
+                    # Without engine timings the wall clock includes the prefill,
+                    # so this understates decode speed; flagged in the table.
+                    row.generation_tok_s = row.generated_tokens / wall
                 results.append(row)
-                continue
-            timings = obj.get("timings") or {}
-            row.measured_depth = _measured_tokens(obj, "prompt_n", "prompt_tokens", depth)
-            row.generated_tokens = _measured_tokens(
-                obj, "predicted_n", "completion_tokens", gen_tokens
-            )
-            if timings.get("prompt_per_second"):
-                row.prompt_eval_tok_s = float(timings["prompt_per_second"])
-            if timings.get("predicted_per_second"):
-                row.generation_tok_s = float(timings["predicted_per_second"])
-            elif wall > 0 and row.generated_tokens:
-                # Without engine timings the wall clock includes the prefill,
-                # so this understates decode speed; flagged in the table.
-                row.generation_tok_s = row.generated_tokens / wall
-            results.append(row)
+            return results
     finally:
         if own:
             await http.aclose()
-    return results
 
 
 def print_depth_table(model: str, results: list[DepthResult], skipped: list[int]) -> None:

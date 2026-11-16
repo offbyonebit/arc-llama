@@ -330,9 +330,17 @@ class ModelConfig:
     """Model-only executable override; empty inherits paths.llama_server."""
     env: dict[str, str] = field(default_factory=dict)
     """Applied after automatic GPU defaults, only to this model's subprocesses."""
+    idle_unload_minutes: int = 0
+    """Unload after this many idle minutes; zero keeps the model resident."""
 
     def __post_init__(self) -> None:
         validate_model_runtime(self.llama_server, self.env)
+        if (
+            isinstance(self.idle_unload_minutes, bool)
+            or not isinstance(self.idle_unload_minutes, int)
+            or not 0 <= self.idle_unload_minutes <= 10080
+        ):
+            raise ValueError("idle_unload_minutes must be an integer from 0 to 10080")
 
     def launch_recipe(self) -> LaunchRecipe:
         r = self.recipe or {}

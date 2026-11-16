@@ -52,7 +52,7 @@
     let renderedSettingsSignature = null;
     function renderSettingsPanel({ poll = false } = {}) {
       const m = ctx.models.find(m => m.id === ctx.selectedModel);
-      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
+      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "kv_class", "llama_server", "env", "owned_by", "idle_unload_minutes"].map(k => m[k])]);
       if (poll && signature === renderedSettingsSignature) {
         const fitLine = ctx.$("#s-fit");
         if (fitLine && !settingsDirty) fitLine.textContent = vramFitText(m || {});
@@ -96,6 +96,9 @@
           <input id="s-par" type="number" min="1" max="32" value="${parallel}"></div>
         <div class="s-field"><label>KV Class</label>
           <select id="s-kvc">${classOpts}</select></div>
+        <div class="s-field"><label for="s-idle">Unload after idle minutes</label>
+          <input id="s-idle" type="number" min="0" max="10080" value="${m.idle_unload_minutes ?? 0}">
+          <div class="s-note">0 keeps the model loaded; otherwise free its VRAM after this many idle minutes and reload on your next message.</div></div>
         <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
         <details class="s-runtime"><summary>Runtime for this model</summary>
           <div class="s-field"><label for="s-llama-server">llama-server path</label>
@@ -165,6 +168,7 @@
         cache_type_k: ctx.$("#s-ctk").value,
         cache_type_v: ctx.$("#s-ctv").value,
         parallel:     parseInt(ctx.$("#s-par").value, 10),
+        idle_unload_minutes: parseInt(ctx.$("#s-idle").value, 10),
         kv_class:     ctx.$("#s-kvc").value,
         reload:       true,
         ...(runtimeBinaryDirty ? { llama_server: ctx.$("#s-llama-server").value.trim() } : {}),
@@ -182,6 +186,7 @@
         m.cache_type_k = body.cache_type_k;
         m.cache_type_v = body.cache_type_v;
         m.parallel     = body.parallel;
+        m.idle_unload_minutes = body.idle_unload_minutes;
         m.kv_class     = body.kv_class;
         if (Object.hasOwn(body, "llama_server")) m.llama_server = body.llama_server;
         if (Object.hasOwn(body, "env")) m.env = body.env;
