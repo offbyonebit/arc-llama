@@ -324,7 +324,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       if (!button.isConnected) { featuredButtons.delete(key); continue; }
       const [repo, file] = JSON.parse(key);
       const job = [...knownJobs].reverse().find((item) => item.repo === repo && item.file === file && !supersededFailures.has(item.id));
-      if (job && ["queued", "downloading", "registering"].includes(job.status)) {
+      if (job && ["queued", "downloading", "cancelling", "registering"].includes(job.status)) {
         const pct = job.bytes_total ? Math.min(99, Math.round(job.bytes_done / job.bytes_total * 100)) : null;
         button.textContent = job.status === "downloading" && pct != null ? `Downloading ${pct}%` : job.status === "registering" ? "Adding…" : "Queued…";
         button.disabled = true;
@@ -680,7 +680,7 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
       if (await fetchStatus(true)) for (const job of completed) refreshedCompletions.add(job.id);
       else retryCompletion = true;
     }
-    const active = jobs.some(job => ["queued", "downloading", "registering"].includes(job.status));
+    const active = jobs.some(job => ["queued", "downloading", "cancelling", "registering"].includes(job.status));
     if (active || retryCompletion) schedulePoll(active ? 2000 : 5000);
     const visibleJobs = jobs.filter(job => !supersededFailures.has(job.id));
     const signature = JSON.stringify([visibleJobs, [...retryingDownloads], (getSnapshot()?.models || []).map(model => [model.name, getDisplayName(model)])]);
@@ -747,9 +747,27 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
         host.appendChild(row);
         continue;
       } else {
-        state.textContent = job.status;
+        state.textContent = job.status === "cancelled" ? "Cancelled · partial files removed" : job.status;
       }
       row.append(name, state);
+      if (["queued", "downloading", "cancelling"].includes(job.status)) {
+        const cancel = makeButton(job.status === "cancelling" ? "Cancelling…" : "Cancel", "secondary", async () => {
+          cancel.disabled = true;
+          try {
+            const response = await request(`/admin/library/jobs/${encodeURIComponent(job.id)}/cancel`, {
+              method: "POST", headers: authHeaders(),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+          } catch (error) {
+            recoveryMessage(`Could not cancel download: ${error.message}`);
+          }
+          await poll({ force: true });
+        });
+        cancel.setAttribute("aria-label", `Cancel download ${job.file}`);
+        cancel.disabled = job.status === "cancelling";
+        row.appendChild(cancel);
+      }
       host.appendChild(row);
     }
     renderedJobsSignature = signature;
@@ -785,6 +803,12 @@ window.ArcDashboard.createLibraryController = function createLibraryController({
           else remove.disabled = false;
         });
         remove.title = m.managed ? "Files inside the models folder are deleted" : "Outside the models folder: only the registration is removed";
+        const model = getSnapshot()?.models?.find(model => model.name === m.name);
+        if (model?.loaded || ["ready", "loading", "draining"].includes(model?.state)) {
+          remove.disabled = true;
+          remove.title = "Stop this model before deleting it; it is loaded or loading.";
+          name.textContent += " · Stop the model before deleting it";
+        }
         row.append(name, remove);
         host.appendChild(row);
       }

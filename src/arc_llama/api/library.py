@@ -185,6 +185,18 @@ def register_library_routes(
         jobs = list(manager.jobs.values()) if manager is not None else []
         return {"jobs": [j.public() for j in sorted(jobs, key=lambda j: -j.started_at)]}
 
+    @app.post("/admin/library/jobs/{job_id}/cancel")
+    async def library_cancel(
+        job_id: str, request: Request, _auth: None = Depends(require_admin)
+    ) -> dict[str, Any]:
+        manager = getattr(request.app.state, "downloads", None)
+        if manager is None or job_id not in manager.jobs:
+            raise HTTPException(status_code=404, detail="Unknown download")
+        try:
+            return (await manager.cancel(job_id)).public()
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
     @app.get("/admin/library/disk")
     async def library_disk(
         request: Request, _auth: None = Depends(require_admin)
@@ -216,8 +228,11 @@ def register_library_routes(
         model = next((m for m in c.models if m.name == name), None)
         if model is None:
             raise HTTPException(status_code=404, detail=f"Unknown model: {name!r}")
+        server = rt._servers.get(name)
+        if ((server and server.is_running) or name in getattr(rt, "_loading_futures", {})
+                or name in getattr(rt, "_stopping", set())):
+            raise HTTPException(status_code=409, detail="Stop the model before deleting it; it is loaded or loading")
         doomed = deletable_files_fn(c, model) if delete_files else []
-        await rt.stop_one(name)
         previous = list(c.models)
         c.models = [m for m in c.models if m.name != name]
         try:

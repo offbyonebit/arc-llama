@@ -116,6 +116,14 @@ def setup(tmp_path, monkeypatch):
 
     downloader = Mock(side_effect=download)
     monkeypatch.setattr(models, "download_from_hf", downloader)
+    from arc_llama.model_library import DownloadManager
+
+    async def mock_worker(self, job):
+        return await asyncio.to_thread(
+            models.download_from_hf, models.HFModelSpec(job.repo, job.file, None),
+            target_dir=Path(job.target_dir), progress=False, revision=job.revision,
+        )
+    monkeypatch.setattr(DownloadManager, "_download", mock_worker)
 
     def register(c, paths, *, gpu_pci_slot):
         model = ModelConfig(

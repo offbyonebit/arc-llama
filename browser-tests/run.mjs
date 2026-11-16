@@ -1,7 +1,7 @@
 import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply, testGuidedHidesEmptyLibraryUntilSetupAnswers, testGuidedLibraryReturnsWhenSetupStatusFails, testChatWithoutModelsPointsToSetup, testWorkNavHiddenWhenWorkIsOff, testWorkNavShownWhenWorkIsOn } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testWorkOffersManagedCopyBesideOwnOpenCode, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
-import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
+import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker, testDownloadCancel } from "./paper-cases.mjs";
 import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
@@ -135,6 +135,7 @@ const TESTS = [
   ["paper-claims-context", testPaperRealClaimsAndContext],
   ["paper-model-load-stop", testPaperModelLoadStop],
   ["paper-model-delete", testPaperModelDelete],
+  ["download-cancel", testDownloadCancel],
   ["paper-system-sections-aligned", testPaperSystemSectionsAligned],
   ["paper-work-model-picker", testPaperWorkModelPicker],
   ["work-attempt-settings-and-results", testWorkAttemptSettingsAndResults],

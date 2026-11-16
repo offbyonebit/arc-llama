@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
 import shutil
 import stat
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -172,7 +174,7 @@ class DownloadJob:
     file: str
     target_dir: str
     status: str = "queued"
-    """queued, downloading, registering, done, or error."""
+    """queued, downloading, cancelling, cancelled, registering, done, or error."""
     bytes_done: int = 0
     bytes_total: int | None = None
     error: str | None = None
@@ -220,6 +222,8 @@ class DownloadManager:
         self.jobs: dict[str, DownloadJob] = {}
         self._queue: asyncio.Queue[DownloadJob] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
+        self._transfers: dict[str, asyncio.Task[Path]] = {}
+        self._cancel_lock = asyncio.Lock()
 
     def submit(
         self, repo: str, file: str, bytes_total: int | None, dest_dir: str | None = None,
@@ -228,7 +232,7 @@ class DownloadManager:
         if not _REPO_RE.match(repo) or not file.lower().endswith(".gguf") or ".." in file:
             raise ValueError("invalid repo or file")
         if any(
-            j.repo == repo and j.file == file and j.status not in ("done", "error")
+            j.repo == repo and j.file == file and j.status not in ("done", "error", "cancelled")
             for j in self.jobs.values()
         ):
             raise ValueError("that file is already downloading")
@@ -268,15 +272,75 @@ class DownloadManager:
     async def _run(self) -> None:
         while not self._queue.empty():
             job = self._queue.get_nowait()
-            await self._process(job)
+            if job.status == "queued":
+                await self._process(job)
+
+    def _staging_root(self, job: DownloadJob) -> Path:
+        key = hashlib.sha256(f"{job.repo}:{job.file}@{job.revision or 'latest'}".encode()).hexdigest()[:16]
+        return Path(job.target_dir) / f".arc-transfer-{key}"
+
+    async def _download(self, job: DownloadJob) -> Path:
+        staging = self._staging_root(job)
+        payload = {k: getattr(job, k) for k in ("repo", "file", "target_dir", "revision")}
+        payload["staging_root"] = str(staging)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "arc_llama.download_worker", json.dumps(payload),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        communication = asyncio.create_task(process.communicate())
+        try:
+            stdout, stderr = await asyncio.shield(communication)
+            if process.returncode:
+                raise RuntimeError(stderr.decode(errors="replace")[-500:] or "Download worker failed")
+            result = Path(json.loads(stdout)["path"])
+            if staging.exists():
+                await asyncio.to_thread(shutil.rmtree, staging, ignore_errors=True)
+            return result
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await communication  # Windows must release open files before cleanup.
+            raise
+
+    async def cancel(self, job_id: str) -> DownloadJob:
+        async with self._cancel_lock:
+            return await self._cancel(job_id)
+
+    async def _cancel(self, job_id: str) -> DownloadJob:
+        job = self.jobs[job_id]
+        if job.status == "cancelled":
+            return job
+        if job.status not in {"queued", "downloading", "cancelling"}:
+            raise ValueError("Only queued or downloading transfers can be cancelled")
+        job.status = "cancelling"
+        transfer = self._transfers.get(job.id)
+        if transfer is not None:
+            transfer.cancel()
+            try:
+                await transfer
+            except (asyncio.CancelledError, Exception):
+                pass
+        staging = self._staging_root(job)
+        if staging.exists():
+            try:
+                await asyncio.to_thread(shutil.rmtree, staging)
+            except OSError as exc:
+                job.status = "error"
+                job.error = f"Transfer stopped but partial files could not be removed: {exc}"
+                raise ValueError(job.error) from exc
+        job.status = "cancelled"
+        job.bytes_done = 0
+        job.error = None
+        job.finished_at = time.time()
+        return job
 
     async def _process(self, job: DownloadJob) -> None:
-        from arc_llama.models import HFModelSpec, download_from_hf
-
         target = Path(job.target_dir)
         baseline = _dir_bytes(target)
         job.status = "downloading"
-        spec = HFModelSpec(repo=job.repo, file=job.file, quant=None)
         task = None
         try:
             # Queued jobs must recheck: another job may have used the free space.
@@ -293,14 +357,16 @@ class DownloadManager:
                         )
 
                 await asyncio.to_thread(check_space)
-            task = asyncio.create_task(
-                asyncio.to_thread(download_from_hf, spec, target_dir=target, progress=False,
-                                  **({"revision": job.revision} if job.revision else {}))
-            )
+            if job.status in {"cancelling", "cancelled"}:
+                return
+            task = asyncio.create_task(self._download(job))
+            self._transfers[job.id] = task
             while not task.done():
                 job.bytes_done = max(0, _dir_bytes(target) - baseline)
                 await asyncio.wait({task}, timeout=1.0)
             path = task.result()
+            if job.status in {"cancelling", "cancelled"}:
+                return
             job.bytes_done = job.bytes_total or job.bytes_done
             job.status = "registering"
             # Registration reads the GGUF on the event loop, and parsing a large
@@ -308,16 +374,24 @@ class DownloadManager:
             await asyncio.to_thread(_warm_gguf_caches, Path(path))
             job.registered = await self.on_registered(Path(path))
             job.status = "done"
+        except asyncio.CancelledError:
+            if job.status not in {"cancelling", "cancelled"}:
+                raise
         except Exception as exc:  # noqa: BLE001 - surface every failure on the job
+            if job.status in {"cancelling", "cancelled"}:
+                return
             job.status = "error"
             job.error = str(exc)[:500]
             log.warning("download %s/%s failed: %s", job.repo, job.file, exc)
         finally:
+            self._transfers.pop(job.id, None)
             job.finished_at = time.time()
 
     async def shutdown(self) -> None:
+        for job in list(self.jobs.values()):
+            if job.status in {"queued", "downloading", "cancelling"}:
+                await self.cancel(job.id)
         if self._worker is not None and not self._worker.done():
-            self._worker.cancel()
             try:
                 await self._worker
             except (asyncio.CancelledError, Exception):  # noqa: BLE001

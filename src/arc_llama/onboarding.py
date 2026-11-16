@@ -338,7 +338,7 @@ class FirstAnswerSetup:
                     if self._paused():
                         return
                     self._check_gpu()
-                    if self.download is None or self.download.status == "error":
+                    if self.download is None or self.download.status in {"error", "cancelled"}:
                         self.download = self.downloads.submit(
                             starter.repo,
                             starter.file,
@@ -346,12 +346,15 @@ class FirstAnswerSetup:
                             revision=starter.revision,
                         )
                     self.phase = "downloading"
-                    while self.download.status not in {"done", "error"}:
+                    while self.download.status not in {"done", "error", "cancelled"}:
                         if self._paused():
                             return  # shutdown or Pause; the download keeps its own state
                         if self.download.status == "registering":
                             self.phase = "registering"
                         await asyncio.sleep(0.2)
+                    if self.download.status == "cancelled":
+                        self.phase = "paused"
+                        return
                     if self.download.status == "error":
                         raise ValueError(
                             self.download.error
@@ -389,8 +392,7 @@ class FirstAnswerSetup:
 
     async def shutdown(self) -> None:
         # Stop waiting on the download (setup returns as paused) and let the
-        # download manager cancel its worker. A thread already writing a file
-        # finishes that write; publication only happens after verification.
+        # download manager stop its transfer process and remove partial files.
         self.pause_requested = True
         if self.discovery_task:
             self.discovery_task.cancel()
