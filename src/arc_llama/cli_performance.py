@@ -130,8 +130,10 @@ def register_performance_commands(
                 if not runnable:
                     console.print(f"[red]No depth fits in {model}'s context ({ctx_size}).[/red]")
                     return 1
+                token = cfg.server.admin_token
                 rows = await benchmark_mod.benchmark_depths(
-                    url, model, runnable, gen_tokens=gen_tokens
+                    url, model, runnable, gen_tokens=gen_tokens,
+                    headers={"Authorization": f"Bearer {token}"} if token else None,
                 )
                 if as_json:
                     click.echo(
@@ -217,8 +219,12 @@ def register_performance_commands(
         runnable, skipped = benchmark_mod.usable_depths(
             list(benchmark_mod.BENCH_DEPTHS), (model_cfg.recipe or {}).get("ctx"), gen
         )
+        token = cfg.server.admin_token
         rows = asyncio.run(
-            benchmark_mod.benchmark_depths(url, model_cfg.name, runnable, gen_tokens=gen)
+            benchmark_mod.benchmark_depths(
+                url, model_cfg.name, runnable, gen_tokens=gen,
+                headers={"Authorization": f"Bearer {token}"} if token else None,
+            )
         )
         click.echo("\n".join(benchmark_mod.bench_lines(cfg, model_cfg.name, rows, skipped)))
         if rows and all(r.error for r in rows):

@@ -740,6 +740,7 @@ async def benchmark_depths(
     *,
     gen_tokens: int = DEFAULT_GEN_TOKENS,
     client: httpx.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
 ) -> list[DepthResult]:
     """Measure generation speed after prefilling ``depth`` tokens.
 
@@ -750,7 +751,7 @@ async def benchmark_depths(
     tokens and reports llama-server's own prompt and decode rates.
     """
     own = client is None
-    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0)
+    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0, headers=headers)
     results: list[DepthResult] = []
     try:
         await _warmup(http, model_name)
