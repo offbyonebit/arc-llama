@@ -1777,3 +1777,6 @@ header > * { position: relative; z-index: 1; }
 @media (max-width: 600px) { .compact-controls { padding: 6px 12px; } }
 
 .budget-warning button { margin: .5rem .5rem 0 0; padding: .4rem .6rem; }
+
+.s-field label small { display: block; font-size: 10px; font-weight: normal; opacity: .7; text-transform: none; }
+.s-hint { font-size: 11px; color: var(--fg-mute); margin: 2px 0 5px; line-height: 1.4; }
