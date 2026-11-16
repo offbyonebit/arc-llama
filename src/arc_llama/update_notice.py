@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -10,7 +11,6 @@ from time import time
 from typing import Any
 
 import httpx
-from packaging.version import InvalidVersion, Version
 
 from arc_llama import __version__
 from arc_llama.config import Config
@@ -24,12 +24,16 @@ def _path(cfg: Config) -> Path:
     return Path(cfg.paths.state_dir).expanduser() / "update-notice.sqlite3"
 
 
+def _version(value: Any) -> tuple[int, ...] | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", value):
+        return None
+    return tuple(int(part) for part in value.split("."))
+
+
 def _notice(latest: str | None) -> dict[str, str] | None:
-    try:
-        if latest and not Version(latest).is_prerelease and Version(latest) > Version(__version__):
-            return {"current": __version__, "latest": latest, "command": UPGRADE_COMMAND}
-    except InvalidVersion:
-        pass
+    version, current = _version(latest), _version(__version__)
+    if version is not None and current is not None and version > current:
+        return {"current": __version__, "latest": str(latest), "command": UPGRADE_COMMAND}
     return None
 
 
@@ -39,14 +43,11 @@ def latest_stable(payload: Any) -> str | None:
         return None
     versions = []
     for text, files in releases.items():
-        try:
-            version = Version(text)
-        except (InvalidVersion, TypeError):
-            continue
-        if (not version.is_prerelease and not version.is_devrelease and isinstance(files, list)
+        version = _version(text)
+        if (version is not None and isinstance(files, list)
                 and any(isinstance(item, dict) and not item.get("yanked", False) for item in files)):
-            versions.append(version)
-    return str(max(versions)) if versions else None
+            versions.append((version, text))
+    return max(versions)[1] if versions else None
 
 
 def _claim(path: Path, now: float) -> tuple[str | None, bool]:

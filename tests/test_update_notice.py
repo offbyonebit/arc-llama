@@ -29,8 +29,8 @@ def setup(tmp_path, monkeypatch):
     return cfg, wire
 
 
-@pytest.mark.parametrize("version,newer", [("1.3.0", True), ("1.2.0", False), ("1.1.9", False), ("1.2.0.post1", True)])
-async def test_version_comparison_uses_stable_pep440_versions(setup, version, newer):
+@pytest.mark.parametrize("version,newer", [("1.3.0", True), ("1.10.0", True), ("1.2.0", False), ("1.1.9", False), ("1.2.0.post1", False)])
+async def test_version_comparison_uses_numeric_dotted_versions(setup, version, newer):
     cfg, wire = setup
     wire["payload"] = {"releases": {version: [{}]}}
     notice = await updates.check_for_update(cfg)
@@ -46,6 +46,8 @@ def test_latest_release_ignores_prereleases_dev_yanked_and_invalid_versions():
     payload = {"info": {"version": "9.0.0rc1"}, "releases": {
         "1.2.0": [{}], "1.10.0": [{}], "2.0.0rc1": [{}], "3.0.0.dev1": [{}],
         "9.0.0": [{"yanked": True}], "10.0.0": [], "bad-version": [{}],
+        "4.0.0.post1": [{}], "5.0.0+local": [{}], "v6.0.0": [{}],
+        "7..0": [{}], " 8.0.0": [{}], "９.0.0": [{}],
     }}
     assert updates.latest_stable(payload) == "1.10.0"
     assert updates.latest_stable({"releases": {"2.0.0rc1": [{}]}}) is None

@@ -633,7 +633,7 @@ url  = "http://127.0.0.1:11434"
 
 When the dashboard opens and daily while it remains open, `server.check_updates`
 (default `true`) allows a background request to PyPI at most once every 24 hours.
-A newer stable release
+A newer all-numeric dotted release (such as `1.3.0`)
 shows a dismissible notice with `pip install -U arc-llama`; dismissal lasts for
 that version in this browser. Network failures are silent and share the daily
 limit. `arc-llama doctor` shows the cached notice without making a network
