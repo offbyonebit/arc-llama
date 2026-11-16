@@ -911,10 +911,10 @@ def create_app(
             if not isinstance(command_arguments, str) or len(command_arguments) > 20000:
                 raise HTTPException(status_code=400, detail="arguments must be a string")
         if harness != "builtin":
-            if not experimental_enabled():
+            if not experimental_enabled(cfg):
                 raise HTTPException(
                     status_code=403,
-                    detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.",
+                    detail="External harnesses are experimental. Enable Work in System settings or set ARC_LLAMA_EXPERIMENTAL_AGENT=1.",
                 )
             # A harness can read the project and run tools; keep it behind the admin token when one is set.
             await _require_admin(request)
@@ -1140,8 +1140,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"harness must be one of {list(HARNESSES)}")
         if harness in ("builtin", "hermes"):
             return {"commands": []}
-        if not experimental_enabled():
-            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        if not experimental_enabled(cfg):
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Enable Work in System settings or set ARC_LLAMA_EXPERIMENTAL_AGENT=1.")
         folder = Path(root).expanduser() if root else Path.home()
         if not folder.is_absolute():
             folder = Path.home() / folder
@@ -1163,8 +1163,8 @@ def create_app(
     @app.get("/v1/agent/capabilities")
     async def agent_capabilities(request: Request, root: str = "", _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         """What a tool profile can switch on or off for a project: MCP servers, skills and web tools."""
-        if not experimental_enabled():
-            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        if not experimental_enabled(cfg):
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Enable Work in System settings or set ARC_LLAMA_EXPERIMENTAL_AGENT=1.")
         folder = Path(root).expanduser() if root else Path.home()
         if not folder.is_absolute():
             folder = Path.home() / folder
@@ -1205,7 +1205,7 @@ def create_app(
         """Saved Work conversations and native harness history, newest first."""
         sessions = await asyncio.to_thread(request.app.state.work_sessions.list)
         warnings: list[str] = []
-        if experimental_enabled():
+        if experimental_enabled(cfg):
             native, warnings = await asyncio.to_thread(list_native_sessions)
             saved_ids = {item["id"] for item in sessions}
             represented_ids = set(saved_ids)
@@ -1224,7 +1224,7 @@ def create_app(
             record = await asyncio.to_thread(request.app.state.work_sessions.get, session_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if record is None and experimental_enabled():
+        if record is None and experimental_enabled(cfg):
             try:
                 record = await asyncio.to_thread(get_native_session, session_id)
             except NativeHistoryError as exc:
@@ -1278,6 +1278,20 @@ def create_app(
             "install": harness_offer(cfg, name),
         }
 
+    @app.put("/admin/settings")
+    async def admin_settings(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
+        body = await _read_json_body(request)
+        if set(body) != {"work_mode"} or type(body["work_mode"]) is not bool:
+            raise HTTPException(status_code=400, detail="work_mode must be a boolean")
+        previous = cfg.server.work_mode
+        cfg.server.work_mode = body["work_mode"]
+        try:
+            cfg.save(config_path or default_config_path())
+        except OSError as exc:
+            cfg.server.work_mode = previous
+            raise HTTPException(status_code=500, detail="Could not save Work setting") from exc
+        return {"work_mode": cfg.server.work_mode, "experimental": experimental_enabled(cfg)}
+
     @app.get("/admin/harnesses/jobs")
     async def harness_install_jobs(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         manager: HarnessInstallManager = request.app.state.harness_installs
@@ -1285,8 +1299,8 @@ def create_app(
 
     @app.post("/admin/harnesses/{name}/install")
     async def harness_install_start(name: str, request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
-        if not experimental_enabled():
-            raise HTTPException(status_code=403, detail="External harnesses are experimental. Set ARC_LLAMA_EXPERIMENTAL_AGENT=1 to enable them.")
+        if not experimental_enabled(cfg):
+            raise HTTPException(status_code=403, detail="External harnesses are experimental. Enable Work in System settings or set ARC_LLAMA_EXPERIMENTAL_AGENT=1.")
         try:
             body = await request.json()
         except ValueError:
@@ -1324,9 +1338,10 @@ def create_app(
     @app.get("/v1/agent/info")
     async def agent_info(request: Request, _auth: None = Depends(_require_admin)) -> dict[str, Any]:
         """What the Work view can offer on this server."""
-        experimental = experimental_enabled()
+        experimental = experimental_enabled(cfg)
         return {
             "experimental": experimental,
+            "work_mode": cfg.server.work_mode,
             "root": str(Path(cfg.agent.root).expanduser().resolve()),
             "home": str(Path.home()),
             # Present only on servers whose adapter keeps destructive commands asking under auto-approve.
@@ -2519,7 +2534,7 @@ def create_app(
     async def ui_flags() -> Response:
         # Read synchronously before the page shell builds its navigation, so
         # a disabled feature never flashes into view and then disappears.
-        flags = {"work": experimental_enabled()}
+        flags = {"work": experimental_enabled(cfg)}
         return Response(
             f"window.ARC_UI_FLAGS = {json.dumps(flags)};\n",
             media_type="text/javascript",

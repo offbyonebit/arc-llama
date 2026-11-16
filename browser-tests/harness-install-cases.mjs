@@ -135,3 +135,25 @@ export async function testSystemAgentsOffWithoutExperimental({ page, origin }) {
   await page.waitForFunction(() => document.querySelector("#harness-list")?.textContent.includes("ARC_LLAMA_EXPERIMENTAL_AGENT"));
   if (await page.locator("#harness-list .harness-btn").count()) throw new Error("install offered while external agents are off");
 }
+
+export async function testSystemWorkSetting({ page, origin }) {
+  let enabled = false;
+  const writes = [];
+  await page.route("**/v1/agent/info", route => route.fulfill(json({ ...info(missing), experimental: enabled, work_mode: enabled })));
+  await page.route("**/admin/settings", route => {
+    writes.push({ body: route.request().postDataJSON(), auth: route.request().headers().authorization });
+    enabled = writes.at(-1).body.work_mode;
+    return route.fulfill(json({ work_mode: enabled, experimental: enabled }));
+  });
+  await page.goto(`${origin}/#system`);
+  const toggle = page.getByRole("switch", { name: "Enable Work (experimental)" });
+  await toggle.waitFor();
+  await page.waitForFunction(() => !document.querySelector("#work-mode-enabled").disabled);
+  await toggle.check();
+  await page.waitForFunction(() => document.querySelector("#work-mode-status").textContent.includes("Saved."));
+  if (!writes[0]?.body.work_mode || !writes[0]?.auth) throw new Error("Work switch did not save through authenticated settings");
+  if (!(await page.locator("#work-mode-status").textContent()).includes("No server restart needed")) throw new Error("activation instructions missing");
+  await toggle.uncheck();
+  await page.waitForFunction(() => !document.querySelector("#work-mode-enabled").disabled);
+  if (writes.length !== 2 || writes[1].body.work_mode !== false) throw new Error("Work switch did not save off");
+}

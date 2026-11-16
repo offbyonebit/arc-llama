@@ -278,7 +278,14 @@ its files in place.
 
 ## Work: local project conversations
 
-Enable experimental Work when starting the server:
+Enable **Work (experimental)** in **System → Agents for Work**. The switch saves
+`work_mode = true` in the `[server]` section of your config (default `false`).
+Reload the page to update navigation; the server needs no restart. New CLI
+invocations read the same setting, including a config selected with `--config`.
+Changing the switch uses the same admin authentication as other settings.
+Work lets an agent read files, make edits and run commands in a project folder.
+
+You can also enable Work when starting the server:
 
 ```bash
 ARC_LLAMA_EXPERIMENTAL_AGENT=1 arc-llama serve
@@ -631,9 +638,9 @@ url  = "http://127.0.0.1:11434"
 ```
 
 > [!NOTE]
-> The optional agent/coding-assistant mode is experimental. Enable it by setting
-> `ARC_LLAMA_EXPERIMENTAL_AGENT=1` before running `arc-llama serve` for web Work,
-> or before running `arc-llama agent`, `code`, or `agent-tui`.
+> The optional agent/coding-assistant mode is experimental. Enable it in System,
+> with `[server] work_mode = true`, or with `ARC_LLAMA_EXPERIMENTAL_AGENT=1`.
+> The environment variable still enables Work when the saved setting is off.
 
 `kv_class` controls the KV-cache size estimate that `arc-llama add` uses to
 pick a context length. Currently:
