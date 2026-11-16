@@ -298,3 +298,5 @@ footer.error .status-dot { background: var(--red); }
 .library-folder label { font-size: 12px; font-weight: 600; }
 .library-folder-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; font-family: ui-monospace, monospace; font-size: 12px; }
 .library-folder .plugin-meta { margin: 0; }
+.runtime-confirm { margin-block: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; }
+.runtime-confirm[hidden], #runtime-rollback[hidden] { display: none; }

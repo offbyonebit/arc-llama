@@ -151,6 +151,8 @@ def register_library_routes(
     async def library_download(
         request: Request, _auth: None = Depends(require_admin)
     ) -> dict[str, Any]:
+        if getattr(request.app.state, "runtime_rollback_running", False):
+            raise HTTPException(status_code=409, detail="A runtime rollback is running. Wait before starting a download.")
         body = await read_json_body(request)
         repo, file = body.get("repo"), body.get("file")
         size_mb = body.get("size_mb")

@@ -1,6 +1,60 @@
 import { openChat, choosePaperModel, ADMIN_STATUS } from './harness.mjs';
 const json = body => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 
+export async function testRuntimeRollback({ page, origin }) {
+  const build = tag => ({ build: tag, path: `/runtime/${tag}/llama-server`, available: true,
+    installed_at: tag === 'b100' ? null : 1700000000, date_source: tag === 'b100' ? null : 'update history' });
+  let current = 'b300', previous = 'b200', busy = null, mode = 'success';
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const history = () => ({ current: build(current), previous: previous ? build(previous) : null,
+    builds: ['b300', 'b200', 'b100'].map(build), busy_reason: busy });
+  await page.route('**/admin/runtime/history', route => route.fulfill(json(history())));
+  await page.route('**/admin/runtime/rollback', async route => {
+    calls.push({ body: route.request().postDataJSON(), auth: route.request().headers().authorization });
+    if (mode === 'refuse') return route.fulfill({ ...json({ detail: 'A tune is running. Finish or stop it before rolling back.' }), status: 409 });
+    await gate;
+    const from = build(current).path;
+    current = previous;
+    previous = current === 'b200' ? 'b100' : null;
+    return route.fulfill(json({ from, to: build(current).path, restarted: mode === 'partial' ? [] : ['qwen'],
+      restart_errors: mode === 'partial' ? [{ model: 'qwen', message: 'controlled reload failure' }] : [], history: history() }));
+  });
+  await page.goto(`${origin}/#system`);
+  await page.waitForFunction(() => document.querySelector('#runtime-current').textContent.includes('b300'));
+  if (!(await page.locator('#runtime-builds').innerText()).includes('Install date not recorded')) throw new Error('unknown install date was fabricated');
+  await page.click('#runtime-rollback');
+  if (!(await page.locator('#runtime-confirm').innerText()).includes('Loaded models will stop and restart')) throw new Error('restart warning missing');
+  await page.click('#runtime-confirm-cancel');
+  if (calls.length) throw new Error('cancel initiated rollback');
+  await page.click('#runtime-rollback');
+  const request = page.waitForRequest('**/admin/runtime/rollback');
+  await page.click('#runtime-confirm-yes');
+  await request;
+  if (!(await page.locator('#runtime-rollback').isDisabled()) || !(await page.locator('#runtime-action-status').innerText()).includes('Stopping loaded models')) throw new Error('rollback progress was not shown');
+  if (calls[0].body.expected_previous !== '/runtime/b200/llama-server' || !calls[0].auth?.startsWith('Bearer ')) throw new Error('rollback target/auth missing');
+  release();
+  await page.waitForFunction(() => document.querySelector('#runtime-action-status').textContent.includes('Restarted 1'));
+  await page.waitForFunction(() => document.querySelector('#runtime-current').textContent.includes('b200'));
+  busy = 'A download is running.';
+  await page.evaluate(() => loadRuntimeHistory());
+  if (!(await page.locator('#runtime-rollback').isDisabled()) || !(await page.locator('#runtime-busy-reason').innerText()).includes('download')) throw new Error('busy history did not disable rollback with a reason');
+  busy = null;
+  mode = 'refuse';
+  await page.evaluate(() => loadRuntimeHistory());
+  await page.click('#runtime-rollback');
+  await page.click('#runtime-confirm-yes');
+  await page.waitForFunction(() => document.querySelector('#runtime-action-status').textContent.includes('A tune is running'));
+  if (current !== 'b200') throw new Error('refused rollback changed the runtime');
+  mode = 'partial';
+  await page.click('#runtime-rollback');
+  await page.click('#runtime-confirm-yes');
+  await page.waitForFunction(() => document.querySelector('#runtime-action-status').textContent.includes('Some models could not restart'));
+  await page.waitForFunction(() => document.querySelector('#runtime-current').textContent.includes('b100'));
+  if (!(await page.locator('#runtime-rollback').isHidden())) throw new Error('rollback button remained without an earlier runtime');
+}
+
 export async function testPerModelRuntimeSettings({ page, origin }) {
   const runtime = new Map([['qwen', { llama_server: '/patched/ornith server', env: { LD_LIBRARY_PATH: '/patched/lib', FLAG: 'literal=value' } }], ['gemma', { llama_server: '', env: {} }]]);
   let editCount = 0;

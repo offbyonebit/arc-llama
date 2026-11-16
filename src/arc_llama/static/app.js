@@ -59,6 +59,78 @@ function authHeaders(headers = {}) {
 }
 
 let adminTokenReady = null;
+let runtimeHistory = null;
+let runtimeBusy = false;
+
+async function loadRuntimeHistory() {
+  if (runtimeBusy) return;
+  try {
+    const response = await fetch("/admin/runtime/history", { headers: authHeaders() });
+    if (!response.ok) throw new Error(response.status === 401 ? "Local admin access is required." : "Runtime history is unavailable.");
+    runtimeHistory = await response.json();
+    if (runtimeBusy) return;
+    $("#runtime-current").textContent = `Current build: ${runtimeHistory.current.build}${runtimeHistory.current.available ? "" : " (file missing)"}`;
+    $("#runtime-builds").replaceChildren();
+    for (const build of runtimeHistory.builds) {
+      const item = document.createElement("li");
+      const date = build.installed_at == null ? "Install date not recorded" :
+        `${new Date(build.installed_at * 1000).toLocaleString()} (${build.date_source})`;
+      item.textContent = `${build.build} · ${date} · ${build.path}`;
+      $("#runtime-builds").appendChild(item);
+    }
+    const previous = runtimeHistory.previous;
+    $("#runtime-rollback").hidden = !previous;
+    $("#runtime-rollback").textContent = previous ? `Roll back to ${previous.build}` : "";
+    $("#runtime-rollback").disabled = !!runtimeHistory.busy_reason;
+    $("#runtime-busy-reason").textContent = runtimeHistory.busy_reason || (previous ? "Loaded models restart when you roll back." : "No earlier runtime is available for rollback.");
+  } catch (error) {
+    if (!runtimeBusy) $("#runtime-current").textContent = error.message;
+  }
+}
+
+function bindRuntimeControls() {
+  $("#runtime-refresh").addEventListener("click", loadRuntimeHistory);
+  $("#runtime-rollback").addEventListener("click", () => {
+    if (runtimeBusy || !runtimeHistory?.previous) return;
+    $("#runtime-confirm").hidden = false;
+    $("#runtime-confirm-cancel").focus();
+  });
+  function cancelRuntimeRollback() {
+    if (runtimeBusy) return;
+    $("#runtime-confirm").hidden = true;
+    $("#runtime-rollback").focus();
+  }
+  $("#runtime-confirm-cancel").addEventListener("click", cancelRuntimeRollback);
+  $("#runtime-confirm").addEventListener("keydown", event => {
+    if (event.key === "Escape") { event.preventDefault(); cancelRuntimeRollback(); }
+  });
+  $("#runtime-confirm-yes").addEventListener("click", async () => {
+    if (runtimeBusy || !runtimeHistory?.previous) return;
+    runtimeBusy = true;
+    for (const id of ["runtime-refresh", "runtime-rollback", "runtime-confirm-yes", "runtime-confirm-cancel"]) $("#" + id).disabled = true;
+    $("#runtime-action-status").textContent = "Stopping loaded models and restoring the previous runtime…";
+    try {
+      const response = await fetch("/admin/runtime/rollback", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ expected_previous: runtimeHistory.previous.path }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Runtime rollback failed.");
+      const failures = data.restart_errors || [];
+      $("#runtime-action-status").textContent = failures.length ?
+        `Runtime rolled back. Some models could not restart: ${failures.map(item => `${item.model}: ${item.message}`).join("; ")}` :
+        `Runtime rolled back. Restarted ${(data.restarted || []).length} loaded model(s).`;
+      await fetchStatus(true);
+    } catch (error) {
+      $("#runtime-action-status").textContent = error.message;
+    } finally {
+      runtimeBusy = false;
+      $("#runtime-confirm").hidden = true;
+      for (const id of ["runtime-refresh", "runtime-rollback", "runtime-confirm-yes", "runtime-confirm-cancel"]) $("#" + id).disabled = false;
+      await loadRuntimeHistory();
+      $("#runtime-action-status").tabIndex = -1;
+      $("#runtime-action-status").focus();
+    }
+  });
+}
 async function initAdminToken() {
   adminTokenReady ??= loadAdminToken();
   return adminTokenReady;
@@ -1011,8 +1083,10 @@ $("#stop-all").addEventListener("click", stopAll);
 $("#theme-toggle").addEventListener("click", () => { const next = document.documentElement.dataset.theme === "light" ? "dark" : "light"; localStorage.setItem(THEME_KEY, next); applyTheme(next); });
 
 (async () => {
+  bindRuntimeControls();
   libraryController.bind();
   await initAdminToken();
+  void loadRuntimeHistory();
   await fetchStatus(true);
   await pluginsController.start();
   pluginsController.bind();

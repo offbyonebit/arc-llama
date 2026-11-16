@@ -21,6 +21,8 @@ import asyncio
 import copy
 import json
 import logging
+import math
+import shutil
 import socket
 import time
 from collections.abc import Callable
@@ -74,6 +76,67 @@ def read_history(cfg: Config) -> list[dict[str, Any]]:
     except (OSError, ValueError):
         return []
     return [entry for entry in data if isinstance(entry, dict)] if isinstance(data, list) else []
+
+
+def runtime_history(cfg: Config) -> dict[str, Any]:
+    """Describe retained files without executing them or fetching releases."""
+    entries = read_history(cfg)
+
+    def physical(binary: str) -> Path:
+        return Path(shutil.which(binary) or binary).expanduser().resolve()
+
+    recorded = {}
+    candidates = {physical(cfg.paths.llama_server)}
+    for entry in entries:
+        for key in ("previous", "installed"):
+            if isinstance(entry.get(key), str) and entry[key]:
+                candidates.add(physical(entry[key]))
+        stamp = entry.get("at")
+        if (isinstance(entry.get("installed"), str) and entry["installed"]
+                and isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp)):
+            recorded[physical(entry["installed"])] = (entry.get("tag"), stamp)
+    root = Path(cfg.paths.state_dir).expanduser() / "runtime"
+    try:
+        for name in ("llama-server", "llama-server.exe"):
+            candidates.update(path.resolve() for path in root.rglob(name)
+                              if not any(part.startswith(".") for part in path.relative_to(root).parts))
+    except OSError:
+        pass
+
+    def describe(path: Path) -> dict[str, Any]:
+        tag, stamp = recorded.get(path, (None, None))
+        source = "update history" if stamp is not None else None
+        for folder in list(path.parents)[:4]:
+            marker = folder / ".arc-llama-runtime.json"
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                tag = tag or data.get("tag")
+                if stamp is None:
+                    stamp, source = marker.stat().st_mtime, "install marker timestamp"
+                break
+            except (OSError, ValueError):
+                continue
+        return {"path": str(path), "build": tag if isinstance(tag, str) and tag else "Unknown build",
+                "installed_at": stamp, "date_source": source, "available": path.is_file()}
+
+    current_path = physical(cfg.paths.llama_server)
+    rows = {path: describe(path) for path in candidates if path == current_path or path.is_file()}
+    previous = None
+    # Match rollback_runtime's stack selection, including its PATH fallback.
+    for entry in reversed(entries):
+        raw = entry.get("previous")
+        if not isinstance(raw, str) or not raw:
+            continue
+        if raw == "llama-server" or Path(raw).expanduser().exists():
+            path = physical(raw)
+            if path != current_path and path.is_file():
+                previous = rows.get(path) or describe(path)
+            break
+    builds = sorted(rows.values(), key=lambda row: (row["path"] != str(current_path),
+                                                   -(row["installed_at"] or 0), row["path"]))
+    return {"current": rows[current_path], "previous": previous, "builds": builds}
 
 
 def _write_history(cfg: Config, history: list[dict[str, Any]]) -> None:

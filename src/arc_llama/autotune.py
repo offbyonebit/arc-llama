@@ -398,6 +398,9 @@ class Autotuner:
     async def _tick(self) -> None:
         if not self.cfg.tune.auto:
             return
+        resources = getattr(self.router, "resources", None)
+        if resources is not None and resources.exclusive_active:
+            return
 
         idle = self.cfg.tune.idle_seconds
         now = _now()
