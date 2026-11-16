@@ -108,6 +108,38 @@ def test_search_endpoint(tmp_path, monkeypatch):
         assert data[0]["matching_message_indices"] == [-1, 0]
 
 
+def test_export_single_chat_markdown_and_keep_json_export(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    app = _app(tmp_path)
+    reply = "**Hello** café\n\n```python\nprint('hello')\n```"
+    with TestClient(app) as client:
+        client.post("/v1/chats", json={"id": "markdown", "title": "Project\nnotes"})
+        client.patch("/v1/chats/markdown", json={"messages": [
+            {"role": "user", "content": "Question?"},
+            {"role": "assistant", "content": reply},
+        ]})
+        client.post("/v1/chats", json={"id": "other", "title": "Other private chat"})
+        response = client.get("/v1/chats/export", params={"chat_id": "markdown", "format": "markdown"})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/markdown")
+        assert response.headers["content-disposition"].endswith('"arc-llama-chat-markdown.md"')
+        assert response.text == f"# Project notes\n\n## User\n\nQuestion?\n\n## Assistant\n\n{reply}\n"
+        assert "Other private chat" not in response.text
+        assert len(client.get("/v1/chats/export").json()["chats"]) == 2
+        assert len(client.get("/v1/chats/export?chat_id=markdown").json()["chats"]) == 1
+        assert client.get("/v1/chats/export?format=markdown").status_code == 400
+        assert client.get("/v1/chats/export?format=pdf").status_code == 400
+        assert client.get("/v1/chats/export?format=markdown&chat_id=missing").status_code == 404
+        assert client.get("/v1/chats/export", params={"chat_id": "..", "format": "markdown"}).status_code == 400
+        unusual_id = 'café"\n报告'
+        assert client.post("/v1/chats", json={"id": unusual_id, "title": "Unicode"}).status_code == 200
+        unusual = client.get("/v1/chats/export", params={"chat_id": unusual_id, "format": "markdown"})
+        assert unusual.status_code == 200
+        assert unusual.headers["content-disposition"].isascii()
+        assert "\n" not in unusual.headers["content-disposition"]
+
+
 def test_export_and_import_chats(tmp_path, monkeypatch):
     monkeypatch.setattr(server_mod, "Router", FakeRouter)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)

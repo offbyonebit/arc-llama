@@ -7,6 +7,38 @@
     let chatCache = [];
     let currentFolder = ALL_FOLDERS;
     let folders = [];
+    const searchInput = ctx.historyPanel.querySelector("#h-search");
+    let searchMatches = null;
+    let searchEpoch = 0;
+    let searchTimer;
+    let searching = false;
+
+    function searchHistory() {
+      clearTimeout(searchTimer);
+      const epoch = ++searchEpoch;
+      const query = searchInput.value.trim();
+      searchMatches = query ? [] : null;
+      searching = !!query;
+      renderHistoryPanel();
+      if (!query) return;
+      searchTimer = setTimeout(async () => {
+        try {
+          const data = await apiRequest("/v1/chats/search", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, limit: MAX_HISTORY }),
+          });
+          if (epoch !== searchEpoch) return;
+          searchMatches = (data.data || []).map(result => serverChatToLocal(result.chat,
+            chatCache.find(c => c.id === result.chat.id)?.model));
+          searching = false;
+          renderHistoryPanel();
+        } catch (error) {
+          if (epoch !== searchEpoch) return;
+          searching = false;
+          ctx.hList.textContent = "Could not search chats. Clear the search to show history.";
+        }
+      }, 250);
+    }
     function loadChatsFromStorage() {
       try {
         const raw = ctx.storage.getItem(HISTORY_KEY);
@@ -186,10 +218,11 @@
     }
 
     function renderHistoryPanel() {
-      const chats = loadChats().filter(c => currentFolder === ALL_FOLDERS || c.folder === currentFolder);
+      const chats = (searchMatches || loadChats()).filter(c => currentFolder === ALL_FOLDERS || c.folder === currentFolder);
       ctx.hList.innerHTML = "";
       if (chats.length === 0) {
-        ctx.hList.innerHTML = '<div class="h-empty">No chats in this folder yet.</div>';
+        const empty = searching ? "Searching…" : searchMatches ? "No matching chats." : "No chats in this folder yet.";
+        ctx.hList.innerHTML = `<div class="h-empty">${empty}</div>`;
         return;
       }
       for (const c of chats) {
@@ -210,13 +243,20 @@
         `;
         card.appendChild(buildMoveSelect(c));
         card.addEventListener("click", (e) => {
-          if (e.target.closest(".h-delete") || e.target.closest(".h-move")) return;
+          if (e.target.closest(".h-delete") || e.target.closest(".h-move") || e.target.closest(".h-export-chat")) return;
           loadChat(c.id);
         });
         card.querySelector(".h-delete").addEventListener("click", (e) => {
           e.stopPropagation();
           deleteChat(c.id);
         });
+        const markdown = document.createElement("button");
+        markdown.type = "button";
+        markdown.className = "h-action h-export-chat";
+        markdown.textContent = "Markdown";
+        markdown.setAttribute("aria-label", "Export chat as Markdown");
+        markdown.addEventListener("click", e => { e.stopPropagation(); exportChatMarkdown(c.id); });
+        card.appendChild(markdown);
         ctx.hList.appendChild(card);
       }
     }
@@ -288,6 +328,7 @@
         console.warn("Could not delete chat on server:", e.message);
       }
       const chats = loadChats().filter(c => c.id !== id);
+      if (searchMatches) searchMatches = searchMatches.filter(c => c.id !== id);
       saveChats(chats);
       if (ctx.currentChatId === id) {
         ctx.currentChatId = null;
@@ -387,6 +428,22 @@
       return select;
     }
 
+    async function exportChatMarkdown(id) {
+      try {
+        const response = await ctx.request(`/v1/chats/export?chat_id=${encodeURIComponent(id)}&format=markdown`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = new Blob([await response.text()], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `arc-llama-chat-${String(id).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100)}.md`;
+        document.body.appendChild(link);
+        link.click(); link.remove(); URL.revokeObjectURL(url);
+      } catch (error) {
+        ctx.showError("Markdown export failed: " + error.message);
+      }
+    }
+
     async function exportChats() {
       try {
         const data = await apiRequest("/v1/chats/export");
@@ -440,6 +497,7 @@
     function start() {
       if (started) return;
       started = true;
+          searchInput?.addEventListener("input", searchHistory);
           chatCache = loadChatsFromStorage();
           ctx.hNew?.addEventListener("click", ctx.newChat);
           if (ctx.hFolder) ctx.hFolder.addEventListener("change", () => { currentFolder = ctx.hFolder.value; renderHistoryPanel(); });

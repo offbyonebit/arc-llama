@@ -4,6 +4,7 @@ import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, tes
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
 import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
+import { testChatBasicsSearch, testChatBasicsCopy, testChatBasicsMarkdownExport } from "./chat-basics-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
 import { installApiMocks, recordSessionTokenCalls, startStaticServer } from "./harness.mjs";
@@ -125,6 +126,9 @@ const TESTS = [
   ["work-hermes-unavailable", testWorkHermesUnavailable],
   ["work-live-activity-full-prompt", testWorkLiveActivityAndFullPrompt],
   ["chat-single-reply-lifecycle", testChatSingleReplyLifecycle],
+  ["chat-basics-search", testChatBasicsSearch],
+  ["chat-basics-copy", testChatBasicsCopy],
+  ["chat-basics-markdown-export", testChatBasicsMarkdownExport],
   ["chat-live-activity", testChatLiveActivity],
   ["work-resume-visible-context", testWorkResumeAndVisibleContext],
   ["work-context-stale-budgets", testWorkContextIgnoresStaleBudgets],

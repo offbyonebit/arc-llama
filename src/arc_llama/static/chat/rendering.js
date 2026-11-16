@@ -83,6 +83,30 @@
       content.className = "content";
       content.textContent = text;
       div.appendChild(content);
+      if (role === "assistant") {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "copy-reply";
+        copy.textContent = "Copy";
+        copy.setAttribute("aria-label", "Copy whole reply");
+        copy.addEventListener("click", async () => {
+          const text = content.dataset.markdown ?? content.textContent ?? "";
+          try {
+            if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+            else {
+              const focused = document.activeElement;
+              const field = document.createElement("textarea");
+              field.value = text; field.style.position = "fixed"; field.style.opacity = "0";
+              document.body.appendChild(field); field.select();
+              try { if (!document.execCommand("copy")) throw new Error("Clipboard unavailable"); }
+              finally { field.remove(); focused?.focus(); }
+            }
+            copy.textContent = "Copied";
+          } catch (error) { copy.textContent = "Copy failed"; }
+          setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+        });
+        div.appendChild(copy);
+      }
       ctx.chatLog.appendChild(div);
       if (ctx.shouldAutoScroll(ctx.chatLog)) ctx.autoScroll(ctx.chatLog);
       return { div, content };
@@ -137,6 +161,7 @@
     }
 
     function renderMarkdown(container, text) {
+      container.dataset.markdown = text;
       if (typeof marked === "undefined" || typeof hljs === "undefined") {
         container.textContent = text;
         return;
