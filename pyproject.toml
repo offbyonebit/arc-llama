@@ -74,6 +74,7 @@ Issues = "https://github.com/offbyonebit/arc-llama/issues"
 packages = ["src/arc_llama"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"src/arc_llama/data/known_bad_runtimes.json" = "arc_llama/data/known_bad_runtimes.json"
 "src/arc_llama/data/recipes.json" = "src/arc_llama/data/recipes.json"
 "src/arc_llama/data/arc-llama-runtime.allowed_signers" = "src/arc_llama/data/arc-llama-runtime.allowed_signers"
 

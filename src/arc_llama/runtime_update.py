@@ -228,12 +228,14 @@ def update_runtime(
     canary_model: str | None = None,
     canary: bool = True,
     dry_run: bool = False,
+    allow_known_bad: bool = False,
     installer: Installer | None = None,
     canary_runner: Canary | None = None,
     caps_probe: Callable[[str], ServerCaps] = probe_server_caps,
 ) -> UpdateResult:
     """Install a candidate runtime beside the current one and switch if it passes."""
-    from arc_llama.runtime import install_runtime
+    from arc_llama.known_bad_runtimes import known_bad_reason
+    from arc_llama.runtime import host_platform, install_runtime
 
     previous = cfg.paths.llama_server
     enabled = [g.backend for g in cfg.gpus if g.enabled]
@@ -247,11 +249,16 @@ def update_runtime(
         cfg=cfg,
         set_default=False,
         config_path=config_path,
+        allow_known_bad=allow_known_bad,
     )
     candidate = Path(installed.binary_path)
     result = UpdateResult(
         status="rejected", previous=previous, candidate=str(candidate), tag=installed.tag
     )
+    reason = known_bad_reason(installed.tag, host_platform()[0], backend)
+    if reason and not allow_known_bad:
+        result.problems.append(reason)
+        return result
     try:
         same = candidate.resolve() == Path(previous).expanduser().resolve()
     except OSError:

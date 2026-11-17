@@ -261,7 +261,7 @@ def register_diagnostic_commands(
         # llama-server binary
         console.print("\n  llama-server binary:")
         if cfg is not None:
-            llama_server = Path(cfg.paths.llama_server).expanduser()
+            llama_server = Path(shutil.which(cfg.paths.llama_server) or cfg.paths.llama_server).expanduser()
             if llama_server.exists():
                 backends = detect_backends(llama_server)
                 primary = detect_llama_server_backend(llama_server)
@@ -270,6 +270,14 @@ def register_diagnostic_commands(
                 )
                 console.print(f"    path:        {llama_server}")
                 console.print(f"    backends:    {backend_list}")
+                from arc_llama.known_bad_runtimes import installed_runtime_warning
+
+                warning = installed_runtime_warning(llama_server, "windows" if is_windows() else "linux",
+                                                    primary.value if primary else None)
+                if warning:
+                    console.print(f"    [yellow]known-bad: {warning}[/yellow]")
+                    report.add("known_bad_runtime", False, warning, severity="warn",
+                               hint="Use arc-llama runtime rollback or select a known-good build.")
                 if primary is None:
                     report.add(
                         "llama_server",
