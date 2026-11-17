@@ -1977,3 +1977,39 @@ def test_agent_offers_questions_only_to_a_client_that_answers_them(monkeypatch, 
         assert client.post("/v1/agent", json={"model": "test", "task": "go", "questions": True}).status_code == 200
         assert client.post("/v1/agent", json={"model": "test", "task": "go", "questions": "yes"}).status_code == 400
     assert seen[0] is None and callable(seen[1]) and len(seen) == 2
+
+
+@pytest.mark.parametrize("single_resident", [True, False])
+def test_model_edit_preview_validates_estimates_without_mutation(monkeypatch, tmp_path, single_resident):
+    import copy
+
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    cfg.server.single_resident = single_resident
+    cfg.server.admin_token = "secret"
+    before = copy.deepcopy(cfg.models[0])
+    seen = []
+
+    def estimate(model, gpu, cache):
+        seen.append((model.recipe, model.kv_class, gpu.pci_slot))
+        return {"estimated_mb": 7000, "headroom_mb": 17576, "fit": True}
+
+    monkeypatch.setattr(server_mod, "model_vram_fit_info", estimate)
+    monkeypatch.setattr(cfg, "save", lambda *a: pytest.fail("preview saved config"))
+    monkeypatch.setattr(FakeRouterWithRebuild, "rebuild_model", lambda *a: pytest.fail("preview rebuilt runtime"))
+    headers = {"Authorization": "Bearer secret"}
+    body = {"preview": True, "ctx": 16384, "cache_type_k": "q4_0", "kv_class": "moe_a3b"}
+    with TestClient(app) as client:
+        assert client.post("/admin/models/qwen/edit", json=body).status_code == 401
+        assert client.post("/admin/models/qwen/edit", json={**body, "ctx": -1}, headers=headers).status_code == 400
+        response = client.post("/admin/models/qwen/edit", json=body, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["preview"] is True
+        fit = response.json()["vram_estimate"]
+        assert fit["estimated_mb"] == 7000
+        assert fit["fit"] is (True if single_resident else None)
+    assert seen[-1][0]["ctx"] == 16384 and seen[-1][0]["cache_type_k"] == "q4_0"
+    assert seen[-1][1] == "moe_a3b"
+    assert cfg.models[0] == before
+    assert cfg.model_saved_settings == {}

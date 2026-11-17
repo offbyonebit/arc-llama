@@ -7,6 +7,59 @@
     let settingsDirty = false;
     let runtimeBinaryDirty = false, runtimeEnvDirty = false;
     let settingsDraftModel = null;
+    let previewTimer = null, previewAbort = null, previewSequence = 0;
+    let pendingReloadModel = null;
+    function cancelPreview() {
+      clearTimeout(previewTimer); previewAbort?.abort(); previewSequence++;
+    }
+    function draftValues() {
+      return { ctx: Number(ctx.$("#s-ctx").value), cache_type_k: ctx.$("#s-ctk").value,
+        cache_type_v: ctx.$("#s-ctv").value, parallel: Number(ctx.$("#s-par").value),
+        kv_class: ctx.$("#s-kvc").value };
+    }
+    function reloadNotice(text = "", offer = false) {
+      const note = ctx.$("#s-reload-note"), button = ctx.$("#s-reload-now");
+      if (note) { note.textContent = text; note.hidden = !text; }
+      if (button) button.hidden = !offer;
+    }
+    function previewFit() {
+      cancelPreview();
+      const sequence = previewSequence, modelId = ctx.selectedModel;
+      previewTimer = setTimeout(async () => {
+        const controller = new AbortController(); previewAbort = controller;
+        try {
+          const response = await ctx.request(`/admin/models/${encodeURIComponent(modelId)}/edit`, {
+            method: "POST", headers: ctx.authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ ...draftValues(), preview: true }), signal: controller.signal,
+          });
+          const data = await response.json();
+          if (sequence !== previewSequence || modelId !== ctx.selectedModel) return;
+          ctx.$("#s-fit").textContent = response.ok
+            ? `Unsaved draft. ${vramFitText({ vram_estimate: data.vram_estimate })}`
+            : `Unsaved settings. Memory fit unavailable: ${data.detail || response.status}`;
+        } catch (error) {
+          if (sequence === previewSequence && modelId === ctx.selectedModel && error.name !== "AbortError")
+            ctx.$("#s-fit").textContent = "Unsaved settings. Memory fit is unavailable.";
+        }
+      }, 300);
+    }
+    async function reloadNow() {
+      const modelId = ctx.selectedModel, button = ctx.$("#s-reload-now");
+      button.disabled = true;
+      try {
+        for (const action of ["stop", "load"]) {
+          const response = await ctx.request(`/admin/${action}/${encodeURIComponent(modelId)}`, {
+            method: "POST", headers: ctx.authHeaders(),
+          });
+          if (!response.ok) { const data = await response.json(); throw new Error(data.detail || response.status); }
+        }
+        pendingReloadModel = null;
+        if (modelId === ctx.selectedModel) { reloadNotice(); ctx.sFeedback.textContent = "Reloaded with saved settings."; }
+        ctx.fetchStatus().catch(() => {});
+      } catch (error) {
+        if (modelId === ctx.selectedModel) ctx.sFeedback.textContent = `Reload failed: ${error.message}`;
+      } finally { button.disabled = false; }
+    }
     function renderPresetPanel() {
       const host = ctx.$("#s-preset");
       if (!host || !ctx.selectedModel) return;
@@ -52,6 +105,10 @@
     let renderedSettingsSignature = null;
     function renderSettingsPanel({ poll = false } = {}) {
       const m = ctx.models.find(m => m.id === ctx.selectedModel);
+      if (settingsDraftModel === ctx.selectedModel) {
+        if (!m?.loaded) reloadNotice();
+        else if (pendingReloadModel === ctx.selectedModel) reloadNotice("Saved launch settings take effect on the next load.", true);
+      }
       const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
       if (poll && signature === renderedSettingsSignature) {
         const fitLine = ctx.$("#s-fit");
@@ -62,10 +119,11 @@
       if (settingsDraftModel === ctx.selectedModel && (settingsDirty || ctx.sFields.contains(document.activeElement))) {
         const fitLine = ctx.$("#s-fit");
         if (fitLine) fitLine.textContent = settingsDirty
-          ? "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate."
+          ? "Unsaved settings. Checking memory fit before Apply."
           : vramFitText(m || {});
         return;
       }
+      cancelPreview();
       settingsDraftModel = ctx.selectedModel;
       renderedSettingsSignature = signature;
       settingsDirty = false;
@@ -83,40 +141,46 @@
 
       const kvOpts = KV_TYPES.map(v => `<option value="${v}"${v===ctk?" selected":""}>${v}</option>`).join("");
       const kvOptsV = KV_TYPES.map(v => `<option value="${v}"${v===ctv?" selected":""}>${v}</option>`).join("");
-      const classOpts = KV_CLASSES.map(v => `<option value="${v}"${v===kvClass?" selected":""}>${v}</option>`).join("");
+      const classNames = { default: "General model", moe_a3b: "Mixture of experts, about 3B active", qwen3_27b_dense: "Qwen 3, 27B dense", gemma_swa: "Gemma with sliding-window attention" };
+      const classOpts = KV_CLASSES.map(v => `<option value="${v}"${v===kvClass?" selected":""}>${classNames[v]} (${v})</option>`).join("");
 
       ctx.sFields.innerHTML = `
-        <div class="s-field"><label>Context (tokens)</label>
+        <div class="s-field"><label for="s-ctx">Conversation capacity <small>ctx</small></label><div class="s-hint">More tokens keep longer conversations but use more memory.</div>
           <input id="s-ctx" type="number" min="256" max="1048576" step="1024" value="${contextTokens}"></div>
-        <div class="s-field"><label>KV Cache K</label>
+        <div class="s-field"><label for="s-ctk">Key cache precision <small>cache_type_k</small></label><div class="s-hint">Lower precision uses less memory for remembered conversation keys.</div>
           <select id="s-ctk">${kvOpts}</select></div>
-        <div class="s-field"><label>KV Cache V</label>
+        <div class="s-field"><label for="s-ctv">Value cache precision <small>cache_type_v</small></label><div class="s-hint">Lower precision uses less memory for remembered conversation values.</div>
           <select id="s-ctv">${kvOptsV}</select></div>
-        <div class="s-field"><label>Parallel slots</label>
+        <div class="s-field"><label for="s-par">Simultaneous conversations <small>parallel</small></label><div class="s-hint">More slots share the available context and memory.</div>
           <input id="s-par" type="number" min="1" max="32" value="${parallel}"></div>
-        <div class="s-field"><label>KV Class</label>
+        <div class="s-field"><label for="s-kvc">Memory estimate model family <small>kv_class</small></label><div class="s-hint">Choose the architecture used to estimate conversation memory; this does not change the model.</div>
           <select id="s-kvc">${classOpts}</select></div>
         <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
         <details class="s-runtime"><summary>Runtime for this model</summary>
-          <div class="s-field"><label for="s-llama-server">llama-server path</label>
+          <div class="s-field"><label for="s-llama-server">Runtime executable <small>llama_server</small></label><div class="s-hint">Choose a different runtime for this model; empty uses the global runtime.</div>
             <input id="s-llama-server" type="text" placeholder="Use the global runtime"></div>
-          <div class="s-field"><label for="s-runtime-env">Environment variables</label>
+          <div class="s-field"><label for="s-runtime-env">Runtime environment <small>env</small></label><div class="s-hint">One literal KEY=value per line, applied only to this model.</div>
             <textarea id="s-runtime-env" rows="4" spellcheck="false" placeholder="KEY=value, one per line"></textarea></div>
           <div class="s-note">Applies only to this model. Empty fields use the defaults. Values are literal; no shell expansion.</div>
         </details>
         <button class="s-apply" id="s-apply">Apply</button>
-        <div class="s-note">A loaded model restarts with the new settings.</div>
+        <div id="s-reload-note" class="s-note" role="status" hidden></div><button id="s-reload-now" type="button" class="s-apply" hidden>Reload now</button>
       `;
       ctx.$("#s-llama-server").value = m.llama_server || "";
       ctx.$("#s-llama-server").placeholder = m.effective_llama_server || "Use the global runtime";
       ctx.$("#s-runtime-env").value = Object.entries(m.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
       ctx.$("#s-apply").addEventListener("click", applySettings);
+      ctx.$("#s-reload-now").addEventListener("click", reloadNow);
+      if (m.loaded && pendingReloadModel === ctx.selectedModel)
+        reloadNotice("Saved launch settings take effect on the next load.", true);
       ctx.sFields.querySelectorAll("input, select, textarea").forEach((field) => {
         const markDirty = () => {
           settingsDirty = true;
           if (field.id === "s-llama-server") runtimeBinaryDirty = true;
           if (field.id === "s-runtime-env") runtimeEnvDirty = true;
-          ctx.$("#s-fit").textContent = "Unsaved settings. Increasing context raises KV memory use; apply to refresh the estimate.";
+          ctx.$("#s-fit").textContent = "Unsaved settings. Checking memory fit before Apply.";
+          reloadNotice(ctx.models.find(model => model.id === ctx.selectedModel)?.loaded ? "Apply restarts this loaded model with the new launch settings." : "");
+          if (["s-ctx", "s-ctk", "s-ctv", "s-par", "s-kvc"].includes(field.id)) previewFit();
         };
         field.addEventListener("input", markDirty);
         field.addEventListener("change", markDirty);
@@ -156,20 +220,20 @@
         }
         env[key] = line.slice(separator + 1);
       }
+      cancelPreview();
       const modelId = ctx.selectedModel;
+      const wasLoaded = !!m.loaded;
       const btn = ctx.$("#s-apply");
       btn.disabled = true;
       ctx.sFeedback.textContent = "";
       const body = {
-        ctx:          parseInt(ctx.$("#s-ctx").value, 10),
-        cache_type_k: ctx.$("#s-ctk").value,
-        cache_type_v: ctx.$("#s-ctv").value,
-        parallel:     parseInt(ctx.$("#s-par").value, 10),
-        kv_class:     ctx.$("#s-kvc").value,
+        ...draftValues(),
         reload:       true,
         ...(runtimeBinaryDirty ? { llama_server: ctx.$("#s-llama-server").value.trim() } : {}),
         ...(runtimeEnvDirty ? { env } : {}),
       };
+      const launchChanged = Object.entries(draftValues()).some(([key, value]) => value !== (m[key] ?? ({ctx:32768,cache_type_k:"q8_0",cache_type_v:"q8_0",parallel:1,kv_class:"default"}[key])))
+        || runtimeBinaryDirty || runtimeEnvDirty;
       try {
         const r = await ctx.request(`/admin/models/${encodeURIComponent(modelId)}/edit`, {
           method: "POST",
@@ -188,6 +252,8 @@
         if (ctx.selectedModel !== modelId) return;
         ctx.sFeedback.style.color = "var(--accent-bright)";
         ctx.sFeedback.textContent = data.reloading ? "Saved. Reloading the model..." : "Saved.";
+        pendingReloadModel = wasLoaded && launchChanged && !data.reloading ? modelId : null;
+        reloadNotice(pendingReloadModel ? "Saved launch settings take effect on the next load." : "", !!pendingReloadModel);
         settingsDirty = false;
         runtimeBinaryDirty = false; runtimeEnvDirty = false;
         // The VRAM estimate depends on ctx/KV; refresh status so the settings
