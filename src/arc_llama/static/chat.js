@@ -1859,6 +1859,7 @@ function restoreDraft() {
   settingsComponent.start();
   historyComponent.start();
   workComponent.start();
+  window.ArcChat.createSpeech?.({ document, chatLog, settings: $("#speech-settings") }).start();
   window.addEventListener("arc-paper-work-mode", syncPaperModels);
   $("#work-model").addEventListener("change", syncPaperModels);
   await loadPluginActions();
