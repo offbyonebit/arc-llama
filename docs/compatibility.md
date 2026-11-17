@@ -125,12 +125,14 @@ call control; `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` an
 hints and hosted service-tier/speed/geography hints are accepted and ignored.
 They do not enable prompt caching, hosted tools or geography guarantees locally.
 
-`thinking: {"type":"adaptive"}` enables the runtime template's thinking mode;
-`disabled` disables it. `output_config.effort` maps to `reasoning_effort`, and its
+`thinking: {"type":"adaptive"}` and `thinking: {"type":"enabled"}` enable
+runtime template thinking; `disabled` disables it. An enabled request's
+`budget_tokens` is accepted and ignored: a fixed thinking budget is not enforced
+by the local runtime. `output_config.effort` maps to `reasoning_effort`, and its
 JSON schema format maps to OpenAI `response_format`. These remain dependent on
-the chosen runtime/template. Fixed thinking budgets, signed thinking-history
-blocks, server-executed tools, PDF/documents and automatic context edits cannot
-be faithfully mapped and return a descriptive 400. The adapter returns final
+the chosen runtime/template. Signed thinking-history blocks, server-executed
+tools, PDF/documents and automatic context edits cannot be faithfully mapped
+and return a descriptive 400. The adapter returns final
 text and tool calls, without hosted signed-reasoning blocks. Other unsupported
 answer-changing request fields are errors rather than silently discarded.
 

@@ -167,9 +167,9 @@ def to_openai(body: dict[str, Any]) -> dict[str, Any]:
             payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "messages_output", "schema": fmt["schema"], "strict": True}}
     thinking = body.get("thinking")
     if thinking is not None:
-        if not isinstance(thinking, dict) or thinking.get("type") not in ("disabled", "adaptive"):
-            _bad("A fixed thinking budget cannot map to this runtime; use thinking.type adaptive or disabled")
-        payload["chat_template_kwargs"] = {"enable_thinking": thinking["type"] == "adaptive"}
+        if not isinstance(thinking, dict) or thinking.get("type") not in ("disabled", "adaptive", "enabled"):
+            _bad("thinking.type must be enabled, adaptive or disabled")
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking["type"] in ("adaptive", "enabled")}
         if thinking["type"] == "disabled":
             payload["reasoning_effort"] = "none"
     return payload

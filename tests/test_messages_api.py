@@ -99,6 +99,15 @@ async def test_text_system_images_samplers_and_metadata(upstream_app):
     assert state.closed == state.clients_closed == 1
 
 
+async def test_enabled_thinking_accepts_unenforced_budget(upstream_app):
+    app, state = upstream_app
+    result = await call(app, request(thinking={"type": "enabled", "budget_tokens": 1024}))
+    assert result.status_code == 200
+    sent = state.bodies[0]
+    assert sent["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "thinking" not in sent and "budget_tokens" not in sent
+
+
 async def test_tool_round_trip(upstream_app):
     app, state = upstream_app
     state.response = answer(choices=[{"message": {"content": "", "tool_calls": [{"id": "call_1", "function": {"name": "weather", "arguments": '{"city":"York"}'}}]}, "finish_reason": "tool_calls"}])
@@ -186,7 +195,7 @@ async def test_x_api_key_same_rules_as_bearer(upstream_app, tmp_path):
 
 async def test_invalid_requests_and_upstream_errors(upstream_app):
     app, state = upstream_app
-    for fields in ({"max_tokens": True}, {"messages": []}, {"system": [{"type": "image"}]}, {"messages": [{"role": "user", "content": [{"type": "document"}]}]}, {"thinking": {"type": "enabled", "budget_tokens": 1024}}, {"context_management": {"edits": ["change history"]}}):
+    for fields in ({"max_tokens": True}, {"messages": []}, {"system": [{"type": "image"}]}, {"messages": [{"role": "user", "content": [{"type": "document"}]}]}, {"thinking": {"type": "unsupported"}}, {"context_management": {"edits": ["change history"]}}):
         result = await call(app, request(**fields))
         assert result.status_code == 400
         assert result.json()["type"] == "error"
