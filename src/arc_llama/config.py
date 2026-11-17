@@ -135,8 +135,12 @@ class ServerConfig:
     """Header/first-byte deadline after loading completes. Zero means unlimited."""
     inference_stream_idle_seconds: float = 120.0
     """Maximum gap between streamed chunks. Zero means unlimited."""
+    runtime_self_check: bool = True
+    """Check simple inference after a runtime/backend change; warnings never unload a model."""
 
     def __post_init__(self) -> None:
+        if type(self.runtime_self_check) is not bool:
+            raise ValueError("server.runtime_self_check must be a boolean")
         for name in ("inference_first_response_seconds", "inference_stream_idle_seconds"):
             value = getattr(self, name)
             if (

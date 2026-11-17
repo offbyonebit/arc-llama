@@ -230,6 +230,13 @@ function createModelCard(model) {
     gpu?.name || "GPU assignment unavailable",
   ].join(" · ");
   body.append(title, meta);
+  if (model.correctness_check?.status === "warning") {
+    const warning = document.createElement("p");
+    warning.className = "model-card-file-warning";
+    warning.textContent = `Runtime self-check warning (${model.correctness_check.build}): ${model.correctness_check.detail} ${model.loaded ? "The model remains running." : "This warning is from the last self-check."} Consider arc-llama runtime rollback. `;
+    const link = document.createElement("a"); link.href = "/#system"; link.textContent = "System details";
+    warning.append(link); body.append(warning);
+  }
   const fileState = readiness(model);
   if (fileState.available === false) {
     const problem = document.createElement("p");

@@ -218,6 +218,16 @@ arc-llama runtime rollback               # undo the last switch
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
 
+After a runtime update, rollback or a model's runtime/backend change, its next
+load runs two short greedy correctness prompts for chat models. Embedding and
+reranking models are excluded. An existing installation first
+records an observed baseline; an ordinary reload does not repeat the check.
+Failures leave the model running and show a warning with the build on its card
+and in `arc-llama doctor`, with `arc-llama runtime rollback` as a recovery option.
+The check never rolls back automatically. Set `runtime_self_check = false` in
+`[server]` to disable these prompts (default `true`). Results are saved in the
+state directory; these simple checks are not a general model-quality test.
+
 ### Keeping long chats usable
 
 In the bundled chat, use **Compact chat** or `/compact` (optionally

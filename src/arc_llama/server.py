@@ -1787,6 +1787,7 @@ def create_app(
                     "tune_error": m.tune_error,
                     "tune_fingerprint": m.tune_fingerprint,
                     "vram_estimate": fit_info,
+                    "correctness_check": rt.correctness.warning(m.name) if hasattr(rt, "correctness") else None,
                 }
             )
         gpus = [
