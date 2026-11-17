@@ -336,11 +336,24 @@ class ModelConfig:
 
     def launch_recipe(self) -> LaunchRecipe:
         r = self.recipe or {}
+        budget = r.get("reasoning_budget")
+        try:
+            if budget is not None:
+                if type(budget) not in (int, str):
+                    raise ValueError
+                budget = int(budget)
+                if not -1 <= budget <= 131072:
+                    raise ValueError
+        except ValueError:
+            logging.getLogger("arc_llama.config").warning(
+                "[%s] ignoring invalid reasoning_budget %r", self.name, r.get("reasoning_budget")
+            )
+            budget = None
         return LaunchRecipe(
             n_gpu_layers=int(r.get("n_gpu_layers", 999)),
             ctx=int(r.get("ctx", 8192)),
             parallel=int(r.get("parallel", 1)),
-            reasoning_budget=r.get("reasoning_budget"),
+            reasoning_budget=budget,
             cache_type_k=KVCacheType(r.get("cache_type_k", "f16")),
             cache_type_v=KVCacheType(r.get("cache_type_v", "f16")),
             threads=r.get("threads"),
