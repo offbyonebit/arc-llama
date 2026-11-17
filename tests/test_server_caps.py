@@ -17,6 +17,18 @@ from arc_llama.server_caps import (
     probe_server_caps,
 )
 
+
+@pytest.mark.parametrize("help_text,supported,positive", [
+    ("--other N", False, False),
+    ("--reasoning-budget-message MESSAGE", False, False),
+    ("--reasoning-budget N  token budget for thinking: -1 for unrestricted, 0 for immediate end, N>0 for token budget (default: -1)", True, True),
+    ("--reasoning-budget N controls the amount of thinking allowed; currently only one of: -1 for\n  unrestricted thinking budget, or 0 to disable thinking (default: -1)\n--reasoning-format FORMAT", True, False),
+])
+def test_reasoning_budget_capabilities(help_text, supported, positive):
+    caps = _parse_help(help_text)
+    assert caps.supports_reasoning_budget is supported
+    assert caps.supports_positive_reasoning_budget is positive
+
 _skip_on_windows = pytest.mark.skipif(
     sys.platform == "win32",
     reason="fakes an executable llama-server via a POSIX shell script, which "
