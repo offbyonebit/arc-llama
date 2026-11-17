@@ -17,6 +17,10 @@
       return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
     }
 
+    function isOfficeFile(file) {
+      return /\.(docx|xlsx|pptx)$/i.test(file.name);
+    }
+
     function generateAttachmentId() {
       if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
       return Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -29,6 +33,7 @@
         const chip = document.createElement("div");
         chip.className = "attachment-chip" + (a.error ? " error" : a.processing ? " processing" : "");
         chip.dataset.id = a.id;
+        if (a.error) { chip.title = a.error; chip.setAttribute("aria-label", `${a.file.name}: ${a.error}`); }
         const ICON_CLIP = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M16.5 6v11.5c0 2.485-2.015 4.5-4.5 4.5S7.5 19.985 7.5 17.5V5c0-1.657 1.343-3 3-3s3 1.343 3 3v12.5c0 .828-.672 1.5-1.5 1.5s-1.5-.672-1.5-1.5V6h-2v11.5c0 1.933 1.567 3.5 3.5 3.5s3.5-1.567 3.5-3.5V5c0-2.761-2.239-5-5-5S5 2.239 5 5v12.5c0 3.59 2.91 6.5 6.5 6.5s6.5-2.91 6.5-6.5V6h-2z"/></svg>';
         const ICON_CLOSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
         const icon = a.processing ? '<span class="spinner"></span>'
@@ -68,6 +73,16 @@
             reader.readAsDataURL(a.file);
           });
           a.text = "";
+        } else if (isOfficeFile(a.file)) {
+          if (a.file.size > 50 * 1024 * 1024) throw new Error("Document is larger than 50 MB");
+          const form = new FormData();
+          form.append("file", a.file);
+          const response = await ctx.request("/admin/parse-document", {
+            method: "POST", headers: ctx.authHeaders(), body: form,
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+          a.text = data.text || "";
         } else if (isPdfFile(a.file)) {
           const form = new FormData();
           form.append("file", a.file);
