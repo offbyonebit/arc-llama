@@ -231,6 +231,9 @@ def add_local_model(
             )
     if recipe_overrides:
         recipe_dict.update(recipe_overrides)
+    flags = recipe_dict.get("extra_flags") or []
+    if "--reasoning=off" not in flags and not any(flags[i:i + 2] == ["--reasoning", "off"] for i in range(len(flags))):
+        recipe_dict.setdefault("reasoning_budget", 256)
     mc = ModelConfig(
         name=name,
         path=str(p),
@@ -737,6 +740,9 @@ def register_discovered(
             f16_bytes_per_token=exact_kv_bytes,
         )
         recipe_dict: dict[str, Any] = recipe_to_dict(recipe)
+        flags = recipe_dict.get("extra_flags") or []
+        if "--reasoning=off" not in flags and not any(flags[i:i + 2] == ["--reasoning", "off"] for i in range(len(flags))):
+            recipe_dict.setdefault("reasoning_budget", 256)
         mmproj = find_mmproj(rp)
         if mmproj is not None:
             recipe_dict["mmproj"] = str(mmproj)

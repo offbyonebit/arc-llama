@@ -1040,6 +1040,47 @@ def test_admin_edit_accepts_flash_attn_and_batch_size(monkeypatch, tmp_path):
     assert model.recipe["ubatch_size"] == 1024
 
 
+@pytest.mark.parametrize("budget", [-1, 0, 256, 131072, None, ""])
+def test_admin_edit_reasoning_budget(monkeypatch, tmp_path, budget):
+    from arc_llama.config import load_config
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    cfg.models[0].recipe["reasoning_budget"] = 64
+    with TestClient(app) as client:
+        app.state.router.model = cfg.models[0]
+        response = client.post("/admin/models/qwen/edit", json={"reasoning_budget": budget})
+        assert response.status_code == 200, response.text
+        assert response.json()["changed"] == ["reasoning_budget"]
+        expected = None if budget is None or budget == "" else budget
+        assert cfg.models[0].recipe.get("reasoning_budget") == expected
+        assert client.get("/admin/status").json()["models"][0]["reasoning_budget"] == expected
+    path = tmp_path / "config" / "arc-llama" / "config.toml"
+    assert load_config(path).models[0].recipe.get("reasoning_budget") == expected
+
+
+@pytest.mark.parametrize("budget", [131073, -2, "abc", "256", 1.5, 256.0, True, [], {}])
+def test_admin_edit_rejects_invalid_reasoning_budget_atomically(monkeypatch, tmp_path, budget):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"ctx": 16384, "reasoning_budget": budget})
+    assert response.status_code == 400
+    assert cfg.models[0].recipe == {"ctx": 8192}
+
+
+def test_reasoning_budget_persist_false_does_not_leak_to_an_unrelated_save(monkeypatch, tmp_path):
+    from arc_llama.config import load_config
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    path = tmp_path / "config" / "arc-llama" / "config.toml"
+    with TestClient(app) as client:
+        assert client.post("/admin/models/qwen/edit", json={"reasoning_budget": 256, "persist": False}).status_code == 200
+        assert cfg.models[0].recipe["reasoning_budget"] == 256 and not path.exists()
+        cfg.save(path)
+        assert "reasoning_budget" not in load_config(path).models[0].recipe
+        assert client.post("/admin/models/qwen/edit", json={"reasoning_budget": 0}).status_code == 200
+    assert load_config(path).models[0].recipe["reasoning_budget"] == 0
+
+
 def test_admin_edit_persist_false_keeps_the_edit_out_of_config_toml(monkeypatch, tmp_path):
     # Auto-tune trials: the running recipe changes, the file on disk does not.
     app, cfg = _edit_app(monkeypatch, tmp_path)

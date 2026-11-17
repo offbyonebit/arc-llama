@@ -340,6 +340,7 @@ class ModelConfig:
             n_gpu_layers=int(r.get("n_gpu_layers", 999)),
             ctx=int(r.get("ctx", 8192)),
             parallel=int(r.get("parallel", 1)),
+            reasoning_budget=r.get("reasoning_budget"),
             cache_type_k=KVCacheType(r.get("cache_type_k", "f16")),
             cache_type_v=KVCacheType(r.get("cache_type_v", "f16")),
             threads=r.get("threads"),

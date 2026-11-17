@@ -347,6 +347,43 @@ def _make_config_with_gpu(tmp_path):
     return cfg
 
 
+@pytest.mark.parametrize("discover", [False, True])
+@pytest.mark.parametrize("flags", [[], ["--reasoning", "off"], ["--reasoning=off"]])
+def test_new_model_gets_budget_unless_reasoning_is_off(tmp_path, mock_recipe_and_mtp, monkeypatch, discover, flags):
+    from arc_llama.recipes import LaunchRecipe
+
+    monkeypatch.setattr("arc_llama.models.default_recipe", lambda **_: LaunchRecipe(extra_flags=flags))
+    cfg = _make_config_with_gpu(tmp_path)
+    path = tmp_path / "thinking.gguf"
+    path.write_bytes(b"fixture")
+    model = register_discovered(cfg, [path])[0] if discover else add_local_model(
+        cfg, name="thinking", path=str(path), gpu_pci_slot=cfg.gpus[0].pci_slot,
+    )
+    assert model.recipe.get("reasoning_budget") == (None if flags else 256)
+
+
+def test_adding_with_manual_reasoning_off_skips_default(tmp_path, mock_recipe_and_mtp):
+    cfg = _make_config_with_gpu(tmp_path)
+    path = tmp_path / "thinking.gguf"
+    path.write_bytes(b"fixture")
+    model = add_local_model(cfg, name="thinking", path=str(path), gpu_pci_slot=cfg.gpus[0].pci_slot,
+                            recipe_overrides={"extra_flags": ["--reasoning", "off"]})
+    assert "reasoning_budget" not in model.recipe
+
+
+def test_existing_config_does_not_gain_a_budget_on_load_save(tmp_path):
+    from arc_llama.config import load_config
+
+    cfg = _make_config_with_gpu(tmp_path)
+    cfg.models = [ModelConfig("old", "/old.gguf", 18080, cfg.gpus[0].pci_slot, recipe={"ctx": 8192})]
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    restored = load_config(path)
+    assert restored.models[0].launch_recipe().reasoning_budget is None
+    restored.save(path)
+    assert "reasoning_budget" not in path.read_text()
+
+
 @pytest.mark.parametrize(
     "bad_name",
     [
