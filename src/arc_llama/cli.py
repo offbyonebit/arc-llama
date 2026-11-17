@@ -42,6 +42,7 @@ from rich.table import Table
 from arc_llama import __version__
 from arc_llama import benchmark as benchmark_mod
 from arc_llama.arch import Arch, Backend, aot_arch_for
+from arc_llama.autostart import register_autostart_commands
 from arc_llama.binary import detect_backends, detect_llama_server_backend
 from arc_llama.cli_agent import register_agent_commands
 from arc_llama.cli_diagnostics import register_diagnostic_commands
@@ -1440,6 +1441,7 @@ _runtime_command_exports = register_runtime_commands(
 )
 runtime_group = _runtime_command_exports["runtime_group"]
 register_harness_commands(cli, console=console, load_config=lambda path: load_config(path))
+register_autostart_commands(cli, is_windows=lambda: _IS_WINDOWS)
 _installed_runtimes = _runtime_command_exports["_installed_runtimes"]
 runtime_list_cmd = _runtime_command_exports["runtime_list_cmd"]
 runtime_use_cmd = _runtime_command_exports["runtime_use_cmd"]
