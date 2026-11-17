@@ -222,3 +222,12 @@ export async function testWorkNavShownWhenWorkIsOn({ page, origin }) {
   await page.goto(`${origin}/chat`);
   await page.locator('.paper-rail a[href="/work"]').waitFor();
 }
+
+export async function testKnownBadRuntimeRefusal({ page, origin }) {
+  const f = await setup({ page, origin });
+  const reason = 'Known-bad runtime b12244: Windows SYCL release zips from b12244 onward fall back to CPU.';
+  await f.state({ phase: 'error', error: reason });
+  assert.equal(await page.locator(field('error')).innerText(), reason);
+  assert.equal(await page.getByRole('button', { name: /override|allow known.bad/i }).count(), 0);
+  assert.equal(f.inference.length, 0);
+}

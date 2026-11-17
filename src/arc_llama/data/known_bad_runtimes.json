@@ -1,0 +1,9 @@
+[
+  {
+    "min_tag": "b12244",
+    "max_tag": null,
+    "platform": "windows",
+    "backend": "sycl",
+    "reason": "Windows SYCL release zips from b12244 onward fall back to CPU."
+  }
+]

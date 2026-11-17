@@ -323,3 +323,84 @@ def test_runtime_cli_update_and_rollback(tmp_path, monkeypatch) -> None:
     assert load_config(config_path).paths.llama_server == cfg.paths.llama_server
     again = runner.invoke(cli, ["--config", str(config_path), "runtime", "rollback"], obj={})
     assert again.exit_code != 0
+
+
+@pytest.mark.parametrize("tag,os_name,backend,blocked", [
+    ("b12243", "windows", "sycl", False), ("b12244", "windows", "sycl", True),
+    ("b99999", "windows", "sycl", True), ("b12244", "linux", "sycl", False),
+    ("b12244", "windows", "vulkan", False), ("custom", "windows", "sycl", False),
+])
+def test_shipped_known_bad_runtime_ranges(tag, os_name, backend, blocked):
+    import json
+    from importlib import resources
+
+    from arc_llama.known_bad_runtimes import known_bad_reason
+
+    entries = json.loads(resources.files("arc_llama").joinpath("data/known_bad_runtimes.json").read_text(encoding="utf-8"))
+    assert entries[0]["min_tag"] == "b12244"
+    assert {"min_tag", "max_tag", "platform", "backend", "reason"} <= entries[0].keys()
+    reason = known_bad_reason(tag, os_name, backend)
+    assert bool(reason) is blocked
+    if blocked:
+        assert "fall back to CPU" in reason
+
+
+def test_known_bad_archive_is_refused_before_download(tmp_path, monkeypatch):
+    import httpx
+
+    import arc_llama.runtime as runtime
+
+    monkeypatch.setattr(runtime, "host_platform", lambda: ("windows", "x64"))
+    monkeypatch.setattr(runtime, "resolve_release", lambda *_: {"tag_name": "b12244"})
+    monkeypatch.setattr(runtime, "select_asset", lambda *_: runtime.RuntimeAsset("bad.zip", "https://example.invalid/bad.zip", 1, "b12244"))
+    monkeypatch.setattr(runtime, "download_asset", lambda *a, **k: pytest.fail("blocked build was downloaded"))
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected request"))) as client:
+        with pytest.raises(runtime.RuntimeInstallError, match="fall back to CPU"):
+            runtime.install_runtime(backend="sycl", version="latest", dest=tmp_path / "runtime", set_default=False, client=client)
+    assert not (tmp_path / "runtime" / "llama-b12244-sycl").exists()
+
+
+def test_update_known_bad_requires_explicit_cli_override(tmp_path, monkeypatch):
+    import arc_llama.runtime as runtime
+    import arc_llama.runtime_update as mod
+
+    cfg = _cfg(tmp_path)
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    install = _installer(tmp_path / "bad" / "llama-server", "b12244")
+    real_update = mod.update_runtime
+    monkeypatch.setattr(runtime, "host_platform", lambda: ("windows", "x64"))
+
+    def update(c, config_path, **kwargs):
+        return real_update(c, config_path, installer=install, caps_probe=lambda _: FULL_CAPS, **kwargs)
+
+    monkeypatch.setattr(mod, "update_runtime", update)
+    args = ["--config", str(path), "runtime", "update", "--runtime-version", "b12244", "--no-canary"]
+    denied = CliRunner().invoke(cli, args)
+    assert denied.exit_code == 1 and "fall back to CPU" in " ".join(denied.output.split())
+    assert load_config(path).paths.llama_server == cfg.paths.llama_server
+    allowed = CliRunner().invoke(cli, [*args, "--allow-known-bad"])
+    assert allowed.exit_code == 0, allowed.output
+    assert install.calls[-1]["allow_known_bad"] is True
+    assert load_config(path).paths.llama_server == str(tmp_path / "bad" / "llama-server")
+
+
+def test_doctor_warns_for_current_known_bad_runtime(tmp_path, monkeypatch):
+    import json
+
+    import arc_llama.cli as cli_mod
+    import arc_llama.cli_diagnostics as diagnostics
+    from arc_llama.arch import Backend
+
+    cfg = _cfg(tmp_path)
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    binary = Path(cfg.paths.llama_server)
+    (binary.parent / ".arc-llama-runtime.json").write_text(json.dumps({"tag": "b12244", "backend": "sycl"}), encoding="utf-8")
+    monkeypatch.setattr(cli_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr(cli_mod, "detect_gpus", lambda **_: [])
+    monkeypatch.setattr(diagnostics, "detect_backends", lambda _: {Backend.SYCL})
+    monkeypatch.setattr(diagnostics, "detect_llama_server_backend", lambda _: Backend.SYCL)
+    result = CliRunner().invoke(cli, ["--config", str(path), "doctor"])
+    assert "known-bad" in result.output and "b12244" in result.output
+    assert "fall back to CPU" in " ".join(result.output.split())

@@ -119,6 +119,7 @@ def register_runtime_commands(
         help="Skip the trial launch; only check the candidate's flags.",
     )
     @click.option("--dry-run", is_flag=True, help="Install and test, but keep the current runtime.")
+    @click.option("--allow-known-bad", is_flag=True, help="Explicitly allow a runtime on the shipped known-bad list.")
     @click.pass_context
     def runtime_update_cmd(
         ctx: click.Context,
@@ -127,6 +128,7 @@ def register_runtime_commands(
         canary_model: str | None,
         no_canary: bool,
         dry_run: bool,
+        allow_known_bad: bool,
     ) -> None:
         """Install a newer llama.cpp beside the current one and switch only if it passes.
 
@@ -153,6 +155,7 @@ def register_runtime_commands(
                 canary_model=canary_model,
                 canary=not no_canary,
                 dry_run=dry_run,
+                allow_known_bad=allow_known_bad,
             )
         except RuntimeInstallError as exc:
             raise click.ClickException(f"download failed: {exc}") from exc

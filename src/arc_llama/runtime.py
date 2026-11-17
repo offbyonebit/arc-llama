@@ -421,6 +421,7 @@ def install_runtime(
     on_progress: Callable[[int, int], None] | None = None,
     client: httpx.Client | None = None,
     force: bool = False,
+    allow_known_bad: bool = False,
 ) -> RuntimeInstallResult:
     """Download, extract, and verify a prebuilt llama-server binary.
 
@@ -485,6 +486,11 @@ def install_runtime(
                 ) from None
             else:
                 raise
+        from arc_llama.known_bad_runtimes import known_bad_reason
+
+        reason = known_bad_reason(asset.tag, os_name, backend)
+        if reason and not allow_known_bad:
+            raise RuntimeInstallError(f"Known-bad runtime {asset.tag}: {reason}")
         install_dir = dest / f"llama-{asset.tag}-{backend}"
 
         # Short-circuit: reuse existing install when not forced.
