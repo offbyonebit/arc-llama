@@ -114,6 +114,11 @@ def test_config_omits_unknown_context(context):
 @pytest.mark.parametrize("argv,expected", [
     (["-c", "8192"], 8192), (["-c", "8192", "--ctx-size=16384"], 16384),
     (["-c", "8192", "--ctx-size", "32768"], 32768),
+    (["-c", "32768", "--parallel", "2"], 16384),
+    (["-c", "32768", "-np", "2"], 16384),
+    (["-c=32768", "--parallel=2"], 16384),
+    (["--ctx-size=32768", "-np=2"], 16384),
+    (["-c", "32768", "--parallel", "2", "-np=4"], 8192),
     (["-c", "8192", "-c", "0"], None), (["-c"], None), (["-c", "auto"], None), ([], None),
 ])
 def test_context_limit_uses_final_launch_flag(argv, expected):

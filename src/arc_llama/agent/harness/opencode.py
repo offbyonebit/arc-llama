@@ -141,18 +141,25 @@ def mcp_server_names(root: Path | str | None = None, extra_files: tuple[Path, ..
 
 
 def context_limit(argv: list[str]) -> int | None:
-    """Read the final llama-server context flag, including extra-flag overrides."""
+    """Read per-slot context from the final launch flags, including extra overrides."""
     value = None
+    parallel = "1"
     for i, arg in enumerate(argv):
         if arg in ("-c", "--ctx-size"):
             value = argv[i + 1] if i + 1 < len(argv) else None
         elif arg.startswith(("--ctx-size=", "-c=")):
             value = arg.split("=", 1)[1]
+        elif arg in ("--parallel", "-np"):
+            parallel = argv[i + 1] if i + 1 < len(argv) else "0"
+        elif arg.startswith(("--parallel=", "-np=")):
+            parallel = arg.split("=", 1)[1]
     try:
         parsed = int(value) if value is not None else 0
+        slots = int(parallel)
     except ValueError:
         return None
-    return parsed if parsed > 0 else None
+    slot_ctx = parsed // slots if parsed > 0 and slots > 0 else 0
+    return slot_ctx if slot_ctx > 0 else None
 
 
 def build_config(
