@@ -327,7 +327,9 @@ def test_runtime_cli_update_and_rollback(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.parametrize("tag,os_name,backend,blocked", [
     ("b12243", "windows", "sycl", False), ("b12244", "windows", "sycl", True),
-    ("b99999", "windows", "sycl", True), ("b12244", "linux", "sycl", False),
+    ("b12299", "windows", "sycl", True), ("b12300", "windows", "sycl", False),
+    ("b12359", "windows", "sycl", False), ("b99999", "windows", "sycl", False),
+    ("b12244", "linux", "sycl", False),
     ("b12244", "windows", "vulkan", False), ("custom", "windows", "sycl", False),
 ])
 def test_shipped_known_bad_runtime_ranges(tag, os_name, backend, blocked):
