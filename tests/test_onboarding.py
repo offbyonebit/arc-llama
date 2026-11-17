@@ -119,7 +119,7 @@ def setup(tmp_path, monkeypatch):
 
     def register(c, paths, *, gpu_pci_slot):
         model = ModelConfig(
-            "starter", str(paths[0]), 18080, "gpu", recipe={"ctx": 131072}
+            "starter", str(paths[0]), 18080, "gpu", recipe={"ctx": 131072, "reasoning_budget": 256}
         )
         c.models.append(model)
         return [model]
@@ -182,6 +182,8 @@ async def test_fresh_explicit_setup_prepares_registers_and_loads_exact_model(set
         "extra_flags": STARTER_THINKING_OFF,
         **STARTER_SAMPLING,
     }
+    assert "reasoning_budget" not in manager.cfg.models[0].recipe
+    assert "--reasoning-budget" not in manager.cfg.models[0].launch_recipe().to_argv()
     assert manager.public()["chat_url"] == "/chat?model=starter&welcome=1"
     assert manager.download.bytes_done == manager.download.bytes_total
     await manager.shutdown()
