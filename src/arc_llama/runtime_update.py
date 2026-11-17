@@ -300,6 +300,9 @@ def update_runtime(
         if gpu.enabled:
             gpu.backend = backend
     cfg.save(config_path)
+    from arc_llama.runtime_correctness import mark_runtime_changed
+
+    mark_runtime_changed(cfg)
     result.status = "switched"
     return result
 
@@ -328,6 +331,9 @@ def rollback_runtime(cfg: Config, config_path: Path | None) -> tuple[str, str] |
                 if gpu.enabled:
                     gpu.backend = previous_backend
         cfg.save(config_path)
+        from arc_llama.runtime_correctness import mark_runtime_changed
+
+        mark_runtime_changed(cfg)
         _write_history(cfg, history)
         return current, previous
     _write_history(cfg, history)

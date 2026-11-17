@@ -326,6 +326,16 @@ def register_diagnostic_commands(
                 )
 
         # Config
+        if cfg is not None:
+            from arc_llama.runtime_correctness import read_checks
+
+            for name, record in read_checks(cfg).items():
+                if record.get("status") == "warning" and cfg.find_model(name) is not None:
+                    detail = f"{name} on {record.get('build', 'build not reported')}: {record.get('detail', '')}"
+                    console.print(f"    [yellow]runtime self-check: {detail}[/yellow]")
+                    report.add(f"runtime_correctness_{name}", False, detail, severity="warn",
+                               hint="Model remains available. Consider arc-llama runtime rollback.")
+
         console.print("\n  config:")
         if cfg is not None:
             console.print(f"    [green]found[/green] at {config_path}")

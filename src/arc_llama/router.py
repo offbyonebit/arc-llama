@@ -36,6 +36,7 @@ from arc_llama.gguf_meta import (
 from arc_llama.launcher import LlamaServer, build_plan, resolve_split_gpus
 from arc_llama.preflight import preflight_launch
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
+from arc_llama.runtime_correctness import RuntimeCorrectness
 
 log = logging.getLogger("arc_llama.router")
 
@@ -467,6 +468,7 @@ class Router:
 
     def __init__(self, cfg: Config, log_dir: Path | None = None):
         self.cfg = cfg
+        self.correctness = RuntimeCorrectness(cfg)
         self.log_dir = log_dir
         self.resources: Any = None
         # Optional plugin_api.EventBus; set by the server lifespan.
@@ -816,6 +818,7 @@ class Router:
                 self.timings.record_cold_start(
                     target_model.name, time.monotonic() - load_started_at
                 )
+                await self.correctness.after_load(target_model, target_srv.plan.backend_url)
                 self._emit("model_loaded", model=target_model.name, gpu=target_gpu.pci_slot)
                 result = (target_model, target_srv)
                 future.set_result(result)
