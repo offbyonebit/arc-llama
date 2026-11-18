@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import tempfile
 from pathlib import Path
 
 from edit import duration, run, zoom
@@ -37,11 +38,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
     for start, end, text, size, y, color, punch in events:
-        tags = f"\\pos(720,{y})\\b800\\fs{size}\\c&H{color}&\\blur2"
+        tags = f"\\pos(720,{y})\\b800\\fs{size}\\c&H{color}&"
         if punch:
             tags += "\\fscx110\\fscy110\\t(0,133,\\fscx100\\fscy100)"
-        lines.append(f"Dialogue: 1,{stamp(start)},{stamp(min(end, length))},Main,,0,0,0,,{{{tags}}}{safe(text)}")
-    path.write_text(header + "\n".join(lines) + "\n")
+        for layer, glow in ((1, r"\1a&HFF&\3c&HC57100&\bord16\blur12"),
+                            (2, r"\1a&HFF&\3c&HFDC700&\bord7\blur5"),
+                            (3, r"\bord0\blur0.5")):
+            lines.append(f"Dialogue: {layer},{stamp(start)},{stamp(min(end, length))},Main,,0,0,0,,{{{tags}{glow}}}{safe(text)}")
+    path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -55,30 +59,30 @@ def main() -> None:
     args = ap.parse_args()
     if not math.isfinite(args.bpm) or not 30 <= args.bpm <= 300:
         ap.error("--bpm must be between 30 and 300")
-    out = (args.out or (Path("/tmp/arc-trailer-placeholder") if args.placeholder else ROOT / "docs/media")).resolve()
+    out = (args.out or ((Path(tempfile.gettempdir()) / "arc-trailer-placeholder") if args.placeholder else ROOT / "docs/media")).resolve()
     if args.placeholder and (out == ROOT / "docs/media" or ROOT / "docs/media" in out.parents):
         ap.error("placeholder output must stay outside docs/media")
     out.mkdir(parents=True, exist_ok=True)
     work = out / ".trailer-work"
-    work.mkdir(exist_ok=True)
+    work.mkdir(parents=True, exist_ok=True)
     rec = args.rec
     names = ["terminal", "first-run", "speed", "thinking", "work", "montage"]
     if args.with_27b:
         names.append("bigger")
     if args.placeholder:
         rec = work / "rec" / "trailer"
-        rec.mkdir(exist_ok=True)
+        rec.mkdir(parents=True, exist_ok=True)
         for name in names:
             data = dict(tps="PLACEHOLDER", version="PLACEHOLDER", gpu=dict(name="PLACEHOLDER", vram_mb="PLACEHOLDER"),
                         backend="PLACEHOLDER", ready=0, download=0, loaded=32, first_token=0,
                         browser=8, type=0, end=40, saved=1, question=1, answered=2, approval1=3,
                         discover=0, hermes=1, settings=2, models=3, speculative_active=False)
-            (rec / f"{name}.json").write_text(json.dumps(data, indent=2))
+            (rec / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
             label = work / f"{name}-label.ass"
             subtitles(label, 40, [(0, 40, name.upper() + " / PLACEHOLDER", 32, 110, "FFFFFF", False)])
-            run("-f", "lavfi", "-i", "color=c=0x0b101a:s=1440x900:r=30:d=40", "-vf", f"ass='{label}'",
+            run("-f", "lavfi", "-i", "color=c=0x0b101a:s=1440x900:r=30:d=40", "-vf", f"ass='{label.as_posix().replace(chr(58), chr(92) + chr(58))}'",
                 "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", str(rec / f"{name}.mp4"))
-    marks = {name: json.loads((rec / f"{name}.json").read_text()) for name in names}
+    marks = {name: json.loads((rec / f"{name}.json").read_text(encoding="utf-8")) for name in names}
     setup = marks["first-run"]
     for key in ("version", "backend", "gpu"):
         if not setup.get(key):
@@ -162,20 +166,31 @@ def main() -> None:
     b, e = clip("first-run", 2, t["download"], speed=8)
     text(b, e, "ONE CLICK TO AN ANSWER.", 64)
     wipe_start = b
+    if not args.with_27b:
+        b, e = clip("first-run", 4, max(t["download"], t["loaded"] - 32), speed=8)
+        text(b, e, "ONE CLICK TO AN ANSWER.", 64)
     b, e = clip("first-run", 4, max(t["download"], t["loaded"] - 16), speed=8)
     text(b, e, "ONE CLICK TO AN ANSWER.", 64)
     wipe = (wipe_start, e)
-    counter("speed", 10 if args.with_27b else 18)
+    speed_at = at(cursor)
+    counter("speed", 10 if args.with_27b else 8)
     if args.with_27b:
         counter("bigger", 8)
+    thinking_at = at(cursor)
     b, e = clip("thinking", 3, marks["thinking"]["ready"])
     text(b, e, "YOU DECIDE HOW HARD IT THINKS.", 58, 780)
     b, e = clip("thinking", 3, marks["thinking"]["saved"])
     text(b, e, "YOU DECIDE HOW HARD IT THINKS.", 58, 780)
+    work_at = at(cursor)
     t = marks["work"]
     for key, beats in (("ready", 2), ("question", 3), ("answered", 2), ("approval1", 3)):
         b, e = clip("work", beats, t[key])
         text(b, e, "AGENTS THAT ASK FIRST.", 68, 780)
+    montage_at = at(cursor)
+    if not args.with_27b:
+        for key in ("discover", "hermes", "settings"):
+            b, e = clip("montage", 2, marks["montage"][key])
+            text(b, e, setup["version"], 180, 450, blue=True)
     for key in ("discover", "hermes", "settings", "models"):
         b, e = clip("montage", 1, marks["montage"][key])
         text(b, e, setup["version"], 180, 450, blue=True)
@@ -189,7 +204,7 @@ def main() -> None:
     poster_at = b + beat
     ass = work / "type.ass"
     subtitles(ass, e, events)
-    with ass.open("a") as handle:
+    with ass.open("a", encoding="utf-8") as handle:
         handle.write(
             f"Dialogue: 0,{stamp(b)},{stamp(e)},Main,,0,0,0,,"
             r"{\an7\pos(390,520)\p1\bord0\shad0\1c&H5C3000&}"
@@ -197,9 +212,9 @@ def main() -> None:
             "l 45 90 b 20 90 0 70 0 45 b 0 20 20 0 45 0\n"
         )
     listing = work / "concat.txt"
-    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts))
+    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
     master = out / "trailer-1.2.mp4"
-    filters = (f"ass='{ass}',drawbox=x=0:y=896:w=iw:h=4:c=0x0071C5:t=fill,"
+    filters = (f"ass='{ass.as_posix().replace(chr(58), chr(92) + chr(58))}',drawbox=x=0:y=896:w=iw:h=4:c=0x0071C5:t=fill,"
                f"drawbox=x=0:y=0:w=iw:h=ih:c=white:t=fill:enable='eq(n,{round(at(2)*FPS)})',"
                f"drawtext=font='Inter':text='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━':fontsize=40:"
                f"fontcolor=0x00C7FD:x='-1440+1440*min(1,max(0,(t-{wipe[0]})/{wipe[1]-wipe[0]}))':y=850:"
@@ -223,11 +238,11 @@ def main() -> None:
     assert all(abs(t / beat - round(t / beat)) * beat <= 1 / FPS for t in cuts)
     report = dict(length_s=actual, cut_times_s=cuts, bpm=args.bpm, placeholder=args.placeholder,
                   webp_bytes=webp.stat().st_size)
-    (out / "timing.json").write_text(json.dumps(report, indent=2) + "\n")
+    (out / "timing.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if args.placeholder:
-        for name, seconds in (("cold-open", .75 * beat), ("counter", 20 * beat + .4),
-                              ("thinking", 39 * beat), ("work", 47 * beat),
-                              ("montage", 55 * beat), ("end-card", poster_at)):
+        for name, seconds in (("cold-open", .75 * beat), ("counter", speed_at + .4),
+                              ("thinking", thinking_at + beat), ("work", work_at + beat),
+                              ("montage", montage_at + beat), ("end-card", poster_at)):
             run("-ss", str(seconds), "-i", str(master), "-frames:v", "1", str(out / f"{name}.png"))
     print(json.dumps(report))
 

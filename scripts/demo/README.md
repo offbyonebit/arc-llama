@@ -46,8 +46,8 @@ Install the Hermes harness too (`arc-llama install-harness hermes`) for the mont
 
 Optionally register a 27B model in that saved config, with its MTP/draft recipe configured there.
 Set `TRAILER_27B_MODEL` to its registered model ID when recording and pass `--with-27b` when editing.
-Without it, the speed take holds the extra four seconds. The speculative decoding title appears
-only if new server log lines during that take report a positive drafted/accepted token count;
+Without it, first run and the montage use the extra time while the speed counter stays at four seconds
+(at 120 BPM). The speculative decoding title appears only if new server log lines during that take report a positive drafted/accepted token count;
 unrecognized or absent evidence omits the title. No recipe flag alone counts as active decoding.
 
 ```bash
