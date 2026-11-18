@@ -33,6 +33,7 @@ function cleanState() {
 function prepFresh() {
   serve("stop");
   rmSync(path.join(DEMO, "config/arc-llama"), { recursive: true, force: true });
+  rmSync(path.join(DEMO, "data/arc-llama/models"), { recursive: true, force: true });
   rmSync(path.join(DEMO, "opened-url"), { force: true });
   cleanState();
   serve("start-cmd");
@@ -232,7 +233,11 @@ async function chat(name = "chat", model = null) {
     await page.locator("#message-input").waitFor();
     if (which === "trailer") await page.waitForFunction(() => document.querySelector("#model-select")?.value);
     // The 1.2 UI hides the native select behind its own picker; switch it the way the picker does.
-    if (model) await page.locator("#model-select").evaluate((s, v) => { s.value = v; s.dispatchEvent(new Event("change")); }, model);
+    if (model) await page.locator("#model-select").evaluate((s, v) => {
+      const available = Array.from(s.options, o => o.value);
+      if (!available.includes(v)) throw new Error(`Requested model ${JSON.stringify(v)} is unavailable. Available model values: ${JSON.stringify(available)}`);
+      s.value = v; s.dispatchEvent(new Event("change"));
+    }, model);
     if (which === "trailer") {
       const status = await appData(page, "/admin/status");
       const selected = await page.locator("#model-select").inputValue();
@@ -274,7 +279,7 @@ async function chat(name = "chat", model = null) {
     if (name === "bigger") {
       let log = "";
       try { log = readFileSync(logFile).subarray(logOffset).toString("utf8"); } catch { /* omit unverified claim */ }
-      const evidence = log.split("\n").filter(l => /(?:drafted|n_drafted|draft accepted|#acc (?:drafts|tokens))\s*[=:]\s*[1-9]\d*/i.test(l));
+      const evidence = log.split("\n").filter(l => /(?:drafted|n_drafted|draft accepted|#acc\s+(?:drafts|tokens))\s*[=:]\s*[1-9]\d*|\(\s*[1-9]\d* accepted/i.test(l));
       marks.speculative_active = evidence.length > 0;
       marks.speculative_evidence = evidence;
     }
