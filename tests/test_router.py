@@ -50,6 +50,34 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     assert estimate_model_vram_quick_mb(model) is None
 
 
+def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
+    model_file = tmp_path / "qwen35moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.read_gguf_meta",
+        lambda _path: {
+            "architecture": "qwen35moe",
+            "block_count": 40,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        },
+    )
+    model = ModelConfig(
+        name="qwen35moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        kv_class="default",
+        recipe={"ctx": 8192, "cache_type_k": "f16"},
+    )
+
+    # 1 MiB weights + 160 MiB metadata KV (not the default bucket's 560 MiB).
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 160 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
+
+
 async def test_single_resident_policy_stops_other_models_before_starting_target(
     tmp_path, monkeypatch
 ):
