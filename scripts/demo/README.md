@@ -77,7 +77,7 @@ older takes without them fall back to fixed points. `timing.json` records frame-
 within one frame. Omit `--music` for silent MP4; no music is stored here. WebP is always silent and
 steps down fps/quality/size to stay below 3 MiB. Real output goes to `docs/media/trailer-1.2.mp4`,
 `trailer-1.2.webp` and `trailer-1.2-poster.png`; the existing README demo is never replaced.
-Grabs of each section land in `grabs/` next to the outputs. Watch the real render before deciding
+Grabs of each section land in `.trailer-work/grabs/` under the output directory. Watch the real render before deciding
 whether to update the README separately.
 
 No-GPU timing/type proof (never commit these outputs):

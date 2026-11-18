@@ -46,7 +46,7 @@ def draft_rate(lines: list) -> int | None:
     for line in reversed(lines or []):
         acc, gen = re.search(r"#acc tokens\s*=\s*(\d+)", line), re.search(r"#gen tokens\s*=\s*(\d+)", line)
         if acc and gen and int(gen[1]) > 0:
-            return round(100 * int(acc[1]) / int(gen[1]))
+            return min(100, round(100 * int(acc[1]) / int(gen[1])))
     return None
 
 
@@ -199,7 +199,7 @@ def main() -> None:
         fx, fy = focus
         vf = [f"setpts=(PTS-STARTPTS)/{speed}", "fps=30",
               f"scale=w='2*trunc({W}*{z}/2)':h='2*trunc({H}*{z}/2)':eval=frame:flags=bicubic",
-              f"crop={W}:{H}:x='max(0,min(iw-{W},{fx}*iw/{W}-{W // 2}))':y='max(0,min(ih-{H},{fy}*ih/{H}-{H // 2}))'",
+              f"crop={W}:{H}:x='max(0,min({W}*{z}-{W},{fx}*{z}-{W // 2}))':y='max(0,min({H}*{z}-{H},{fy}*{z}-{H // 2}))'",
               "setsar=1"]
         if trails:
             vf.append("lagfun=decay=0.84")
@@ -300,7 +300,8 @@ def main() -> None:
     hud(b, e)
     ty.kicker(b, e, 2, "FIRST RUN")
     ty.headline(b, e, "ONE CLICK.")
-    ty.label(b, e, f"▸▸ DOWNLOAD ×{speed:.0f}", 22, W - 40, 80, an=9, color=BLUE, spacing=4)
+    if speed >= 2:
+        ty.label(b, e, f"▸▸ DOWNLOAD ×{speed:.0f}", 22, W - 40, 80, an=9, color=BLUE, spacing=4)
     b, e = clip("first-run", 2, t["loaded"], zoom=(1.2, 1.35), focus=(720, 450))
     hud(b, e)
     ty.kicker(b, e, 2, "FIRST RUN")
@@ -400,7 +401,7 @@ def main() -> None:
     assert all(abs(t / beat - round(t / beat)) * beat <= 1 / FPS for t in cuts)
     report = dict(length_s=actual, cut_times_s=cuts, bpm=args.bpm, placeholder=fake, webp_bytes=webp.stat().st_size)
     (out / "timing.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    grabs = out / "grabs"
+    grabs = work / "grabs"
     grabs.mkdir(exist_ok=True)
     for name, seconds in (("cold-open", at(2) + .2), ("card", at(4) + beat + .3), ("terminal", at(6) + .9),
                           ("counter", speed_at + 1.6), ("thinking", thinking_at + 1.0), ("work", work_at + 3.4),
