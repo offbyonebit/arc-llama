@@ -27,6 +27,7 @@ from arc_llama.platform_checks import (
     oneapi_setvars_path,
     parse_kernel_version,
     rebar_likely_enabled,
+    sycl_runtime_error_hint,
     user_in_groups,
 )
 
@@ -270,6 +271,12 @@ def register_diagnostic_commands(
                 )
                 console.print(f"    path:        {llama_server}")
                 console.print(f"    backends:    {backend_list}")
+                if Backend.SYCL in backends:
+                    from arc_llama.server_caps import probe_server_caps
+
+                    hint = sycl_runtime_error_hint(probe_server_caps(str(llama_server)).probe_error)
+                    if hint:
+                        report.add("sycl_runtime", False, "SYCL runtime ABI mismatch", severity="fail", hint=hint)
                 if primary is None:
                     report.add(
                         "llama_server",

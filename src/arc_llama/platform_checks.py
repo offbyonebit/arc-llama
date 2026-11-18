@@ -237,6 +237,19 @@ def level_zero_loader_present() -> tuple[bool, str]:
     return False, ""
 
 
+def sycl_runtime_error_hint(output: str) -> str | None:
+    """Explain the newer SYCL ABI's loader failure without matching unrelated errors."""
+    if "symbol lookup error" not in output or not (
+        "defaultAsyncHandler" in output or "libsycl" in output
+    ):
+        return None
+    return (
+        "This llama.cpp build needs the oneAPI 2026.2 SYCL runtime (builds after b12243). "
+        "Install oneAPI 2026.2 beside 2026.1, or set paths.oneapi_setvars to its setvars.sh, "
+        "or run with --runtime-version b12359 on a 2026.2 runtime / b12243 on 2026.1."
+    )
+
+
 def oneapi_setvars_path() -> Path | None:
     """Return the path to Intel oneAPI's setvars script, if found.
 
@@ -354,7 +367,7 @@ def oneapi_runtime_env_needed() -> bool:
     return True
 
 
-def source_setvars(setvars_path: Path | str) -> dict[str, str]:
+def source_setvars(setvars_path: Path | str, *, force: bool = False) -> dict[str, str]:
     """Source a oneAPI setvars script and return the resulting environment diff.
 
     On Linux, runs the script in a bash subprocess and parses null-delimited
@@ -381,7 +394,7 @@ def source_setvars(setvars_path: Path | str) -> dict[str, str]:
                 wrapper.write("@echo off\n")
                 wrapper.write(f'cd /d "{setvars_path.parent}"\n')
                 # `call` is required so cmd resumes the wrapper after the batch.
-                wrapper.write(f'call "{setvars_path}"\n')
+                wrapper.write(f'call "{setvars_path}"' + (" --force" if force else "") + "\n")
                 wrapper.write("set\n")
             out = subprocess.run(
                 ["cmd", "/C", str(wrapper_path)],
@@ -410,7 +423,7 @@ def source_setvars(setvars_path: Path | str) -> dict[str, str]:
 
     # Use bash to source the script and dump the environment. setvars.sh is
     # a bash script, so this is the most reliable way to capture its effects.
-    script = f"source '{setvars_path}' > /dev/null 2>&1; env -0 | sort -z"
+    script = f"source '{setvars_path}'" + (" --force" if force else "") + " > /dev/null 2>&1; env -0 | sort -z"
     try:
         out = subprocess.run(
             ["bash", "-c", script],
