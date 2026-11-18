@@ -308,7 +308,7 @@ def main() -> None:
     ty.headline(b, e, "TO AN ANSWER.")
     # 5. Speed: the answer streams at real speed while the measured tok/s counts up and lands.
     speed_at, e, _ = counter("speed", 10 if big else 12, 3, "SPEED")
-    ty.label(speed_at + 1.2, e, f"MEASURED LIVE  ·  {card}  ·  {backend}", 22, 102, 650, an=4, alpha="20", spacing=5)
+    ty.label(speed_at + 1.2, e, f"MEASURED LIVE  ·  {backend}", 22, 102, 650, an=4, alpha="20", spacing=5)
     if big:
         m = marks["bigger"]
         b, e, hit = counter("bigger", 8, 4, "GO BIGGER")
@@ -317,8 +317,9 @@ def main() -> None:
         ty.slam(b, e, "27B.", 72, 102, 300, an=4)
         rate = draft_rate(m.get("speculative_evidence")) if m.get("speculative_active") is True else None
         if m.get("speculative_active") is True and m.get("speculative_evidence"):
-            line = "SPECULATIVE DECODING" + (f"  ·  {rate}% OF DRAFT TOKENS ACCEPTED" if rate is not None else "")
-            ty.label(hit + .2, e, line, 22, 102, 650, an=4, color=BLUE, spacing=5)
+            ty.label(hit + .2, e, "SPECULATIVE DECODING", 22, 102, 650, an=4, color=BLUE, spacing=5)
+            if rate is not None:
+                ty.label(hit + .2, e, f"{rate}% OF DRAFT TOKENS ACCEPTED", 22, 102, 686, an=4, color=BLUE, spacing=5)
     # 6. Thinking budget: push into the settings panel as 256 goes in and saves.
     th = marks["thinking"]
     field = box_focus(th.get("budget_box"), (1180, 420))
