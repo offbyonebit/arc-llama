@@ -161,6 +161,8 @@ arc-llama install-runtime
 
 # 4. Look at what was found
 arc-llama doctor
+# Optional redacted JSON for bug reports (same exit code):
+# arc-llama doctor --json > doctor.json
 arc-llama gpus
 
 # 5. Auto-register every GGUF found under your scan paths.
