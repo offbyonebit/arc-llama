@@ -11,7 +11,7 @@ const here = path.dirname(new URL(import.meta.url).pathname);
 const { chromium } = createRequire(path.join(here, "../../browser-tests/package.json"))("playwright");
 const DEMO = process.env.DEMO || "/tmp/arc-demo";
 const ORIGIN = "http://127.0.0.1:11437";
-const OUT = path.join(DEMO, "rec");
+const OUT = path.join(DEMO, "rec", ...(process.argv[2] === "trailer" ? ["trailer"] : []));
 // Raw frames are large; keep them off the root disk.
 const FRAMES = process.env.DEMO_FRAMES || "/mnt/storage/tmp/arc-demo-frames";
 const SIZE = { width: 1440, height: 900 };
@@ -113,7 +113,7 @@ async function shot(name, body) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   try {
-    await body(page, mark);
+    await body(page, mark, marks);
     mark("end");
   } finally {
     await cdp.send("Page.stopScreencast").catch(() => {});
@@ -137,7 +137,17 @@ async function glide(page, locator, steps = 25) {
 // Shot 1: the real `arc-llama start` output on a neutral `$` prompt, then the page it opened.
 async function terminal(url) {
   const lines = readFileSync(path.join(DEMO, "start.log"), "utf8").split("\n")
-    .filter((l) => l && !/^(INFO|\d{4}-\d\d-\d\d)/.test(l)).slice(0, 4);
+    .filter((l) => l && !/^(INFO|\d{4}-\d\d-\d\d)/.test(l)).slice(0, which === "trailer" ? 12 : 4);
+  if (which === "trailer") {
+    const token = await (await fetch(ORIGIN + "/admin/session-token")).json();
+    const r = await fetch(ORIGIN + "/admin/onboarding", {
+      headers: token.admin_token ? { Authorization: `Bearer ${token.admin_token}` } : {},
+    });
+    if (!r.ok) throw new Error("Cannot read detected device from running app");
+    const { gpu } = await r.json();
+    if (!gpu?.name || !gpu.vram_mb || !/B60/i.test(gpu.name)) throw new Error("Missing detected GPU");
+    lines.push(`Detected device (live app): ${gpu.name} · ${gpu.vram_mb} MiB`);
+  }
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const fmt = (l) => l.startsWith("Open Arc Llama:")
     ? `<b>Open Arc Llama:</b> <span class="u">${esc(l.slice(16))}</span>`
@@ -152,7 +162,7 @@ async function terminal(url) {
     .c{display:inline-block;width:.6em;height:1.1em;vertical-align:-.15em;background:#d7dae0;animation:k 1s steps(1) infinite}
     @keyframes k{50%{opacity:0}}</style>
     <div class="win"><div class="bar"><i></i><i></i><i></i></div><pre id="t"><span class="p">$</span> <span id="cmd"></span><span class="c"></span></pre></div>`;
-  await shot("terminal", async (page, mark) => {
+  await shot("terminal", async (page, mark, marks) => {
     await page.setContent(html);
     await sleep(900);
     mark("type");
@@ -163,6 +173,14 @@ async function terminal(url) {
     await sleep(700);
     for (const l of lines) { await page.evaluate((h) => { document.getElementById("t").insertAdjacentHTML("beforeend", "\n" + h); }, fmt(l)); await sleep(450); }
     await sleep(1600);
+    if (which === "trailer") {
+      const card = page.locator("#t");
+      const line = lines.find(l => /Using |Detected .*GPU|Intel.*Arc/i.test(l));
+      if (!line) throw new Error("No detected-card line in start.log");
+      marks.card_line = line;
+      const box = await card.boundingBox();
+      marks_box("zoom_box", { ...box, y: box.y + 38 * (lines.indexOf(line) + 1), height: 50 });
+    }
     mark("browser");
     await page.goto(url);
     // Wait for the catalog pick, not just the device line, so the page is settled.
@@ -208,10 +226,22 @@ async function discover() {
 }
 
 // Shot 3: a real answer streamed from the B60; load time is sped up later, streaming is not.
-async function chat() {
-  await shot("chat", async (page, mark) => {
+async function chat(name = "chat", model = null) {
+  await shot(name, async (page, mark, marks) => {
     await page.goto(ORIGIN + "/chat");
     await page.locator("#message-input").waitFor();
+    if (which === "trailer") await page.waitForFunction(() => document.querySelector("#model-select")?.value);
+    if (model) await page.selectOption("#model-select", model);
+    if (which === "trailer") {
+      const status = await appData(page, "/admin/status");
+      const selected = await page.locator("#model-select").inputValue();
+      const m = status.models.find(m => m.id === selected || m.name === selected);
+      const gpu = status.gpus.find(g => g.pci_slot === m?.gpu_pci_slot);
+      if (!gpu?.name || !gpu.vram_mb || !/B60/i.test(gpu.name)) throw new Error("Missing measured GPU identity");
+      marks.gpu = gpu;
+      marks.model = await page.locator("#model-select option:checked").innerText();
+      if (name === "bigger" && !/27B/i.test(marks.model)) throw new Error("Optional model must identify itself as 27B");
+    }
     await sleep(1500);
     mark("ready");
     await glide(page, page.locator("#message-input"));
@@ -219,6 +249,11 @@ async function chat() {
     await page.keyboard.type(CHAT_PROMPT, { delay: 28 });
     await sleep(400);
     await glide(page, page.locator("#send-button"), 12);
+    const logFile = path.join(DEMO, "state/arc-llama", model + ".log");
+    let logOffset = 0;
+    if (name === "bigger") {
+      try { logOffset = readFileSync(logFile).length; } catch { /* no log yet */ }
+    }
     await page.click("#send-button");
     mark("send");
     await page.mouse.move(1300, 500, { steps: 15 });
@@ -230,6 +265,17 @@ async function chat() {
     mark("done");
     const tps = await page.locator("#ctx-label-tps").innerText();
     console.log("  chat:", tps);
+    const measured = tps.match(/([\d.]+)\s*tok\/s/);
+    if (!measured || !(Number(measured[1]) > 0)) throw new Error("No measured tok/s in this take");
+    marks.tps = Number(measured[1]);
+    marks.tps_label = tps;
+    if (name === "bigger") {
+      let log = "";
+      try { log = readFileSync(logFile).subarray(logOffset).toString("utf8"); } catch { /* omit unverified claim */ }
+      const evidence = log.split("\n").filter(l => /(?:drafted|n_drafted|draft accepted)\s*[=:]\s*[1-9]\d*/i.test(l));
+      marks.speculative_active = evidence.length > 0;
+      marks.speculative_evidence = evidence;
+    }
     await sleep(1200);
     const ring = page.locator("#paper-context-toggle");
     await glide(page, ring, 20);
@@ -287,7 +333,91 @@ async function work() {
   });
 }
 
+// Trailer-only shots reuse the same isolated server and screencast encoder.
+async function appData(page, route) {
+  const session = await (await page.request.get(ORIGIN + "/admin/session-token")).json();
+  const response = await page.request.get(ORIGIN + route, {
+    headers: session.admin_token ? { Authorization: `Bearer ${session.admin_token}` } : {},
+  });
+  if (!response.ok()) throw new Error(`${route}: HTTP ${response.status()}`);
+  return response.json();
+}
+
+async function firstRun(url) {
+  await shot("first-run", async (page, mark, marks) => {
+    await page.goto(url);
+    const start = page.getByRole("button", { name: "Download and start", exact: true });
+    await start.waitFor({ timeout: 60000 });
+    marks.version = (await (await page.request.get(ORIGIN + "/openapi.json")).json()).info.version;
+    marks.hardware = await page.locator('[data-setup="hardware"]').innerText();
+    marks.starter = await page.locator('[data-setup="model"]').innerText();
+    if (!/Ornith.*9B/i.test(marks.starter)) throw new Error("Expected the Ornith 9B starter; inspect catalog selection");
+    mark("ready");
+    await sleep(1200);
+    await start.click();
+    mark("download");
+    await page.locator("#message-input").waitFor({ timeout: 3600000 });
+    mark("loaded");
+    const setup = await appData(page, "/admin/onboarding");
+    marks.gpu = setup.gpu;
+    marks.backend = setup.gpu?.backend;
+    if (!["vulkan", "sycl"].includes(marks.backend)) throw new Error("Unknown active backend");
+    await sleep(2500);
+  });
+}
+
+async function thinking() {
+  await shot("thinking", async (page, mark) => {
+    await page.goto(ORIGIN + "/chat");
+    await page.waitForFunction(() => document.querySelector("#model-select")?.value);
+    await page.locator("#settings-toggle").click();
+    await page.locator("#s-rbudget").waitFor();
+    mark("ready");
+    await page.fill("#s-rbudget", "");
+    await page.locator("#s-rbudget").pressSequentially("256", { delay: 160 });
+    await sleep(500);
+    await page.click("#s-apply");
+    await page.locator("#s-feedback").filter({ hasText: /^Saved/ }).waitFor({ timeout: 60000 });
+    mark("saved");
+    await sleep(3200);
+  });
+}
+
+async function montage() {
+  await shot("montage", async (page, mark) => {
+    await page.goto(ORIGIN + "/#discover");
+    await page.locator(".discover-cover").first().waitFor({ timeout: 60000 });
+    mark("discover"); await sleep(1200);
+    await page.goto(ORIGIN + "/work");
+    await page.locator('#work-harness option[value="hermes"]').waitFor({ state: "attached", timeout: 60000 });
+    await page.selectOption("#work-harness", "hermes");
+    mark("hermes"); await sleep(1200);
+    await page.goto(ORIGIN + "/chat");
+    await page.click("#settings-toggle");
+    await page.locator("#s-rbudget").waitFor();
+    mark("settings"); await sleep(1200);
+    await page.goto(ORIGIN + "/");
+    await page.locator(".model-card").first().waitFor({ timeout: 60000 });
+    mark("models"); await sleep(1200);
+  });
+}
+
 const which = process.argv[2] || "all";
+if (which === "trailer") {
+  // A failed recording must not leave old evidence available for a new edit.
+  rmSync(OUT, { recursive: true, force: true });
+  try {
+    const url = prepFresh();
+    await terminal(url);
+    await firstRun(url);
+    await chat("speed");
+    await thinking();
+    prepModel();
+    await work();
+    if (process.env.TRAILER_27B_MODEL) await chat("bigger", process.env.TRAILER_27B_MODEL);
+    await montage();
+  } finally { serve("stop"); }
+}
 if (["all", "terminal", "discover"].includes(which)) {
   const url = prepFresh();
   if (which !== "discover") await terminal(url);
