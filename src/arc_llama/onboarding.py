@@ -94,6 +94,7 @@ class FirstAnswerSetup:
             # Thinking off, so a reasoning starter answers inside Chat's
             # 1024-token default reply instead of spending it on thinking.
             model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_THINKING_OFF]
+            model.recipe.pop("reasoning_budget", None)
             model.recipe.update(STARTER_SAMPLING)
             model.recipe["ctx"] = next(
                 (
