@@ -14,6 +14,7 @@ from arc_llama.arch import Backend
 from arc_llama.binary import detect_llama_server_backend
 from arc_llama.config import Config
 from arc_llama.models import parse_hf_spec, scan_models
+from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 
 def register_model_commands(
@@ -23,6 +24,7 @@ def register_model_commands(
     load_config: Any,
     save_or_die: Any,
     add_local_model: Any,
+    installed_runtimes: Any,
     download_from_hf: Any,
     detect_gpus: Any,
     do_scan: Any,
@@ -147,7 +149,7 @@ def register_model_commands(
         "backend",
         default=None,
         type=click.Choice([Backend.SYCL.value, Backend.VULKAN.value]),
-        help="Compute backend for this GPU (default: the GPU's configured backend, usually sycl).",
+        help="Runtime backend for this model only (default: the GPU's backend).",
     )
     @click.option(
         "--port",
@@ -260,24 +262,18 @@ def register_model_commands(
                 sys.exit(1)
             gpu_pci_slot = enabled[0].pci_slot
 
-        # Apply backend override to the selected GPU.
-        if backend is not None:
-            gpu_cfg = cfg.find_gpu(gpu_pci_slot)
-            if gpu_cfg is not None:
-                gpu_cfg.backend = backend
-
-        # Warn if the configured llama-server binary does not support the GPU backend.
         selected_gpu = cfg.find_gpu(gpu_pci_slot)
-        if selected_gpu is not None:
-            bin_path = Path(cfg.paths.llama_server).expanduser()
-            if bin_path.exists():
-                bin_backend = detect_llama_server_backend(bin_path)
-                if bin_backend is not None and bin_backend.value != selected_gpu.backend:
-                    console.print(
-                        f"[yellow]Warning: GPU {selected_gpu.pci_slot} is set to "
-                        f"'{selected_gpu.backend}', but {bin_path} appears to be a "
-                        f"'{bin_backend.value}' binary.[/yellow]"
-                    )
+        runtime_override = None
+        if backend is not None and selected_gpu is not None and backend != selected_gpu.backend:
+            candidates = [item for item in installed_runtimes(cfg) if item[1] == backend]
+            if not candidates:
+                raise click.ClickException(
+                    f"No {backend} runtime installed. Run: arc-llama install-runtime --backend {backend} --no-set-default"
+                )
+            runtime_override = max(candidates, key=lambda item: (
+                item[0] == LLAMA_CPP_BUILD,
+                int(item[0][1:]) if item[0].startswith("b") and item[0][1:].isdigit() else -1,
+            ))[2]
 
         # Resolve source → file path. Local file wins if it exists; otherwise try HF.
         local_candidate = Path(source).expanduser()
@@ -339,6 +335,23 @@ def register_model_commands(
             console.print(f"[red]{e}[/red]")
             sys.exit(1)
 
+        if runtime_override is not None:
+            from arc_llama.launcher import model_backend
+
+            mc.llama_server = str(runtime_override)
+            if selected_gpu is not None and mc.recipe.get("flash_attn") == "off" and model_backend(cfg, mc, selected_gpu) == Backend.SYCL:
+                mc.recipe["flash_attn"] = "on"
+                console.print("Flash attention set to on for this model's SYCL runtime.", markup=False)
+        if selected_gpu is not None:
+            bin_path = Path(cfg.model_llama_server(mc)).expanduser()
+            if bin_path.exists():
+                bin_backend = detect_llama_server_backend(bin_path)
+                expected_backend = backend or selected_gpu.backend
+                if bin_backend is not None and bin_backend.value != expected_backend:
+                    console.print(
+                        f"[yellow]Warning: model {mc.name} requests '{expected_backend}', "
+                        f"but {bin_path} appears to be a '{bin_backend.value}' binary.[/yellow]"
+                    )
         save_or_die(cfg, cfg_path)
         recipe = mc.launch_recipe()
         ctx_info = f"ctx={recipe.ctx}"
