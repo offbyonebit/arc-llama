@@ -169,7 +169,7 @@ def main() -> None:
             raise ValueError(f"{name}: missing GPU name/VRAM from app")
     gpu = marks["speed"]["gpu"]
     card = "ARC PRO B60 (PLACEHOLDER)" if fake else gpu_label(gpu)
-    vram = "## GB" if fake else f"{round(gpu['vram_mb'] / 1024)} GB"
+    vram = "## GB" if fake else f"{min((4, 6, 8, 10, 11, 12, 16, 20, 24, 32, 48, 64, 96, 128), key=lambda gb: abs(gb - gpu['vram_mb'] / 1024))} GB"
     version = "#.#" if fake else str(setup["version"])
     short = version if fake else ".".join(version.split(".")[:2])
     backend = "VULKAN/SYCL" if fake else str(setup["backend"]).upper()
