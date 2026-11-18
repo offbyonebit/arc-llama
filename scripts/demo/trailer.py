@@ -190,11 +190,12 @@ def main() -> None:
     cursor = 0
 
     def clip(name, beats, start=0.0, speed=1.0, zoom=(1.0, 1.0), focus=(720, 450), trails=False, dim=0.0, glitch=True,
-             blur=0, panel=0, footer=0):
+             blur=0, panel=0, footer=0, top=0):
         """One beat-aligned piece; ``focus`` is a page point (1440x900 basis) the push-in centres on.
 
         ``blur`` softens the whole frame and ``panel`` frosts a dark strip down the left, so app
         text (such as the app's own tok/s readout) can never be read behind a measured number.
+        ``top`` keeps a plain band that tall above the footage for captions, so no caption can sit on app text.
         """
         nonlocal cursor
         begin, end = at(cursor), at(cursor + beats)
@@ -205,8 +206,11 @@ def main() -> None:
         fx, fy = focus
         vf = [f"setpts=(PTS-STARTPTS)/{speed}", "fps=30",
               f"scale=w='2*trunc({W}*{z}/2)':h='2*trunc({H}*{z}/2)':eval=frame:flags=bicubic",
-              f"crop={W}:{H}:x='max(0,min({W}*{z}-{W},{fx}*{z}-{W // 2}))':y='max(0,min({H}*{z}-{H},{fy}*{z}-{H // 2}))'",
+              f"crop={W}:{H - top}:x='max(0,min({W}*{z}-{W},{fx}*{z}-{W // 2}))'"
+              f":y='max(0,min({H}*{z}-{H - top},{fy}*{z}-{(H - top - footer) // 2}))'",
               "setsar=1"]
+        if top:
+            vf.append(f"pad={W}:{H}:0:{top}:color={BG}")
         if trails:
             vf.append("lagfun=decay=0.84")
         if dim:
@@ -238,6 +242,22 @@ def main() -> None:
 
     def box_focus(box, fallback):
         return (box["x"] + box["w"] / 2, box["y"] + box["h"] / 2) if isinstance(box, dict) and "x" in box else fallback
+
+    def fit_zoom(box, zoom, fallback, top, footer, above=0):
+        """Largest push-in (same ramp) that keeps a page box, plus ``above`` px over it, clear of the band and footer."""
+        if not (isinstance(box, dict) and "y" in box):
+            return zoom, fallback
+        y0, y1 = box["y"] - above, box["y"] + box["h"]
+        fy = (y0 + y1) / 2
+
+        def fits(z):
+            win = max(0, min(H * z - (H - top), fy * z - (H - top - footer) / 2))
+            return y0 * z - win + top >= top + 16 and y1 * z - win + top <= H - footer - 16
+
+        ramp, z1 = zoom[1] - zoom[0], zoom[1]
+        while z1 > 1.0 and not (fits(z1) and fits(max(1.0, z1 - ramp))):
+            z1 = round(z1 - .02, 2)
+        return (max(1.0, z1 - ramp), max(1.0, z1)), (box["x"] + box["w"] / 2, fy)
 
     def hud(begin, end):
         ty.label(begin, end, f"● LIVE CAPTURE  ·  {card}", 18, 40, 40, an=7, color=BLUE, alpha="20", spacing=4)
@@ -339,31 +359,28 @@ def main() -> None:
     # 6. Thinking budget: push into the settings panel as 256 goes in and saves.
     th = marks["thinking"]
     field = box_focus(th.get("budget_box"), (1180, 420))
-    thinking_at, e = clip("thinking", 3, th["ready"], zoom=(1.25, 1.6), focus=field)
-    hud(thinking_at, e)
-    ty.kicker(thinking_at, e, 5, "CONTROL")
-    ty.rect(thinking_at, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
-    ty.headline(thinking_at, e, "YOU SET HOW HARD IT THINKS.", 72)
-    b, e = clip("thinking", 3, th["saved"], zoom=(1.6, 1.75), focus=field)
-    hud(b, e)
-    ty.kicker(b, e, 5, "CONTROL")
-    ty.rect(b, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
-    ty.headline(b, e, "YOU SET HOW HARD IT THINKS.", 72, settle=True)
-    # 7. Work: the whole line stays up across four cuts.
-    wk = marks["work"]
-    approval = box_focus(wk.get("approval_box"), (720, 470))
-    work_at = at(cursor)
-    shots = (("ready", (1.2, 1.35), (720, 700)), ("question", (1.35, 1.6), (720, 430)),
-             ("answered", (1.3, 1.45), (720, 470)), ("approval1", (1.5, 1.8), approval))
-    for i, (key, zoom, focus) in enumerate(shots):
-        beats = 3
-        b, e = clip("work", beats, wk[key], zoom=zoom, focus=focus, footer=105)
+    # The settings panel fills the right of the frame, so the line goes on two rows in the empty chat on the left.
+    thinking_at = at(cursor)
+    for i, (key, zoom) in enumerate((("ready", (1.25, 1.6)), ("saved", (1.6, 1.75)))):
+        b, e = clip("thinking", 3, th[key], zoom=zoom, focus=field)
         hud(b, e)
-        # The composer sits along the bottom of Work, so the type goes up top on a soft scrim.
-        ty.rect(b, e, 0, 0, W, 380, "000000", alpha="40", blur=70, layer=0)
-        ty.kicker(b, e, 6, "WORK", y=96)
-        ty.headline(b, e, "AGENTS THAT ASK", 80, y=212, settle=i > 0)
-        ty.headline(b, e, "BEFORE THEY ACT.", 80, y=304, settle=i > 0)
+        ty.rect(b, e, 0, H - 340, 760, 340, "000000", alpha="50", blur=70, layer=0)
+        ty.kicker(b, e, 5, "CONTROL", y=640)
+        ty.headline(b, e, "YOU SET HOW", 80, y=752, settle=i > 0)
+        ty.headline(b, e, "HARD IT THINKS.", 80, y=838, settle=i > 0)
+    # 7. Work: the whole line stays up across three cuts, on a plain band above the footage.
+    wk, band = marks["work"], 300
+    approval_zoom, approval = fit_zoom(wk.get("approval_box"), (1.2, 1.45), (720, 470), band, 105, above=150)
+    work_at = at(cursor)
+    shots = (("ready", (1.2, 1.35), (720, 700), 105), ("question", (1.1, 1.22), (720, 384), 0),
+             ("approval1", approval_zoom, approval, 105))
+    for i, (key, zoom, focus, footer) in enumerate(shots):
+        b, e = clip("work", 4, wk[key], zoom=zoom, focus=focus, footer=footer, top=band)
+        hud(b, e)
+        ty.rect(b, e, 0, band - 12, W, 52, "0D0704", blur=16, layer=0)  # soften the band's edge over the app
+        ty.kicker(b, e, 6, "WORK", y=90)
+        ty.headline(b, e, "AGENTS THAT ASK", 80, y=194, settle=i > 0)
+        ty.headline(b, e, "BEFORE THEY ACT.", 80, y=280, settle=i > 0)
     # 8. Montage: a cut a beat, "1.2" punching on each.
     mo = marks["montage"]
     montage_at = at(cursor)
@@ -427,7 +444,7 @@ def main() -> None:
     grabs = work / "grabs"
     grabs.mkdir(exist_ok=True)
     for name, seconds in (("cold-open", at(4) + .3), ("card", at(7) + beat + .3), ("terminal", b2 + .25),
-                          ("counter", speed_at + 1.6), ("thinking", thinking_at + 1.0), ("work", work_at + 3.4),
+                          ("counter", speed_at + 1.6), ("thinking", thinking_at + 1.0), ("work", work_at + 4.5),
                           ("montage", montage_at + .3), ("end-card", poster_at)):
         run("-ss", str(seconds), "-i", str(master), "-frames:v", "1", str(grabs / f"{name}.png"))
     print(json.dumps(report))
