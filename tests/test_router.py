@@ -20,6 +20,12 @@ def _inline_router_threads(monkeypatch):
     monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
 
 
+@pytest.mark.parametrize("platform,expected", [("win32", 768), ("linux", 256), ("darwin", 256)])
+def test_vram_safety_margin_by_platform(monkeypatch, platform, expected):
+    monkeypatch.setattr(router_mod.sys, "platform", platform)
+    assert router_mod._vram_safety_margin_mb() == expected
+
+
 def test_quick_vram_estimate_uses_file_kv_and_fixed_overhead(tmp_path, monkeypatch):
     model_file = tmp_path / "dense.gguf"
     model_file.write_bytes(b"x" * (1_048_576 + 1))
@@ -32,8 +38,9 @@ def test_quick_vram_estimate_uses_file_kv_and_fixed_overhead(tmp_path, monkeypat
     )
     monkeypatch.setattr("arc_llama.router.kv_bytes_per_token_f16", lambda _path: 1024)
 
-    # 2 MiB rounded-up weights + 4 MiB q8 KV + 768 MiB compute + 256 MiB safety.
-    assert estimate_model_vram_quick_mb(model) == 1030
+    # 2 MiB rounded-up weights + 4 MiB q8 KV + compute and platform safety overhead.
+    expected = 2 + 4 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    assert estimate_model_vram_quick_mb(model) == expected
 
 
 def test_quick_vram_estimate_defers_offloaded_models(tmp_path):

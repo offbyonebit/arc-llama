@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import statistics
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -44,9 +45,14 @@ BACKEND_HOST = "127.0.0.1"
 client, and binding them to ``server.host`` exposed every backend port,
 unauthenticated, whenever the router itself was bound to the network."""
 
+
+def _vram_safety_margin_mb() -> int:
+    return 768 if sys.platform == "win32" else 256
+
+
 # Rough overhead budgets for VRAM estimation (MiB).
 _VRAM_COMPUTE_BUFFER_MB = 768
-_VRAM_SAFETY_MARGIN_MB = 256
+_VRAM_SAFETY_MARGIN_MB = _vram_safety_margin_mb()
 
 
 def _quantile(sorted_values: list[float], q: float) -> float | None:
