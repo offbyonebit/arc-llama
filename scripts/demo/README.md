@@ -46,9 +46,11 @@ Install the Hermes harness too (`arc-llama install-harness hermes`) for the mont
 
 Optionally register a 27B model in that saved config, with its MTP/draft recipe configured there.
 Set `TRAILER_27B_MODEL` to its registered model ID when recording and pass `--with-27b` when editing.
-Without it, first run and the montage use the extra time while the speed counter stays at four seconds
-(at 120 BPM). The speculative decoding title appears only if new server log lines during that take report a positive drafted/accepted token count;
-unrecognized or absent evidence omits the title. No recipe flag alone counts as active decoding.
+Without it, first run, speed, Work and the montage use the extra time. The speculative decoding line
+appears only if new server log lines during that take report accepted drafts (llama.cpp's MTP
+statistics line counts); its acceptance percentage comes from the same line. No recipe flag alone
+counts as active decoding. `record.mjs trailer-rest` re-records only the 27B take and the montage,
+keeping the other takes.
 
 ```bash
 source scripts/demo/env.sh
@@ -68,12 +70,15 @@ Missing speed/hardware evidence aborts the edit. Version cards use that app vers
 `1.1.1` until the independent version bump merges; no trailer code changes the package version.
 
 The cut is 33 seconds at 120 BPM, 1440x900 at 30 fps. Other BPM values scale the beat schedule;
-streaming always plays at 1x, with a held last frame if the answer finishes early. Long downloads
-use head/tail excerpts at 8x. `timing.json` records frame-quantized cuts and verifies beat alignment
+streaming always plays at 1x, with a held last frame if the answer finishes early. The download
+plays as a time-lapse fitted to its beats, with its speed-up shown on screen. The recorder stores
+element boxes (answer, start button, budget field, approval sheet) that the push-ins centre on;
+older takes without them fall back to fixed points. `timing.json` records frame-quantized cuts and verifies beat alignment
 within one frame. Omit `--music` for silent MP4; no music is stored here. WebP is always silent and
 steps down fps/quality/size to stay below 3 MiB. Real output goes to `docs/media/trailer-1.2.mp4`,
 `trailer-1.2.webp` and `trailer-1.2-poster.png`; the existing README demo is never replaced.
-Watch the real render before deciding whether to update the README separately.
+Grabs of each section land in `grabs/` next to the outputs. Watch the real render before deciding
+whether to update the README separately.
 
 No-GPU timing/type proof (never commit these outputs):
 

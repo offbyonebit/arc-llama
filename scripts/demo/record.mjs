@@ -11,7 +11,7 @@ const here = path.dirname(new URL(import.meta.url).pathname);
 const { chromium } = createRequire(path.join(here, "../../browser-tests/package.json"))("playwright");
 const DEMO = process.env.DEMO || "/tmp/arc-demo";
 const ORIGIN = "http://127.0.0.1:11437";
-const OUT = path.join(DEMO, "rec", ...(process.argv[2] === "trailer" ? ["trailer"] : []));
+const OUT = path.join(DEMO, "rec", ...(/^trailer/.test(process.argv[2] || "") ? ["trailer"] : []));
 // Raw frames are large; keep them off the root disk.
 const FRAMES = process.env.DEMO_FRAMES || "/mnt/storage/tmp/arc-demo-frames";
 const SIZE = { width: 1440, height: 900 };
@@ -231,7 +231,8 @@ async function chat(name = "chat", model = null) {
     await page.goto(ORIGIN + "/chat");
     await page.locator("#message-input").waitFor();
     if (which === "trailer") await page.waitForFunction(() => document.querySelector("#model-select")?.value);
-    if (model) await page.selectOption("#model-select", model);
+    // The 1.2 UI hides the native select behind its own picker; switch it the way the picker does.
+    if (model) await page.locator("#model-select").evaluate((s, v) => { s.value = v; s.dispatchEvent(new Event("change")); }, model);
     if (which === "trailer") {
       const status = await appData(page, "/admin/status");
       const selected = await page.locator("#model-select").inputValue();
@@ -263,6 +264,7 @@ async function chat(name = "chat", model = null) {
     mark("first_token");
     await page.waitForFunction(() => /tok\/s/.test(document.getElementById("ctx-label-tps")?.textContent || ""), null, { timeout: 180000, polling: 30 });
     mark("done");
+    marks_box("stream_box", await page.locator(".message.assistant").last().boundingBox());
     const tps = await page.locator("#ctx-label-tps").innerText();
     console.log("  chat:", tps);
     const measured = tps.match(/([\d.]+)\s*tok\/s/);
@@ -272,7 +274,7 @@ async function chat(name = "chat", model = null) {
     if (name === "bigger") {
       let log = "";
       try { log = readFileSync(logFile).subarray(logOffset).toString("utf8"); } catch { /* omit unverified claim */ }
-      const evidence = log.split("\n").filter(l => /(?:drafted|n_drafted|draft accepted)\s*[=:]\s*[1-9]\d*/i.test(l));
+      const evidence = log.split("\n").filter(l => /(?:drafted|n_drafted|draft accepted|#acc (?:drafts|tokens))\s*[=:]\s*[1-9]\d*/i.test(l));
       marks.speculative_active = evidence.length > 0;
       marks.speculative_evidence = evidence;
     }
@@ -318,6 +320,7 @@ async function work() {
       const allow = page.locator(".work-sheet").getByRole("button", { name: "Allow", exact: true }).first();
       if (await allow.count() && await allow.isEnabled()) {
         mark("approval" + ++approvals);
+        if (approvals === 1) marks_box("approval_box", await page.locator(".work-sheet").first().boundingBox());
         await sleep(900);
         await glide(page, allow, 20);
         await sleep(300);
@@ -353,6 +356,7 @@ async function firstRun(url) {
     marks.starter = await page.locator('[data-setup="model"]').innerText();
     if (!/Ornith.*9B/i.test(marks.starter)) throw new Error("Expected the Ornith 9B starter; inspect catalog selection");
     mark("ready");
+    marks_box("button_box", await start.boundingBox());
     await sleep(1200);
     await start.click();
     mark("download");
@@ -373,6 +377,7 @@ async function thinking() {
     await page.locator("#settings-toggle").click();
     await page.locator("#s-rbudget").waitFor();
     mark("ready");
+    marks_box("budget_box", await page.locator("#s-rbudget").boundingBox());
     await page.fill("#s-rbudget", "");
     await page.locator("#s-rbudget").pressSequentially("256", { delay: 160 });
     await sleep(500);
@@ -402,18 +407,22 @@ async function montage() {
   });
 }
 
-const which = process.argv[2] || "all";
+// trailer-rest reruns only the 27B take and montage on top of an earlier trailer take.
+const REST = process.argv[2] === "trailer-rest";
+const which = REST ? "trailer" : process.argv[2] || "all";
 if (which === "trailer") {
   // A failed recording must not leave old evidence available for a new edit.
-  rmSync(OUT, { recursive: true, force: true });
+  if (!REST) rmSync(OUT, { recursive: true, force: true });
   try {
-    const url = prepFresh();
-    await terminal(url);
-    await firstRun(url);
-    await chat("speed");
-    await thinking();
+    if (!REST) {
+      const url = prepFresh();
+      await terminal(url);
+      await firstRun(url);
+      await chat("speed");
+      await thinking();
+    }
     prepModel();
-    await work();
+    if (!REST) await work();
     if (process.env.TRAILER_27B_MODEL) await chat("bigger", process.env.TRAILER_27B_MODEL);
     await montage();
   } finally { serve("stop"); }
