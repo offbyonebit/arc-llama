@@ -581,14 +581,14 @@ def _enrich_with_sycl_ls(gpus: list[DetectedGPU]) -> None:
 
 def _read_hex(path: Path) -> int | None:
     try:
-        return int(path.read_text().strip(), 16)
+        return int(path.read_text(encoding="utf-8").strip(), 16)
     except (OSError, ValueError):
         return None
 
 
 def _read_int(path: Path) -> int | None:
     try:
-        return int(path.read_text().strip())
+        return int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
 

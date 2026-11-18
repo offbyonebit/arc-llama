@@ -310,7 +310,7 @@ def register_recipe_commands(
         """Validate a submission JSON file (same checks registry CI runs)."""
         from arc_llama.recipe_share import validate_submission
 
-        problems = validate_submission(json.loads(path.read_text()))
+        problems = validate_submission(json.loads(path.read_text(encoding="utf-8")))
         if problems:
             for p in problems:
                 console.print(f"[red]- {p}[/red]")

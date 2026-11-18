@@ -102,7 +102,7 @@ def _find_drm_card(pci_slot: str) -> Path | None:
 
 def _read_int(p: Path) -> int | None:
     try:
-        return int(p.read_text().strip())
+        return int(p.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
 
