@@ -501,7 +501,7 @@ def test_min_moe_offload_layers_against_ctx_and_kv(tmp_path, monkeypatch):
     monkeypatch.setattr("arc_llama.gguf_meta.scan_weight_tensors", lambda _p: scan)
     monkeypatch.setattr("arc_llama.router.scan_weight_tensors", lambda _p: scan)
 
-    vram = 25000
+    vram = 25000 + router_mod._VRAM_SAFETY_MARGIN_MB - 256
     assert min_moe_offload_layers(model, vram, ctx=8192, kv_type=KVCacheType.F16) == 6
     assert min_moe_offload_layers(model, vram, ctx=8192, kv_type=KVCacheType.Q8_0) == 5
     # Larger context consumes more KV: the minimum must move with ctx too.
