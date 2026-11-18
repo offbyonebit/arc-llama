@@ -251,8 +251,8 @@ def register_performance_commands(
         show_default=True,
         help="What to optimise: generation tok/s, prompt-eval tok/s, or both.",
     )
-    @click.option("--prompt-tokens", type=int, default=1024, show_default=True)
-    @click.option("--gen-tokens", type=int, default=128, show_default=True)
+    @click.option("--prompt-tokens", type=int, default=1024, show_default=True, help="Approximate prompt tokens per tuning run.")
+    @click.option("--gen-tokens", type=int, default=128, show_default=True, help="Tokens to generate per tuning run.")
     @click.option(
         "--apply/--dry-run",
         "apply_",
@@ -446,15 +446,15 @@ def register_performance_commands(
     @click.option(
         "--tune-mtp", is_flag=True, help="Sweep MTP length/confidence and confirm a winner."
     )
-    @click.option("--repeats", default=5, show_default=True, type=click.IntRange(5, 25))
-    @click.option("--gen-tokens", default=128, show_default=True, type=click.IntRange(16, 4096))
+    @click.option("--repeats", default=5, show_default=True, type=click.IntRange(5, 25), help="Measured repeats per configuration with --tune-mtp.")
+    @click.option("--gen-tokens", default=128, show_default=True, type=click.IntRange(16, 4096), help="Tokens to generate per request with --tune-mtp.")
     @click.option(
         "--prompt-file",
         type=click.Path(exists=True, dir_okay=False, path_type=Path),
         help="Local benchmark prompt for --tune-mtp (default: Python coding task).",
     )
     @click.option("--json", "as_json", is_flag=True, help="Emit the MTP tuning report as JSON.")
-    @click.option("--draft-tokens", default=4, show_default=True, type=click.IntRange(1, 16))
+    @click.option("--draft-tokens", default=4, show_default=True, type=click.IntRange(1, 16), help="Maximum draft tokens per speculative step.")
     @click.option(
         "--verify/--no-verify",
         default=True,

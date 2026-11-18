@@ -1474,8 +1474,8 @@ def mtp_info_cmd(path: Path) -> None:
 
 
 @cli.command("systemd")
-@click.option("--service-name", default="arc-llama.service")
-@click.option("--description", default="arc-llama OpenAI-compatible router")
+@click.option("--service-name", default="arc-llama.service", help="Filename for the written user service (default: arc-llama.service).")
+@click.option("--description", default="arc-llama OpenAI-compatible router", help="Description shown for the systemd service.")
 @click.option("--write", is_flag=True, help="Write the unit to ~/.config/systemd/user/")
 def systemd_unit(service_name: str, description: str, write: bool) -> None:
     """Print (or write) a systemd --user unit for `arc-llama serve`."""
