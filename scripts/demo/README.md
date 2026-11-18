@@ -41,6 +41,7 @@ The original `record.mjs all` / `edit.py` demo is unchanged. The trailer needs t
 plus ffmpeg's libass filter for kinetic Inter ExtraBold type. Use the setup above on the B60,
 with the release/1.2 wheel and a current catalog offering the Ornith 1.0 9B starter. Fresh setup
 chooses its runtime; both Vulkan and SYCL are accepted and the active backend is recorded.
+Every fresh take re-downloads the starter; `$DEMO/models` and its hand-linked Work model are preserved.
 Install the Hermes harness too (`arc-llama install-harness hermes`) for the montage. The saved
 `$DEMO/config-model.toml` still supplies the original Work model/harness configuration.
 
