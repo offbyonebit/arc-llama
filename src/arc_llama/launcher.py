@@ -778,7 +778,7 @@ class LlamaServer:
         if self.plan.resident_lock_path is not None and fcntl is not None:
             lock_path = self.plan.resident_lock_path
             lock_path.parent.mkdir(parents=True, exist_ok=True)
-            lock_file = open(lock_path, "a+")
+            lock_file = open(lock_path, "a+", encoding="utf-8")
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:

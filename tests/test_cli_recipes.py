@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,25 @@ from helpers import AsyncContextClient
 from arc_llama.benchmark import BenchmarkResult
 from arc_llama.cli import cli
 from arc_llama.config import Config, GPUConfig, ModelConfig, PathsConfig, TuneConfig
-from arc_llama.recipe_share import SharedRecipe
+from arc_llama.recipe_share import SharedRecipe, submission_document
+
+
+def test_recipes_validate_reads_utf8_submission(tmp_path):
+    doc = submission_document(
+        fingerprint="a" * 64,
+        recipe={"kv": "q8_0"},
+        prompt_eval_tok_s=None,
+        generation_tok_s=None,
+        gpu_name="Test café 東京",
+        arc_llama_version="test",
+    )
+    path = tmp_path / "submission.json"
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["recipes", "validate", str(path)])
+
+    assert result.exit_code == 0, result.output
+    assert "OK" in result.output
 
 
 def _config(tmp_path: Path) -> Config:
