@@ -281,9 +281,11 @@ def main() -> None:
     hud(b, e)
     ty.kicker(b, e, 1, "START")
     ty.headline(b, e, "ONE COMMAND.")
-    # Fit the whole detected-device line (24px monospace, about 14.5px a character) with its left edge in view.
-    zb, z1 = t.get("zoom_box"), max(1.2, min(2.45, W / (len(t.get("card_line") or "") * 14.5 + 96)))
-    line_focus = (zb["x"] + W / (2 * z1), zb["y"] + zb["h"] / 2) if isinstance(zb, dict) and "x" in zb else (330, 250)
+    # Fit the longest of the device line and the live-app line under it (24px monospace, about 14.5px a
+    # character), left edge in view, with the device line near the top so the lines below it stay in frame.
+    dev = f"Detected device (live app): {setup['gpu'].get('name')} · {setup['gpu'].get('vram_mb')} MiB"
+    zb, z1 = t.get("zoom_box"), max(1.2, min(2.45, W / (max(len(t.get("card_line") or ""), len(dev)) * 14.5 + 96)))
+    line_focus = (zb["x"] + W / (2 * z1), zb["y"] + zb["h"] + 270 / z1) if isinstance(zb, dict) and "x" in zb else (330, 250)
     b2, e2 = clip("terminal", 2, max(0, t["browser"] - .5), zoom=(z1 - .2, z1), focus=line_focus)
     hud(b2, e2)
     ty.kicker(b2, e2, 1, "START")
@@ -407,7 +409,7 @@ def main() -> None:
     (out / "timing.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     grabs = work / "grabs"
     grabs.mkdir(exist_ok=True)
-    for name, seconds in (("cold-open", at(2) + .2), ("card", at(4) + beat + .3), ("terminal", b2 + .6),
+    for name, seconds in (("cold-open", at(2) + .2), ("card", at(4) + beat + .3), ("terminal", b2 + .25),
                           ("counter", speed_at + 1.6), ("thinking", thinking_at + 1.0), ("work", work_at + 3.4),
                           ("montage", montage_at + .3), ("end-card", poster_at)):
         run("-ss", str(seconds), "-i", str(master), "-frames:v", "1", str(grabs / f"{name}.png"))
