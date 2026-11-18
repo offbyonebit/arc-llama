@@ -180,7 +180,7 @@
     const response = await fetch("/admin/session-token");
     if (response.ok) token = (await response.json()).admin_token || token;
     const data = await request("/v1/models");
-    $("#workspace-model").replaceChildren(...data.data.filter(m => m.owned_by === "arc-llama" && (!m.metadata?.capabilities || m.metadata.capabilities.includes("chat"))).map(m => new Option(m.metadata?.display_name || m.id, m.id)));
+    $("#workspace-model").replaceChildren(...data.data.filter(m => m.owned_by === "arc-llama" && m.metadata?.missing !== true && (!m.metadata?.capabilities || m.metadata.capabilities.includes("chat"))).map(m => new Option(m.metadata?.display_name || m.id, m.id)));
     await refresh();
     if (workspaces.length) selectProject(workspaces[0].id);
   }

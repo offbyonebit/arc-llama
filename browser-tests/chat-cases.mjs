@@ -9,6 +9,11 @@ import {
 } from "./harness.mjs";
 
 export async function testChatSelection({ page, origin }) {
+  await page.route("**/v1/models", route => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ ...MODELS, data: [
+      ...MODELS.data, { ...MODELS.data[0], id: "missing", metadata: { ...MODELS.data[0].metadata, missing: true } },
+    ] }),
+  }));
   await openChat(page, origin);
   const options = await page.$$eval("#model-select option", (els) => els.map((e) => e.value));
   if (options.join(",") !== "qwen,gemma") throw new Error(`unexpected model options: ${options}`);

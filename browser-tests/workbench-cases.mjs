@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { MODELS } from "./harness.mjs";
 
 export async function testWorkProjectsJobsAndReview({ page, origin }) {
   let projects = [], jobs = [], selected = null;
   const actions = [];
   const json = data => ({ status: 200, contentType: "application/json", body: JSON.stringify(data) });
+  await page.route("**/v1/models", route => route.fulfill(json({ ...MODELS, data: [
+    ...MODELS.data, { ...MODELS.data[0], id: "missing", metadata: { ...MODELS.data[0].metadata, missing: true } },
+  ] })));
   await page.route("**/admin/work**", route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     if (path === "/admin/work") return route.fulfill(json({ workspaces: projects, jobs, commands_available: false }));
@@ -24,6 +28,7 @@ export async function testWorkProjectsJobsAndReview({ page, origin }) {
   });
   await page.goto(origin + "/workbench");
   await page.waitForSelector("#workspace-model option", { state: "attached" });
+  assert.deepEqual(await page.locator("#workspace-model option").evaluateAll(options => options.map(o => o.value)), ["qwen", "gemma"]);
   await page.fill("#workspace-name", "Private project <script>");
   await page.fill("#workspace-root", "/projects/private");
   await page.fill("#workspace-instructions", "Do not change the API");
