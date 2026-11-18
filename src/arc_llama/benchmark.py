@@ -907,10 +907,11 @@ def llama_cpp_build(binary: str) -> str | None:
     """``b12243 (abc1234)`` from ``llama-server --version``, or None."""
     import subprocess
 
+    from arc_llama.platform_checks import sycl_runtime_error_hint
     from arc_llama.server_caps import _env_with_oneapi
 
     env = None
-    for _ in range(2):
+    for attempt in range(2):
         try:
             out = subprocess.run(
                 [binary, "--version"], capture_output=True, text=True,
@@ -924,8 +925,16 @@ def llama_cpp_build(binary: str) -> str | None:
         if m:
             return f"b{m.group(1)} ({m.group(2)})"
         # A SYCL build outside a oneAPI shell can't load its libraries; source setvars once.
-        env = _env_with_oneapi(None) if "error while loading shared libraries" in text else None
+        hint = sycl_runtime_error_hint(text)
+        if attempt == 1:
+            if hint:
+                log.warning("%s", hint)
+            return None
+        env = (_env_with_oneapi(None, force=True) if hint else
+               _env_with_oneapi(None) if "error while loading shared libraries" in text else None)
         if env is None:
+            if hint:
+                log.warning("%s", hint)
             return None
     return None
 

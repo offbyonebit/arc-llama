@@ -22,8 +22,10 @@ import logging
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from arc_llama.platform_checks import sycl_runtime_error_hint
 
 log = logging.getLogger("arc_llama.server_caps")
 
@@ -39,6 +41,7 @@ class ServerCaps:
     """True: `-fa {on,off,auto}` (new style). False: boolean `-fa` (old style)."""
     probed: bool = False
     """False when the probe failed and these are optimistic defaults."""
+    probe_error: str = ""
     supports_speculative: bool = False
     """Whether this binary exposes llama.cpp's ``--spec-type`` interface."""
     supports_draft_model: bool = False
@@ -117,17 +120,17 @@ def _parse_help(help_text: str) -> ServerCaps:
     }
     idx = help_text.find("--flash-attn")
     if idx < 0:
-        return ServerCaps(supports_flash_attn=False, flash_attn_takes_value=False, **features)
+        return ServerCaps(probe_error="", supports_flash_attn=False, flash_attn_takes_value=False, **features)
     # New-style help reads: "-fa, --flash-attn FA  set Flash Attention use
     # ('on', 'off', or 'auto', default: 'auto')". Old-style: "-fa, --flash-attn
     # enable Flash Attention (default: disabled)". 'auto' in the option's help
     # window is the discriminator.
     window = help_text[idx : idx + 240]
     takes_value = "auto" in window
-    return ServerCaps(supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
+    return ServerCaps(probe_error="", supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
 
 
-def _env_with_oneapi(env: dict[str, str] | None) -> dict[str, str] | None:
+def _env_with_oneapi(env: dict[str, str] | None, *, force: bool = False) -> dict[str, str] | None:
     """*env* (or the process environment) with oneAPI's setvars applied, or None if that cannot help."""
     from arc_llama.platform_checks import (
         oneapi_runtime_env_needed,
@@ -135,10 +138,10 @@ def _env_with_oneapi(env: dict[str, str] | None) -> dict[str, str] | None:
         source_setvars,
     )
 
-    if not oneapi_runtime_env_needed():
+    if not force and not oneapi_runtime_env_needed():
         return None
     setvars = oneapi_setvars_path()
-    sourced = source_setvars(setvars) if setvars is not None else {}
+    sourced = (source_setvars(setvars, force=True) if force else source_setvars(setvars)) if setvars is not None else {}
     if not sourced:
         return None
     return {**(env if env is not None else os.environ), **sourced}
@@ -179,9 +182,11 @@ def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -
             timeout=_HELP_TIMEOUT_S,
             env=env,
         )
-        if proc.returncode != 0 and "error while loading shared libraries" in (proc.stderr or ""):
+        output = (proc.stdout or "") + (proc.stderr or "")
+        symbol_error = sycl_runtime_error_hint(output)
+        if proc.returncode != 0 and (symbol_error or "error while loading shared libraries" in output):
             # A SYCL build started outside a oneAPI shell; launches source setvars, so the probe must too.
-            oneapi_env = _env_with_oneapi(env)
+            oneapi_env = _env_with_oneapi(env, force=True) if symbol_error else _env_with_oneapi(env)
             if oneapi_env is not None:
                 proc = subprocess.run(
                     [llama_server, "--help"],
@@ -195,15 +200,17 @@ def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -
         if proc.returncode == 0:
             caps = _parse_help(proc.stdout + proc.stderr)
         else:
-            output = (proc.stderr or proc.stdout).strip().splitlines()
-            detail = f": {output[-1]}" if output else ""
+            error = (proc.stderr or "") + (proc.stdout or "")
+            output_lines = error.strip().splitlines()
+            hint = sycl_runtime_error_hint(error)
+            detail = f": {hint or output_lines[-1]}" if hint or output_lines else ""
             log.warning(
                 "%s --help exited with code %s%s; assuming modern flag syntax",
                 llama_server,
                 proc.returncode,
                 detail,
             )
-            caps = DEFAULT_CAPS
+            caps = replace(DEFAULT_CAPS, probe_error=error) if hint else DEFAULT_CAPS
     except (OSError, subprocess.TimeoutExpired) as e:
         log.warning("could not probe %s (%s); assuming modern flag syntax", llama_server, e)
         caps = DEFAULT_CAPS
