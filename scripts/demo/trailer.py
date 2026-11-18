@@ -70,6 +70,12 @@ class Type:
         self.add(start, end, pos + f"\\c&H{color}&\\bord0\\blur.6\\alpha&HFF&\\fscx140\\fscy140\\fsp40"
                  f"\\t(0,50,\\alpha&H00&)\\t(0,120,\\fscx100\\fscy100\\fsp-2)", text)
 
+    def hold(self, start, end, text, size, x, y, an=5, color=WHITE):
+        """A slam's settled frame, for a caption that carries on across a hard cut."""
+        pos = f"\\an{an}\\pos({x},{y})\\fs{size}\\fsp-2\\b900"
+        self.add(start, end, pos + f"\\1a&HFF&\\3c&H{DEEP}&\\bord14\\blur16", safe(text), 4)
+        self.add(start, end, pos + f"\\c&H{color}&\\bord0\\blur.6", safe(text))
+
     def label(self, start, end, text, size, x, y, an=5, color=WHITE, alpha="00", spacing=6):
         self.add(start, end, f"\\an{an}\\pos({x},{y})\\fs{size}\\b700\\fsp{spacing}\\c&H{color}&\\alpha&H{alpha}&\\bord0\\fad(90,0)", safe(text))
 
@@ -78,12 +84,12 @@ class Type:
         self.add(start, end, f"\\an7\\pos({x},{y})\\p1\\bord0\\shad0\\blur{blur}\\c&H{color}&\\alpha&H{alpha}&{grow_tags}",
                  f"m 0 0 l {w} 0 l {w} {h} l 0 {h}", layer)
 
-    def kicker(self, start, end, number, word):
-        self.rect(start, end, 96, 726, 64, 6, BLUE, grow=160)
-        self.label(start, end, f"{number:02} / {word}", 24, 176, 729, an=4, color=BLUE)
+    def kicker(self, start, end, number, word, y=726):
+        self.rect(start, end, 96, y, 64, 6, BLUE, grow=160)
+        self.label(start, end, f"{number:02} / {word}", 24, 176, y + 3, an=4, color=BLUE)
 
-    def headline(self, start, end, text, size=96):
-        self.slam(start, end, text, size, 92, 838, an=1)
+    def headline(self, start, end, text, size=96, y=838, settle=False):
+        (self.hold if settle else self.slam)(start, end, text, size, 92, y, an=1)
 
     def ring(self, t, x, y, size=260):
         circle = "m 0 -100 b 55 -100 100 -55 100 0 b 100 55 55 100 0 100 b -55 100 -100 55 -100 0 b -100 -55 -55 -100 0 -100"
@@ -184,7 +190,7 @@ def main() -> None:
     cursor = 0
 
     def clip(name, beats, start=0.0, speed=1.0, zoom=(1.0, 1.0), focus=(720, 450), trails=False, dim=0.0, glitch=True,
-             blur=0, panel=0):
+             blur=0, panel=0, footer=0):
         """One beat-aligned piece; ``focus`` is a page point (1440x900 basis) the push-in centres on.
 
         ``blur`` softens the whole frame and ``panel`` frosts a dark strip down the left, so app
@@ -209,6 +215,9 @@ def main() -> None:
             vf.append(f"gblur=sigma={blur}")
         if panel:
             vf.append(f"split[a][b];[b]crop={panel}:{H}:0:0,gblur=sigma=30,eq=brightness=-0.4[p];[a][p]overlay=0:0")
+        if footer:  # blur the app's status footer (it can show its own tok/s) along the bottom edge
+            vf.append(f"split[fa][fb];[fb]crop={W}:{footer}:0:{H - footer},gblur=sigma=16,eq=brightness=-0.3[ff];"
+                      f"[fa][ff]overlay=0:{H - footer}")
         if glitch:
             vf += ["rgbashift=rh=-18:bh=18:enable='lt(t,0.07)'", "noise=alls=45:allf=t:enable='lt(t,0.07)'"]
         vf += [f"tpad=stop_mode=clone:stop_duration={length}", "format=yuv420p"]
@@ -241,7 +250,7 @@ def main() -> None:
                           blur=11, panel=840)
         hud(begin, end)
         ty.rect(begin, end, 838, 0, 3, H, DEEP, alpha="30", blur=0, layer=0)
-        ty.kicker(begin, end, number, word)
+        ty.kicker(begin, end, number, word, y=790)
         ramp, x, y = 1.0, 96, 440
         hit = begin + ramp
         ty.streaks(begin, hit + .6, 250, 620, seed=number)
@@ -263,13 +272,13 @@ def main() -> None:
         return begin, end, hit
 
     # 1. Cold open: three slams on black, the last one in Intel blue.
-    clip(None, 4, glitch=False)
+    clip(None, 7, glitch=False)
     for i, (word, color) in enumerate((("NO CLOUD.", WHITE), ("NO API BILL.", WHITE), ("JUST YOUR ARC.", BLUE))):
-        ty.slam(at(i), at(i + 1 if i < 2 else 4), word, 150, W // 2, H // 2, color=color)
-        shakes.append(at(i))
-    flashes.append(at(2))
+        ty.slam(at(2 * i), at(2 * i + 2 if i < 2 else 7), word, 150, W // 2, H // 2, color=color)
+        shakes.append(at(2 * i))
+    flashes.append(at(4))
     # 2. The card, as the app detected it.
-    b, e = clip(None, 2)
+    b, e = clip(None, 3)
     ty.label(b, e, "DETECTED LIVE", 24, W // 2, 270, color=BLUE, spacing=14)
     ty.slam(b, e, card, 128, W // 2, 420)
     ty.slam(b + beat, e, vram, 170, W // 2, 600, color=BLUE)
@@ -287,7 +296,6 @@ def main() -> None:
     zb, z1 = t.get("zoom_box"), max(1.2, min(2.45, W / (max(len(t.get("card_line") or ""), len(dev)) * 14.5 + 96)))
     line_focus = (zb["x"] + W / (2 * z1), zb["y"] + zb["h"] + 270 / z1) if isinstance(zb, dict) and "x" in zb else (330, 250)
     b2, e2 = clip("terminal", 2, max(0, t["browser"] - .5), zoom=(z1 - .2, z1), focus=line_focus)
-    hud(b2, e2)
     ty.kicker(b2, e2, 1, "START")
     ty.headline(b2, e2, "ONE COMMAND.")
     # 4. First run: the click at real speed, the download as a labelled time-lapse, then the model loads.
@@ -297,20 +305,23 @@ def main() -> None:
     b, e = clip("first-run", 2, max(0, download_at - .7), zoom=(1.3, 1.6), focus=button)
     hud(b, e)
     ty.kicker(b, e, 2, "FIRST RUN")
-    ty.headline(b, e, "ONE CLICK.")
+    ty.rect(b, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
+    ty.headline(b, e, "ONE CLICK TO AN ANSWER.", 72)
     lapse_beats = 4 if big else 6
     span = max(t["loaded"] - download_at, 0.1)
     speed = max(1.0, span / (lapse_beats * beat))
     b, e = clip("first-run", lapse_beats, download_at, speed=speed, zoom=(1.0, 1.2), focus=(720, 400))
     hud(b, e)
     ty.kicker(b, e, 2, "FIRST RUN")
-    ty.headline(b, e, "ONE CLICK.")
+    ty.rect(b, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
+    ty.headline(b, e, "ONE CLICK TO AN ANSWER.", 72, settle=True)
     if speed >= 2:
         ty.label(b, e, f"▸▸ DOWNLOAD ×{speed:.0f}", 22, W - 40, 80, an=9, color=BLUE, spacing=4)
     b, e = clip("first-run", 2, t["loaded"], zoom=(1.2, 1.35), focus=(720, 450))
     hud(b, e)
     ty.kicker(b, e, 2, "FIRST RUN")
-    ty.headline(b, e, "TO AN ANSWER.")
+    ty.rect(b, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
+    ty.headline(b, e, "ONE CLICK TO AN ANSWER.", 72, settle=True)
     # 5. Speed: the answer streams at real speed while the measured tok/s counts up and lands.
     speed_at, e, _ = counter("speed", 10 if big else 12, 3, "SPEED")
     ty.label(speed_at + 1.2, e, f"MEASURED LIVE  ·  {backend}", 22, 102, 650, an=4, alpha="20", spacing=5)
@@ -331,22 +342,28 @@ def main() -> None:
     thinking_at, e = clip("thinking", 3, th["ready"], zoom=(1.25, 1.6), focus=field)
     hud(thinking_at, e)
     ty.kicker(thinking_at, e, 5, "CONTROL")
-    ty.headline(thinking_at, e, "YOU SET HOW", 88)
+    ty.rect(thinking_at, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
+    ty.headline(thinking_at, e, "YOU SET HOW HARD IT THINKS.", 72)
     b, e = clip("thinking", 3, th["saved"], zoom=(1.6, 1.75), focus=field)
     hud(b, e)
     ty.kicker(b, e, 5, "CONTROL")
-    ty.headline(b, e, "HARD IT THINKS.", 88)
-    # 7. Work: one word per hard cut.
+    ty.rect(b, e, 0, H - 300, W, 300, "000000", alpha="50", blur=70, layer=0)
+    ty.headline(b, e, "YOU SET HOW HARD IT THINKS.", 72, settle=True)
+    # 7. Work: the whole line stays up across four cuts.
     wk = marks["work"]
     approval = box_focus(wk.get("approval_box"), (720, 470))
     work_at = at(cursor)
-    shots = (("ready", "AGENTS", (1.2, 1.35), (720, 700)), ("question", "THAT ASK", (1.35, 1.6), (720, 430)),
-             ("answered", "BEFORE", (1.3, 1.45), (720, 470)), ("approval1", "THEY ACT.", (1.5, 1.8), approval))
-    for (key, word, zoom, focus), beats in zip(shots, (2, 2, 2, 2) if big else (2, 3, 2, 3), strict=True):
-        b, e = clip("work", beats, wk[key], zoom=zoom, focus=focus)
+    shots = (("ready", (1.2, 1.35), (720, 700)), ("question", (1.35, 1.6), (720, 430)),
+             ("answered", (1.3, 1.45), (720, 470)), ("approval1", (1.5, 1.8), approval))
+    for i, (key, zoom, focus) in enumerate(shots):
+        beats = 3
+        b, e = clip("work", beats, wk[key], zoom=zoom, focus=focus, footer=105)
         hud(b, e)
-        ty.kicker(b, e, 6, "WORK")
-        ty.headline(b, e, word)
+        # The composer sits along the bottom of Work, so the type goes up top on a soft scrim.
+        ty.rect(b, e, 0, 0, W, 380, "000000", alpha="40", blur=70, layer=0)
+        ty.kicker(b, e, 6, "WORK", y=96)
+        ty.headline(b, e, "AGENTS THAT ASK", 80, y=212, settle=i > 0)
+        ty.headline(b, e, "BEFORE THEY ACT.", 80, y=304, settle=i > 0)
     # 8. Montage: a cut a beat, "1.2" punching on each.
     mo = marks["montage"]
     montage_at = at(cursor)
@@ -409,7 +426,7 @@ def main() -> None:
     (out / "timing.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     grabs = work / "grabs"
     grabs.mkdir(exist_ok=True)
-    for name, seconds in (("cold-open", at(2) + .2), ("card", at(4) + beat + .3), ("terminal", b2 + .25),
+    for name, seconds in (("cold-open", at(4) + .3), ("card", at(7) + beat + .3), ("terminal", b2 + .25),
                           ("counter", speed_at + 1.6), ("thinking", thinking_at + 1.0), ("work", work_at + 3.4),
                           ("montage", montage_at + .3), ("end-card", poster_at)):
         run("-ss", str(seconds), "-i", str(master), "-frames:v", "1", str(grabs / f"{name}.png"))
