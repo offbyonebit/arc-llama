@@ -12,6 +12,7 @@ from rich.table import Table
 
 from arc_llama.arch import Backend
 from arc_llama.binary import detect_llama_server_backend
+from arc_llama.cli_support import unknown_model_message
 from arc_llama.config import Config
 from arc_llama.models import parse_hf_spec, scan_models
 
@@ -379,7 +380,7 @@ def register_model_commands(
         cfg = load_config(ctx.obj["config_path"])
         model = cfg.find_model(name)
         if model is None:
-            raise click.ClickException(f"unknown model {name!r}")
+            raise click.ClickException(unknown_model_message(cfg, name))
         binary = "" if reset else model.llama_server
         env = {} if reset else dict(model.env)
         if llama_server is not None:
