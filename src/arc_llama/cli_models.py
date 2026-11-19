@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from arc_llama.config import (
     validate_config,
 )
 from arc_llama.gguf_meta import (
+    estimate_weight_vram_bytes,
     gguf_total_bytes,
     kv_bytes_per_token_f16,
     missing_shards,
@@ -153,8 +155,16 @@ def register_model_commands(
     @cli.command("context")
     @click.argument("model")
     @click.option("--json", "as_json", is_flag=True, help="Print the context report as JSON.")
+    @click.option(
+        "--n-cpu-moe",
+        type=click.IntRange(min=0),
+        default=None,
+        help="Preview N expert layers on CPU (default: the model recipe).",
+    )
     @click.pass_context
-    def context_cmd(ctx: click.Context, model: str, as_json: bool) -> None:
+    def context_cmd(
+        ctx: click.Context, model: str, as_json: bool, n_cpu_moe: int | None
+    ) -> None:
         """Estimate MODEL's KV cost and the context that fits its configured GPU."""
         # The normal loader persists a missing admin token; this report must not.
         cfg = Config()
@@ -180,6 +190,19 @@ def register_model_commands(
         configured_ctx = int(recipe.get("ctx", 8192))
         configured_kv = KVCacheType(recipe.get("cache_type_k", "f16"))
         parallel = max(1, int(recipe.get("parallel") or 1))
+        if n_cpu_moe is None:
+            n_cpu_moe = max(0, int(recipe.get("n_cpu_moe") or 0))
+        weights_offloaded_mib: float | None = 0
+        if n_cpu_moe > 0:
+            full_weights = estimate_weight_vram_bytes(selected.path)
+            weight_bytes = estimate_weight_vram_bytes(selected.path, n_cpu_moe=n_cpu_moe)
+            weights_offloaded_mib = (
+                (full_weights - weight_bytes) / 1_048_576
+                if full_weights is not None and weight_bytes is not None
+                else None
+            )
+        else:
+            weight_bytes = gguf_total_bytes(selected.path)
         f16_per_token = kv_bytes_per_token_f16(selected.path)
         source = "gguf_metadata" if f16_per_token is not None else "family_estimate"
         if f16_per_token is None:
@@ -190,8 +213,8 @@ def register_model_commands(
         gpu = cfg.find_gpu(selected.gpu_pci_slot)
         vram_mb = gpu.vram_mb if gpu else None
         max_ctx: dict[str, int] | None = None
-        if vram_mb:
-            model_file_mb = (gguf_total_bytes(selected.path) + 1_048_575) // 1_048_576
+        if vram_mb and weight_bytes is not None:
+            model_file_mb = (weight_bytes + 1_048_575) // 1_048_576
             max_ctx = {
                 kv.value: suggest_ctx(
                     vram_mb=vram_mb,
@@ -219,8 +242,12 @@ def register_model_commands(
                 configured_ctx, configured_kv, selected.kv_class, f16_per_token
             ) / 1_048_576,
             "parallel": parallel,
+            "n_cpu_moe": n_cpu_moe,
+            "weights_offloaded_mib": weights_offloaded_mib,
             "trained_ctx": trained_ctx,
-            "estimated_vram_mb": estimate_model_vram_quick_mb(selected),
+            "estimated_vram_mb": estimate_model_vram_quick_mb(
+                replace(selected, recipe={**recipe, "n_cpu_moe": n_cpu_moe})
+            ),
             "gpu_vram_mb": vram_mb,
             "estimated_max_ctx": max_ctx,
         }
@@ -234,6 +261,14 @@ def register_model_commands(
         click.echo(f"Configured context: {configured_ctx}; KV type: {configured_kv.value}")
         click.echo(f"KV at configured context: {report['configured_kv_mib']:g} MiB")
         click.echo(f"Parallel: {parallel}; trained context: {trained_ctx or 'unknown'}")
+        if weights_offloaded_mib is None:
+            click.echo(f"Expert layers on CPU: {n_cpu_moe} (offload size unknown)")
+        else:
+            click.echo(
+                f"Expert layers on CPU: {n_cpu_moe} (frees {weights_offloaded_mib:g} MiB)"
+            )
+            if n_cpu_moe > 0 and weights_offloaded_mib == 0:
+                click.echo("--n-cpu-moe has no effect on this model.")
         estimate = report["estimated_vram_mb"]
         click.echo(f"VRAM estimate: {str(estimate) + ' MiB' if estimate is not None else 'unknown'}")
         click.echo(f"Card VRAM: {str(vram_mb) + ' MiB' if vram_mb else 'unknown'}")

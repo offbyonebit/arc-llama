@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
+from helpers import FakeTensor, FakeTensorReader
 
 from arc_llama.cli import cli
 from arc_llama.config import Config, GPUConfig, ModelConfig
@@ -94,6 +95,8 @@ def test_context_json_fields_and_fit_inputs(context_config, monkeypatch):
         "configured_kv_type",
         "configured_kv_mib",
         "parallel",
+        "n_cpu_moe",
+        "weights_offloaded_mib",
         "trained_ctx",
         "estimated_vram_mb",
         "gpu_vram_mb",
@@ -104,6 +107,7 @@ def test_context_json_fields_and_fit_inputs(context_config, monkeypatch):
         for kv in (KVCacheType.F16, KVCacheType.Q8_0, KVCacheType.Q4_0)
     }
     assert report["estimated_vram_mb"] == 1297
+    assert report["n_cpu_moe"] == report["weights_offloaded_mib"] == 0
     assert report["estimated_max_ctx"] == {"q8_0": 32768, "q4_0": 32768}
     assert fit.call_count == 2
     for call in fit.call_args_list:
@@ -223,6 +227,7 @@ def test_context_missing_model_file_stops_before_estimates(
         "kv_bytes_per_token_f16",
         "trained_context_length",
         "gguf_total_bytes",
+        "estimate_weight_vram_bytes",
         "estimate_model_vram_quick_mb",
         "suggest_ctx",
     ):
@@ -236,3 +241,91 @@ def test_context_missing_model_file_stops_before_estimates(
     assert "Re-download it or remove the model with arc-llama remove." in result.output
     assert "Largest context" not in result.output
     assert "estimated_max_ctx" not in result.output
+
+
+@pytest.fixture
+def moe_context_config(context_config, monkeypatch):
+    mib = 1_048_576
+    tensors = [
+        FakeTensor("token_embd.weight", 2048 * mib),
+        FakeTensor("blk.0.ffn_up_exps.weight", 2048 * mib),
+        FakeTensor("blk.1.ffn_up_exps.weight", 2048 * mib),
+    ]
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.gguf.GGUFReader",
+        lambda _path: FakeTensorReader(tensors, "qwen3moe"),
+    )
+    monkeypatch.setattr("arc_llama.cli_models.gguf_total_bytes", lambda _path: 6144 * mib)
+    return context_config
+
+
+def test_context_expert_offload_increases_context(moe_context_config, monkeypatch):
+    baseline = invoke_context(moe_context_config, monkeypatch, "demo", "--n-cpu-moe", "0", "--json")
+    fit = Mock(wraps=suggest_ctx)
+    monkeypatch.setattr("arc_llama.cli_models.suggest_ctx", fit)
+    result = invoke_context(moe_context_config, monkeypatch, "demo", "--n-cpu-moe", "2", "--json")
+    text = invoke_context(moe_context_config, monkeypatch, "demo", "--n-cpu-moe", "2")
+
+    assert baseline.exit_code == result.exit_code == text.exit_code == 0
+    before, after = json.loads(baseline.output), json.loads(result.output)
+    assert after["n_cpu_moe"] == 2
+    assert after["weights_offloaded_mib"] == 4096
+    assert after["estimated_vram_mb"] is None  # The quick estimator skips expert offload.
+    for kv in ("q8_0", "q4_0"):
+        assert after["estimated_max_ctx"][kv] > before["estimated_max_ctx"][kv]
+    assert all(call.kwargs["model_file_mb"] == 2048 for call in fit.call_args_list)
+    assert "Expert layers on CPU: 2 (frees 4096 MiB)" in text.output
+
+
+def test_context_recipe_offload_and_explicit_zero(moe_context_config, monkeypatch):
+    path, cfg = moe_context_config
+    cfg.models[0].recipe["n_cpu_moe"] = 2
+    cfg.save(path)
+
+    result = invoke_context(moe_context_config, monkeypatch, "demo", "--json")
+    override = invoke_context(moe_context_config, monkeypatch, "demo", "--n-cpu-moe", "0", "--json")
+
+    assert result.exit_code == override.exit_code == 0
+    report, overridden = json.loads(result.output), json.loads(override.output)
+    assert report["n_cpu_moe"] == 2
+    assert report["weights_offloaded_mib"] == 4096
+    assert overridden["n_cpu_moe"] == overridden["weights_offloaded_mib"] == 0
+    assert overridden["estimated_vram_mb"] == 1297
+    assert report["estimated_max_ctx"]["q8_0"] > overridden["estimated_max_ctx"]["q8_0"]
+
+
+def test_context_dense_expert_offload_has_no_effect(context_config, monkeypatch):
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.gguf.GGUFReader",
+        lambda _path: FakeTensorReader([FakeTensor("token_embd.weight", 1024)], "llama"),
+    )
+
+    text = invoke_context(context_config, monkeypatch, "demo", "--n-cpu-moe", "2")
+    result = invoke_context(context_config, monkeypatch, "demo", "--n-cpu-moe", "2", "--json")
+
+    assert text.exit_code == result.exit_code == 0
+    assert "Expert layers on CPU: 2 (frees 0 MiB)" in text.output
+    assert "--n-cpu-moe has no effect on this model." in text.output
+    assert json.loads(result.output)["weights_offloaded_mib"] == 0
+
+
+def test_context_unknown_expert_offload_skips_context(context_config, monkeypatch):
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.gguf.GGUFReader",
+        lambda _path: FakeTensorReader([FakeTensor("unrecognised.weight", 1024)], "qwen3moe"),
+    )
+    monkeypatch.setattr("arc_llama.gguf_meta.is_moe", lambda _path: True)
+    fit = Mock(side_effect=AssertionError("cannot suggest context with unknown offload size"))
+    monkeypatch.setattr("arc_llama.cli_models.suggest_ctx", fit)
+
+    text = invoke_context(context_config, monkeypatch, "demo", "--n-cpu-moe", "2")
+    result = invoke_context(context_config, monkeypatch, "demo", "--n-cpu-moe", "2", "--json")
+
+    assert text.exit_code == result.exit_code == 0
+    assert "Expert layers on CPU: 2 (offload size unknown)" in text.output
+    assert "Largest context" not in text.output
+    report = json.loads(result.output)
+    assert report["n_cpu_moe"] == 2
+    assert report["weights_offloaded_mib"] is None
+    assert report["estimated_max_ctx"] is None
+    fit.assert_not_called()
