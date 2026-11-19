@@ -50,6 +50,66 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     assert estimate_model_vram_quick_mb(model) is None
 
 
+def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
+    model_file = tmp_path / "qwen35moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.read_gguf_meta",
+        lambda _path: {
+            "architecture": "qwen35moe",
+            "block_count": 40,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        },
+    )
+    model = ModelConfig(
+        name="qwen35moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        kv_class="default",
+        recipe={"ctx": 8192, "cache_type_k": "f16"},
+    )
+
+    # 1 MiB weights + 160 MiB metadata KV (not the default bucket's 560 MiB).
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 160 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
+
+
+def test_quick_vram_estimate_uses_context_sized_gemma_kv(tmp_path, monkeypatch):
+    path = tmp_path / "gemma3.gguf"
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+        "architecture": "gemma3", "block_count": 34,
+        "attention.head_count_kv": 4,
+        "attention.key_length": 256, "attention.value_length": 256,
+        "attention.sliding_window": 1024,
+    })
+    model = ModelConfig(
+        name="gemma3", path=str(path), port=18080, gpu_pci_slot="gpu",
+        kv_class="gemma_swa", recipe={"ctx": 32768, "cache_type_k": "f16"},
+    )
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 814 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
+
+
+def test_context_sized_kv_per_token_rounds_up(tmp_path, monkeypatch):
+    model = ModelConfig(name="swa", path=str(tmp_path / "model.gguf"), port=18080, gpu_pci_slot="gpu")
+    monkeypatch.setattr(router_mod, "kv_bytes_per_token_f16", lambda _path: None)
+    seen = []
+
+    def at_context(path, ctx):
+        seen.append((path, ctx))
+        return 32769
+
+    monkeypatch.setattr(router_mod, "kv_bytes_f16_at_ctx", at_context)
+    assert router_mod._kv_f16_bytes_per_token_at_ctx(model, 32) == 1025
+    assert seen == [(model.path, 32)]
+
+
 async def test_single_resident_policy_stops_other_models_before_starting_target(
     tmp_path, monkeypatch
 ):
