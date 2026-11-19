@@ -124,6 +124,69 @@ class TestReadGgufMetaExpertCountKeys:
         assert "expert_count" not in meta
 
 
+class TestRecurrentStateBytes:
+    def _meta(self):
+        return {
+            "architecture": "qwen35moe", "block_count": 40,
+            "ssm.conv_kernel": 4, "ssm.inner_size": 4096,
+            "ssm.state_size": 128, "ssm.group_count": 16,
+        }
+
+    def _estimate(self, tmp_path, monkeypatch, meta, n_seq=1):
+        path = tmp_path / "recurrent.gguf"
+        path.write_bytes(b"GGUF")
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
+        return recurrent_state_bytes(path, n_seq)
+
+    def test_qwen35moe_state_geometry(self, tmp_path, monkeypatch):
+        # 30 recurrent layers. R=(4-1)*(4096+2*16*128)=24576 f32 elements;
+        # S=128*4096=524288. Default rollback=0: one row per sequence.
+        # 30*(24576+524288)*4 = 65863680 bytes = 62.8125 MiB.
+        one = self._estimate(tmp_path, monkeypatch, self._meta())
+        assert one == 65863680
+        assert self._estimate(tmp_path, monkeypatch, self._meta(), n_seq=2) == 2 * one
+        # Public 35B-A3B load log: four sequences, R=11.25 + S=240 MiB.
+        assert self._estimate(tmp_path, monkeypatch, self._meta(), n_seq=4) == 251.25 * 1024**2
+
+    def test_reads_ssm_geometry_from_gguf(self, tmp_path):
+        path = tmp_path / "ssm-metadata.gguf"
+        writer = gguf.GGUFWriter(str(path), "qwen35moe")
+        for key, value in self._meta().items():
+            if key != "architecture":
+                writer.add_uint32(f"qwen35moe.{key}", value)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        assert recurrent_state_bytes(path) == 65863680
+
+    @pytest.mark.parametrize("arch", ["qwen35", "qwen35moe", "qwen3next"])
+    def test_array_overrides_interval_and_excludes_mtp(self, tmp_path, monkeypatch, arch):
+        meta = {**self._meta(), "architecture": arch, "block_count": 9,
+                "nextn_predict_layers": 1, "full_attention_interval": 1,
+                "attention.recurrent_layers": [True, False] * 4 + [True]}
+        assert self._estimate(tmp_path, monkeypatch, meta) == 4 * (24576 + 524288) * 4
+
+    def test_interval_layout_excludes_mtp(self, tmp_path, monkeypatch):
+        meta = {**self._meta(), "block_count": 41, "nextn_predict_layers": 1}
+        assert self._estimate(tmp_path, monkeypatch, meta) == 65863680
+
+    def test_qwen35_27b_geometry(self, tmp_path, monkeypatch):
+        meta = {**self._meta(), "architecture": "qwen35", "block_count": 64,
+                "ssm.inner_size": 6144}
+        # 48 * (30720 conv + 786432 delta elements) * 4 = 149.625 MiB.
+        assert self._estimate(tmp_path, monkeypatch, meta) == 149.625 * 1024**2
+
+    @pytest.mark.parametrize("key", ["ssm.conv_kernel", "ssm.inner_size", "ssm.state_size", "ssm.group_count"])
+    def test_missing_ssm_key_falls_back(self, tmp_path, monkeypatch, key):
+        meta = self._meta()
+        del meta[key]
+        assert self._estimate(tmp_path, monkeypatch, meta) is None
+
+    def test_other_architecture_is_unsupported(self, tmp_path, monkeypatch):
+        assert self._estimate(tmp_path, monkeypatch, {**self._meta(), "architecture": "llama"}) is None
+
+
 class TestTokenizerFingerprint:
     def _fingerprint(
         self,
@@ -395,69 +458,6 @@ class TestKvBytesPerToken:
 
     def test_incomplete_geometry_uses_family_fallback(self, tmp_path, monkeypatch):
         assert self._estimate(tmp_path, monkeypatch, {"block_count": 32}) is None
-
-
-class TestRecurrentStateBytes:
-    def _meta(self):
-        return {
-            "architecture": "qwen35moe", "block_count": 40,
-            "ssm.conv_kernel": 4, "ssm.inner_size": 4096,
-            "ssm.state_size": 128, "ssm.group_count": 16,
-        }
-
-    def _estimate(self, tmp_path, monkeypatch, meta, n_seq=1):
-        path = tmp_path / "recurrent.gguf"
-        path.write_bytes(b"GGUF")
-        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
-        return recurrent_state_bytes(path, n_seq)
-
-    def test_qwen35moe_state_geometry(self, tmp_path, monkeypatch):
-        # 30 recurrent layers. R=(4-1)*(4096+2*16*128)=24576 f32 elements;
-        # S=128*4096=524288. Default rollback=0: one row per sequence.
-        # 30*(24576+524288)*4 = 65863680 bytes = 62.8125 MiB.
-        one = self._estimate(tmp_path, monkeypatch, self._meta())
-        assert one == 65863680
-        assert self._estimate(tmp_path, monkeypatch, self._meta(), n_seq=2) == 2 * one
-        # Public 35B-A3B load log: four sequences, R=11.25 + S=240 MiB.
-        assert self._estimate(tmp_path, monkeypatch, self._meta(), n_seq=4) == 251.25 * 1024**2
-
-    def test_reads_ssm_geometry_from_gguf(self, tmp_path):
-        path = tmp_path / "ssm-metadata.gguf"
-        writer = gguf.GGUFWriter(str(path), "qwen35moe")
-        for key, value in self._meta().items():
-            if key != "architecture":
-                writer.add_uint32(f"qwen35moe.{key}", value)
-        writer.write_header_to_file()
-        writer.write_kv_data_to_file()
-        writer.write_tensors_to_file()
-        writer.close()
-        assert recurrent_state_bytes(path) == 65863680
-
-    @pytest.mark.parametrize("arch", ["qwen35", "qwen35moe", "qwen3next"])
-    def test_array_overrides_interval_and_excludes_mtp(self, tmp_path, monkeypatch, arch):
-        meta = {**self._meta(), "architecture": arch, "block_count": 9,
-                "nextn_predict_layers": 1, "full_attention_interval": 1,
-                "attention.recurrent_layers": [True, False] * 4 + [True]}
-        assert self._estimate(tmp_path, monkeypatch, meta) == 4 * (24576 + 524288) * 4
-
-    def test_interval_layout_excludes_mtp(self, tmp_path, monkeypatch):
-        meta = {**self._meta(), "block_count": 41, "nextn_predict_layers": 1}
-        assert self._estimate(tmp_path, monkeypatch, meta) == 65863680
-
-    def test_qwen35_27b_geometry(self, tmp_path, monkeypatch):
-        meta = {**self._meta(), "architecture": "qwen35", "block_count": 64,
-                "ssm.inner_size": 6144}
-        # 48 * (30720 conv + 786432 delta elements) * 4 = 149.625 MiB.
-        assert self._estimate(tmp_path, monkeypatch, meta) == 149.625 * 1024**2
-
-    @pytest.mark.parametrize("key", ["ssm.conv_kernel", "ssm.inner_size", "ssm.state_size", "ssm.group_count"])
-    def test_missing_ssm_key_falls_back(self, tmp_path, monkeypatch, key):
-        meta = self._meta()
-        del meta[key]
-        assert self._estimate(tmp_path, monkeypatch, meta) is None
-
-    def test_other_architecture_is_unsupported(self, tmp_path, monkeypatch):
-        assert self._estimate(tmp_path, monkeypatch, {**self._meta(), "architecture": "llama"}) is None
 
 
 class TestMtpDetection:

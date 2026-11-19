@@ -78,26 +78,6 @@ def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, mon
     )
 
 
-@pytest.mark.parametrize("parallel, state_mb", [(1, 62), (2, 125)])
-def test_quick_vram_estimate_adds_recurrent_state(tmp_path, monkeypatch, parallel, state_mb):
-    path = tmp_path / "qwen35moe-state.gguf"
-    path.write_bytes(b"GGUF")
-    meta = {
-        "architecture": "qwen35moe", "block_count": 40,
-        "ssm.conv_kernel": 4, "ssm.inner_size": 4096,
-        "ssm.state_size": 128, "ssm.group_count": 16,
-    }
-    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
-    model = ModelConfig(
-        name="qwen35moe", path=str(path), port=18080, gpu_pci_slot="gpu",
-        recipe={"ctx": 8192, "cache_type_k": "f16", "parallel": parallel},
-    )
-    with_state = estimate_model_vram_quick_mb(model)
-    del meta["ssm.conv_kernel"]
-    without_state = estimate_model_vram_quick_mb(model)
-    assert with_state == without_state + state_mb
-
-
 async def test_single_resident_policy_stops_other_models_before_starting_target(
     tmp_path, monkeypatch
 ):
@@ -594,3 +574,23 @@ def test_model_size_fixture_is_sparse_on_both_platforms(tmp_path):
         assert (high.value << 32) | low < 1024**2
     else:
         assert info.st_blocks * 512 < 1024**2
+
+
+@pytest.mark.parametrize("parallel, state_mb", [(1, 62), (2, 125)])
+def test_quick_vram_estimate_adds_recurrent_state(tmp_path, monkeypatch, parallel, state_mb):
+    path = tmp_path / "qwen35moe-state.gguf"
+    path.write_bytes(b"GGUF")
+    meta = {
+        "architecture": "qwen35moe", "block_count": 40,
+        "ssm.conv_kernel": 4, "ssm.inner_size": 4096,
+        "ssm.state_size": 128, "ssm.group_count": 16,
+    }
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
+    model = ModelConfig(
+        name="qwen35moe", path=str(path), port=18080, gpu_pci_slot="gpu",
+        recipe={"ctx": 8192, "cache_type_k": "f16", "parallel": parallel},
+    )
+    with_state = estimate_model_vram_quick_mb(model)
+    del meta["ssm.conv_kernel"]
+    without_state = estimate_model_vram_quick_mb(model)
+    assert with_state == without_state + state_mb
