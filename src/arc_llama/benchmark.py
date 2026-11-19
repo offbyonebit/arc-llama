@@ -712,6 +712,8 @@ class DepthResult:
     generation_tok_s: float | None = None
     generated_tokens: int | None = None
     error: str | None = None
+    generation_samples: list[float] = field(default_factory=list)
+    prompt_eval_samples: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -739,6 +741,7 @@ async def benchmark_depths(
     depths: list[int],
     *,
     gen_tokens: int = DEFAULT_GEN_TOKENS,
+    repeats: int = REPEAT_GENERATION,
     client: httpx.AsyncClient | None = None,
     headers: dict[str, str] | None = None,
 ) -> list[DepthResult]:
@@ -747,8 +750,8 @@ async def benchmark_depths(
     The default benchmark decodes after a one-word prompt, which flatters
     every model: attention cost grows with the context already in the KV
     cache, so real chats and agent loops slow down as they get longer. Each
-    depth runs one uncached prefill followed by ``gen_tokens`` forced
-    tokens and reports llama-server's own prompt and decode rates.
+    depth repeats an uncached prefill followed by ``gen_tokens`` forced
+    tokens and reports median prompt and decode rates, retaining samples.
     """
     own = client is None
     http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0, headers=headers)
@@ -758,33 +761,41 @@ async def benchmark_depths(
         for depth in depths:
             row = DepthResult(depth=depth)
             prompt = _varied_prompt(depth, seed=depth) + _PROSE_LEAD if depth > 0 else "Hello"
-            try:
-                wall, obj = await _complete(
-                    http,
-                    model_name,
-                    prompt,
-                    max_tokens=gen_tokens,
-                    ignore_eos=True,
-                    cache_prompt=False,
-                    is_chat=False,
+            had_success = False
+            for _ in range(repeats):
+                try:
+                    wall, obj = await _complete(
+                        http,
+                        model_name,
+                        prompt,
+                        max_tokens=gen_tokens,
+                        ignore_eos=True,
+                        cache_prompt=False,
+                        is_chat=False,
+                    )
+                except Exception as exc:  # noqa: BLE001 - report per depth, keep going
+                    row.error = str(exc)[:200]
+                    continue
+                had_success = True
+                timings = obj.get("timings") or {}
+                row.measured_depth = _measured_tokens(obj, "prompt_n", "prompt_tokens", depth)
+                row.generated_tokens = _measured_tokens(
+                    obj, "predicted_n", "completion_tokens", gen_tokens
                 )
-            except Exception as exc:  # noqa: BLE001 - report per depth, keep going
-                row.error = str(exc)[:200]
-                results.append(row)
-                continue
-            timings = obj.get("timings") or {}
-            row.measured_depth = _measured_tokens(obj, "prompt_n", "prompt_tokens", depth)
-            row.generated_tokens = _measured_tokens(
-                obj, "predicted_n", "completion_tokens", gen_tokens
-            )
-            if timings.get("prompt_per_second"):
-                row.prompt_eval_tok_s = float(timings["prompt_per_second"])
-            if timings.get("predicted_per_second"):
-                row.generation_tok_s = float(timings["predicted_per_second"])
-            elif wall > 0 and row.generated_tokens:
-                # Without engine timings the wall clock includes the prefill,
-                # so this understates decode speed; flagged in the table.
-                row.generation_tok_s = row.generated_tokens / wall
+                if timings.get("prompt_per_second"):
+                    row.prompt_eval_samples.append(float(timings["prompt_per_second"]))
+                if timings.get("predicted_per_second"):
+                    row.generation_samples.append(float(timings["predicted_per_second"]))
+                elif wall > 0 and row.generated_tokens:
+                    # Without engine timings wall time includes the prefill,
+                    # so this understates decode speed; flagged in the table.
+                    row.generation_samples.append(row.generated_tokens / wall)
+            if had_success:
+                row.error = None
+            if row.prompt_eval_samples:
+                row.prompt_eval_tok_s = float(statistics.median(row.prompt_eval_samples))
+            if row.generation_samples:
+                row.generation_tok_s = float(statistics.median(row.generation_samples))
             results.append(row)
     finally:
         if own:

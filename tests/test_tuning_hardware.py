@@ -148,7 +148,72 @@ async def test_benchmark_depths_reports_engine_timings() -> None:
     assert rows[1].generation_tok_s == pytest.approx(22.0, abs=0.1)
     assert 8000 <= rows[1].measured_depth < 8100
     measured = [b for b in seen if b.get("ignore_eos")]
+    assert len(seen) == 1 + 2 * 3
     assert all(b["cache_prompt"] is False and b["max_tokens"] == 32 for b in measured)
+    assert measured[0] == measured[1] == measured[2]
+    assert measured[3] == measured[4] == measured[5]
+
+
+@pytest.mark.parametrize("repeats,expected,samples", [(3, 20.0, [10.0, 30.0, 20.0]), (1, 10.0, [10.0])])
+async def test_benchmark_depths_repeated_sample_medians(repeats, expected, samples):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200, json={})  # The single warm-up is not sampled.
+        rate = [10.0, 30.0, 20.0][calls - 2]
+        return httpx.Response(200, json={"timings": {
+            "prompt_n": 4097, "predicted_n": 31,
+            "predicted_per_second": rate, "prompt_per_second": rate * 10,
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://t") as client:
+        rows = await benchmark_depths("http://t", "m", [4096], repeats=repeats, client=client)
+    row = rows[0]
+    assert row.generation_tok_s == expected
+    assert row.prompt_eval_tok_s == expected * 10
+    assert row.generation_samples == samples
+    assert row.prompt_eval_samples == [rate * 10 for rate in samples]
+    assert row.to_dict()["generation_samples"] == samples
+    assert row.to_dict()["prompt_eval_samples"] == [rate * 10 for rate in samples]
+    assert row.generated_tokens == 31
+    assert row.measured_depth == 4097
+    assert row.error is None
+    assert calls == 1 + repeats
+
+
+@pytest.mark.parametrize("failures", [{0}, {1}, {2}, {0, 1, 2}])
+async def test_benchmark_depths_uses_successful_repeats(failures):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(200, json={})
+        sample = calls - 2
+        if sample in failures:
+            return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(200, json={"timings": {
+            "predicted_per_second": [10.0, 30.0, 20.0][sample],
+            "prompt_per_second": [100.0, 300.0, 200.0][sample],
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://t") as client:
+        row = (await benchmark_depths("http://t", "m", [0], repeats=3, client=client))[0]
+    assert calls == 4
+    good = [rate for i, rate in enumerate([10.0, 30.0, 20.0]) if i not in failures]
+    assert row.generation_samples == good
+    assert row.prompt_eval_samples == [rate * 10 for rate in good]
+    if good:
+        assert row.generation_tok_s == sum(good) / 2
+        assert row.prompt_eval_tok_s == sum(good) * 10 / 2
+        assert row.error is None
+    else:
+        assert "500" in row.error
+        assert row.generation_tok_s is row.prompt_eval_tok_s is None
 
 
 async def test_benchmark_depths_keeps_going_after_an_error() -> None:
@@ -164,7 +229,7 @@ async def test_benchmark_depths_keeps_going_after_an_error() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="http://t"
     ) as client:
-        rows = await benchmark_depths("http://t", "m", [0, 4096], client=client)
+        rows = await benchmark_depths("http://t", "m", [0, 4096], repeats=1, client=client)
     assert rows[0].error is not None
     assert rows[1].generation_tok_s == 10.0
 
