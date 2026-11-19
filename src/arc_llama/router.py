@@ -28,6 +28,7 @@ from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
     gguf_total_bytes,
+    kv_bytes_f16_at_ctx,
     kv_bytes_per_token_f16,
     override_tensor_saved_bytes,
     scan_weight_tensors,
@@ -181,6 +182,14 @@ class ModelTimings:
         return out
 
 
+def _kv_f16_bytes_per_token_at_ctx(model: ModelConfig, ctx: int) -> int | None:
+    per_token = kv_bytes_per_token_f16(model.path)
+    if per_token is not None or ctx <= 0:
+        return per_token
+    total = kv_bytes_f16_at_ctx(model.path, ctx)
+    return (total + ctx - 1) // ctx if total is not None else None
+
+
 def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
     """Conservative constant-time fit estimate for a launch-plan preview.
 
@@ -206,7 +215,7 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
             ctx,
             kv_type,
             model.kv_class,
-            kv_bytes_per_token_f16(model.path),
+            _kv_f16_bytes_per_token_at_ctx(model, ctx),
         )
         // mib
     )
@@ -321,7 +330,7 @@ def _estimate_model_vram_mb(
         eff_ctx,
         eff_kv,
         model.kv_class,
-        kv_bytes_per_token_f16(model.path),
+        _kv_f16_bytes_per_token_at_ctx(model, eff_ctx),
     ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
     return weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
@@ -446,7 +455,7 @@ def min_moe_offload_layers(
         eff_ctx,
         eff_kv,
         model.kv_class,
-        kv_bytes_per_token_f16(model.path),
+        _kv_f16_bytes_per_token_at_ctx(model, eff_ctx),
     ) // (1_048_576)
     fixed_mb = kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
     n_layers = max(expert_by_layer) + 1

@@ -47,6 +47,10 @@ _KV_METADATA_SUFFIXES = (
     "attention.sliding_window",
     "full_attention_interval",
     "attention.recurrent_layers",
+    "attention.sliding_window_pattern",
+    "attention.key_length_swa",
+    "attention.value_length_swa",
+    "attention.shared_kv_layers",
 )
 
 
@@ -355,6 +359,56 @@ def kv_bytes_per_token_f16(path: Path | str) -> int | None:
     except OSError:
         return None
     return _kv_bytes_per_token_f16_cached(resolved, stat.st_size, stat.st_mtime_ns)
+
+
+def kv_bytes_f16_at_ctx(path: Path | str, ctx: int, n_ubatch: int = 512) -> int | None:
+    """Calculate one sequence's f16 KV allocation, including supported SWA caches."""
+    if ctx <= 0 or n_ubatch < 0:
+        return None
+    meta = read_gguf_meta(path)
+    arch = str(meta.get("architecture", "")).lower()
+    if arch not in {"gemma3", "gemma4", "gpt-oss"}:
+        per_token = kv_bytes_per_token_f16(path)
+        return per_token * ctx if per_token is not None else None
+    try:
+        layers = int(meta["block_count"])
+        window = int(meta["attention.sliding_window"])
+        shared = int(meta.get("attention.shared_kv_layers", 0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if layers <= 0 or window <= 0 or shared != 0:
+        return None
+    pattern = meta.get("attention.sliding_window_pattern", {"gemma3": 6, "gpt-oss": 2}.get(arch))
+    if isinstance(pattern, list) and len(pattern) == layers:
+        swa_layers = [bool(value) for value in pattern]
+    elif isinstance(pattern, int) and pattern >= 0:
+        swa_layers = [pattern == 0 or i % pattern < pattern - 1 for i in range(layers)]
+    else:
+        return None
+    kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
+    key_lengths = _per_layer_values(meta.get("attention.key_length"), layers)
+    value_lengths = _per_layer_values(meta.get("attention.value_length"), layers)
+    swa_key_lengths = _per_layer_values(
+        meta.get("attention.key_length_swa") if arch == "gemma4" else meta.get("attention.key_length"),
+        layers,
+    )
+    swa_value_lengths = _per_layer_values(
+        meta.get("attention.value_length_swa") if arch == "gemma4" else meta.get("attention.value_length"),
+        layers,
+    )
+    if kv_heads is None or key_lengths is None or value_lengths is None:
+        return None
+    if swa_key_lengths is None or swa_value_lengths is None:
+        return None
+    swa_cells = ((min(ctx, window + n_ubatch) + 255) // 256) * 256
+    total = 0
+    for i, is_swa in enumerate(swa_layers):
+        key_length = swa_key_lengths[i] if is_swa else key_lengths[i]
+        value_length = swa_value_lengths[i] if is_swa else value_lengths[i]
+        if kv_heads[i] < 0 or key_length <= 0 or value_length <= 0:
+            return None
+        total += kv_heads[i] * (key_length + value_length) * 2 * (swa_cells if is_swa else ctx)
+    return total if total > 0 else None
 
 
 def _hash_metadata_value(digest: Any, value: Any) -> None:
