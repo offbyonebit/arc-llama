@@ -179,7 +179,7 @@ def register_model_commands(
         recipe = selected.recipe or {}
         configured_ctx = int(recipe.get("ctx", 8192))
         configured_kv = KVCacheType(recipe.get("cache_type_k", "f16"))
-        parallel = int(recipe.get("parallel", 1))
+        parallel = max(1, int(recipe.get("parallel") or 1))
         f16_per_token = kv_bytes_per_token_f16(selected.path)
         source = "gguf_metadata" if f16_per_token is not None else "family_estimate"
         if f16_per_token is None:

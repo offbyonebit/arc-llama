@@ -137,6 +137,17 @@ def test_context_family_fallback_and_router_defaults(context_config, monkeypatch
     assert fit.call_args.kwargs["trained_ctx"] is None
 
 
+def test_context_empty_parallel_defaults_to_one(context_config, monkeypatch):
+    path, cfg = context_config
+    cfg.models[0].recipe["parallel"] = ""
+    cfg.save(path)
+
+    result = invoke_context(context_config, monkeypatch, "demo")
+
+    assert result.exit_code == 0, result.output
+    assert "Parallel: 1" in result.output
+
+
 @pytest.mark.parametrize("missing_gpu", [True, False])
 def test_context_unknown_vram_skips_fit(context_config, monkeypatch, missing_gpu):
     path, cfg = context_config
