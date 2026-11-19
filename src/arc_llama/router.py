@@ -222,7 +222,7 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
 
 
 def _recurrent_state_mb(model: ModelConfig) -> int:
-    parallel = int((model.recipe or {}).get("parallel", 1))
+    parallel = max(1, int((model.recipe or {}).get("parallel") or 1))
     return (recurrent_state_bytes(model.path, n_seq=parallel) or 0) // 1_048_576
 
 

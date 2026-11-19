@@ -594,3 +594,23 @@ def test_quick_vram_estimate_adds_recurrent_state(tmp_path, monkeypatch, paralle
     del meta["ssm.conv_kernel"]
     without_state = estimate_model_vram_quick_mb(model)
     assert with_state == without_state + state_mb
+
+
+@pytest.mark.parametrize("parallel", ["", None, 0])
+def test_recurrent_state_empty_parallel_uses_one_sequence(tmp_path, monkeypatch, parallel):
+    path = tmp_path / "qwen35-state.gguf"
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+        "architecture": "qwen35", "block_count": 64,
+        "ssm.conv_kernel": 4, "ssm.inner_size": 6144,
+        "ssm.state_size": 128, "ssm.group_count": 16,
+    })
+    model = ModelConfig(
+        name="qwen35", path=str(path), port=18080, gpu_pci_slot="gpu",
+        recipe={"parallel": 1},
+    )
+    one_sequence_mb = estimate_model_vram_quick_mb(model)
+    assert router_mod._recurrent_state_mb(model) == 149
+
+    model.recipe["parallel"] = parallel
+    assert estimate_model_vram_quick_mb(model) == one_sequence_mb
