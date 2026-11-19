@@ -50,6 +50,104 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     assert estimate_model_vram_quick_mb(model) is None
 
 
+@pytest.mark.parametrize("estimator", [estimate_model_vram_quick_mb, router_mod._estimate_model_vram_mb])
+@pytest.mark.parametrize("k,v,flash,extra", [
+    ("q8_0", "q8_0", "auto", 512),
+    ("f16", "f16", None, 0),
+    ("f32", "f32", "on", 0),
+    ("q8_0", "q8_0", "off", 0),
+    ("f16", "q8_0", "on", 512),
+    ("q4_0", None, None, 512),
+])
+def test_sycl_fa_staging_backend_and_recipe_gates(tmp_path, monkeypatch, estimator, k, v, flash, extra):
+    path = tmp_path / "model.gguf"
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr(router_mod, "estimate_weight_vram_bytes", lambda _path: 1_048_576)
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+        "architecture": "qwen35moe", "block_count": 40,
+        "attention.head_count_kv": 2, "attention.key_length": 256, "attention.value_length": 256,
+    })
+    recipe = {"ctx": 262144, "cache_type_k": k, "flash_attn": flash}
+    if v is not None:
+        recipe["cache_type_v"] = v
+    model = ModelConfig(name="moe", path=str(path), port=18080, gpu_pci_slot="gpu", recipe=recipe)
+    sycl = estimator(model, backend="sycl")
+    vulkan = estimator(model, backend="vulkan")
+    assert sycl == vulkan + extra
+    assert estimator(model) == vulkan  # Unknown backend retains the backend-neutral base.
+    if estimator is router_mod._estimate_model_vram_mb:
+        assert estimator(model, ctx=131072, backend="sycl") == (
+            estimator(model, ctx=131072, backend="vulkan") + extra // 2
+        )
+
+
+def test_sycl_fa_staging_unknown_geometry_is_zero(tmp_path, monkeypatch):
+    model = ModelConfig(name="m", path=str(tmp_path / "m.gguf"), port=1, gpu_pci_slot="gpu")
+    monkeypatch.setattr(router_mod, "max_layer_kv_bytes_f16_per_token", lambda _path: None)
+    assert router_mod._sycl_fa_staging_mb(model, {"cache_type_k": "q8_0"}, backend="sycl") == 0
+
+
+def test_admin_fit_adds_staging_after_backend_neutral_cache(tmp_path, monkeypatch):
+    from arc_llama.config import GPUConfig
+
+    path = tmp_path / "m.gguf"
+    path.write_bytes(b"GGUF")
+    model = ModelConfig(name="m", path=str(path), port=1, gpu_pci_slot="gpu",
+        recipe={"ctx": 262144, "cache_type_k": "q8_0", "n_cpu_moe": 1})
+    monkeypatch.setattr(router_mod, "estimate_weight_vram_bytes", lambda *args, **kwargs: 1_048_576)
+    monkeypatch.setattr(router_mod, "max_layer_kv_bytes_f16_per_token", lambda _path: 2048)
+    gpu = GPUConfig("gpu", 0, "battlemage", vram_mb=8192, backend="vulkan")
+    cache = {}
+    base = router_mod.model_vram_fit_info(model, gpu, cache)["estimated_mb"]
+    gpu.backend = "sycl"
+    assert router_mod.model_vram_fit_info(model, gpu, cache)["estimated_mb"] == base + 512
+
+
+def test_admission_guard_counts_sycl_staging(tmp_path, monkeypatch):
+    from conftest import make_config
+
+    cfg = make_config(tmp_path, single_resident=True)
+    model, gpu = cfg.models[0], cfg.gpus[0]
+    model.recipe.update(ctx=262144, cache_type_k="q8_0", cache_type_v="q8_0")
+    gpu.vram_mb = 1500
+    monkeypatch.setattr(router_mod, "_estimate_model_vram_mb", lambda _model: 1024)
+    monkeypatch.setattr(router_mod, "max_layer_kv_bytes_f16_per_token", lambda _path: 2048)
+    router = Router(cfg)
+    gpu.backend = "vulkan"
+    router._check_vram_fit(model, gpu)
+    gpu.backend = "sycl"
+    with pytest.raises(RuntimeError, match="needs ~1536 MiB"):
+        router._check_vram_fit(model, gpu)
+
+
+def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
+    model_file = tmp_path / "qwen35moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.read_gguf_meta",
+        lambda _path: {
+            "architecture": "qwen35moe",
+            "block_count": 40,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        },
+    )
+    model = ModelConfig(
+        name="qwen35moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        kv_class="default",
+        recipe={"ctx": 8192, "cache_type_k": "f16"},
+    )
+
+    # 1 MiB weights + 160 MiB metadata KV (not the default bucket's 560 MiB).
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 160 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
+
+
 async def test_single_resident_policy_stops_other_models_before_starting_target(
     tmp_path, monkeypatch
 ):
