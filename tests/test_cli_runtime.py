@@ -52,6 +52,35 @@ def test_runtime_use_switches_configured_binary_and_backend(tmp_path):
     assert saved.gpus[0].backend == Backend.VULKAN.value
 
 
+
+def test_runtime_use_picks_the_server_exe_over_its_impl_dll(tmp_path):
+    # The b12243 Windows zip ships llama-server-impl.dll next to llama-server.exe, and the DLL sorts first.
+    config_path, cfg = _runtime_config(tmp_path)
+    install = Path(cfg.paths.state_dir) / "runtime" / "llama-b12345-vulkan"
+    (install / "llama-server").unlink()
+    (install / "llama-server-impl.dll").write_bytes(b"dll")
+    (install / "llama-server.exe").write_bytes(b"exe")
+
+    result = CliRunner().invoke(
+        cli,
+        ["--config", str(config_path), "runtime", "use", "b12345", "--backend", "vulkan"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert Path(load_config(config_path).paths.llama_server).name == "llama-server.exe"
+
+
+def test_runtime_list_never_takes_the_impl_dll_for_the_server(tmp_path):
+    config_path, cfg = _runtime_config(tmp_path)
+    install = Path(cfg.paths.state_dir) / "runtime" / "llama-b12345-vulkan"
+    (install / "llama-server").unlink()
+    (install / "llama-server-impl.dll").write_bytes(b"dll")
+
+    result = CliRunner().invoke(cli, ["--config", str(config_path), "runtime", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "No installed Arc Llama runtimes found" in result.output
+
 def test_missing_release_says_why_and_that_nothing_was_installed():
     import httpx
 
