@@ -30,6 +30,7 @@ from arc_llama.gguf_meta import (
     gguf_total_bytes,
     kv_bytes_per_token_f16,
     override_tensor_saved_bytes,
+    recurrent_state_bytes,
     scan_weight_tensors,
     weight_tensor_table,
 )
@@ -214,9 +215,15 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         weight_mb
         + kv_mb
         + mmproj_vram_mb(recipe)
+        + _recurrent_state_mb(model)
         + _VRAM_COMPUTE_BUFFER_MB
         + _VRAM_SAFETY_MARGIN_MB
     )
+
+
+def _recurrent_state_mb(model: ModelConfig) -> int:
+    parallel = max(1, int((model.recipe or {}).get("parallel") or 1))
+    return (recurrent_state_bytes(model.path, n_seq=parallel) or 0) // 1_048_576
 
 
 def mmproj_vram_mb(recipe: dict[str, Any]) -> int:
@@ -324,7 +331,7 @@ def _estimate_model_vram_mb(
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
-    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
+    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + _recurrent_state_mb(model) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
 
 _VRAM_ESTIMATE_CACHE_TTL_SECONDS = 120.0
@@ -448,7 +455,7 @@ def min_moe_offload_layers(
         model.kv_class,
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
-    fixed_mb = kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+    fixed_mb = kv_mb + _recurrent_state_mb(model) + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
     n_layers = max(expert_by_layer) + 1
     # Saved bytes grow monotonically with N, so a linear scan from 0 finds
     # the minimum; MoE layer counts are at most ~100 and each step here is

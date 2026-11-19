@@ -50,6 +50,34 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     assert estimate_model_vram_quick_mb(model) is None
 
 
+def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
+    model_file = tmp_path / "qwen35moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.read_gguf_meta",
+        lambda _path: {
+            "architecture": "qwen35moe",
+            "block_count": 40,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        },
+    )
+    model = ModelConfig(
+        name="qwen35moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        kv_class="default",
+        recipe={"ctx": 8192, "cache_type_k": "f16"},
+    )
+
+    # 1 MiB weights + 160 MiB metadata KV (not the default bucket's 560 MiB).
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 160 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
+
+
 async def test_single_resident_policy_stops_other_models_before_starting_target(
     tmp_path, monkeypatch
 ):
@@ -546,3 +574,43 @@ def test_model_size_fixture_is_sparse_on_both_platforms(tmp_path):
         assert (high.value << 32) | low < 1024**2
     else:
         assert info.st_blocks * 512 < 1024**2
+
+
+@pytest.mark.parametrize("parallel, state_mb", [(1, 62), (2, 125)])
+def test_quick_vram_estimate_adds_recurrent_state(tmp_path, monkeypatch, parallel, state_mb):
+    path = tmp_path / "qwen35moe-state.gguf"
+    path.write_bytes(b"GGUF")
+    meta = {
+        "architecture": "qwen35moe", "block_count": 40,
+        "ssm.conv_kernel": 4, "ssm.inner_size": 4096,
+        "ssm.state_size": 128, "ssm.group_count": 16,
+    }
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
+    model = ModelConfig(
+        name="qwen35moe", path=str(path), port=18080, gpu_pci_slot="gpu",
+        recipe={"ctx": 8192, "cache_type_k": "f16", "parallel": parallel},
+    )
+    with_state = estimate_model_vram_quick_mb(model)
+    del meta["ssm.conv_kernel"]
+    without_state = estimate_model_vram_quick_mb(model)
+    assert with_state == without_state + state_mb
+
+
+@pytest.mark.parametrize("parallel", ["", None, 0])
+def test_recurrent_state_empty_parallel_uses_one_sequence(tmp_path, monkeypatch, parallel):
+    path = tmp_path / "qwen35-state.gguf"
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+        "architecture": "qwen35", "block_count": 64,
+        "ssm.conv_kernel": 4, "ssm.inner_size": 6144,
+        "ssm.state_size": 128, "ssm.group_count": 16,
+    })
+    model = ModelConfig(
+        name="qwen35", path=str(path), port=18080, gpu_pci_slot="gpu",
+        recipe={"parallel": 1},
+    )
+    one_sequence_mb = estimate_model_vram_quick_mb(model)
+    assert router_mod._recurrent_state_mb(model) == 149
+
+    model.recipe["parallel"] = parallel
+    assert estimate_model_vram_quick_mb(model) == one_sequence_mb
