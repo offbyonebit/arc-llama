@@ -333,6 +333,17 @@ class ModelConfig:
 
     def __post_init__(self) -> None:
         validate_model_runtime(self.llama_server, self.env)
+        recipe = self.recipe or {}
+        if recipe.get("rope_scaling") is not None and recipe["rope_scaling"] != "yarn":
+            raise ValueError("recipe.rope_scaling must be 'yarn'")
+        rope_scale = recipe.get("rope_scale")
+        if rope_scale is not None and (
+            isinstance(rope_scale, bool)
+            or not isinstance(rope_scale, (int, float))
+            or not math.isfinite(rope_scale)
+            or rope_scale <= 1
+        ):
+            raise ValueError("recipe.rope_scale must be a finite number greater than 1")
 
     def launch_recipe(self) -> LaunchRecipe:
         r = self.recipe or {}
@@ -342,6 +353,9 @@ class ModelConfig:
             parallel=int(r.get("parallel", 1)),
             cache_type_k=KVCacheType(r.get("cache_type_k", "f16")),
             cache_type_v=KVCacheType(r.get("cache_type_v", "f16")),
+            rope_scaling=r.get("rope_scaling"),
+            rope_scale=float(r["rope_scale"]) if r.get("rope_scale") is not None else None,
+            yarn_orig_ctx=int(r["yarn_orig_ctx"]) if r.get("yarn_orig_ctx") is not None else None,
             threads=r.get("threads"),
             temp=r.get("temp"),
             top_p=r.get("top_p"),

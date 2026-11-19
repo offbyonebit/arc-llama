@@ -71,6 +71,9 @@ class LaunchRecipe:
     parallel: int = 1
     cache_type_k: KVCacheType = KVCacheType.F16
     cache_type_v: KVCacheType = KVCacheType.F16
+    rope_scaling: str | None = None
+    rope_scale: float | None = None
+    yarn_orig_ctx: int | None = None
     threads: int | None = None
     temp: float | None = None
     top_p: float | None = None
@@ -157,6 +160,12 @@ class LaunchRecipe:
             "--cache-type-v",
             self.cache_type_v.value,
         ]
+        if self.rope_scaling is not None:
+            argv += ["--rope-scaling", self.rope_scaling]
+        if self.rope_scale is not None:
+            argv += ["--rope-scale", str(self.rope_scale)]
+        if self.yarn_orig_ctx is not None:
+            argv += ["--yarn-orig-ctx", str(self.yarn_orig_ctx)]
         if self.threads is not None:
             argv += ["-t", str(self.threads)]
         if self.temp is not None:
@@ -271,12 +280,13 @@ def suggest_ctx(
     trained_ctx: int | None = None,
     parallel: int = 1,
     f16_bytes_per_token: int | None = None,
+    rope_scale: float | None = None,
 ) -> int:
     """Pick the largest power-of-2-ish context that fits comfortably in VRAM.
 
     Rounds *down* to the nearest multiple of 4096 and clamps to `ctx_cap`.
-    If `trained_ctx` is known, the result is also clamped to it (the model
-    silently uses its trained length as a ceiling at runtime).
+    If `trained_ctx` is known, it also caps the result, extended by an
+    explicitly supplied `rope_scale` greater than one for YaRN recipes.
 
     The KV cache scales linearly with the number of parallel sequences, so
     `parallel` multiplies the per-token estimate.
@@ -307,8 +317,11 @@ def suggest_ctx(
     rounded = (max_tokens // 4096) * 4096
     # Clamp to the smallest applicable ceiling: trained context, then ctx_cap.
     ceiling = ctx_cap
-    if trained_ctx is not None and trained_ctx < ceiling:
-        ceiling = trained_ctx
+    if trained_ctx is not None:
+        trained_ceiling = (
+            int(trained_ctx * rope_scale) if rope_scale is not None and rope_scale > 1 else trained_ctx
+        )
+        ceiling = min(ceiling, trained_ceiling)
     return max(4096, min(rounded, ceiling))
 
 
@@ -533,6 +546,12 @@ def recipe_to_dict(recipe: LaunchRecipe) -> dict:
         "cache_type_k": recipe.cache_type_k.value,
         "cache_type_v": recipe.cache_type_v.value,
     }
+    if recipe.rope_scaling is not None:
+        d["rope_scaling"] = recipe.rope_scaling
+    if recipe.rope_scale is not None:
+        d["rope_scale"] = recipe.rope_scale
+    if recipe.yarn_orig_ctx is not None:
+        d["yarn_orig_ctx"] = recipe.yarn_orig_ctx
     if recipe.threads is not None:
         d["threads"] = recipe.threads
     if recipe.temp is not None:
