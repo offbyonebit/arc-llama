@@ -22,7 +22,12 @@ from arc_llama.config import (
     migrate_config,
     validate_config,
 )
-from arc_llama.gguf_meta import gguf_total_bytes, kv_bytes_per_token_f16, trained_context_length
+from arc_llama.gguf_meta import (
+    gguf_total_bytes,
+    kv_bytes_per_token_f16,
+    missing_shards,
+    trained_context_length,
+)
 from arc_llama.models import parse_hf_spec, scan_models
 from arc_llama.recipes import KV_PER_TOKEN_F16_BYTES, KVCacheType, estimate_kv_bytes, suggest_ctx
 from arc_llama.router import estimate_model_vram_quick_mb
@@ -165,6 +170,12 @@ def register_model_commands(
         selected = cfg.find_model(model)
         if selected is None:
             raise click.ClickException(f"Unknown model: {model}")
+        missing = missing_shards(Path(selected.path).expanduser())
+        if missing:
+            raise click.ClickException(
+                f"Model file missing: {missing[0]}. "
+                "Re-download it or remove the model with arc-llama remove."
+            )
         recipe = selected.recipe or {}
         configured_ctx = int(recipe.get("ctx", 8192))
         configured_kv = KVCacheType(recipe.get("cache_type_k", "f16"))

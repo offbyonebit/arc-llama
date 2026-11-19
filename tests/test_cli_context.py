@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -185,3 +186,42 @@ def test_context_unavailable_vram_estimate_is_unknown(context_config, monkeypatc
     assert text.exit_code == result.exit_code == 0
     assert "VRAM estimate: unknown" in text.output
     assert json.loads(result.output)["estimated_vram_mb"] is None
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("split_model", [False, True])
+def test_context_missing_model_file_stops_before_estimates(
+    context_config, monkeypatch, as_json, split_model
+):
+    config_path, cfg = context_config
+    model_path = Path(cfg.models[0].path)
+    if split_model:
+        first = model_path.with_name("model-00001-of-00002.gguf")
+        model_path.rename(first)
+        cfg.models[0].path = str(first)
+        missing = model_path.with_name("model-00002-of-00002.gguf")
+        cfg.save(config_path)
+    else:
+        model_path.unlink()
+        missing = model_path
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("missing model files must stop the report before metadata or sizing")
+
+    for helper in (
+        "kv_bytes_per_token_f16",
+        "trained_context_length",
+        "gguf_total_bytes",
+        "estimate_model_vram_quick_mb",
+        "suggest_ctx",
+    ):
+        monkeypatch.setattr(f"arc_llama.cli_models.{helper}", forbidden)
+
+    args = ["demo", "--json"] if as_json else ["demo"]
+    result = invoke_context(context_config, monkeypatch, *args)
+
+    assert result.exit_code != 0
+    assert f"Model file missing: {missing}." in result.output
+    assert "Re-download it or remove the model with arc-llama remove." in result.output
+    assert "Largest context" not in result.output
+    assert "estimated_max_ctx" not in result.output
