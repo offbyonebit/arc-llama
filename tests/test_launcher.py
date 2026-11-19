@@ -156,6 +156,39 @@ class TestBuildEnv:
 
 
 class TestBuildPlan:
+    @pytest.mark.parametrize("ctx,trained,scaling,scale,ceiling", [
+        (524288, 262144, None, None, 262144),
+        (524288, 262144, "yarn", 2.0, None),
+        (1048576, 262144, "yarn", 2.0, 524288),
+        (524288, None, None, None, None),
+        (262144, 262144, None, None, None),
+        (131072, 262144, None, None, None),
+        (524288, 262144, None, 2.0, 262144),
+    ])
+    def test_context_ceiling_warning(
+        self, monkeypatch, caplog, ctx, trained, scaling, scale, ceiling
+    ):
+        monkeypatch.setattr("arc_llama.launcher.trained_context_length", lambda _path: trained)
+        monkeypatch.setattr("arc_llama.launcher.build_model_env", lambda *args: {})
+        model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0",
+            recipe={"ctx": ctx, "rope_scaling": scaling, "rope_scale": scale})
+        with caplog.at_level("WARNING", logger="arc_llama.launcher"):
+            plan = build_plan(Config(), model, _gpu())
+        warnings = [r.getMessage() for r in caplog.records if "llama.cpp will serve" in r.getMessage()]
+        if ceiling is None:
+            assert warnings == []
+        else:
+            assert warnings == [
+                f"[m] ctx {ctx} is above the model's trained context {ceiling}; "
+                f'llama.cpp will serve {ceiling}. Set rope_scaling = "yarn" and '
+                "rope_scale in the recipe to go past it."
+            ]
+        assert plan.argv[plan.argv.index("-c") + 1] == str(ctx)
+        assert model.recipe["ctx"] == ctx
+        if scaling:
+            assert plan.argv[plan.argv.index("--rope-scaling") + 1] == scaling
+            assert plan.argv[plan.argv.index("--rope-scale") + 1] == str(scale)
+
     def test_includes_model_and_port(self):
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
         model = ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0")

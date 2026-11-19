@@ -74,6 +74,67 @@ def test_find_model_matches_name_alias_display_name_and_filename(tmp_path):
     assert cfg.find_model("missing") is None
 
 
+def test_yarn_recipe_toml_round_trip(tmp_path):
+    from arc_llama.recipes import recipe_to_dict
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        'version = 1\n[[models]]\nname = "qwen"\npath = "model.gguf"\n'
+        'port = 18080\ngpu_pci_slot = "gpu"\n[models.recipe]\n'
+        'rope_scaling = "yarn"\nrope_scale = 2.0\nyarn_orig_ctx = 262144\n',
+        encoding="utf-8",
+    )
+    loaded = load_config(path)
+    recipe = loaded.models[0].launch_recipe()
+    assert recipe.rope_scaling == "yarn"
+    assert recipe.rope_scale == 2.0
+    assert recipe.yarn_orig_ctx == 262144
+    argv = recipe.to_argv()
+    assert argv[argv.index("--yarn-orig-ctx") + 1] == "262144"
+    saved = recipe_to_dict(recipe)
+    assert saved["rope_scaling"] == "yarn"
+    assert saved["rope_scale"] == 2.0
+    assert saved["yarn_orig_ctx"] == 262144
+    loaded.models[0].recipe = saved
+    loaded.save(path)
+    assert load_config(path).models[0].launch_recipe() == recipe
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("rope_scaling", '"linear"'),
+        ("rope_scale", "1.0"),
+        ("rope_scale", "0.0"),
+        ("rope_scale", "-2.0"),
+        ("rope_scale", "inf"),
+        ("rope_scale", "nan"),
+        ("rope_scale", '"2.0"'),
+        ("rope_scale", "true"),
+        ("yarn_orig_ctx", '"262k"'),
+        ("yarn_orig_ctx", "0"),
+        ("yarn_orig_ctx", "-1"),
+        ("yarn_orig_ctx", "true"),
+        ("yarn_orig_ctx", "262144.0"),
+    ],
+)
+def test_yarn_recipe_rejects_invalid_config(tmp_path, key, value):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        'version = 1\n[[models]]\nname = "qwen"\npath = "model.gguf"\n'
+        'port = 18080\ngpu_pci_slot = "gpu"\n[models.recipe]\n'
+        f"{key} = {value}\n",
+        encoding="utf-8",
+    )
+    message = (
+        r"^recipe\.yarn_orig_ctx must be a positive whole number$"
+        if key == "yarn_orig_ctx"
+        else key
+    )
+    with pytest.raises(ValueError, match=message):
+        load_config(path)
+
+
 def test_windows_default_paths_use_appdata(monkeypatch):
     import os
 

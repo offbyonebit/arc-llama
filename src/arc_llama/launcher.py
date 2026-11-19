@@ -43,7 +43,7 @@ from arc_llama.binary import (
 )
 from arc_llama.config import Config, GPUConfig, ModelConfig, default_state_dir
 from arc_llama.failures import StartupFailureError
-from arc_llama.gguf_meta import has_mtp_heads
+from arc_llama.gguf_meta import has_mtp_heads, trained_context_length
 from arc_llama.gpu_ownership import check_gpu_ownership, host_memory_pressure
 from arc_llama.platform_checks import (
     oneapi_runtime_env_needed,
@@ -564,6 +564,18 @@ def build_plan(
                 "spec_draft_model provides MTP heads. Speculative decoding will "
                 "likely degenerate or crash.",
                 model.name,
+            )
+
+    trained_ctx = trained_context_length(model.path)
+    if trained_ctx is not None:
+        ceiling = trained_ctx
+        if recipe.rope_scaling == "yarn" and recipe.rope_scale is not None and recipe.rope_scale > 1:
+            ceiling = int(trained_ctx * recipe.rope_scale)
+        if recipe.ctx > ceiling:
+            log.warning(
+                '[%s] ctx %d is above the model\'s trained context %d; llama.cpp will serve %d. '
+                'Set rope_scaling = "yarn" and rope_scale in the recipe to go past it.',
+                model.name, recipe.ctx, ceiling, ceiling,
             )
 
     # 3. Launch policy: only verified adjustments (e.g. Vulkan q8 needs
