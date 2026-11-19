@@ -50,6 +50,102 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     assert estimate_model_vram_quick_mb(model) is None
 
 
+@pytest.mark.parametrize("estimator", [estimate_model_vram_quick_mb, router_mod._estimate_model_vram_mb])
+def test_vram_estimate_sizes_mixed_kv_and_defaults_v_to_k(tmp_path, monkeypatch, estimator):
+    model_file = tmp_path / "dense.gguf"
+    model_file.write_bytes(b"GGUF")
+    mib = 1_048_576
+    monkeypatch.setattr(router_mod, "gguf_total_bytes", lambda _path: mib)
+    monkeypatch.setattr(router_mod, "estimate_weight_vram_bytes", lambda _path: mib)
+    monkeypatch.setattr(router_mod, "kv_bytes_per_token_f16", lambda _path: mib)
+    model = ModelConfig(
+        name="dense",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        recipe={"ctx": 64, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+    )
+    # f16 KV = 64 MiB, q8_0 = 34 MiB, mixed halves = 49 MiB.
+    overhead = 1 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    q8 = estimator(model)
+    assert q8 == overhead + 34
+    model.recipe["cache_type_v"] = "f16"
+    mixed = estimator(model)
+    assert mixed == overhead + 49
+    model.recipe["cache_type_k"] = "f16"
+    f16 = estimator(model)
+    assert f16 == overhead + 64
+    assert mixed == (q8 + f16) // 2
+    model.recipe["cache_type_v"] = "q8_0"
+    assert estimator(model) == mixed  # Reversing K/V has the same cost.
+    model.recipe = {"ctx": 64, "cache_type_k": "q8_0"}
+    assert estimator(model) == q8
+
+
+def test_min_moe_offload_uses_mixed_kv_cost(tmp_path, monkeypatch):
+    from arc_llama.recipes import KVCacheType
+
+    mib = 1_048_576
+    monkeypatch.setattr(router_mod, "scan_weight_tensors", lambda _path: (256 * mib, {0: 128 * mib}))
+    monkeypatch.setattr(router_mod, "kv_bytes_per_token_f16", lambda _path: mib)
+    model = ModelConfig(
+        name="moe", path=str(tmp_path / "model.gguf"), port=18080, gpu_pci_slot="gpu",
+        recipe={"ctx": 64, "cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+    )
+    # Enough room for full weights + all-q8 KV, but mixed K/V needs expert offload.
+    budget = 256 + 34 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    assert router_mod.min_moe_offload_layers(model, budget) == 0
+    model.recipe["cache_type_v"] = "f16"
+    assert router_mod.min_moe_offload_layers(model, budget) == 1
+    # Tuner trial types continue to apply to both halves.
+    assert router_mod.min_moe_offload_layers(model, budget, kv_type=KVCacheType.Q8_0) == 0
+    model.recipe.pop("cache_type_v")
+    assert router_mod.min_moe_offload_layers(model, budget) == 0
+
+
+def test_exact_vram_trial_kv_overrides_both_halves(tmp_path, monkeypatch):
+    from arc_llama.recipes import KVCacheType
+
+    mib = 1_048_576
+    monkeypatch.setattr(router_mod, "estimate_weight_vram_bytes", lambda _path: mib)
+    monkeypatch.setattr(router_mod, "kv_bytes_per_token_f16", lambda _path: mib)
+    model = ModelConfig(
+        name="dense", path=str(tmp_path / "model.gguf"), port=18080, gpu_pci_slot="gpu",
+        recipe={"ctx": 64, "cache_type_k": "q8_0", "cache_type_v": "f16"},
+    )
+    overhead = 1 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    assert router_mod._estimate_model_vram_mb(model, kv_type=KVCacheType.Q8_0) == overhead + 34
+    assert router_mod._estimate_model_vram_mb(model, ctx=128, kv_type=KVCacheType.Q8_0) == overhead + 68
+
+
+def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
+    model_file = tmp_path / "qwen35moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.read_gguf_meta",
+        lambda _path: {
+            "architecture": "qwen35moe",
+            "block_count": 40,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        },
+    )
+    model = ModelConfig(
+        name="qwen35moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        kv_class="default",
+        recipe={"ctx": 8192, "cache_type_k": "f16"},
+    )
+
+    # 1 MiB weights + 160 MiB metadata KV (not the default bucket's 560 MiB).
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 160 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
+
+
 async def test_single_resident_policy_stops_other_models_before_starting_target(
     tmp_path, monkeypatch
 ):
