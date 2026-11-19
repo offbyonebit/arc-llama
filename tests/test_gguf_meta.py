@@ -29,6 +29,52 @@ from arc_llama.gguf_meta import (
     tokenizer_fingerprint,
     trained_context_length,
 )
+from arc_llama.recipes import KVCacheType, estimate_kv_bytes
+
+
+@pytest.fixture
+def ornith_kv_gguf(tmp_path):
+    path = tmp_path / "ornith-shaped.gguf"
+    writer = gguf.GGUFWriter(str(path), "qwen35moe")
+    writer.add_block_count(40)
+    writer.add_uint32("qwen35moe.full_attention_interval", 4)
+    writer.add_array("qwen35moe.attention.head_count_kv", [2 if (i + 1) % 4 == 0 else 0 for i in range(40)])
+    writer.add_key_length(256)
+    writer.add_value_length(256)
+    writer.add_context_length(262144)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def test_ornith_kv_geometry(ornith_kv_gguf):
+    # Ten attention layers; DeltaNet layers contribute no token-growing KV.
+    per_token = kv_bytes_per_token_f16(ornith_kv_gguf)
+    assert per_token == 20480
+    assert estimate_kv_bytes(262144, KVCacheType.F16, "default", per_token) == 5_368_709_120
+
+
+def test_ornith_q8_kv_at_trained_context(ornith_kv_gguf):
+    per_token = kv_bytes_per_token_f16(ornith_kv_gguf)
+    total = estimate_kv_bytes(262144, KVCacheType.Q8_0, "default", per_token)
+    assert total == 2_852_126_720  # 20480 * (34 / 64) * 262144.
+    assert total // 1_048_576 == 2720
+
+
+def test_ornith_q4_kv_uses_branch_multiplier(ornith_kv_gguf):
+    # Probe the active table at an exactly representable 64 f16 bytes. Do not
+    # freeze this branch's older Q4 multiplier when PR 151 corrects it.
+    table_q4_bytes = estimate_kv_bytes(1, KVCacheType.Q4_0, f16_bytes_per_token=64)
+    per_token = kv_bytes_per_token_f16(ornith_kv_gguf)
+    assert estimate_kv_bytes(262144, KVCacheType.Q4_0, "default", per_token) == (
+        262144 * 20480 * table_q4_bytes // 64
+    )
+
+
+def test_ornith_trained_context(ornith_kv_gguf):
+    assert trained_context_length(ornith_kv_gguf) == 262144
 
 
 # Metadata fields and tensor tables use separate reader doubles.
