@@ -182,11 +182,6 @@ class ModelTimings:
         return out
 
 
-def _recurrent_state_mb(model: ModelConfig) -> int:
-    parallel = int((model.recipe or {}).get("parallel", 1))
-    return (recurrent_state_bytes(model.path, n_seq=parallel) or 0) // 1_048_576
-
-
 def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
     """Conservative constant-time fit estimate for a launch-plan preview.
 
@@ -224,6 +219,11 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         + _VRAM_COMPUTE_BUFFER_MB
         + _VRAM_SAFETY_MARGIN_MB
     )
+
+
+def _recurrent_state_mb(model: ModelConfig) -> int:
+    parallel = int((model.recipe or {}).get("parallel", 1))
+    return (recurrent_state_bytes(model.path, n_seq=parallel) or 0) // 1_048_576
 
 
 def mmproj_vram_mb(recipe: dict[str, Any]) -> int:

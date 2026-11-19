@@ -39,6 +39,10 @@ _TOKENIZER_IDENTITY_KEYS = (
 # ---------------------------------------------------------------------------
 
 _KV_METADATA_SUFFIXES = (
+    "ssm.conv_kernel",
+    "ssm.inner_size",
+    "ssm.state_size",
+    "ssm.group_count",
     "embedding_length",
     "attention.head_count",
     "attention.head_count_kv",
@@ -47,10 +51,6 @@ _KV_METADATA_SUFFIXES = (
     "attention.sliding_window",
     "full_attention_interval",
     "attention.recurrent_layers",
-    "ssm.conv_kernel",
-    "ssm.inner_size",
-    "ssm.state_size",
-    "ssm.group_count",
 )
 
 
@@ -311,6 +311,40 @@ def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> 
     return total_elements * 2 if total_elements > 0 else None
 
 
+def recurrent_state_bytes(path: Path | str, n_seq: int = 1) -> int | None:
+    """Qwen hybrid f32 state with llama-server's default zero rollback snapshots."""
+    meta = read_gguf_meta(path)
+    if str(meta.get("architecture", "")).lower() not in {"qwen35", "qwen35moe", "qwen3next"}:
+        return None
+    try:
+        layers = int(meta["block_count"])
+        main_layers = layers - int(meta.get("nextn_predict_layers", 0))
+        conv = int(meta["ssm.conv_kernel"])
+        inner = int(meta["ssm.inner_size"])
+        state = int(meta["ssm.state_size"])
+        groups = int(meta["ssm.group_count"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 0 < main_layers <= layers or n_seq <= 0 or min(conv, inner, state, groups) < 0:
+        return None
+    recurrent = meta.get("attention.recurrent_layers")
+    if recurrent is not None:
+        if not isinstance(recurrent, list) or len(recurrent) != layers:
+            return None
+        n_recurrent = sum(bool(value) for value in recurrent[:main_layers])
+    else:
+        try:
+            interval = int(meta.get("full_attention_interval", 4))
+        except (TypeError, ValueError):
+            return None
+        if interval <= 0:
+            return None
+        n_recurrent = sum((i + 1) % interval != 0 for i in range(main_layers))
+    n_embd_r = max(conv - 1, 0) * (inner + 2 * groups * state)
+    n_embd_s = state * inner
+    return n_recurrent * (n_embd_r + n_embd_s) * 4 * n_seq
+
+
 def _hybrid_kv_bytes_per_token_f16(meta: dict[str, Any], layers: int) -> int | None:
     """Count only main-model attention layers, excluding recurrent and MTP KV."""
     kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
@@ -359,40 +393,6 @@ def kv_bytes_per_token_f16(path: Path | str) -> int | None:
     except OSError:
         return None
     return _kv_bytes_per_token_f16_cached(resolved, stat.st_size, stat.st_mtime_ns)
-
-
-def recurrent_state_bytes(path: Path | str, n_seq: int = 1) -> int | None:
-    """Qwen hybrid f32 state with llama-server's default zero rollback snapshots."""
-    meta = read_gguf_meta(path)
-    if str(meta.get("architecture", "")).lower() not in {"qwen35", "qwen35moe", "qwen3next"}:
-        return None
-    try:
-        layers = int(meta["block_count"])
-        main_layers = layers - int(meta.get("nextn_predict_layers", 0))
-        conv = int(meta["ssm.conv_kernel"])
-        inner = int(meta["ssm.inner_size"])
-        state = int(meta["ssm.state_size"])
-        groups = int(meta["ssm.group_count"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if not 0 < main_layers <= layers or n_seq <= 0 or min(conv, inner, state, groups) < 0:
-        return None
-    recurrent = meta.get("attention.recurrent_layers")
-    if recurrent is not None:
-        if not isinstance(recurrent, list) or len(recurrent) != layers:
-            return None
-        n_recurrent = sum(bool(value) for value in recurrent[:main_layers])
-    else:
-        try:
-            interval = int(meta.get("full_attention_interval", 4))
-        except (TypeError, ValueError):
-            return None
-        if interval <= 0:
-            return None
-        n_recurrent = sum((i + 1) % interval != 0 for i in range(main_layers))
-    n_embd_r = max(conv - 1, 0) * (inner + 2 * groups * state)
-    n_embd_s = state * inner
-    return n_recurrent * (n_embd_r + n_embd_s) * 4 * n_seq
 
 
 def _hash_metadata_value(digest: Any, value: Any) -> None:
