@@ -24,6 +24,7 @@ from arc_llama.gguf_meta import (
     is_moe,
     kv_bytes_per_token_f16,
     mtp_info,
+    mtp_draft_kv_bytes,
     read_gguf_meta,
     scan_weight_tensors,
     tokenizer_fingerprint,
@@ -40,6 +41,51 @@ class _FakeFieldReader:
         if key not in self._fields:
             return None
         return _FakeField(self._fields[key])
+
+
+class TestMtpDraftKvBytes:
+    def _write(self, tmp_path, arch="qwen35", nextn=1, layers=65):
+        path = tmp_path / "mtp-kv.gguf"
+        writer = gguf.GGUFWriter(str(path), arch)
+        for key, value in {
+            "block_count": layers, "nextn_predict_layers": nextn,
+            "attention.head_count_kv": 4,
+            "attention.key_length": 256, "attention.value_length": 256,
+        }.items():
+            writer.add_uint32(f"{arch}.{key}", value)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        return path
+
+    @pytest.mark.parametrize("nextn, per_token", [(1, 4096), (0, 0)])
+    def test_embedded_heads_from_real_metadata(self, tmp_path, nextn, per_token):
+        path = self._write(tmp_path, nextn=nextn)
+        assert mtp_draft_kv_bytes(path, 131072) == 131072 * per_token
+
+    @pytest.mark.parametrize("arch", ["qwen35_mtp", "qwen35moe_mtp"])
+    def test_sidecar_uses_all_layers(self, tmp_path, arch):
+        path = self._write(tmp_path, arch=arch, nextn=0, layers=2)
+        assert mtp_draft_kv_bytes(path, 32768) == 32768 * 2 * 4096
+
+    def test_only_last_layers_use_per_layer_geometry(self, tmp_path, monkeypatch):
+        path = self._write(tmp_path)
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+            "architecture": "qwen35", "block_count": 4, "nextn_predict_layers": 2,
+            "attention.head_count_kv": [8, 8, 2, 4],
+            "attention.key_length": [128, 128, 256, 256],
+            "attention.value_length": [128, 128, 256, 256],
+        })
+        assert mtp_draft_kv_bytes(path, 32768) == 32768 * (2048 + 4096)
+
+    def test_unreadable_or_incomplete_metadata(self, tmp_path, monkeypatch):
+        path = tmp_path / "missing.gguf"
+        assert mtp_draft_kv_bytes(path, 32768) is None
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+            "architecture": "qwen35", "block_count": 65, "nextn_predict_layers": 1,
+        })
+        assert mtp_draft_kv_bytes(path, 32768) is None
 
 
 class TestReadGgufMetaExpertCountKeys:

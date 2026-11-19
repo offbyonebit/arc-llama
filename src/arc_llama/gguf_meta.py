@@ -390,6 +390,36 @@ def _hash_metadata_value(digest: Any, value: Any) -> None:
     digest.update(f"{type(value).__name__}:{value}".encode("utf-8", errors="replace"))
 
 
+def mtp_draft_kv_bytes(path: Path | str, ctx: int) -> int | None:
+    """Size the full-context f16 KV cache for embedded or standalone MTP layers."""
+    meta = read_gguf_meta(path)
+    if not meta or ctx < 0:
+        return None
+    sidecar = meta.get("architecture") in {"qwen35_mtp", "qwen35moe_mtp"}
+    try:
+        n_mtp = int(meta.get("nextn_predict_layers", 0))
+        if not sidecar and n_mtp == 0:
+            return 0
+        layers = int(meta["block_count"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if sidecar:
+        n_mtp = layers
+    if layers <= 0 or not 0 < n_mtp <= layers:
+        return None
+    kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
+    key_lengths = _per_layer_values(meta.get("attention.key_length"), layers)
+    value_lengths = _per_layer_values(meta.get("attention.value_length"), layers)
+    if kv_heads is None or key_lengths is None or value_lengths is None:
+        return None
+    per_token = 0
+    for i in range(layers - n_mtp, layers):
+        if kv_heads[i] < 0 or key_lengths[i] <= 0 or value_lengths[i] <= 0:
+            return None
+        per_token += kv_heads[i] * (key_lengths[i] + value_lengths[i]) * 2
+    return ctx * per_token
+
+
 def tokenizer_fingerprint(path: Path | str) -> str | None:
     """Hash tokenizer-defining GGUF metadata, or return None when unavailable.
 
