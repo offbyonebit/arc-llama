@@ -29,6 +29,7 @@ from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
     gguf_total_bytes,
     kv_bytes_per_token_f16,
+    max_layer_kv_bytes_f16_per_token,
     override_tensor_saved_bytes,
     scan_weight_tensors,
     weight_tensor_table,
@@ -181,7 +182,26 @@ class ModelTimings:
         return out
 
 
-def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
+def _sycl_fa_staging_mb(
+    model: ModelConfig,
+    recipe: dict[str, Any],
+    ctx: int | None = None,
+    kv_type: KVCacheType | None = None,
+    *,
+    backend: str | None = None,
+) -> int:
+    if backend != "sycl" or recipe.get("flash_attn") == "off":
+        return 0
+    k_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_k", "f16"))
+    v_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_v", k_type.value))
+    if all(kv in (KVCacheType.F16, KVCacheType.F32) for kv in (k_type, v_type)):
+        return 0
+    per_token = max_layer_kv_bytes_f16_per_token(model.path)
+    eff_ctx = ctx if ctx is not None else int(recipe.get("ctx", 8192))
+    return eff_ctx * per_token // 1_048_576 if per_token is not None else 0
+
+
+def estimate_model_vram_quick_mb(model: ModelConfig, *, backend: str | None = None) -> int | None:
     """Conservative constant-time fit estimate for a launch-plan preview.
 
     Dense GGUF weight storage is already packed in the representation loaded
@@ -190,6 +210,8 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
     resident weight set and deliberately falls back to the exact estimator.
     The router's admission guard continues to use ``_estimate_model_vram_mb``;
     this helper only removes a multi-second scan from user-facing setup.
+    Pass a known backend to include its SYCL flash-attention staging buffer;
+    unknown backends leave the base estimate unchanged.
     """
     recipe = model.recipe or {}
     if recipe.get("n_cpu_moe") or recipe.get("override_tensor"):
@@ -216,6 +238,7 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         + mmproj_vram_mb(recipe)
         + _VRAM_COMPUTE_BUFFER_MB
         + _VRAM_SAFETY_MARGIN_MB
+        + _sycl_fa_staging_mb(model, recipe, ctx, backend=backend)
     )
 
 
@@ -241,6 +264,7 @@ def _estimate_model_vram_mb(
     n_cpu_moe: int | None = None,
     override_tensor: list[str] | None = None,
     compute_buffer_mb: int | None = None,
+    backend: str | None = None,
 ) -> int | None:
     """Rough VRAM footprint for one model instance, or None when it cannot
     be estimated.
@@ -324,7 +348,10 @@ def _estimate_model_vram_mb(
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
-    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
+    return (
+        weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
+        + _sycl_fa_staging_mb(model, recipe, eff_ctx, kv_type, backend=backend)
+    )
 
 
 _VRAM_ESTIMATE_CACHE_TTL_SECONDS = 120.0
@@ -389,6 +416,11 @@ def model_vram_fit_info(
         confidence = "estimated_from_tensor_table" if estimated is not None else None
     if estimated is None:
         return None
+    # Cache the backend-neutral base; add staging with the current GPU so a
+    # backend change cannot reuse the other backend's staging allowance.
+    estimated += _sycl_fa_staging_mb(
+        model, model.recipe or {}, backend=gpu.backend if gpu else None
+    )
     info: dict[str, Any] = {
         "estimated_mb": estimated,
         "confidence": confidence,
@@ -888,6 +920,7 @@ class Router:
                 target.name,
             )
             return
+        target_mb += _sycl_fa_staging_mb(target, target.recipe or {}, backend=target_gpu.backend)
         used_mb = target_mb
         for name, srv in self._servers.items():
             if name == target.name or not srv.is_running:
@@ -906,6 +939,7 @@ class Router:
                 )
                 continue
             used_mb += other_mb
+            used_mb += _sycl_fa_staging_mb(other, other.recipe or {}, backend=target_gpu.backend)
         if used_mb > capacity_mb:
             message = (
                 f"model {target.name!r} needs ~{target_mb} MiB on GPU "

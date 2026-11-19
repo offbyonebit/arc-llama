@@ -23,6 +23,7 @@ from arc_llama.gguf_meta import (
     is_hybrid_ssm,
     is_moe,
     kv_bytes_per_token_f16,
+    max_layer_kv_bytes_f16_per_token,
     mtp_info,
     read_gguf_meta,
     scan_weight_tensors,
@@ -211,6 +212,39 @@ class TestKvBytesPerToken:
         path.write_bytes(b"GGUF")
         monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
         return kv_bytes_per_token_f16(path)
+
+    def test_max_attention_layer_f16_geometry(self, tmp_path):
+        path = tmp_path / "qwen35moe.gguf"
+        writer = gguf.GGUFWriter(str(path), "qwen35moe")
+        writer.add_block_count(40)
+        writer.add_head_count_kv(2)
+        writer.add_key_length(256)
+        writer.add_value_length(256)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        assert max_layer_kv_bytes_f16_per_token(path) == 2048
+
+    def test_max_attention_layer_skips_recurrent_and_mtp(self, monkeypatch):
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+            "architecture": "qwen35moe", "block_count": 4, "nextn_predict_layers": 1,
+            "attention.recurrent_layers": [True, False, False, False],
+            "attention.head_count_kv": [99, 1, 2, 99],
+            "attention.key_length": [256, 128, 256, 256],
+            "attention.value_length": [256, 128, 256, 256],
+        })
+        assert max_layer_kv_bytes_f16_per_token("synthetic.gguf") == 2048
+
+    def test_max_attention_layer_uses_derived_head_dimensions(self, monkeypatch):
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+            "block_count": 2, "attention.head_count_kv": [1, 2],
+            "attention.head_count": 8, "embedding_length": 2048,
+        })
+        assert max_layer_kv_bytes_f16_per_token("synthetic.gguf") == 2048
+
+    def test_max_attention_layer_unknown_metadata(self):
+        assert max_layer_kv_bytes_f16_per_token("/nonexistent.gguf") is None
 
     def test_scalar_transformer_geometry(self, tmp_path, monkeypatch):
         # 32 layers × 8 KV heads × (128 K + 128 V) × 2-byte f16.

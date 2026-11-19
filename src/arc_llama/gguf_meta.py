@@ -357,6 +357,59 @@ def kv_bytes_per_token_f16(path: Path | str) -> int | None:
     return _kv_bytes_per_token_f16_cached(resolved, stat.st_size, stat.st_mtime_ns)
 
 
+def max_layer_kv_bytes_f16_per_token(path: Path | str) -> int | None:
+    """Largest main attention layer's f16 K+V bytes/token, or unknown."""
+    meta = read_gguf_meta(path)
+    try:
+        layers = int(meta["block_count"])
+        main_layers = layers - int(meta.get("nextn_predict_layers", 0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 0 < main_layers <= layers:
+        return None
+    kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
+    keys = _per_layer_values(meta.get("attention.key_length"), layers)
+    values = _per_layer_values(meta.get("attention.value_length"), layers)
+    heads = _per_layer_values(meta.get("attention.head_count"), layers)
+    embeddings = _per_layer_values(meta.get("embedding_length"), layers)
+    if kv_heads is None:
+        return None
+    attention_layers = list(range(main_layers))
+    if meta.get("architecture") in {"qwen35", "qwen35moe", "qwen3next"}:
+        recurrent = meta.get("attention.recurrent_layers")
+        if recurrent is not None:
+            if not isinstance(recurrent, list) or len(recurrent) != layers:
+                return None
+            attention_layers = [i for i in attention_layers if not recurrent[i]]
+        else:
+            try:
+                interval = int(meta.get("full_attention_interval", 4))
+            except (TypeError, ValueError):
+                return None
+            if interval <= 0:
+                return None
+            attention_layers = [i for i in attention_layers if (i + 1) % interval == 0]
+    sizes = []
+    for i in attention_layers:
+        if kv_heads[i] < 0:
+            return None
+        if kv_heads[i] == 0:
+            continue
+        key = keys[i] if keys is not None else None
+        value = values[i] if values is not None else None
+        if key is None or value is None:
+            if heads is None or embeddings is None or heads[i] <= 0:
+                return None
+            if embeddings[i] <= 0 or embeddings[i] % heads[i]:
+                return None
+            key = key if key is not None else embeddings[i] // heads[i]
+            value = value if value is not None else embeddings[i] // heads[i]
+        if key <= 0 or value <= 0:
+            return None
+        sizes.append(kv_heads[i] * (key + value) * 2)
+    return max(sizes, default=None)
+
+
 def _hash_metadata_value(digest: Any, value: Any) -> None:
     """Stream a deterministic representation into *digest* without giant reprs."""
     if isinstance(value, bytes):
