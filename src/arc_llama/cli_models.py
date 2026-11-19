@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,24 @@ from rich.table import Table
 
 from arc_llama.arch import Backend
 from arc_llama.binary import detect_llama_server_backend
-from arc_llama.config import Config
+from arc_llama.config import (
+    Config,
+    GPUConfig,
+    ModelConfig,
+    _filter_fields,
+    _toml_load,
+    migrate_config,
+    validate_config,
+)
+from arc_llama.gguf_meta import (
+    gguf_total_bytes,
+    kv_bytes_per_token_f16,
+    missing_shards,
+    trained_context_length,
+)
 from arc_llama.models import parse_hf_spec, scan_models
+from arc_llama.recipes import KV_PER_TOKEN_F16_BYTES, KVCacheType, estimate_kv_bytes, suggest_ctx
+from arc_llama.router import estimate_model_vram_quick_mb
 
 
 def register_model_commands(
@@ -128,6 +145,101 @@ def register_model_commands(
             console.print(
                 f"[dim]Status not available from {status_url}; server may not be running.[/dim]"
             )
+
+    # ===========================================================================
+    # context
+    # ===========================================================================
+
+    @cli.command("context")
+    @click.argument("model")
+    @click.option("--json", "as_json", is_flag=True, help="Print the context report as JSON.")
+    @click.pass_context
+    def context_cmd(ctx: click.Context, model: str, as_json: bool) -> None:
+        """Estimate MODEL's KV cost and the context that fits its configured GPU."""
+        # The normal loader persists a missing admin token; this report must not.
+        cfg = Config()
+        config_path: Path = ctx.obj["config_path"]
+        if config_path.exists():
+            with config_path.open("rb") as stream:
+                raw = migrate_config(_toml_load(stream))
+            validate_config(raw)
+            cfg = Config(
+                models=[ModelConfig(**_filter_fields(ModelConfig, m)) for m in raw.get("models", [])],
+                gpus=[GPUConfig(**_filter_fields(GPUConfig, g)) for g in raw.get("gpus", [])],
+            )
+        selected = cfg.find_model(model)
+        if selected is None:
+            raise click.ClickException(f"Unknown model: {model}")
+        missing = missing_shards(Path(selected.path).expanduser())
+        if missing:
+            raise click.ClickException(
+                f"Model file missing: {missing[0]}. "
+                "Re-download it or remove the model with arc-llama remove."
+            )
+        recipe = selected.recipe or {}
+        configured_ctx = int(recipe.get("ctx", 8192))
+        configured_kv = KVCacheType(recipe.get("cache_type_k", "f16"))
+        parallel = max(1, int(recipe.get("parallel") or 1))
+        f16_per_token = kv_bytes_per_token_f16(selected.path)
+        source = "gguf_metadata" if f16_per_token is not None else "family_estimate"
+        if f16_per_token is None:
+            f16_per_token = KV_PER_TOKEN_F16_BYTES.get(
+                selected.kv_class, KV_PER_TOKEN_F16_BYTES["default"]
+            )
+        trained_ctx = trained_context_length(selected.path)
+        gpu = cfg.find_gpu(selected.gpu_pci_slot)
+        vram_mb = gpu.vram_mb if gpu else None
+        max_ctx: dict[str, int] | None = None
+        if vram_mb:
+            model_file_mb = (gguf_total_bytes(selected.path) + 1_048_575) // 1_048_576
+            max_ctx = {
+                kv.value: suggest_ctx(
+                    vram_mb=vram_mb,
+                    model_file_mb=model_file_mb,
+                    kv_type=kv,
+                    kv_class=selected.kv_class,
+                    parallel=parallel,
+                    ctx_cap=trained_ctx if trained_ctx is not None else 262144,
+                    trained_ctx=trained_ctx,
+                    f16_bytes_per_token=f16_per_token,
+                )
+                for kv in (KVCacheType.Q8_0, KVCacheType.Q4_0)
+            }
+        report: dict[str, Any] = {
+            "model": selected.name,
+            "kv_source": source,
+            "kv_class": selected.kv_class,
+            "kv_kib_per_token": {
+                kv.value: estimate_kv_bytes(1, kv, selected.kv_class, f16_per_token) / 1024
+                for kv in (KVCacheType.F16, KVCacheType.Q8_0, KVCacheType.Q4_0)
+            },
+            "configured_ctx": configured_ctx,
+            "configured_kv_type": configured_kv.value,
+            "configured_kv_mib": estimate_kv_bytes(
+                configured_ctx, configured_kv, selected.kv_class, f16_per_token
+            ) / 1_048_576,
+            "parallel": parallel,
+            "trained_ctx": trained_ctx,
+            "estimated_vram_mb": estimate_model_vram_quick_mb(selected),
+            "gpu_vram_mb": vram_mb,
+            "estimated_max_ctx": max_ctx,
+        }
+        if as_json:
+            click.echo(json.dumps(report))
+            return
+        click.echo(f"Model: {selected.name}")
+        click.echo(f"KV source: {source} (family: {selected.kv_class})")
+        for kv_type, kib in report["kv_kib_per_token"].items():
+            click.echo(f"KV per token ({kv_type}): {kib:g} KiB")
+        click.echo(f"Configured context: {configured_ctx}; KV type: {configured_kv.value}")
+        click.echo(f"KV at configured context: {report['configured_kv_mib']:g} MiB")
+        click.echo(f"Parallel: {parallel}; trained context: {trained_ctx or 'unknown'}")
+        estimate = report["estimated_vram_mb"]
+        click.echo(f"VRAM estimate: {str(estimate) + ' MiB' if estimate is not None else 'unknown'}")
+        click.echo(f"Card VRAM: {str(vram_mb) + ' MiB' if vram_mb else 'unknown'}")
+        if max_ctx is not None:
+            for kv_type, tokens in max_ctx.items():
+                click.echo(f"Largest context that fits ({kv_type}, estimate): {tokens}")
 
     # ===========================================================================
     # add
