@@ -137,6 +137,20 @@ class TestSuggestCtx:
         )
         assert ctx == 32768
 
+    @pytest.mark.parametrize(
+        "rope_scale,ctx_cap,expected",
+        [(None, 1048576, 262144), (2.0, 1048576, 524288), (2.0, 393216, 393216)],
+    )
+    def test_yarn_extends_trained_context_ceiling(self, rope_scale, ctx_cap, expected):
+        assert suggest_ctx(
+            vram_mb=1024 * 1024,
+            model_file_mb=1,
+            kv_type=KVCacheType.Q8_0,
+            trained_ctx=262144,
+            ctx_cap=ctx_cap,
+            rope_scale=rope_scale,
+        ) == expected
+
     def test_trained_context_ignored_when_larger(self):
         ctx = suggest_ctx(
             vram_mb=8 * 1024,
@@ -439,6 +453,15 @@ class TestDefaultRecipe:
 
 
 class TestLaunchRecipeArgv:
+    def test_yarn_flags_are_opt_in(self):
+        flags = ("--rope-scaling", "--rope-scale", "--yarn-orig-ctx")
+        assert all(flag not in LaunchRecipe().to_argv() for flag in flags)
+        argv = LaunchRecipe(rope_scaling="yarn", rope_scale=2.0, yarn_orig_ctx=262144).to_argv()
+        for flag, value in zip(flags, ("yarn", "2.0", "262144"), strict=True):
+            assert argv[argv.index(flag) + 1] == value
+        assert "--rope-scaling" not in LaunchRecipe(rope_scale=2.0).to_argv()
+        assert "--yarn-orig-ctx" not in LaunchRecipe(rope_scale=2.0).to_argv()
+
     def test_all_fields_present(self):
         r = LaunchRecipe(
             n_gpu_layers=999,
@@ -653,6 +676,9 @@ class TestRecipeToDict:
         assert "temp" not in d
         assert "top_p" not in d
         assert "top_k" not in d
+        assert "rope_scaling" not in d
+        assert "rope_scale" not in d
+        assert "yarn_orig_ctx" not in d
 
     def test_optional_sampling_fields_serialised_when_set(self):
         from arc_llama.recipes import recipe_to_dict
