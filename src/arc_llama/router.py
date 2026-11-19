@@ -29,6 +29,7 @@ from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
     gguf_total_bytes,
     kv_bytes_per_token_f16,
+    mtp_draft_kv_bytes,
     override_tensor_saved_bytes,
     scan_weight_tensors,
     weight_tensor_table,
@@ -214,6 +215,7 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
         weight_mb
         + kv_mb
         + mmproj_vram_mb(recipe)
+        + _mtp_draft_kv_mb(model, ctx)
         + _VRAM_COMPUTE_BUFFER_MB
         + _VRAM_SAFETY_MARGIN_MB
     )
@@ -231,6 +233,14 @@ def mmproj_vram_mb(recipe: dict[str, Any]) -> int:
     # Projectors also allocate an image-encoder compute buffer; a quarter of
     # their weight size is a conservative allowance measured on CLIP/SigLIP.
     return int(size * 1.25) // 1_048_576
+
+
+def _mtp_draft_kv_mb(model: ModelConfig, ctx: int) -> int:
+    recipe = model.recipe or {}
+    if "draft-mtp" not in (recipe.get("spec_type") or "").split(","):
+        return 0
+    path = recipe.get("spec_draft_model") or model.path
+    return (mtp_draft_kv_bytes(path, ctx) or 0) // 1_048_576
 
 
 def _estimate_model_vram_mb(
@@ -324,7 +334,7 @@ def _estimate_model_vram_mb(
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
     buffer_mb = compute_buffer_mb if compute_buffer_mb is not None else _VRAM_COMPUTE_BUFFER_MB
-    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
+    return weight_mb + kv_mb + mmproj_vram_mb(recipe) + _mtp_draft_kv_mb(model, eff_ctx) + buffer_mb + _VRAM_SAFETY_MARGIN_MB
 
 
 _VRAM_ESTIMATE_CACHE_TTL_SECONDS = 120.0
@@ -448,7 +458,7 @@ def min_moe_offload_layers(
         model.kv_class,
         kv_bytes_per_token_f16(model.path),
     ) // (1_048_576)
-    fixed_mb = kv_mb + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
+    fixed_mb = kv_mb + _mtp_draft_kv_mb(model, eff_ctx) + _VRAM_COMPUTE_BUFFER_MB + _VRAM_SAFETY_MARGIN_MB
     n_layers = max(expert_by_layer) + 1
     # Saved bytes grow monotonically with N, so a linear scan from 0 finds
     # the minimum; MoE layer counts are at most ~100 and each step here is

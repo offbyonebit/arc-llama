@@ -20,6 +20,48 @@ def _inline_router_threads(monkeypatch):
     monkeypatch.setattr(router_mod.asyncio, "to_thread", inline_to_thread)
 
 
+@pytest.mark.parametrize("spec_type, draft_mb", [
+    ("", 0), ("ngram-mod", 0), ("draft-mtp", 128), ("ngram-mod,draft-mtp", 128),
+])
+def test_vram_estimates_add_embedded_mtp_kv(tmp_path, monkeypatch, spec_type, draft_mb):
+    path = tmp_path / "mtp.gguf"
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+        "architecture": "qwen35", "block_count": 65, "nextn_predict_layers": 1,
+        "attention.head_count_kv": 4,
+        "attention.key_length": 256, "attention.value_length": 256,
+    })
+    model = ModelConfig(name="mtp", path=str(path), port=18080, gpu_pci_slot="gpu",
+                        recipe={"ctx": 32768, "cache_type_k": "q8_0"})
+    quick_without = estimate_model_vram_quick_mb(model)
+    exact_without = router_mod._estimate_model_vram_mb(model, ctx=65536)
+    model.recipe["spec_type"] = spec_type
+    assert estimate_model_vram_quick_mb(model) == quick_without + draft_mb
+    assert router_mod._estimate_model_vram_mb(model, ctx=65536) == exact_without + 2 * draft_mb
+
+
+def test_mtp_draft_kv_uses_sidecar_path(tmp_path, monkeypatch):
+    main = tmp_path / "main.gguf"
+    draft = tmp_path / "draft.gguf"
+    main.write_bytes(b"GGUF")
+    draft.write_bytes(b"GGUF")
+
+    def metadata(path):
+        return {
+            "architecture": "qwen35_mtp" if str(path) == str(draft) else "qwen35",
+            "block_count": 1, "nextn_predict_layers": 0,
+            "attention.head_count_kv": 4,
+            "attention.key_length": 256, "attention.value_length": 256,
+        }
+
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", metadata)
+    model = ModelConfig(name="mtp", path=str(main), port=18080, gpu_pci_slot="gpu",
+                        recipe={"spec_type": "draft-mtp", "spec_draft_model": str(draft)})
+    assert router_mod._mtp_draft_kv_mb(model, 32768) == 128
+    model.recipe.pop("spec_draft_model")
+    assert router_mod._mtp_draft_kv_mb(model, 32768) == 0
+
+
 def test_quick_vram_estimate_uses_file_kv_and_fixed_overhead(tmp_path, monkeypatch):
     model_file = tmp_path / "dense.gguf"
     model_file.write_bytes(b"x" * (1_048_576 + 1))
@@ -48,6 +90,34 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
     )
 
     assert estimate_model_vram_quick_mb(model) is None
+
+
+def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
+    model_file = tmp_path / "qwen35moe.gguf"
+    model_file.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        "arc_llama.gguf_meta.read_gguf_meta",
+        lambda _path: {
+            "architecture": "qwen35moe",
+            "block_count": 40,
+            "attention.head_count_kv": 2,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        },
+    )
+    model = ModelConfig(
+        name="qwen35moe",
+        path=str(model_file),
+        port=18080,
+        gpu_pci_slot="gpu",
+        kv_class="default",
+        recipe={"ctx": 8192, "cache_type_k": "f16"},
+    )
+
+    # 1 MiB weights + 160 MiB metadata KV (not the default bucket's 560 MiB).
+    assert estimate_model_vram_quick_mb(model) == (
+        1 + 160 + router_mod._VRAM_COMPUTE_BUFFER_MB + router_mod._VRAM_SAFETY_MARGIN_MB
+    )
 
 
 async def test_single_resident_policy_stops_other_models_before_starting_target(
