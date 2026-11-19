@@ -89,6 +89,8 @@ def test_yarn_recipe_toml_round_trip(tmp_path):
     assert recipe.rope_scaling == "yarn"
     assert recipe.rope_scale == 2.0
     assert recipe.yarn_orig_ctx == 262144
+    argv = recipe.to_argv()
+    assert argv[argv.index("--yarn-orig-ctx") + 1] == "262144"
     saved = recipe_to_dict(recipe)
     assert saved["rope_scaling"] == "yarn"
     assert saved["rope_scale"] == 2.0
@@ -109,6 +111,11 @@ def test_yarn_recipe_toml_round_trip(tmp_path):
         ("rope_scale", "nan"),
         ("rope_scale", '"2.0"'),
         ("rope_scale", "true"),
+        ("yarn_orig_ctx", '"262k"'),
+        ("yarn_orig_ctx", "0"),
+        ("yarn_orig_ctx", "-1"),
+        ("yarn_orig_ctx", "true"),
+        ("yarn_orig_ctx", "262144.0"),
     ],
 )
 def test_yarn_recipe_rejects_invalid_config(tmp_path, key, value):
@@ -119,7 +126,12 @@ def test_yarn_recipe_rejects_invalid_config(tmp_path, key, value):
         f"{key} = {value}\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match=key):
+    message = (
+        r"^recipe\.yarn_orig_ctx must be a positive whole number$"
+        if key == "yarn_orig_ctx"
+        else key
+    )
+    with pytest.raises(ValueError, match=message):
         load_config(path)
 
 

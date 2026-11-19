@@ -344,6 +344,11 @@ class ModelConfig:
             or rope_scale <= 1
         ):
             raise ValueError("recipe.rope_scale must be a finite number greater than 1")
+        yarn_orig_ctx = recipe.get("yarn_orig_ctx")
+        if yarn_orig_ctx is not None and (
+            isinstance(yarn_orig_ctx, bool) or not isinstance(yarn_orig_ctx, int) or yarn_orig_ctx <= 0
+        ):
+            raise ValueError("recipe.yarn_orig_ctx must be a positive whole number")
 
     def launch_recipe(self) -> LaunchRecipe:
         r = self.recipe or {}
