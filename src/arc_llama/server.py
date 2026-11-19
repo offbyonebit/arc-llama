@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import copy
 import io
 import json
 import logging
@@ -1773,6 +1774,7 @@ def create_app(
                     "ctx": r.get("ctx"),
                     "cache_type_k": r.get("cache_type_k"),
                     "cache_type_v": r.get("cache_type_v"),
+                    "reasoning_budget": r.get("reasoning_budget"),
                     "flash_attn": r.get("flash_attn"),
                     "ubatch_size": r.get("ubatch_size"),
                     "batch_size": r.get("batch_size"),
@@ -2076,7 +2078,7 @@ def create_app(
         """Update a model's recipe in-place.
 
         Body is a partial recipe dict — only provided fields change. Recognised
-        fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
+        fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `reasoning_budget`, `kv_class`,
         `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `spec_draft_p_min`,
         `spec_draft_model`, `spec_draft_ngl`, `ubatch_size`,
         `batch_size`, `flash_attn` (null clears), `llama_server` (empty inherits
@@ -2162,6 +2164,15 @@ def create_app(
                 raise HTTPException(status_code=400, detail="parallel must be 1..32")
             recipe["parallel"] = par
             changed.append("parallel")
+        if "reasoning_budget" in body:
+            budget = body["reasoning_budget"]
+            if budget is None or budget == "":
+                recipe.pop("reasoning_budget", None)
+            elif type(budget) is int and -1 <= budget <= 131072:
+                recipe["reasoning_budget"] = budget
+            else:
+                raise HTTPException(status_code=400, detail="reasoning_budget must be an integer from -1 to 131072, or null")
+            changed.append("reasoning_budget")
         kv_class = model.kv_class
         if "kv_class" in body:
             v = str(body["kv_class"])
@@ -2417,11 +2428,19 @@ def create_app(
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
+        saved_settings = c.model_saved_settings.get(name)
+        persist = body.get("persist", True) is not False
+        if not persist and saved_settings is None:
+            c.model_saved_settings[name] = copy.deepcopy({
+                "recipe": previous_recipe, "kv_class": previous_kv_class,
+                "llama_server": model.llama_server, "env": model.env,
+            })
         model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
             # Auto-tune trials send persist=false: only its final pick is saved.
-            if body.get("persist", True) is not False:
+            if persist:
+                c.model_saved_settings.pop(name, None)
                 c.save(config_path or default_config_path())
         except OSError as e:
             # Previously this was logged and the edit continued, so the caller
@@ -2433,6 +2452,8 @@ def create_app(
             # that silently un-applies later is not.
             model.recipe, model.kv_class = previous_recipe, previous_kv_class
             model.llama_server, model.env = previous_runtime
+            if saved_settings is not None:
+                c.model_saved_settings[name] = saved_settings
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(
                 status_code=500,

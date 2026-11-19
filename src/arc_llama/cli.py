@@ -200,6 +200,7 @@ support_bundle_cmd = _diagnostic_command_exports["support_bundle_cmd"]
 
 _do_scan: Any
 _print_gpu_table: Any
+_installed_runtimes: Any
 
 _model_command_exports = register_model_commands(
     cli,
@@ -207,6 +208,7 @@ _model_command_exports = register_model_commands(
     load_config=lambda path: load_config(path),
     save_or_die=lambda cfg, path: _save_or_die(cfg, path),
     add_local_model=lambda *args, **kwargs: add_local_model(*args, **kwargs),
+    installed_runtimes=lambda cfg: _installed_runtimes(cfg),
     download_from_hf=lambda *args, **kwargs: download_from_hf(*args, **kwargs),
     detect_gpus=lambda: detect_gpus(),
     do_scan=lambda cfg, paths: _do_scan(cfg, paths),

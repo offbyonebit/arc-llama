@@ -623,7 +623,7 @@ def build_plan(
             kept or "target-only",
         )
         recipe.spec_type = kept or None
-    elif recipe.spec_draft_model and not caps.supports_draft_model:
+    if recipe.spec_draft_model and not caps.supports_draft_model:
         log.warning(
             "[%s] %s has no --spec-draft-model; starting target-only",
             model.name,
@@ -649,6 +649,15 @@ def build_plan(
             "[%s] %s has no --tensor-split; using a single GPU", model.name, binary
         )
         recipe.tensor_split = None
+    if any(a == "--reasoning-budget" or a.startswith("--reasoning-budget=") for a in recipe.extra_flags):
+        recipe.reasoning_budget = None
+    elif recipe.reasoning_budget is not None:
+        if not caps.supports_reasoning_budget:
+            log.warning("[%s] %s has no --reasoning-budget; ignoring the thinking budget", model.name, binary)
+            recipe.reasoning_budget = None
+        elif recipe.reasoning_budget > 0 and not caps.supports_positive_reasoning_budget:
+            log.warning("[%s] %s only accepts reasoning budget -1 or 0; using -1 instead of %d", model.name, binary, recipe.reasoning_budget)
+            recipe.reasoning_budget = -1
     if "--reasoning" in recipe.extra_flags and not caps.supports_reasoning_off:
         log.warning("[%s] %s has no --reasoning; thinking stays on", model.name, binary)
         i = recipe.extra_flags.index("--reasoning")

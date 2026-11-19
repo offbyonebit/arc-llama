@@ -740,6 +740,7 @@ async def benchmark_depths(
     *,
     gen_tokens: int = DEFAULT_GEN_TOKENS,
     client: httpx.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
 ) -> list[DepthResult]:
     """Measure generation speed after prefilling ``depth`` tokens.
 
@@ -750,7 +751,7 @@ async def benchmark_depths(
     tokens and reports llama-server's own prompt and decode rates.
     """
     own = client is None
-    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0)
+    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0, headers=headers)
     results: list[DepthResult] = []
     try:
         await _warmup(http, model_name)
@@ -912,7 +913,8 @@ def llama_cpp_build(binary: str) -> str | None:
     for _ in range(2):
         try:
             out = subprocess.run(
-                [binary, "--version"], capture_output=True, text=True, timeout=20, env=env
+                [binary, "--version"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=20, env=env
             )
         except (OSError, subprocess.SubprocessError):
             return None

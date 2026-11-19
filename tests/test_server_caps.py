@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -15,6 +16,18 @@ from arc_llama.server_caps import (
     format_speculation_capability,
     probe_server_caps,
 )
+
+
+@pytest.mark.parametrize("help_text,supported,positive", [
+    ("--other N", False, False),
+    ("--reasoning-budget-message MESSAGE", False, False),
+    ("--reasoning-budget N  token budget for thinking: -1 for unrestricted, 0 for immediate end, N>0 for token budget (default: -1)", True, True),
+    ("--reasoning-budget N controls the amount of thinking allowed; currently only one of: -1 for\n  unrestricted thinking budget, or 0 to disable thinking (default: -1)\n--reasoning-format FORMAT", True, False),
+])
+def test_reasoning_budget_capabilities(help_text, supported, positive):
+    caps = _parse_help(help_text)
+    assert caps.supports_reasoning_budget is supported
+    assert caps.supports_positive_reasoning_budget is positive
 
 _skip_on_windows = pytest.mark.skipif(
     sys.platform == "win32",
@@ -47,6 +60,35 @@ LOAD_MODE_HELP = """\
 NO_FA_HELP = """\
 -b,  --batch-size N                     logical maximum batch size (default: 2048)
 """
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_probe_replaces_undecodable_output_including_oneapi_retry(tmp_path, monkeypatch, retry):
+    import arc_llama.server_caps as caps_mod
+
+    binary = tmp_path / "runtime with spaces.exe"
+    binary.write_bytes(b"test")
+    run = subprocess.run
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(kwargs.get("env"))
+        if retry and not (kwargs.get("env") or {}).get("ONEAPI_MARK"):
+            program = (
+                "import sys; sys.stderr.write('error while loading shared libraries'); sys.exit(127)"
+            )
+        else:
+            program = (
+                "import sys; sys.stdout.buffer.write(b'--flash-attn on off auto\\n\\x81\\n'); "
+                "sys.stderr.buffer.write(b'backend path \\x9d\\x98\\n')"
+            )
+        return run([sys.executable, "-c", program], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(caps_mod, "_env_with_oneapi", lambda env: {**os.environ, "ONEAPI_MARK": "1"})
+    caps = probe_server_caps(str(binary))
+    assert caps.probed and caps.supports_flash_attn and caps.flash_attn_takes_value
+    assert len(calls) == (2 if retry else 1)
 
 
 class TestParseHelp:

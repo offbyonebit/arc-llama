@@ -3,7 +3,7 @@ import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-ca
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testWorkOffersManagedCopyBesideOwnOpenCode, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
 import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker } from "./paper-cases.mjs";
 import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
-import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits } from "./runtime-cases.mjs";
+import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits, testModelThinkingBudgetSettings } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
 import { chromium } from "playwright";
 import { installApiMocks, recordSessionTokenCalls, startStaticServer } from "./harness.mjs";
@@ -171,6 +171,7 @@ const TESTS = [
   ["keyboard-navigation", testKeyboardNavigation],
   ["settings-survive-status-poll", testSettingsSurviveStatusPoll],
   ["per-model-runtime-settings", testPerModelRuntimeSettings],
+  ["model-thinking-budget-settings", testModelThinkingBudgetSettings],
   ["per-model-runtime-unrelated-edits", testRuntimeOverridesSurviveUnrelatedEdits],
   ["retry-original-turn-once", testRetrySendsOriginalTurnOnce],
   ["dashboard-measurements", testDashboardMeasurements],

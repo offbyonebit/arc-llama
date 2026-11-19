@@ -855,6 +855,29 @@ class TestBuildPlanFlashAttn:
         assert ("--reasoning" in plan.argv) is supported
         assert "--jinja" in plan.argv and ("off" in plan.argv) is supported
 
+    @pytest.mark.parametrize("budget,caps,extra,expected,warning", [
+        (256, {}, [], [], "has no --reasoning-budget"),
+        (256, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "-1"], "only accepts reasoning budget -1 or 0"),
+        (0, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "0"], None),
+        (-1, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "-1"], None),
+        (256, {"supports_reasoning_budget": True, "supports_positive_reasoning_budget": True}, [], ["--reasoning-budget", "256"], None),
+        (256, {}, ["--reasoning-budget", "64"], ["--reasoning-budget", "64"], None),
+        (256, {}, ["--reasoning-budget=64"], ["--reasoning-budget=64"], None),
+    ])
+    def test_reasoning_budget_compatibility_and_manual_override(self, monkeypatch, caplog, budget, caps, extra, expected, warning):
+        recipe = {"reasoning_budget": budget, "extra_flags": extra}
+        plan = self._plan(recipe, {**caps, "probed": True}, monkeypatch)
+        actual = []
+        for i, arg in enumerate(plan.argv):
+            if arg == "--reasoning-budget":
+                actual.extend(plan.argv[i:i + 2])
+            elif arg.startswith("--reasoning-budget="):
+                actual.append(arg)
+        assert actual == expected
+        assert recipe == {"reasoning_budget": budget, "extra_flags": extra}
+        if warning:
+            assert warning in caplog.text
+
     @pytest.mark.parametrize(
         ("extra", "caps", "expected"),
         [
@@ -889,6 +912,24 @@ class TestBuildPlanFlashAttn:
         assert value("--cache-ram") == cram
         assert value("--ctx-checkpoints") == ctxcp
 
+    @pytest.mark.parametrize(
+        ("key", "flag", "value"),
+        [("LLAMA_ARG_CACHE_RAM", "--cache-ram", "0"),
+         ("LLAMA_ARG_CTX_CHECKPOINTS", "--ctx-checkpoints", "24")],
+    )
+    def test_memory_control_environment_wins_over_automatic_flags(self, monkeypatch, key, flag, value):
+        monkeypatch.delenv("LLAMA_ARG_CACHE_RAM", raising=False)
+        monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising=False)
+        monkeypatch.setenv(key, value)
+        monkeypatch.setattr("arc_llama.issue_report._total_ram_mib", lambda: 16000)
+        plan = self._plan({}, {
+            "supports_cache_ram": True, "supports_ctx_checkpoints": True, "probed": True,
+        }, monkeypatch)
+        assert plan.env[key] == value
+        assert flag not in plan.argv
+        other = "--ctx-checkpoints" if flag == "--cache-ram" else "--cache-ram"
+        assert other in plan.argv
+
     def test_prompt_cache_ram_stops_at_llama_cpps_own_default(self, monkeypatch):
         from arc_llama.launcher import default_cache_ram_mib
 
@@ -904,6 +945,21 @@ class TestBuildPlanFlashAttn:
             monkeypatch,
         )
         assert plan.argv[plan.argv.index("--spec-type") + 1] == expected
+
+    @pytest.mark.parametrize("spec_type", ["ngram-mod", "draft-mtp,ngram-mod"])
+    def test_unsupported_ngram_and_draft_model_both_fall_back(self, monkeypatch, tmp_path, spec_type):
+        draft = tmp_path / "draft.gguf"
+        draft.write_bytes(b"test")
+        monkeypatch.setattr("arc_llama.launcher.has_mtp_heads", lambda path: True)
+        plan = self._plan(
+            {"spec_type": spec_type, "spec_draft_model": str(draft), "spec_draft_n_max": 3},
+            {"supports_speculative": True, "supports_ngram": False,
+             "supports_draft_model": False, "probed": True},
+            monkeypatch,
+        )
+        assert "--spec-type" not in plan.argv
+        assert "--spec-draft-model" not in plan.argv
+        assert "--spec-draft-n-max" not in plan.argv
 
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
         plan = self._plan(

@@ -14,11 +14,12 @@ confirmation requires a successful nonempty reply.
 
 The deterministic suite uses fake hardware, temporary state, fake downloads and
 synthetic model replies. It does not establish native GPU/Windows behavior or
-that memory fit guarantees loading. Catalog discovery uses current public metadata, with no built-in model names.
+that memory fit guarantees loading. Catalog discovery uses current public metadata, with one pinned
+Qwen2.5 0.5B fallback if the catalog fails or finds no suitable model.
 `tests/test_starter_discovery.py` supplies changing synthetic catalogs, incomplete
 shards, unknown sizes, unsupported architectures, connection errors, and changed
 hardware. It checks single-flight discovery, caching, cancellation, immutable
-revision consent and the absence of a fixed fallback. The downloader tests verify
+revision consent, pinned fallback validation and `ARC_LLAMA_STARTER_CATALOG=off`. The downloader tests verify
 that accepted revisions survive a changed upstream HEAD. Browser cases cover
 searching, unavailable/no-match, retry and publisher-specific license display.
 Live catalog checks read metadata and a bounded header; they do not validate
@@ -28,8 +29,8 @@ No actual user conversations are read.
 Run the core checks from the repository environment:
 
 ```bash
-python -m pytest tests/ -q -ra --tb=short -p no:cacheprovider
-ruff check src tests registry-repo/scripts
+python -m pytest tests/ -W error -q -ra --tb=short -p no:cacheprovider
+ruff check src tests scripts registry-repo/scripts
 mypy --check-untyped-defs src
 ```
 
@@ -119,8 +120,9 @@ identity changes, immutable revisions, and authentication. The browser case
 `runtime-compatibility-guidance` checks exact-file requests, separation from
 memory fit, downloaded-model assessment, and runtime-change invalidation.
 `compatibility-abandoned-checks` verifies browser timeouts, aborted requests, and
-stale responses. The same CI jobs run on pushes to
-`feature/model-journey-and-organization` and pull requests targeting `main`.
+stale responses. The same CI jobs run on pushes to `main`, `release/**` and
+`feature/model-journey-and-organization`, and pull requests targeting `main` or
+`release/**`.
 
 ## Restricted execution environments
 

@@ -476,6 +476,29 @@ class TestFusedExpertProjections:
         scan_weight_tensors(f)
         assert len(reads) == 2
 
+    def test_weight_cache_refreshes_for_a_same_size_file_replacement(self, tmp_path, monkeypatch):
+        import os
+
+        path = tmp_path / "weights.gguf"
+        path.write_bytes(b"first")
+        os.utime(path, (1700000000, 1700000000))
+        reads = []
+
+        def reader(filename):
+            contents = Path(filename).read_bytes()
+            reads.append(contents)
+            size = 100 if contents == b"first" else 200
+            return _FakeReader([_FakeTensor("blk.0.ffn_up_exps.weight", size)], "qwen3moe")
+
+        monkeypatch.setattr("arc_llama.gguf_meta.gguf.GGUFReader", reader)
+        assert scan_weight_tensors(path) == (100, {0: 100})
+        path.write_bytes(b"other")
+        os.utime(path, (1700000002, 1700000002))
+        assert scan_weight_tensors(path) == (200, {0: 200})
+        assert reads == [b"first", b"other"]
+        path.unlink()
+        assert scan_weight_tensors(path) is None
+
     def test_healthy_moe_does_not_warn(self, tmp_path, monkeypatch, caplog):
         f = tmp_path / "gemma.gguf"
         f.write_bytes(b"x")

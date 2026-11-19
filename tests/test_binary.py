@@ -24,6 +24,24 @@ def _make_fake_binary(tmp_path: Path, content: bytes) -> Path:
     return path
 
 
+def test_list_devices_replaces_undecodable_tool_output(monkeypatch, tmp_path):
+    run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        return run(
+            [sys.executable, "-c", (
+                "import sys; "
+                "sys.stdout.buffer.write(b'  SYCL0: Intel Arc \\x81 (24576 MiB)\\n'); "
+                "sys.stderr.buffer.write(b'driver warning \\x9d\\n')"
+            )],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    devices = list_devices(tmp_path / "llama-server", "SYCL")
+    assert devices == [(0, "Intel Arc \ufffd", 24576)]
+
+
 def _sibling_lib(name: str) -> str:
     """Return the platform-appropriate shared-library filename for ggml backends.
 
