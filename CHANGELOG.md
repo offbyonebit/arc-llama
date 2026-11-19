@@ -7,6 +7,21 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
+### Added
+- Model settings have a Thinking budget box for each model: -1 is unlimited, 0 turns thinking off
+  and empty clears the override. Newly registered thinking models start at 256 tokens so a reply is
+  not used up by thinking. Models with thinking off, such as the first-run starter, get no budget,
+  existing models keep what they had, and a `--reasoning-budget` in a model's `extra_flags` wins.
+- `arc-llama bench` runs a short standard benchmark through the running server and prints model,
+  GPU, backend, runtime and settings alongside prefill and decode rates. It checks short and 16K
+  prompt depths when they fit the model's context, using non-repeating input followed by prose.
+- `arc-llama report --text` prints a hardware report to paste into a problem report. Reports now
+  include RAM, Mesa, driver-stack information and the device llama.cpp would select.
+- Work offers to install Arc Llama's tested OpenCode copy even when another OpenCode is already
+  available on PATH. The Hermes installer no longer labels its validated Windows support untested.
+
 ### Changed
 - The portable llama.cpp runtime installed by `install-runtime`, `run`, `setup` and guided setup is
   now pinned to b12243 for Vulkan and SYCL on Linux and Windows. `--runtime-version` still lets you
@@ -26,6 +41,9 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
   `doctor`, so an older graphics stack is easier to spot before comparing performance.
 - Token-budget polling no longer fills the INFO log with internal requests. Auto-tune logs when a
   sweep finishes or fails, and Work relay cancellation no longer prints an error traceback.
+- `arc-llama add --backend sycl|vulkan` now sets the runtime for that one model and leaves the GPU's
+  backend and every other model alone. It stops with the install command when that runtime isn't
+  installed yet.
 
 ### Fixed
 - Vulkan models select their configured GPU with llama.cpp's `--device` names instead of using a
@@ -48,8 +66,8 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
   policy handles a quantized V cache's flash-attention requirement. Combined speculative strategies
   are accepted by the model edit API, and draft length and confidence flags are omitted when
   speculation is disabled.
-- Work remembers a folder as it is typed, before a task is sent, and falls back to the home folder
-  when the remembered folder no longer exists on the server.
+- Work remembers a folder as it is typed, before a task is sent, keeps it when the input is cleared,
+  and falls back to the home folder when the remembered folder no longer exists on the server.
 - Work stops the detached Hermes gateway after Linux runs too. OpenCode's side requests, such as
   title generation, no longer replace the agent prompt's token count.
 - A newly downloaded GGUF has its metadata parsed in a worker thread before registration, keeping
@@ -60,15 +78,17 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
   global runtime make `serve` exit with code 3 so service managers can retry.
 - Source distributions no longer include the screenshot tour and demo media or the scripts used
   to record them.
-
-### Added
-- `arc-llama bench` runs a short standard benchmark through the running server and prints model,
-  GPU, backend, runtime and settings alongside prefill and decode rates. It checks short and 16K
-  prompt depths when they fit the model's context, using non-repeating input followed by prose.
-- `arc-llama report --text` prints a hardware report to paste into a problem report. Reports now
-  include RAM, Mesa, driver-stack information and the device llama.cpp would select.
-- Work offers to install Arc Llama's tested OpenCode copy even when another OpenCode is already
-  available on PATH. The Hermes installer no longer labels its validated Windows support untested.
+- Hand-edited thinking budgets that aren't whole numbers from -1 to 131072 are dropped with a warning
+  before launch, instead of stopping llama-server from starting.
+- Draft-model flags are checked even after unsupported n-gram speculation is removed, so runtimes
+  that can't take them fall back to plain decoding instead of failing to launch.
+- KV cache estimates count q8_0 block scales, so fit estimates are no longer optimistic.
+- Auto-tune trial settings no longer leak into unrelated config saves.
+- Device discovery and llama-server help or version output with non-UTF-8 bytes no longer break
+  detection on Windows.
+- Remote depth benchmarks send the admin token.
+- `add --backend` and `runtime use` pick `llama-server.exe` on Windows instead of the
+  `llama-server-impl.dll` that ships next to it in llama.cpp's Windows zips, which failed to launch.
 
 ## [1.1.1] - 2026-11-10
 
