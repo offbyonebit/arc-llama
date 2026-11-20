@@ -381,6 +381,13 @@ def register_diagnostic_commands(
                 )
 
         # Summary of competitive-inference gates
+        if cfg is not None:
+            from arc_llama.update_notice import cached_notice
+
+            update = cached_notice(cfg)
+            if update:
+                console.print(f"\n  update: Arc Llama {update['latest']} available — {update['command']}")
+
         fails = report.failures
         warns = report.warnings
         console.print("\n  [bold]competitive-inference gates[/bold]")

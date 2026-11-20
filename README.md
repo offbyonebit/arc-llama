@@ -589,6 +589,7 @@ version = 1
 host = "127.0.0.1"
 port = 11437
 single_resident = true
+check_updates = false  # true: check PyPI daily for a newer Arc Llama (see "Update check")
 
 [paths]
 llama_server = "/usr/local/bin/llama-server"   # Windows: "C:\\...\\llama-server.exe"
@@ -629,6 +630,38 @@ extra_flags      = []
 name = "ollama"
 url  = "http://127.0.0.1:11434"
 ```
+
+### Update check (off by default)
+
+Arc Llama can tell you when a newer version is out. It is off unless you turn it on.
+
+**What it does.** Once a day, while the dashboard is open, Arc Llama asks PyPI
+for the latest arc-llama version number. If it is newer than yours, the
+dashboard shows a small notice with the upgrade command
+(`pip install -U arc-llama`), and `arc-llama doctor` shows it too. You can
+dismiss the notice. Nothing is downloaded or installed for you.
+
+**What it sends.** One normal web request to PyPI
+(`https://pypi.org/pypi/arc-llama/json`), the public page that lists arc-llama's
+versions. No usage data and nothing about your models, chats, files or hardware. If the request fails, Arc Llama says nothing and tries again
+the next day.
+
+**Turn it on.** Add this to `config.toml` under `[server]`, then restart Arc Llama:
+
+```toml
+[server]
+check_updates = true
+```
+
+Or turn it on for one run only, without changing the config:
+
+```bash
+arc-llama serve --check-updates
+```
+
+**Turn it off again.** Set `check_updates = false` (or delete the line) and
+restart. For one run only, use `arc-llama serve --no-check-updates`. When it is
+off, Arc Llama never contacts PyPI.
 
 > [!NOTE]
 > The optional agent/coding-assistant mode is experimental. Enable it by setting
