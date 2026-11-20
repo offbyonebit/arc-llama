@@ -77,7 +77,9 @@ async def _await_cleanup(future: asyncio.Future[Any]) -> Any:
 
 
 DEFAULT_HEALTH_TIMEOUT = 120  # seconds — generous for cold-start SYCL JIT
-HEALTH_POLL_INTERVAL = 1.5
+# Only used while a model starts. A refused connection or llama-server's 503
+# costs nothing, and a 1.5 s interval added 0.75 s to the average load.
+HEALTH_POLL_INTERVAL = 0.25
 
 # Log rotation for llama-server subprocess logs.
 _MAX_LOG_BYTES = 50 * 1024 * 1024
