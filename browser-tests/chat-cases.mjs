@@ -89,6 +89,96 @@ export async function testChatSend({ page, origin }) {
   });
 }
 
+export async function testKeyboardHistoryAndDeleteConfirmation({ page, origin }) {
+  let chats = [
+    { id: "keyboard-a", title: "First chat", created_at: 1, updated_at: 2 },
+    { id: "keyboard-b", title: "Second chat", created_at: 1, updated_at: 1 },
+  ];
+  const deleted = [];
+  let failDelete = true;
+  const json = value => ({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+  await page.route("**/v1/chats", route => route.fulfill(json({ data: chats })));
+  await page.route("**/v1/chats/keyboard-*", route => {
+    const id = route.request().url().split("/").pop();
+    if (route.request().method() === "DELETE") {
+      deleted.push(id);
+      if (failDelete) return route.fulfill({ status: 500, body: "delete failed" });
+      chats = chats.filter(chat => chat.id !== id);
+      return route.fulfill(json({ deleted: true }));
+    }
+    return route.fulfill(json({ ...chats.find(chat => chat.id === id), messages: [{ role: "user", content: "Saved by keyboard" }] }));
+  });
+  await openChat(page, origin);
+  async function openHistory() {
+    await page.click("#history-toggle");
+    await page.waitForSelector('#history-panel[aria-busy="false"] .h-card');
+  }
+  for (const key of ["Enter", "Space"]) {
+    await openHistory();
+    const card = page.locator('.h-card[data-id="keyboard-a"]');
+    await card.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    const ring = await card.evaluate(el => {
+      const style = getComputedStyle(el);
+      return el === document.activeElement && style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2;
+    });
+    if (!ring) throw new Error("history card lacks keyboard focus or a visible ring");
+    await page.keyboard.press(key);
+    await page.waitForSelector(".message.user .content");
+    if (await page.locator("#history-panel").evaluate(el => el.classList.contains("open"))) throw new Error("keyboard did not open chat");
+  }
+  await openHistory();
+  const trigger = page.locator('.h-card[data-id="keyboard-a"] .h-delete');
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  const confirmation = page.locator('.h-card[data-id="keyboard-a"] .h-delete-confirm');
+  await confirmation.waitFor();
+  if (deleted.length || !(await confirmation.getByRole("button", { name: "Cancel" }).evaluate(el => el === document.activeElement))) {
+    throw new Error("delete ran without confirmation or failed to focus Cancel");
+  }
+  await page.keyboard.press("Escape");
+  if (await confirmation.count() || deleted.length || !(await trigger.evaluate(el => el === document.activeElement))) throw new Error("Escape did not cancel and restore focus");
+  await trigger.press("Enter");
+  await confirmation.getByRole("button", { name: "Cancel" }).press("Enter");
+  if (deleted.length) throw new Error("Cancel deleted the chat");
+  await trigger.press("Enter");
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".message.error");
+  if (deleted.length !== 1 || !(await page.locator('.h-card[data-id="keyboard-a"]').count())) throw new Error("failed deletion removed the chat");
+  failDelete = false;
+  await confirmation.getByRole("button", { name: "Delete chat", exact: true }).press("Enter");
+  await page.waitForFunction(() => !document.querySelector('.h-card[data-id="keyboard-a"]'));
+  if (deleted.join(",") !== "keyboard-a,keyboard-a") throw new Error("confirmed delete used the wrong chat");
+  if (!(await page.locator('.h-card[data-id="keyboard-b"]').evaluate(el => el === document.activeElement))) throw new Error("delete did not move focus to the remaining chat");
+}
+
+export async function testMobileComposerFont({ page, origin }) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openChat(page, origin);
+  const mobile = await page.locator("#message-input").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+  if (mobile < 16) throw new Error(`mobile composer font is ${mobile}px`);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const desktop = await page.locator("#message-input").evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+  if (desktop !== 15) throw new Error(`desktop composer changed from 15px: ${desktop}`);
+}
+
+export async function testReplyReadyAnnouncement({ page, origin }) {
+  await openChat(page, origin);
+  const status = page.locator("#reply-announcement");
+  if (await status.getAttribute("aria-live") !== "polite" || await status.getAttribute("aria-atomic") !== "true") throw new Error("reply status lacks live-region semantics");
+  await page.fill("#message-input", "Hello");
+  await page.press("#message-input", "Enter");
+  await page.waitForFunction(() => document.querySelector("#reply-announcement").textContent === "Reply ready");
+  await page.route("**/v1/chat/completions", route => route.fulfill({ status: 200, contentType: "text/event-stream",
+    body: 'data: {"choices":[{"delta":{"content":"Partial answer"}}]}\n\n' }));
+  await page.fill("#message-input", "An interrupted reply");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.assistant .stopped-note");
+  if (await status.textContent()) throw new Error("an interrupted response was announced as ready");
+}
+
 export async function testStructuredLoadFailure({ page, origin }) {
   await openChat(page, origin, { model: "gemma" });
   let releaseLoad;
