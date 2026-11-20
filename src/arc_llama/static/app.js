@@ -256,8 +256,14 @@ function createModelCard(model) {
     deleteModel(model);
   });
   remove.setAttribute("aria-label", `Delete model ${displayName(model)}`);
-  remove.title = `Delete ${displayName(model)} from this computer`;
+  const deleteBlocked = model.loaded || ["ready", "loading", "draining"].includes(model.state);
+  remove.disabled = deleteBlocked;
+  remove.title = deleteBlocked ? "Stop this model before deleting it; it is loaded or loading." : `Delete ${displayName(model)} from this computer`;
   side.appendChild(remove);
+  if (deleteBlocked) {
+    const hint = document.createElement("small"); hint.textContent = "Stop the model before deleting it.";
+    side.appendChild(hint);
+  }
   const memory = document.createElement("div");
   memory.className = "paper-model-fit";
   memory.textContent = model.vram_estimate?.estimated_mb != null ? `~${fmtGiB(model.vram_estimate.estimated_mb)}` : "Unavailable";
@@ -916,6 +922,10 @@ async function deleteModel(model) {
 }
 
 async function deleteModelOnce(model) {
+  if (model.loaded || ["ready", "loading", "draining"].includes(model.state)) {
+    setFooter("Stop the model before deleting it; it is loaded or loading.", true);
+    return;
+  }
   const label = displayName(model);
   let managed = false;
   let sizeText = "";

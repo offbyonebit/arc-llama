@@ -26,6 +26,22 @@ from arc_llama.model_library import (
 GB = 1024**3
 
 
+@pytest.fixture(autouse=True)
+def mock_download_worker(monkeypatch):
+    """Keep SDK mocks in these unit tests; process lifecycle has its own test."""
+    from arc_llama import models
+
+    original = DownloadManager._download
+    async def download(self, job):
+        kwargs = {"revision": job.revision} if job.revision else {}
+        return await asyncio.to_thread(
+            models.download_from_hf, models.HFModelSpec(job.repo, job.file, None),
+            target_dir=Path(job.target_dir), progress=False, **kwargs,
+        )
+    monkeypatch.setattr(DownloadManager, "_download", download)
+    return original
+
+
 def test_quant_labels() -> None:
     assert quant_label("model-MXFP4_MOE.gguf") == "MXFP4_MOE"
     assert quant_label("Qwen3-8B-Q4_K_M.gguf") == "Q4_K_M"
@@ -242,12 +258,17 @@ async def test_library_endpoints(monkeypatch, tmp_path) -> None:
             assert disk["models"][0]["name"] == "qwen"
             missing = await client.delete("/admin/library/models/nope", headers=auth)
             assert missing.status_code == 404
+            blocked = await client.delete("/admin/library/models/qwen?delete_files=true", headers=auth)
+            assert blocked.status_code == 409
+            assert "Stop the model" in blocked.json()["detail"]
+            assert Path(app.state.cfg.models[0].path).exists()
+            assert not hasattr(app.state.router, "stopped")
+            app.state.router._servers.clear()
             removed = await client.delete(
                 "/admin/library/models/qwen?delete_files=true", headers=auth
             )
             assert removed.json()["deleted_files"] == 1
             assert app.state.cfg.models == []
-            assert app.state.router.stopped == "qwen"
     assert not (tmp_path / "models" / "q.gguf").exists()
 
 
@@ -430,3 +451,163 @@ async def test_queue_rechecks_free_space_before_downloading(tmp_path, monkeypatc
     assert job.status == "error"
     assert "disk space" in job.error
     await manager.shutdown()
+
+
+async def test_cancel_stops_writer_before_removing_partial_files(tmp_path, monkeypatch, mock_download_worker):
+    import sys
+
+    monkeypatch.setattr(DownloadManager, '_download', mock_download_worker)
+    spawn = asyncio.create_subprocess_exec
+    processes = []
+    async def slow_transfer(*command, **kwargs):
+        script = '''import json,sys,time
+from pathlib import Path
+p=Path(json.loads(sys.argv[1])["staging_root"])
+p.mkdir(parents=True,exist_ok=True)
+with (p/"model.incomplete").open("wb") as f:
+    f.write(b"partial"); f.flush()
+    (p/"started").touch()
+    time.sleep(60)
+'''
+        process = await spawn(sys.executable, '-c', script, command[-1], **kwargs)
+        # The suite blocks host signals aimed at fake PIDs. This integration
+        # case owns this exact child; never relax the guard for any other PID.
+        if sys.platform != 'win32':
+            import posix
+            import signal
+            monkeypatch.setattr(process, 'kill', lambda: posix.kill(process.pid, signal.SIGKILL))
+        processes.append(process)
+        return process
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', slow_transfer)
+    registered = []
+    async def register(path):
+        registered.append(path)
+        return ['unexpected']
+    manager = DownloadManager(_cfg(tmp_path), register)
+    try:
+        job = manager.submit('u/slow', 'model.gguf', None)
+        root = manager._staging_root(job)
+        keep = Path(job.target_dir) / 'keep.gguf'
+        keep.parent.mkdir(parents=True, exist_ok=True)
+        keep.write_bytes(b'existing complete model')
+        for _ in range(500):
+            if (root / 'started').exists():
+                break
+            await asyncio.sleep(0.01)
+        assert (root / 'model.incomplete').exists()
+        queued = manager.submit('u/next', 'next.gguf', None)
+        await manager.cancel(queued.id)
+        # Concurrent requests must share cleanup rather than interrupting it.
+        await asyncio.wait_for(asyncio.gather(manager.cancel(job.id), manager.cancel(job.id)), 5)
+        await manager.shutdown()
+        assert job.status == queued.status == 'cancelled'
+        assert job.bytes_done == 0 and job.error is None and job.registered == []
+        assert not root.exists()  # Windows would reject this if a writer still held the file.
+        assert processes[0].returncode is not None
+        assert keep.read_bytes() == b'existing complete model'
+        assert not registered
+        retry = manager.submit('u/slow', 'model.gguf', None)
+        stale = manager._staging_root(retry)
+        stale.mkdir(parents=True)
+        (stale / 'old.incomplete').write_bytes(b'previous failed attempt')
+        await manager.cancel(retry.id)
+        await manager.shutdown()
+        assert retry.status == 'cancelled'
+        assert not stale.exists()
+        assert len(processes) == 1
+    finally:
+        await manager.shutdown()
+
+
+
+async def test_shutdown_retains_partial_download_for_resume(tmp_path, monkeypatch, mock_download_worker):
+    import sys
+
+    monkeypatch.setattr(DownloadManager, "_download", mock_download_worker)
+    spawn = asyncio.create_subprocess_exec
+    processes = []
+    async def transfer(*command, **kwargs):
+        script = '''import json,sys,time
+from pathlib import Path
+payload=json.loads(sys.argv[1])
+root=Path(payload["staging_root"])
+root.mkdir(parents=True,exist_ok=True)
+partial=root/"model.incomplete"
+if partial.exists():
+    assert partial.read_bytes()==b"partial"
+    with partial.open("ab") as f:
+        f.write(b" resumed")
+    result=Path(payload["target_dir"])/payload["file"]
+    partial.replace(result)
+    print(json.dumps({"path":str(result)}))
+else:
+    with partial.open("wb") as f:
+        f.write(b"partial"); f.flush()
+        (root/"started").touch()
+        time.sleep(60)
+'''
+        process = await spawn(sys.executable, "-c", script, command[-1], **kwargs)
+        if sys.platform != "win32":
+            import posix
+            import signal
+            # Allow only the exact child owned by this test through the signal guard.
+            monkeypatch.setattr(process, "kill", lambda: posix.kill(process.pid, signal.SIGKILL))
+        processes.append(process)
+        return process
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", transfer)
+    registered = []
+    async def register(path):
+        registered.append(path)
+        return ["resumed"]
+    cfg = _cfg(tmp_path)
+    manager = DownloadManager(cfg, register)
+    resumed = DownloadManager(cfg, register)
+    try:
+        job = manager.submit("u/slow", "model.gguf", None)
+        root = manager._staging_root(job)
+        for _ in range(500):
+            if (root / "started").exists():
+                break
+            await asyncio.sleep(0.01)
+        assert (root / "model.incomplete").read_bytes() == b"partial"
+        queued = manager.submit("u/next", "next.gguf", None)
+        queued_root = manager._staging_root(queued)
+        queued_root.mkdir(parents=True)
+        (queued_root / "old.incomplete").write_bytes(b"earlier attempt")
+        await asyncio.wait_for(manager.shutdown(), 5)
+        assert processes[0].returncode is not None
+        assert job.status == queued.status == "error"
+        assert "retry resumes" in job.error
+        assert not registered
+        assert (root / "model.incomplete").read_bytes() == b"partial"
+        assert (queued_root / "old.incomplete").read_bytes() == b"earlier attempt"
+        retry = resumed.submit("u/slow", "model.gguf", None)
+        assert resumed._staging_root(retry) == root
+        await asyncio.wait_for(asyncio.shield(resumed._worker), 5)
+        assert retry.status == "done", retry.error
+        assert registered == [Path(job.target_dir) / "model.gguf"]
+        assert registered[0].read_bytes() == b"partial resumed"
+        assert not root.exists()
+        assert len(processes) == 2
+    finally:
+        await manager.shutdown()
+        await resumed.shutdown()
+
+
+async def test_cancel_endpoint_requires_auth_and_checks_job_state(tmp_path, monkeypatch):
+    from arc_llama.model_library import DownloadJob
+
+    _, app = _app(monkeypatch, tmp_path)
+    auth = {'Authorization': 'Bearer tok'}
+    async with app.router.lifespan_context(app):
+        manager = DownloadManager(app.state.cfg, lambda path: None)
+        manager.jobs['queued'] = DownloadJob('queued', 'u/r', 'm.gguf', str(tmp_path))
+        manager.jobs['done'] = DownloadJob('done', 'u/r', 'm.gguf', str(tmp_path), status='done')
+        app.state.downloads = manager
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://t') as client:
+            assert (await client.post('/admin/library/jobs/queued/cancel')).status_code == 401
+            assert (await client.post('/admin/library/jobs/nope/cancel', headers=auth)).status_code == 404
+            result = await client.post('/admin/library/jobs/queued/cancel', headers=auth)
+            assert result.status_code == 200
+            assert result.json()['status'] == 'cancelled'
+            assert (await client.post('/admin/library/jobs/done/cancel', headers=auth)).status_code == 409

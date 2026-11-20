@@ -178,10 +178,16 @@ export async function testPaperPickerListVisibility({page,origin}) {
 
 export async function testPaperModelDelete({page,origin}) {
   const calls=[];const dialogs=[];
+  let loaded=true;
+  await page.route('**/admin/status',route=>route.fulfill(json({...ADMIN_STATUS,models:ADMIN_STATUS.models.map(m=>({...m,loaded:m.name==='qwen'&&loaded,state:m.name==='qwen'&&loaded?'ready':'idle'}))})));
   await page.route('**/admin/library/disk',route=>route.fulfill(json({models_dir:'/m',free_mb:1,total_mb:2,models:[{name:'qwen',size_mb:2048,files:1,missing:false,managed:true},{name:'gemma',size_mb:100,files:1,missing:false,managed:false}]})));
   await page.route('**/admin/library/models/*',route=>{calls.push({url:route.request().url().replace(/^https?:\/\/[^/]+/,''),method:route.request().method(),auth:route.request().headers().authorization});return route.fulfill(json({removed:'x',deleted_files:1,freed_mb:2048,failed:[]}));});
   page.on('dialog',d=>{dialogs.push(d.message());return d.dismiss();});
   await page.goto(origin);await page.waitForSelector('.model-card');
+  assert.equal(await page.getByRole('button',{name:'Delete model Qwen 3',exact:true}).isDisabled(),true);
+  assert.match(await page.locator('.model-card[data-model-name="qwen"]').innerText(),/Stop the model before deleting it/);
+  assert.equal(dialogs.length,0);
+  loaded=false;await page.evaluate(()=>fetchStatus(true));
   await page.getByRole('button',{name:'Delete model Qwen 3',exact:true}).click();
   await page.waitForTimeout(300);
   assert.equal(calls.length,0);                       // cancelling the confirmation deletes nothing
@@ -204,4 +210,15 @@ export async function testPaperSystemSectionsAligned({page,origin}) {
   const boxes=await page.locator('section[data-area="system"]').evaluateAll(s=>s.filter(n=>n.getBoundingClientRect().width>0).map(n=>{const r=n.getBoundingClientRect();return [Math.round(r.x),Math.round(r.width)];}));
   assert.ok(boxes.length>=4);
   for(const b of boxes) assert.deepEqual(b,boxes[0]);        // Agents for Work is as wide as the other System sections
+}
+
+export async function testDownloadCancel({page,origin}) {
+  let status='downloading';const calls=[];
+  await page.route('**/admin/library/jobs',route=>route.fulfill(json({jobs:[{id:'slow',repo:'u/repo',file:'model.gguf',status,bytes_done:100,bytes_total:1000}]})));
+  await page.route('**/admin/library/jobs/slow/cancel',route=>{calls.push({method:route.request().method(),auth:route.request().headers().authorization});status='cancelled';return route.fulfill(json({status}));});
+  await page.goto(origin);await page.getByRole('button',{name:'Cancel download model.gguf',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('#library-jobs').textContent.includes('Cancelled'));
+  assert.deepEqual(calls,[{method:'POST',auth:'Bearer browser-test-token'}]);
+  assert.match(await page.locator('#library-jobs').innerText(),/partial files removed/);
+  assert.equal(await page.getByRole('button',{name:'Cancel download model.gguf',exact:true}).count(),0);
 }
