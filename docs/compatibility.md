@@ -107,3 +107,65 @@ use the same backend. The launcher exposes all of them to llama-server
 (`ONEAPI_DEVICE_SELECTOR` or `--device`), and the fit check
 counts their combined VRAM. An invalid combination falls back to the model's
 single GPU with a warning.
+
+## Anthropic Messages compatibility
+
+`POST /v1/messages` translates Messages requests through the same local/upstream
+chat proxy as `/v1/chat/completions`. Use a registered model name or alias, not a
+hosted model name unless that name exists in your registry. Remote access follows
+the existing client-key rules; this route accepts either `x-api-key` or
+`Authorization: Bearer <key>`. If both are supplied, Bearer takes precedence.
+Beta/version headers are accepted without enabling hosted service features.
+
+Supported request shapes include string or text-block system prompts; user and
+assistant text; base64 PNG/JPEG/GIF/WebP images; client tools with `input_schema`;
+assistant `tool_use` and user `tool_result` blocks; tool selection and parallel
+call control; `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and
+`stream`. Tool errors are preserved as labeled tool output. Metadata, cache
+hints and hosted service-tier/speed/geography hints are accepted and ignored.
+They do not enable prompt caching, hosted tools or geography guarantees locally.
+
+`thinking: {"type":"adaptive"}` and `thinking: {"type":"enabled"}` enable
+runtime template thinking; `disabled` disables it. An enabled request's
+`budget_tokens` is accepted and ignored: a fixed thinking budget is not enforced
+by the local runtime. `output_config.effort` maps to `reasoning_effort`, and its
+JSON schema format maps to OpenAI `response_format`. These remain dependent on
+the chosen runtime/template. Signed thinking-history blocks, server-executed
+tools, PDF/documents and automatic context edits cannot be faithfully mapped
+and return a descriptive 400. The adapter returns final
+text and tool calls, without hosted signed-reasoning blocks. Other unsupported
+answer-changing request fields are errors rather than silently discarded.
+
+Responses contain text/tool-use blocks, JSON object tool inputs, stop reasons
+and token usage. Length and tool-call finishes map to `max_tokens` and `tool_use`.
+An explicitly reported matched stop string maps to `stop_sequence`; a generic
+OpenAI `stop` without that information maps to `end_turn` because it cannot
+identify whether a custom sequence or ordinary end-of-turn ended generation.
+Usage counts are forwarded, not estimated: an unreported count is zero and does
+not establish that no tokens were consumed. No hosted cache-token counts are
+invented.
+
+Streams emit `message_start`, indexed content block start/delta/stop events,
+`message_delta` and `message_stop`. Text is forwarded incrementally. Tool
+metadata/arguments are collected until completion so split names/IDs and
+parallel calls form stable blocks; argument fragments then use
+`input_json_delta`. Final usage arrives in `message_delta`. A malformed,
+truncated or failed upstream stream emits `error` without a success terminator.
+Disconnects close the existing proxy's response/client and release local work.
+
+```sh
+curl http://127.0.0.1:11437/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: YOUR_ARC_KEY' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"YOUR_REGISTERED_MODEL","max_tokens":128,"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Contract sources, accessed 2026-11-16:
+[Messages request/response reference](https://platform.claude.com/docs/en/api/messages/create),
+[stream event reference](https://platform.claude.com/docs/en/build-with-claude/streaming),
+and [the Python SDK request fields](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/resources/messages/messages.py).
+A [CLI report](https://github.com/anthropics/claude-code/issues/68551) describes
+adaptive thinking/cache hints sent to custom endpoints; this is reported client
+behavior, not a measured CLI session here. Automated compatibility checks use
+controlled upstream responses; no complete external CLI workflow is claimed.
