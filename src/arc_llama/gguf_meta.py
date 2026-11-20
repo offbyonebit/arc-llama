@@ -351,6 +351,12 @@ def _read_gguf_meta(path: Path | str) -> dict[str, Any]:
             return {}
 
     meta: dict[str, Any] = {}
+    split_count = reader.get_field("split.count")
+    if split_count is not None:
+        try:
+            meta["split_count"] = int(split_count.contents())
+        except (TypeError, ValueError):
+            pass
     arch_field = reader.get_field(gguf.Keys.General.ARCHITECTURE)
     if arch_field is not None:
         meta["architecture"] = str(arch_field.contents())
