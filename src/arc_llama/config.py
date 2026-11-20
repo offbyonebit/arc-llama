@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-import tomli_w
+import tomlkit
 
 if sys.version_info >= (3, 11):
     import tomllib  # noqa: F401
@@ -572,8 +572,12 @@ class Config:
         lock = _save_locks.setdefault(key, threading.Lock())
         with lock:
             try:
-                with open(tmp, "wb") as f:
-                    tomli_w.dump(self.to_toml_dict(), f)
+                # Read under the same lock as the replace, including edits made
+                # since load_config. A malformed file must not be overwritten.
+                doc = tomlkit.parse(path.read_text(encoding="utf-8")) if path.exists() else tomlkit.document()
+                _update_toml(doc, self.to_toml_dict())
+                with open(tmp, "w", encoding="utf-8", newline="") as f:
+                    tomlkit.dump(doc, f)
                     f.flush()
                     os.fsync(f.fileno())
                 try:
@@ -621,10 +625,32 @@ class Config:
         return path
 
 
+def _update_toml(target: Any, values: dict[str, Any]) -> None:
+    """Update values in place, retaining existing TOML trivia and key order."""
+    for key in list(target):
+        if key not in values:
+            del target[key]
+    for key, value in values.items():
+        old = target.get(key)
+        if isinstance(value, dict) and isinstance(old, dict):
+            _update_toml(old, value)
+        elif key in _ENTRY_KEYS and isinstance(value, list) and isinstance(old, tomlkit.items.AoT):
+            identity = _ENTRY_KEYS[key]
+            entries = {entry.get(identity): entry for entry in old}
+            updated = tomlkit.aot()
+            for entry in value:
+                table = entries.get(entry[identity], tomlkit.table())
+                _update_toml(table, entry)
+                updated.append(table)
+            target[key] = updated
+        elif old != value:
+            target[key] = value
+
+
 def _strip_none(obj: Any) -> Any:
     """Recursively remove dict keys whose value is None.
 
-    TOML has no null type, so None values crash tomli_w. This is applied
+    TOML has no null type, so None values cannot be serialized. This is applied
     to the whole config tree before persistence.
     """
     if isinstance(obj, dict):

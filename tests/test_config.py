@@ -97,6 +97,59 @@ def test_find_model_matches_name_alias_display_name_and_filename(tmp_path):
     assert cfg.find_model("missing") is None
 
 
+def test_save_preserves_comments_key_order_and_model_notes(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('''# Backup: keep this file — tuning notes
+version = 1
+[server] # local settings
+port = 11436 # chosen port
+host = "127.0.0.1"
+# End of server notes
+[[models]] # first model notes
+name = "first"
+path = "/old.gguf" # backup path
+port = 8081
+gpu_pci_slot = "gpu"
+[models.recipe]
+ctx = 2048 # tuned context
+[[models]] # second model notes
+name = "second"
+path = "/second.gguf"
+port = 8082
+gpu_pci_slot = "gpu"
+''', encoding="utf-8")
+    cfg = load_config(path)
+    cfg.server.port = 12345
+    cfg.models[0].path = "/new.gguf"
+    cfg.models[0].recipe["ctx"] = 4096
+    cfg.models[0].recipe["optional"] = None
+    # Reordering must keep comments with their model, not their old index.
+    cfg.models.reverse()
+    for _ in range(2):
+        cfg.save(path)
+        text = path.read_text(encoding="utf-8")
+        for comment in ("# Backup: keep this file — tuning notes", "# local settings",
+                        "# chosen port", "# End of server notes", "# first model notes",
+                        "# backup path", "# tuned context", "# second model notes"):
+            assert text.count(comment) == 1
+        assert text.index("port = 12345") < text.index('host = "127.0.0.1"')
+        assert text.index("# second model notes") < text.index("# first model notes")
+        loaded = load_config(path)
+        assert loaded.models[1].path == "/new.gguf"
+        assert loaded.models[1].recipe["ctx"] == 4096
+        assert "optional" not in loaded.models[1].recipe
+
+
+def test_save_does_not_replace_invalid_existing_toml(tmp_path):
+    path = tmp_path / "config.toml"
+    original = '[server\n# recover these notes\n'
+    path.write_text(original)
+    with pytest.raises(Exception, match="Unexpected"):
+        Config().save(path)
+    assert path.read_text() == original
+    assert not list(tmp_path.glob(".config.toml.tmp.*"))
+
+
 def test_windows_default_paths_use_appdata(monkeypatch):
     import os
 

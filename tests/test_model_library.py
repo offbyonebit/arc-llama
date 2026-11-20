@@ -26,6 +26,19 @@ from arc_llama.model_library import (
 GB = 1024**3
 
 
+def test_deleted_model_is_marked_missing_without_removing_config(tmp_path):
+    path = tmp_path / "model.gguf"
+    path.write_bytes(b"GGUF")
+    model = ModelConfig("local", str(path), 8081, "gpu")
+    cfg = Config(models=[model])
+    assert disk_report(cfg)["models"][0]["missing"] is False
+    path.unlink()
+    assert disk_report(cfg)["models"][0]["missing"] is True
+    assert file_readiness(model)["status"] == "missing"
+    assert file_readiness(model)["available"] is False
+    assert cfg.models == [model]
+
+
 def test_quant_labels() -> None:
     assert quant_label("model-MXFP4_MOE.gguf") == "MXFP4_MOE"
     assert quant_label("Qwen3-8B-Q4_K_M.gguf") == "Q4_K_M"
