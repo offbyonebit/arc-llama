@@ -144,7 +144,10 @@ export async function testPaperPickerListVisibility({page,origin}) {
     await page.waitForFunction(()=>document.querySelectorAll('.paper-model-option').length===18);
     await page.locator('#paper-model-pill').click();await page.keyboard.press('Home');
     const menu=page.locator('#paper-model-menu');const options=page.locator('.paper-model-options');
-    await page.waitForFunction(()=>!document.querySelector('#paper-model-scroll-hint').hidden);
+    await page.waitForFunction(()=>{
+      const hint=document.querySelector('#paper-model-scroll-hint');
+      return !hint.hidden && /more models ↓/.test(hint.textContent);
+    });
     assert.equal(await menu.locator('.paper-model-count').innerText(),'18 models');
     assert.match(await page.locator('#paper-model-scroll-hint').innerText(),/more models ↓/);
     const visible=await options.evaluate(list=>{
