@@ -1088,6 +1088,13 @@ def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
     "one is created if none exists.",
 )
 @click.option("--yes", "assume_yes", is_flag=True, help="Skip the --lan confirmation.")
+@click.option(
+    "--check-updates/--no-check-updates",
+    "check_updates",
+    default=None,
+    help="Ask PyPI once a day whether a newer Arc Llama exists, for this run only "
+    "(default: from config server.check_updates, which is off).",
+)
 @click.pass_context
 def serve(
     ctx: click.Context,
@@ -1099,6 +1106,7 @@ def serve(
     auto_tune: bool | None,
     lan: bool,
     assume_yes: bool,
+    check_updates: bool | None = None,
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
@@ -1125,6 +1133,11 @@ def serve(
         cfg.server.admin_token = admin_token
     if auto_tune is not None:
         cfg.tune.auto = auto_tune
+    if check_updates is not None:
+        from arc_llama.update_notice import RUN_SWITCH
+
+        # Process-only, never saved: settings saves must not keep a one-run opt-in.
+        os.environ[RUN_SWITCH] = "1" if check_updates else "0"
 
     # Zero-config discovery: pick up any GGUF dropped into models_dir/scan_paths
     # since the last run, so `serve` reflects the filesystem without a manual

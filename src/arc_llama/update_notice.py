@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sqlite3
 from contextlib import closing
@@ -18,6 +19,19 @@ from arc_llama.config import Config
 PYPI_URL = "https://pypi.org/pypi/arc-llama/json"
 CHECK_INTERVAL = 24 * 60 * 60
 UPGRADE_COMMAND = "pip install -U arc-llama"
+# Set by `arc-llama serve --check-updates/--no-check-updates` for that run only,
+# so the choice never leaks into config.toml when the server saves settings.
+RUN_SWITCH = "ARC_LLAMA_CHECK_UPDATES"
+
+
+def updates_enabled(cfg: Config) -> bool:
+    """True only when the user opted in (config or the serve flag). Off by default."""
+    value = os.environ.get(RUN_SWITCH, "").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return cfg.server.check_updates is True
 
 
 def _path(cfg: Config) -> Path:
@@ -73,7 +87,7 @@ def _save(path: Path, now: float, latest: str) -> None:
 
 
 def cached_notice(cfg: Config) -> dict[str, str] | None:
-    if not cfg.server.check_updates or not _path(cfg).is_file():
+    if not updates_enabled(cfg) or not _path(cfg).is_file():
         return None
     try:
         with closing(sqlite3.connect(_path(cfg), timeout=0.1)) as db:
@@ -84,7 +98,7 @@ def cached_notice(cfg: Config) -> dict[str, str] | None:
 
 
 async def check_for_update(cfg: Config) -> dict[str, str] | None:
-    if not cfg.server.check_updates:
+    if not updates_enabled(cfg):
         return None
     now = time()
     try:
