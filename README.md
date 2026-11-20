@@ -933,3 +933,15 @@ output hashes even across identical requests on this SYCL runtime, so the
 strict comparison guard rejected the candidates. The original draft length 3
 and effective confidence 0.75 were restored. No additional verified speedup
 is claimed for this validation; DeepSeek is credited for the tuning approach.
+
+The System page's **Connect a frontend → App recipes** tab includes Continue,
+Cline, Zed, SillyTavern, AnythingLLM and Jan. Examples use the current loaded
+chat model, falling back to a configured chat model (or a labeled placeholder).
+Refresh details after switching models. All six use the OpenAI-compatible API;
+Continue has YAML, Zed has a settings block when its context is known (otherwise
+form values), with its API key entered separately in the provider UI. Apps
+configured through forms have copyable field values
+rather than an invented import format. Each recipe links its current official
+setup docs. Replace the key placeholder using the localhost/LAN guidance in the
+panel; no actual key is included in a recipe. Custom frontend capabilities still
+depend on the chosen model.

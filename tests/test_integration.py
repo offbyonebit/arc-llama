@@ -191,11 +191,13 @@ class TestIntegrationPayload:
 
     def test_payload_exposes_api_key_guidance_not_a_key(self, tmp_path: Path):
         payload = self._base_fields(_gguf=tmp_path / "m.gguf")
-        assert "non-empty" in payload["api_key_guidance"]
-        assert (
-            "key" not in payload["api_key_guidance"].lower()
-            or "valid" in payload["api_key_guidance"].lower()
-        )
+        guidance = payload["api_key_guidance"]
+        assert "On localhost" in guidance and "any non-empty" in guidance
+        assert "For LAN callers" in guidance
+        assert "arc-llama keys create <name>" in guidance
+        assert "validated once any key exists" in guidance
+        assert "arc-llama serve --lan" in guidance
+        assert "does not validate" not in guidance
 
     def test_upstreams_listed_without_change(self, tmp_path: Path):
         upstreams = [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")]
@@ -335,3 +337,91 @@ class TestAdminIntegrationEndpoint:
                 data = (await client.get("/admin/integration")).json()
         assert data["ollama"]["reachable"] is True
         assert data["ollama"]["version"] == "0.6.1"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "192.168.1.20", "fd7a:115c:a1e0::123"])
+def test_all_frontend_recipes_use_loaded_model_url_and_placeholder(tmp_path, host):
+    cfg = _cfg(tmp_path / "first.gguf", host=host, admin_token="never-copy-admin")
+    loaded = ModelConfig("loaded-second", str(tmp_path / "second.gguf"), 18081, "gpu", recipe={"ctx": 8192})
+    cfg.models.append(loaded)
+    payload = integration_payload(cfg, loaded_model=loaded)
+    assert payload["model_id"] == "loaded-second"
+    assert "loaded" in payload["recipe_note"]
+    recipes = payload["recipes"]
+    assert [recipe["name"] for recipe in recipes] == ["Continue", "Cline", "Zed", "SillyTavern", "AnythingLLM", "Jan"]
+    for recipe in recipes:
+        assert payload["base_url"] in recipe["snippet"]
+        assert "loaded-second" in recipe["snippet"] and "YOUR_ARC_API_KEY" in recipe["snippet"]
+        assert "never-copy-admin" not in repr(recipe)
+        assert recipe["docs_url"].startswith("https://") and recipe["steps"]
+    zed = next(recipe for recipe in recipes if recipe["id"] == "zed")
+    import json
+
+    zed_cfg = json.loads(zed["snippet"].split("\n", 1)[1])
+    provider = zed_cfg["language_models"]["openai_compatible"]["arc-llama"]
+    assert provider["available_models"][0]["max_tokens"] == 8192
+    assert provider["available_models"][0]["capabilities"]["max_tokens_parameter"] is True
+    assert {"tools", "images", "parallel_tool_calls", "prompt_cache_key"} <= provider["available_models"][0]["capabilities"].keys()
+    assert "api_key" not in provider
+    assert "provider UI/keychain" in " ".join(zed["steps"])
+
+
+def test_wildcard_recipes_use_lan_request_ip_without_dns(tmp_path):
+    cfg = _cfg(tmp_path / "m.gguf", host="0.0.0.0")
+    payload = integration_payload(cfg, request_host="192.168.1.50")
+    assert payload["base_url"] == "http://192.168.1.50:11437/v1"
+    assert all(payload["base_url"] in recipe["snippet"] for recipe in payload["recipes"])
+    assert integration_payload(cfg, request_host="0.0.0.0")["base_url"] == "http://127.0.0.1:11437/v1"
+    assert integration_payload(cfg, request_host='bad-host\"\nunsafe')["base_url"] == "http://127.0.0.1:11437/v1"
+    assert integration_payload(cfg, request_host="arc-host.local")["base_url"] == "http://arc-host.local:11437/v1"
+    cfg.server.host = "192.168.1.8"
+    assert integration_payload(cfg, request_host="192.168.1.50")["base_url"] == "http://192.168.1.8:11437/v1"
+
+
+def test_recipe_model_fallback_and_safe_yaml_strings(tmp_path):
+    import json
+
+    cfg = _cfg(tmp_path / "m.gguf")
+    cfg.models[0].name = 'model: "quoted"\nline'
+    payload = integration_payload(cfg)
+    assert "No chat model is loaded" in payload["recipe_note"]
+    yaml = payload["recipes"][0]["snippet"]
+    assert json.dumps(cfg.models[0].name) in yaml
+    zed = payload["recipes"][2]
+    assert zed["format"] == "text" and "Context window: fill" in zed["snippet"]
+    empty = integration_payload(Config())
+    assert "replace MODEL_ID" in empty["recipe_note"]
+
+
+async def test_endpoint_prefers_ready_chat_model_and_lan_host(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import httpx
+
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr("arc_llama.integration.httpx.AsyncClient", _fake_ollama_unreachable)
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    cfg = _cfg(tmp_path / "first.gguf", host="0.0.0.0")
+    cfg.tune.auto = False
+    cfg.paths.state_dir = str(tmp_path / "state")
+    loaded = ModelConfig("current-chat", str(tmp_path / "loaded.gguf"), 18081, "gpu")
+    cfg.models.append(loaded)
+    app = _make_test_app(cfg)
+    async with app.router.lifespan_context(app):
+        await app.state.started.wait()
+        app.state.router._servers = {"qwen": SimpleNamespace(is_running=True, ready=False),
+                                     "current-chat": SimpleNamespace(is_running=True, ready=True)}
+        async with _HttpxAsyncClient(transport=httpx.ASGITransport(app), base_url="http://192.168.1.50:11437") as client:
+            data = (await client.get("/admin/integration")).json()
+            assert data["model_id"] == "current-chat"
+            assert data["base_url"] == "http://192.168.1.50:11437/v1"
+            assert all("current-chat" in recipe["snippet"] for recipe in data["recipes"])
+
+
+def test_recipe_fallback_skips_reranker_models(tmp_path):
+    cfg = _cfg(tmp_path / "rerank.gguf")
+    cfg.models[0].recipe = {"reranking": True}
+    assert integration_payload(cfg)["model_id"] == "MODEL_ID"
+    cfg.models.append(ModelConfig("chat-model", str(tmp_path / "chat.gguf"), 18081, "gpu"))
+    assert integration_payload(cfg)["model_id"] == "chat-model"
