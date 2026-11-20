@@ -16,6 +16,7 @@ from arc_llama.config import (
     ServerConfig,
     TuneConfig,
 )
+from arc_llama.router import _VRAM_SAFETY_MARGIN_MB
 from arc_llama.tune import (
     TuneReport,
     _probe_offload_info,
@@ -134,7 +135,9 @@ def cfg(tmp_path):
     return Config(
         paths=PathsConfig(llama_server=str(tmp_path / "no-such-llama-server")),
         gpus=[
-            GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=24 * 1024)
+            # Keep the synthetic workload's headroom fixed across OS safety policies.
+            GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage",
+                      vram_mb=24 * 1024 + _VRAM_SAFETY_MARGIN_MB - 256)
         ],
         models=[
             ModelConfig(
@@ -517,7 +520,7 @@ async def test_offload_stage_skipped_when_model_fits_without_offload(cfg, monkey
 async def test_offload_stage_runs_after_kv_and_uses_winning_kv(cfg, monkeypatch):
     """28 GiB MoE on a 25 GB card: f16 KV needs 6 offloaded layers, q8_0
     needs 5. When f16 wins the KV stage the offload stage must target 6."""
-    cfg.gpus[0].vram_mb = 25000
+    cfg.gpus[0].vram_mb = 25000 + _VRAM_SAFETY_MARGIN_MB - 256
     _patch_moe_scan(monkeypatch, 28, 1024, 16)
     perf = {("f16", None): (1200.0, 40.0), ("q8_0", None): (1000.0, 30.0)}
     fake = MoEMeasurements(cfg, perf=perf)
@@ -552,7 +555,7 @@ async def test_offload_oom_candidate_loses_and_recipe_stays_loadable(cfg, monkey
     """The estimated minimum OOMs at load (estimator optimistic): the sweep
     escalates, the failing candidate is recorded but never wins, and the
     model is left on a recipe that actually loads."""
-    cfg.gpus[0].vram_mb = 20000
+    cfg.gpus[0].vram_mb = 20000 + _VRAM_SAFETY_MARGIN_MB - 256
     _patch_moe_scan(monkeypatch, 20, 512, 16)  # estimated minimum: 4 layers
     perf = {("q8_0", None): (1000.0, 30.0), ("f16", None): (800.0, 25.0)}
     fake = MoEMeasurements(cfg, min_loadable_n=6, perf=perf)

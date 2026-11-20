@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -33,7 +34,7 @@ _QUANT_RE = re.compile(
 _REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 # Allowances matching the router's admission estimate.
 _COMPUTE_MB = 768
-_SAFETY_MB = 256
+_SAFETY_MB = 768 if sys.platform == "win32" else 256
 # Context sizes behind the badges: "fits" leaves room for a 16k chat,
 # "tight" only for a 4k one.
 FIT_CTX = 16384
