@@ -88,6 +88,42 @@ def test_patch_appends_messages(tmp_path, monkeypatch):
         assert body["messages"][1]["content"] == "world"
 
 
+def test_think_setting_is_persisted_per_chat_and_survives_export(tmp_path, monkeypatch):
+    from arc_llama.chat_store import Chat, ChatStore
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    assert Chat.from_dict({"id": "old", "title": "Legacy"}).thinking_enabled is True
+    with TestClient(_app(tmp_path)) as client:
+        assert client.post("/v1/chats", json={"id": "on"}).json()["thinking_enabled"] is True
+        assert client.post("/v1/chats", json={"id": "off", "thinking_enabled": False}).json()["thinking_enabled"] is False
+        assert client.get("/v1/chats/off").json()["thinking_enabled"] is False
+        client.put("/v1/chats/off", json={"messages": [{"role": "user", "content": "hi"}]}).raise_for_status()
+        assert client.get("/v1/chats/off").json()["thinking_enabled"] is False
+        assert client.patch("/v1/chats/off", json={"thinking_enabled": True}).json()["thinking_enabled"] is True
+        assert client.put("/v1/chats/off", json={"thinking_enabled": False}).json()["thinking_enabled"] is False
+        reloaded = ChatStore(tmp_path / "state" / "chats")
+        assert reloaded.get("off").thinking_enabled is False
+        assert reloaded.get("on").thinking_enabled is True
+        exported = client.get("/v1/chats/export").json()["chats"]
+        assert next(chat for chat in exported if chat["id"] == "off")["thinking_enabled"] is False
+        client.delete("/v1/chats/off").raise_for_status()
+        client.post("/v1/chats/import", json={"chats": exported}).raise_for_status()
+        assert client.get("/v1/chats/off").json()["thinking_enabled"] is False
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, None, {}])
+def test_think_setting_rejects_non_boolean_values(tmp_path, monkeypatch, invalid):
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    with TestClient(_app(tmp_path)) as client:
+        client.post("/v1/chats", json={"id": "chat"}).raise_for_status()
+        assert client.post("/v1/chats", json={"id": "bad", "thinking_enabled": invalid}).status_code == 400
+        assert client.patch("/v1/chats/chat", json={"thinking_enabled": invalid}).status_code == 400
+        assert client.put("/v1/chats/chat", json={"thinking_enabled": invalid}).status_code == 400
+        assert client.get("/v1/chats/chat").json()["thinking_enabled"] is True
+
+
 def test_search_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(server_mod, "Router", FakeRouter)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)

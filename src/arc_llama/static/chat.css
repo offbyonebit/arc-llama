@@ -1302,6 +1302,7 @@ main {
 
 .h-action:hover { border-color: var(--accent); color: var(--accent-bright); }
 
+.think-control { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; color: var(--fg-dim); font-size: 13px; }
 .h-list { display: flex; flex-direction: column; gap: 8px; }
 .h-empty { font-size: 13px; color: var(--fg-mute); text-align: center; padding: 24px 0; }
 

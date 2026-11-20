@@ -44,6 +44,7 @@
         messages: (data.messages || []).map(m => ({ role: m.role, content: m.content,
           ...(m.images?.length ? { images: m.images } : {}), ...(m.thinking ? { thinking: m.thinking } : {}), ...(m.status ? { status: m.status } : {}) })),
         compaction: data.compaction || null,
+        thinking_enabled: data.thinking_enabled !== false,
       };
     }
 
@@ -104,7 +105,7 @@
       const title = truncateTitle(titleHint || "New chat");
       const chatFolder = folder === ALL_FOLDERS ? "" : folder;
       try {
-        const body = { title };
+        const body = { title, thinking_enabled: ctx.thinkingEnabled };
         if (chatFolder !== undefined) body.folder = chatFolder;
         const data = await apiRequest("/v1/chats", {
           method: "POST",
@@ -125,7 +126,7 @@
         ctx.currentChatId = id;
         const now = Date.now();
         const chats = loadChats();
-        chats.unshift({ id, title, folder: chatFolder || "", model: ctx.selectedModel, messages: [], createdAt: now, updatedAt: now });
+        chats.unshift({ id, title, folder: chatFolder || "", thinking_enabled: ctx.thinkingEnabled, model: ctx.selectedModel, messages: [], createdAt: now, updatedAt: now });
         saveChats(chats);
       }
     }
@@ -247,6 +248,7 @@
         ctx.conversation.push(...chat.messages);
       }
       ctx.currentChatId = chat.id;
+      ctx.thinkingEnabled = chat.thinking_enabled !== false;
       ctx.compactionState = chat.compaction || null;
       ctx.chatLog.innerHTML = "";
       if (ctx.conversation.length === 0) {

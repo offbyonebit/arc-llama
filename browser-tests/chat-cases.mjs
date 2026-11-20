@@ -89,6 +89,58 @@ export async function testChatSend({ page, origin }) {
   });
 }
 
+export async function testThinkToggle({ page, origin }) {
+  let chat = { id: "think-chat", title: "Thinking choice", messages: [], thinking_enabled: true };
+  const requests = [], budgets = [];
+  let failSave = false;
+  const json = value => ({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+  await page.route("**/v1/chats", route => {
+    if (route.request().method() === "POST") chat = { ...chat, ...route.request().postDataJSON() };
+    return route.fulfill(json(route.request().method() === "GET" ? { data: [chat] } : chat));
+  });
+  await page.route("**/v1/chats/think-chat", route => {
+    if (["PATCH", "PUT"].includes(route.request().method())) {
+      if (failSave) return route.fulfill({ status: 500, body: "save failed" });
+      chat = { ...chat, ...route.request().postDataJSON() };
+    }
+    return route.fulfill(json(chat));
+  });
+  await page.route("**/v1/chat/completions", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: "text/event-stream", body: ASSISTANT_REPLY });
+  });
+  await page.route("**/v1/chat/budget", route => {
+    budgets.push(route.request().postDataJSON());
+    return route.fulfill(json({ prompt_tokens: 5, reserved_tokens: 1024, total_tokens: 1029, context_tokens: 8192, exact: true }));
+  });
+  await openChat(page, origin);
+  const toggle = page.getByRole("checkbox", { name: "Think", exact: true });
+  if (!(await toggle.isChecked())) throw new Error("Think must default on");
+  await page.fill("#message-input", "Default request");
+  await page.press("#message-input", "Enter");
+  await page.waitForSelector(".message.assistant .turn-action");
+  if ("chat_template_kwargs" in requests[0] || "reasoning_budget" in requests[0]) throw new Error("Think on changed the request");
+  await toggle.uncheck();
+  await page.waitForFunction(() => !document.querySelector("#think-toggle").disabled);
+  if (chat.thinking_enabled !== false) throw new Error("Think off was not persisted");
+  await page.fill("#message-input", "Direct answer");
+  await page.press("#message-input", "Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".message.assistant .turn-action").length > 0 && !document.querySelector("#send-button").classList.contains("stop"));
+  if (requests[1]?.chat_template_kwargs?.enable_thinking !== false) throw new Error("Think off missing from generation");
+  if (!budgets.some(body => body.chat_template_kwargs?.enable_thinking === false)) throw new Error("budget omitted the template setting");
+  await page.reload();
+  await page.click("#history-toggle");
+  await page.locator('.h-card[data-id="think-chat"] .h-card-title').click();
+  await page.waitForFunction(() => !document.querySelector("#think-toggle").checked);
+  await toggle.check();
+  await page.waitForFunction(() => !document.querySelector("#think-toggle").disabled);
+  if (chat.thinking_enabled !== true) throw new Error("Think on was not saved");
+  failSave = true;
+  await toggle.uncheck();
+  await page.waitForFunction(() => !document.querySelector("#think-toggle").disabled);
+  if (!(await toggle.isChecked()) || !chat.thinking_enabled) throw new Error("failed persistence did not restore the saved choice");
+}
+
 export async function testStructuredLoadFailure({ page, origin }) {
   await openChat(page, origin, { model: "gemma" });
   let releaseLoad;
