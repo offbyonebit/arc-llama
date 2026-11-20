@@ -10,6 +10,9 @@ and package versions follow [PEP 440](https://peps.python.org/pep-0440/).
 ## [1.2.0] - 2026-11-19
 
 ### Added
+- When the installed llama.cpp runtime is older than the tested b12243, `start`, `serve` and
+  `doctor` say so and give the `arc-llama install-runtime` command. Nothing is downloaded or switched
+  until you run it.
 - Model settings have a Thinking budget box for each model: -1 is unlimited, 0 turns thinking off
   and empty clears the override. Newly registered thinking models start at 256 tokens so a reply is
   not used up by thinking. Models with thinking off, such as the first-run starter, get no budget,

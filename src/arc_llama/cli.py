@@ -71,6 +71,7 @@ from arc_llama.platform_checks import (
     old_mesa_vulkan_warning,
     rebar_likely_enabled,
 )
+from arc_llama.runtime import older_runtime_notice
 from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -1185,6 +1186,9 @@ def serve(
             console.print(f"[yellow]{mesa_warning}[/yellow]")
             for line in mesa_upgrade_steps():
                 console.print(line, markup=False, highlight=False)
+    runtime_notice = older_runtime_notice(cfg.paths.llama_server)
+    if runtime_notice:
+        console.print(runtime_notice, style="yellow", markup=False, highlight=False)
     if guided:
         # The local browser UI authenticates itself, so token details would
         # only distract here; they matter to API callers of plain `serve`.
