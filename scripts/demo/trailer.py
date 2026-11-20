@@ -314,12 +314,12 @@ def main() -> None:
     dev = f"Detected device (live app): {setup.get('gpu', {}).get('name')} · {setup.get('gpu', {}).get('vram_mb')} MiB"
     zb, z1 = t.get("zoom_box"), max(1.2, min(2.45, W / (max(len(t.get("card_line") or ""), len(dev)) * 14.5 + 96)))
     line_focus = (zb["x"] + W / (2 * z1), zb["y"] + zb["h"] + 270 / z1) if isinstance(zb, dict) and "x" in zb else (330, 250)
-    # Slowed so the shot ends before the browser window opens over the terminal.
-    b, e = clip("terminal", 4, max(0, t["browser"] - .5), speed=.35, zoom=(z1 - .2, z1), focus=line_focus)
+    # Half a second of the settled terminal (fully printed 1.6 s before the browser opens), slowed to fill
+    # the shot, so the browser never shows. No HUD: the terminal's top line sits where it would go.
+    b, e = clip("terminal", 4, max(0, t["browser"] - 1.2), speed=.25, zoom=(z1 - .2, z1), focus=line_focus)
     gpu_at = b
-    hud(b, e)
-    ty.rect(b, e, 0, 640, 940, 260, "0D0704", blur=24, layer=0)
-    ty.rect(b + 2 * beat, e, 60, 206, 700, 4, BLUE, grow=240, layer=3)
+    ty.rect(b, e, 0, 640, W, 260, "0D0704", blur=24, layer=0)
+    ty.rect(b + beat, e, 60, 206, 700, 4, BLUE, grow=240, layer=3)
     ty.kicker(b, e, 4, "RIGHT GPU", y=640)
     lines(b, e, "PICKS YOUR ARC.", "EVERY TIME.", 88)
     ty.label(b + beat, e, "EVEN WITH AN NVIDIA CARD IN THE SAME BOX", 20, W - 60, 820, an=6, alpha="30", spacing=4)
@@ -329,7 +329,8 @@ def main() -> None:
     thinking_at = at(cursor)
     for i, (key, zoom) in enumerate((("ready", (1.25, 1.6)), ("saved", (1.6, 1.75)))):
         b, e = clip("thinking", 3, th[key], zoom=zoom, focus=field)
-        hud(b, e)
+        if i == 0:  # the closer push-in puts the settings fields under the HUD
+            hud(b, e)
         ty.rect(b, e, 0, H - 340, 760, 340, "000000", alpha="50", blur=70, layer=0)
         ty.kicker(b, e, 5, "THINKING BUDGET", y=640)
         ty.label(b, e, "NEW THINKING MODELS START AT 256", 20, 96, 590, an=4, alpha="30", spacing=4)
