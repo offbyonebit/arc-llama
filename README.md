@@ -1,6 +1,6 @@
 # Arc Llama
 
-![Arc Llama demo: arc-llama start detects an Arc Pro B60, Discover suggests models that fit its 24 GB, a chat answer streams at about 76 tokens per second, and a Work agent asks which language to use and for approval before writing a file](https://raw.githubusercontent.com/offbyonebit/arc-llama/v1.1.0/docs/media/demo.webp)
+![Arc Llama 1.2 trailer: service start drops from 66.8 to 6.1 seconds and a first model load from 21.0 to 10.8 seconds on an Arc Pro B60, a 27B model streams at 23.5 tokens per second with MTP drafting, arc-llama start picks the Arc card, a thinking budget caps how long a model thinks, and Arc Pro B50, B65 and B70 cards are recognised](https://raw.githubusercontent.com/offbyonebit/arc-llama/637b173adb8db3e38a6160112f8d923ff841eba2/docs/media/trailer-1.2.webp)
 
 > Run local LLMs on your Intel Arc GPU with one command.
 
