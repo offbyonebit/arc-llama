@@ -114,7 +114,11 @@ def integration_payload(cfg: Config, ollama: dict[str, Any] | None = None) -> di
             "bind_all": bind_all,
         },
         "base_url": base_url,
-        "api_key_guidance": "Any non-empty string works (arc-llama does not validate client API keys).",
+        "api_key_guidance": (
+            "On localhost, clients can use any non-empty API key string. "
+            "For LAN callers, create a key with `arc-llama keys create <name>` and use it as the API key; "
+            "remote keys are validated once any key exists (`arc-llama serve --lan` creates one automatically)."
+        ),
         "lan_note": lan_note,
         "model_id": model_id,
         "ollama": {
