@@ -19,6 +19,7 @@ from arc_llama.config import (
     ProfileConfig,
     ServerConfig,
     TuneConfig,
+    load_config,
 )
 from arc_llama.failures import StartupFailureError
 from arc_llama.server import _local_request_body, create_app
@@ -1389,6 +1390,35 @@ def test_admin_scan_persists_to_custom_config_path(monkeypatch, tmp_path):
     assert custom_path.exists()
     assert not default_path.exists()
     assert any(m.name == "new" for m in cfg.models)
+
+
+def test_admin_models_reload_picks_up_cli_added_models(monkeypatch, tmp_path):
+    """`arc-llama add` saves config.toml in another process; the running server must load it and keep it."""
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouterWithRebuild)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    path = tmp_path / "config.toml"
+    gpu = GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", vram_mb=24576)
+    old = ModelConfig(name="old", path=str(tmp_path / "old.gguf"), port=18080, gpu_pci_slot=gpu.pci_slot)
+    cfg = Config(server=ServerConfig(admin_token=None), paths=PathsConfig(models_dir=str(tmp_path / "models")),
+                 gpus=[gpu], models=[old], tune=TuneConfig(auto=False))
+    cfg.save(path)
+    app = create_app(cfg, config_path=path)
+    on_disk = load_config(path)
+    on_disk.models.append(ModelConfig(name="new", path=str(tmp_path / "new.gguf"), port=18081,
+                                      gpu_pci_slot=gpu.pci_slot))
+    on_disk.save(path)
+
+    with TestClient(app) as client:
+        response = client.post("/admin/models/reload")
+        again = client.post("/admin/models/reload")
+
+    assert response.status_code == 200 and response.json() == {"added": ["new"]}
+    assert again.json() == {"added": []}
+    assert [m.name for m in cfg.models] == ["old", "new"]
+    cfg.save(path)  # a later web UI save no longer erases the CLI-added model
+    assert load_config(path).find_model("new") is not None
 
 
 def test_local_request_bumps_tuner_use_count(monkeypatch, tmp_path):

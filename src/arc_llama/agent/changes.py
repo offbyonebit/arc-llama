@@ -25,6 +25,8 @@ from arc_llama.workbench.store import WorkOwner, WorkOwnerError
 SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".tox", ".idea", ".next", "target", "dist", "build",
+    # Per-user caches other programs rewrite during a run when the project folder is home.
+    ".cache", ".nv", "AppData",
 })
 MAX_FILES = 5000
 MAX_FILE_BYTES = 1 << 20          # files larger than this are tracked but cannot be restored
@@ -115,8 +117,14 @@ class ChangeTracker:
     def _walk(self) -> tuple[dict[str, _Entry], bool]:
         found: dict[str, _Entry] = {}
         root = self.root
+        undo_dir = self.store.parent.resolve()  # never track our own backups
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not (Path(dirpath) / d).is_symlink())
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if d not in SKIP_DIRS
+                and not (Path(dirpath) / d).is_symlink()
+                and (Path(dirpath) / d).resolve() != undo_dir
+            )
             for name in sorted(filenames):
                 path = Path(dirpath) / name
                 try:

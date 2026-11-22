@@ -100,3 +100,18 @@ def test_add_matching_backend_keeps_inherited_runtime(add_setup):
 def test_add_backend_help_is_model_only():
     result = CliRunner().invoke(cli, ["add", "--help"])
     assert "Runtime backend for this model only (default: the GPU's backend)." in " ".join(result.output.split())
+
+
+def test_add_tells_a_running_server_to_load_the_new_model(add_setup, monkeypatch):
+    _install(add_setup, LLAMA_CPP_BUILD)
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs["headers"]))
+        raise OSError("server not running")  # best effort: add still succeeds
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    result = _add(add_setup, "sycl")
+    assert result.exit_code == 0, result.output
+    assert calls == [(f"http://127.0.0.1:{add_setup.cfg.server.port}/admin/models/reload",
+                      {"Authorization": "Bearer fixture-admin-token"})]

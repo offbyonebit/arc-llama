@@ -241,3 +241,18 @@ def test_begin_replaces_preexisting_owner_byte(project, tmp_path):
     assert owner_path.read_bytes() == ch._OWNER_MARKER
     os.utime(store, (1, 1))
     assert ch.sweep_orphans(base) == 1
+
+
+def test_home_folder_ignores_caches_and_its_own_undo_backups(tmp_path):
+    # With the project folder set to home, driver caches and the undo store itself live inside it.
+    home = tmp_path / "home"
+    (home / "proj").mkdir(parents=True)
+    (home / "proj" / "a.txt").write_text("a\n")
+    t = ChangeTracker(home, home / ".local" / "state" / "arc-llama" / "work-undo" / "run1")
+    t.begin()
+    (home / "proj" / "b.txt").write_text("b\n")
+    for cache in (".nv/ComputeCache/index", ".cache/mesa_shader_cache/x", "AppData/Local/NVIDIA/DXCache/y"):
+        (home / cache).parent.mkdir(parents=True)
+        (home / cache).write_text("cache")
+    out = t.finish()
+    assert [c["path"] for c in out["files"]] == ["proj/b.txt"]
