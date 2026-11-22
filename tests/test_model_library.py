@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import importlib
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +44,21 @@ def test_fit_badges() -> None:
     assert fit_badge(5000, None) == "unknown"
 
 
+def test_memory_need_reserves_windows_margin(monkeypatch) -> None:
+    import arc_llama.model_library as library
+
+    needs = {}
+    try:
+        for platform in ("linux", "win32"):
+            with monkeypatch.context() as patch:
+                patch.setattr(sys, "platform", platform)
+                importlib.reload(library)
+                needs[platform] = library.memory_need_mb(5000)
+    finally:
+        importlib.reload(library)
+    assert needs["win32"] - needs["linux"] == 512
+
+
 def test_group_repo_files_folds_shards_and_flags_vision() -> None:
     files = [
         ("README.md", 10),
@@ -56,7 +73,8 @@ def test_group_repo_files_folds_shards_and_flags_vision() -> None:
     by_file = {o.file: o for o in options}
     assert set(by_file) == {"m-Q4_K_M.gguf", "Q8/m-Q8_0-00001-of-00002.gguf", "m-F32.gguf"}
     split = by_file["Q8/m-Q8_0-00001-of-00002.gguf"]
-    assert split.shards == 2 and split.size_mb == 20 * 1024 and split.fit == "fits"
+    assert split.shards == 2 and split.size_mb == 20 * 1024
+    assert split.fit == ("tight" if sys.platform == "win32" else "fits")
     assert by_file["m-Q4_K_M.gguf"].fit == "fits"
     assert by_file["m-F32.gguf"].fit == "unknown"
     assert [o.file for o in options][0] == "m-F32.gguf"  # sorted by size, unknown first

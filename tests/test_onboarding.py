@@ -12,9 +12,13 @@ from httpx import ASGITransport, AsyncClient
 
 from arc_llama.api.onboarding import register_onboarding_routes
 from arc_llama.config import Config, GPUConfig, ModelConfig, ServerConfig
+from arc_llama.model_library import _SAFETY_MB
 from arc_llama.onboarding import STARTER_SAMPLING, STARTER_THINKING_OFF, FirstAnswerSetup
 from arc_llama.server import _read_json_body, _require_admin
 from arc_llama.starter_discovery import Starter
+
+# A 4 GB card with the same headroom on every OS safety margin.
+SMALL_CARD_MB = 4096 + _SAFETY_MB - 256
 
 STARTERS = (
     Starter(
@@ -138,7 +142,7 @@ def setup(tmp_path, monkeypatch):
     [
         (0, None),
         (512, None),
-        (4096, "catalog-small"),
+        (SMALL_CARD_MB, "catalog-small"),
         (12288, "catalog-large"),
         (24576, "catalog-large"),
     ],
@@ -471,7 +475,7 @@ async def test_full_app_setup_routes_register_into_real_router_without_a_prompt(
 
     manager, _, download, _ = setup
     cfg = manager.cfg
-    cfg.gpus[0].vram_mb = 4096
+    cfg.gpus[0].vram_mb = SMALL_CARD_MB
     cfg.tune.auto = False
     FakeServer.starts = []
     FakeServer.stops = []
