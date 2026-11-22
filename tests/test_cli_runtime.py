@@ -56,6 +56,18 @@ def test_runtime_use_switches_configured_binary_and_backend(tmp_path):
 
 
 
+def test_runtime_list_marks_the_active_runtime(tmp_path):
+    config_path, _cfg = _runtime_config(tmp_path)
+    runner = CliRunner()
+    used = runner.invoke(cli, ["--config", str(config_path), "runtime", "use", "b12345", "--backend", "vulkan"])
+    assert used.exit_code == 0, used.output
+
+    result = runner.invoke(cli, ["--config", str(config_path), "runtime", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "yes" in result.output
+
+
 def test_runtime_use_picks_the_server_exe_over_its_impl_dll(tmp_path):
     # The b12243 Windows zip ships llama-server-impl.dll next to llama-server.exe, and the DLL sorts first.
     config_path, cfg = _runtime_config(tmp_path)

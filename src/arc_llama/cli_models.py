@@ -353,6 +353,7 @@ def register_model_commands(
                         f"but {bin_path} appears to be a '{bin_backend.value}' binary.[/yellow]"
                     )
         save_or_die(cfg, cfg_path)
+        _tell_running_server(cfg)
         recipe = mc.launch_recipe()
         ctx_info = f"ctx={recipe.ctx}"
         batch_info = ""
@@ -364,6 +365,17 @@ def register_model_commands(
             f"[green]Registered {mc.name}[/green] on {gpu_pci_slot}, port {mc.port} "
             f"({ctx_info}{batch_info})"
         )
+
+    def _tell_running_server(cfg: Config) -> None:
+        """Best effort: a running server loads the new entry without a restart."""
+        from arc_llama.integration import client_host
+
+        headers = {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
+        url = f"http://{client_host(cfg.server.host)}:{cfg.server.port}/admin/models/reload"
+        try:
+            httpx_module.post(url, timeout=2.0, headers=headers).raise_for_status()
+        except Exception:
+            pass  # not running (it reads config.toml at start) or started with other host/port/token
 
     def _slugify_for_name(parent: str, file: str) -> str:
         import re

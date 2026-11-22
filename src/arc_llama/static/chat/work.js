@@ -902,7 +902,7 @@
       budgetKey = key;
       const mine = ++budgetEpoch;
       clearTimeout(budgetTimer); budgetAbort?.abort();
-      if (!model || run?.status === "running") return;
+      if (!model || !work.harness || run?.status === "running") return;
       budgetTimer = setTimeout(async () => {
         const abort = new AbortController(); budgetAbort = abort;
         const deadline = setTimeout(() => abort.abort(), 4000);

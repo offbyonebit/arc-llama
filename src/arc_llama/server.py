@@ -2480,6 +2480,18 @@ def create_app(
             "reloading": reloading,
         }
 
+    @app.post("/admin/models/reload")
+    async def admin_models_reload(request: Request, _auth: None = Depends(_require_admin)) -> dict:
+        """Pick up models another process (``arc-llama add``) saved to config.toml."""
+        c: Config = request.app.state.cfg
+        fresh = await asyncio.to_thread(load_config, config_path or default_config_path())
+        known = {m.name for m in c.models}
+        added = [m for m in fresh.models if m.name not in known]
+        if added:
+            c.models.extend(added)
+            request.app.state.router._build_servers()  # type: ignore[attr-defined]
+        return {"added": [m.name for m in added]}
+
     @app.post("/admin/scan")
     async def admin_scan(request: Request, _auth: None = Depends(_require_admin)) -> dict:
         """Re-walk scan paths for new GGUFs and auto-register them.

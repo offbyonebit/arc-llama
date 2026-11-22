@@ -959,8 +959,14 @@ def test_work_view_never_defaults_to_the_servers_own_folder():
     assert "body.work-mode .compact-controls" in css      # chat-only controls stay out of the Work view
 
 
+def test_work_budget_waits_for_the_agent_list():
+    # Right after first-run the model list can arrive before /v1/agent/info fills the agent picker.
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert '!model || !work.harness || run?.status === "running"' in work
+
+
 def test_work_view_uses_current_script_version():
-    assert "/chat/work.js?v=paper-24" in (STATIC / "chat.html").read_text(encoding="utf-8")
+    assert "/chat/work.js?v=paper-25" in (STATIC / "chat.html").read_text(encoding="utf-8")
 
 
 def test_work_view_checks_the_remembered_folder_still_exists():

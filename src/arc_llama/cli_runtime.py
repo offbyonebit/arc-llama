@@ -59,7 +59,7 @@ def register_runtime_commands(
         if not runtimes:
             console.print("[yellow]No installed Arc Llama runtimes found.[/yellow]")
             return
-        active = str(Path(cfg.paths.llama_server).expanduser().resolve())
+        active = Path(cfg.paths.llama_server).expanduser().resolve()
         table = Table(title="Installed llama.cpp runtimes")
         table.add_column("Tag")
         table.add_column("Backend")
