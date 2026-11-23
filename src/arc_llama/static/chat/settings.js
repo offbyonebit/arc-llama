@@ -109,7 +109,7 @@
         if (!m?.loaded) reloadNotice();
         else if (pendingReloadModel === ctx.selectedModel) reloadNotice("Saved launch settings take effect on the next load.", true);
       }
-      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
+      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "reasoning_budget", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
       if (poll && signature === renderedSettingsSignature) {
         const fitLine = ctx.$("#s-fit");
         if (fitLine && !settingsDirty) fitLine.textContent = vramFitText(m || {});
@@ -153,6 +153,8 @@
           <select id="s-ctv">${kvOptsV}</select></div>
         <div class="s-field"><label for="s-par">Simultaneous conversations <small>parallel</small></label><div class="s-hint">More slots share the available context and memory.</div>
           <input id="s-par" type="number" min="1" max="32" value="${parallel}"></div>
+        <div class="s-field"><label for="s-rbudget">Thinking budget <small>reasoning_budget</small></label><div class="s-hint">-1 no limit, 0 off</div>
+          <input id="s-rbudget" type="number" min="-1" max="131072" step="1"></div>
         <div class="s-field"><label for="s-kvc">Memory estimate model family <small>kv_class</small></label><div class="s-hint">Choose the architecture used to estimate conversation memory; this does not change the model.</div>
           <select id="s-kvc">${classOpts}</select></div>
         <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
@@ -167,6 +169,7 @@
         <div id="s-reload-note" class="s-note" role="status" hidden></div><button id="s-reload-now" type="button" class="s-apply" hidden>Reload now</button>
       `;
       ctx.$("#s-llama-server").value = m.llama_server || "";
+      ctx.$("#s-rbudget").value = m.reasoning_budget ?? "";
       ctx.$("#s-llama-server").placeholder = m.effective_llama_server || "Use the global runtime";
       ctx.$("#s-runtime-env").value = Object.entries(m.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
       ctx.$("#s-apply").addEventListener("click", applySettings);
@@ -223,17 +226,24 @@
       cancelPreview();
       const modelId = ctx.selectedModel;
       const wasLoaded = !!m.loaded;
+      const rawBudget = ctx.$("#s-rbudget").value.trim();
+      const reasoningBudget = rawBudget === "" ? null : Number(rawBudget);
+      if (reasoningBudget !== null && (!Number.isInteger(reasoningBudget) || reasoningBudget < -1 || reasoningBudget > 131072)) {
+        ctx.sFeedback.textContent = "Thinking budget must be a whole number from -1 to 131072.";
+        return;
+      }
       const btn = ctx.$("#s-apply");
       btn.disabled = true;
       ctx.sFeedback.textContent = "";
       const body = {
         ...draftValues(),
+        reasoning_budget: reasoningBudget,
         reload:       true,
         ...(runtimeBinaryDirty ? { llama_server: ctx.$("#s-llama-server").value.trim() } : {}),
         ...(runtimeEnvDirty ? { env } : {}),
       };
       const launchChanged = Object.entries(draftValues()).some(([key, value]) => value !== (m[key] ?? ({ctx:32768,cache_type_k:"q8_0",cache_type_v:"q8_0",parallel:1,kv_class:"default"}[key])))
-        || runtimeBinaryDirty || runtimeEnvDirty;
+        || reasoningBudget !== (m.reasoning_budget ?? null) || runtimeBinaryDirty || runtimeEnvDirty;
       try {
         const r = await ctx.request(`/admin/models/${encodeURIComponent(modelId)}/edit`, {
           method: "POST",
@@ -246,6 +256,7 @@
         m.cache_type_k = body.cache_type_k;
         m.cache_type_v = body.cache_type_v;
         m.parallel     = body.parallel;
+        m.reasoning_budget = body.reasoning_budget;
         m.kv_class     = body.kv_class;
         if (Object.hasOwn(body, "llama_server")) m.llama_server = body.llama_server;
         if (Object.hasOwn(body, "env")) m.env = body.env;

@@ -75,6 +75,7 @@ from arc_llama.agent.sessions import SESSION_ID, SessionStore
 from arc_llama.api.context_budget import register_context_budget_route
 from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
+from arc_llama.api.updates import register_update_routes
 from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
 from arc_llama.benchmark import BENCHMARK_HEADER
@@ -1774,6 +1775,7 @@ def create_app(
                     "ctx": r.get("ctx"),
                     "cache_type_k": r.get("cache_type_k"),
                     "cache_type_v": r.get("cache_type_v"),
+                    "reasoning_budget": r.get("reasoning_budget"),
                     "flash_attn": r.get("flash_attn"),
                     "ubatch_size": r.get("ubatch_size"),
                     "batch_size": r.get("batch_size"),
@@ -1829,6 +1831,7 @@ def create_app(
                                config_path=config_path or default_config_path())
     register_context_budget_route(app)
     register_integration_route(app, require_admin=_require_admin)
+    register_update_routes(app, require_admin=_require_admin)
 
     @app.get("/admin/plugins")
     async def admin_plugins(
@@ -2077,7 +2080,7 @@ def create_app(
         """Update a model's recipe in-place.
 
         Body is a partial recipe dict — only provided fields change. Recognised
-        fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
+        fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `reasoning_budget`, `kv_class`,
         `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `spec_draft_p_min`,
         `spec_draft_model`, `spec_draft_ngl`, `ubatch_size`,
         `batch_size`, `flash_attn` (null clears), `llama_server` (empty inherits
@@ -2163,6 +2166,15 @@ def create_app(
                 raise HTTPException(status_code=400, detail="parallel must be 1..32")
             recipe["parallel"] = par
             changed.append("parallel")
+        if "reasoning_budget" in body:
+            budget = body["reasoning_budget"]
+            if budget is None or budget == "":
+                recipe.pop("reasoning_budget", None)
+            elif type(budget) is int and -1 <= budget <= 131072:
+                recipe["reasoning_budget"] = budget
+            else:
+                raise HTTPException(status_code=400, detail="reasoning_budget must be an integer from -1 to 131072, or null")
+            changed.append("reasoning_budget")
         kv_class = model.kv_class
         if "kv_class" in body:
             v = str(body["kv_class"])

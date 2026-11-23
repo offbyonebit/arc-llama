@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from arc_llama.config import Config
+from arc_llama.runtime import _find_llama_server
 from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 
@@ -41,10 +42,7 @@ def register_runtime_commands(
                 marker = json.loads(marker_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 marker = {}
-            binary = next(
-                (path for path in install_dir.rglob("llama-server*") if path.is_file()),
-                None,
-            )
+            binary = _find_llama_server(install_dir)
             if binary is None:
                 continue
             tag = str(marker.get("tag") or install_dir.name.split("-")[1])

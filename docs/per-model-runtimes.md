@@ -1,5 +1,7 @@
 # Per-model runtimes
 
+Model settings includes **Thinking budget**: -1 means no limit, 0 disables thinking, and an empty box clears the override; newly added models default to 256 unless their recipe turns reasoning off (older runtimes may only accept -1 or 0).
+
 Each model can choose its own llama-server executable and environment. Models
 without overrides continue using `paths.llama_server` and the service environment.
 
