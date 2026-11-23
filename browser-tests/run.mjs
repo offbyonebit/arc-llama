@@ -1,3 +1,4 @@
+import { testSettingsLivePreview, testSettingsPendingReload, testSettingsUnloadedNoReload, testSettingsAutomaticReload } from "./settings-preview-cases.mjs";
 import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply, testGuidedHidesEmptyLibraryUntilSetupAnswers, testGuidedLibraryReturnsWhenSetupStatusFails, testChatWithoutModelsPointsToSetup, testWorkNavHiddenWhenWorkIsOff, testWorkNavShownWhenWorkIsOn } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testWorkOffersManagedCopyBesideOwnOpenCode, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
@@ -104,6 +105,10 @@ import { testInterruptedAnswerPersists, testStoppedAnswerPersists, testExactBudg
 import { testWorkProjectsJobsAndReview, testWorkManualTokenLoadsModels, testWorkAttemptSettingsAndResults } from "./workbench-cases.mjs";
 
 const TESTS = [
+  ["settings-live-preview", testSettingsLivePreview],
+  ["settings-pending-reload", testSettingsPendingReload],
+  ["settings-unloaded-no-reload", testSettingsUnloadedNoReload],
+  ["settings-automatic-reload", testSettingsAutomaticReload],
   ["guided-dynamic-catalog", testGuidedDynamicCatalogStates],
   ["guided-first-answer", testGuidedFirstAnswer],
   ["guided-hides-empty-library", testGuidedHidesEmptyLibraryUntilSetupAnswers],

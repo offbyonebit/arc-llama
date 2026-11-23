@@ -2428,6 +2428,18 @@ def create_app(
             changed.append("split_mode")
         if not changed:
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
+        if body.get("preview") is True:
+            # Validate through the same edit path, then estimate a copy without saving or stopping.
+            draft = copy.deepcopy(model)
+            draft.recipe, draft.kv_class = recipe, kv_class
+            cache = getattr(request.app.state, "vram_estimate_cache", None)
+            if cache is None:
+                cache = request.app.state.vram_estimate_cache = {}
+            fit = await asyncio.to_thread(model_vram_fit_info, draft, c.find_gpu(model.gpu_pci_slot), cache)
+            if fit and not c.server.single_resident:
+                fit.update(headroom_mb=None, fit=None,
+                           detail="Per-model estimate; available memory depends on co-resident models.")
+            return {"name": name, "preview": True, "vram_estimate": fit}
         previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
         saved_settings = c.model_saved_settings.get(name)
