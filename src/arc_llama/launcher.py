@@ -77,7 +77,9 @@ async def _await_cleanup(future: asyncio.Future[Any]) -> Any:
 
 
 DEFAULT_HEALTH_TIMEOUT = 120  # seconds — generous for cold-start SYCL JIT
-HEALTH_POLL_INTERVAL = 1.5
+# Only used while a model starts. A refused connection or llama-server's 503
+# costs nothing, and a 1.5 s interval added 0.75 s to the average load.
+HEALTH_POLL_INTERVAL = 0.25
 
 # Log rotation for llama-server subprocess logs.
 _MAX_LOG_BYTES = 50 * 1024 * 1024
@@ -649,6 +651,15 @@ def build_plan(
             "[%s] %s has no --tensor-split; using a single GPU", model.name, binary
         )
         recipe.tensor_split = None
+    if any(a == "--reasoning-budget" or a.startswith("--reasoning-budget=") for a in recipe.extra_flags):
+        recipe.reasoning_budget = None
+    elif recipe.reasoning_budget is not None:
+        if not caps.supports_reasoning_budget:
+            log.warning("[%s] %s has no --reasoning-budget; ignoring the thinking budget", model.name, binary)
+            recipe.reasoning_budget = None
+        elif recipe.reasoning_budget > 0 and not caps.supports_positive_reasoning_budget:
+            log.warning("[%s] %s only accepts reasoning budget -1 or 0; using -1 instead of %d", model.name, binary, recipe.reasoning_budget)
+            recipe.reasoning_budget = -1
     if "--reasoning" in recipe.extra_flags and not caps.supports_reasoning_off:
         log.warning("[%s] %s has no --reasoning; thinking stays on", model.name, binary)
         i = recipe.extra_flags.index("--reasoning")

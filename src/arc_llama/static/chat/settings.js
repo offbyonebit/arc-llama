@@ -52,7 +52,7 @@
     let renderedSettingsSignature = null;
     function renderSettingsPanel({ poll = false } = {}) {
       const m = ctx.models.find(m => m.id === ctx.selectedModel);
-      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
+      const signature = JSON.stringify([ctx.selectedModel, m && ["ctx", "cache_type_k", "cache_type_v", "parallel", "reasoning_budget", "kv_class", "llama_server", "env", "owned_by"].map(k => m[k])]);
       if (poll && signature === renderedSettingsSignature) {
         const fitLine = ctx.$("#s-fit");
         if (fitLine && !settingsDirty) fitLine.textContent = vramFitText(m || {});
@@ -94,6 +94,8 @@
           <select id="s-ctv">${kvOptsV}</select></div>
         <div class="s-field"><label>Parallel slots</label>
           <input id="s-par" type="number" min="1" max="32" value="${parallel}"></div>
+        <div class="s-field"><label for="s-rbudget">Thinking budget</label>
+          <input id="s-rbudget" type="number" min="-1" max="131072" step="1"><span class="s-note">-1 no limit, 0 off</span></div>
         <div class="s-field"><label>KV Class</label>
           <select id="s-kvc">${classOpts}</select></div>
         <div class="s-field s-fit" id="s-fit">${vramFitText(m)}</div>
@@ -108,6 +110,7 @@
         <div class="s-note">A loaded model restarts with the new settings.</div>
       `;
       ctx.$("#s-llama-server").value = m.llama_server || "";
+      ctx.$("#s-rbudget").value = m.reasoning_budget ?? "";
       ctx.$("#s-llama-server").placeholder = m.effective_llama_server || "Use the global runtime";
       ctx.$("#s-runtime-env").value = Object.entries(m.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
       ctx.$("#s-apply").addEventListener("click", applySettings);
@@ -157,6 +160,12 @@
         env[key] = line.slice(separator + 1);
       }
       const modelId = ctx.selectedModel;
+      const rawBudget = ctx.$("#s-rbudget").value.trim();
+      const reasoningBudget = rawBudget === "" ? null : Number(rawBudget);
+      if (reasoningBudget !== null && (!Number.isInteger(reasoningBudget) || reasoningBudget < -1 || reasoningBudget > 131072)) {
+        ctx.sFeedback.textContent = "Thinking budget must be a whole number from -1 to 131072.";
+        return;
+      }
       const btn = ctx.$("#s-apply");
       btn.disabled = true;
       ctx.sFeedback.textContent = "";
@@ -165,6 +174,7 @@
         cache_type_k: ctx.$("#s-ctk").value,
         cache_type_v: ctx.$("#s-ctv").value,
         parallel:     parseInt(ctx.$("#s-par").value, 10),
+        reasoning_budget: reasoningBudget,
         kv_class:     ctx.$("#s-kvc").value,
         reload:       true,
         ...(runtimeBinaryDirty ? { llama_server: ctx.$("#s-llama-server").value.trim() } : {}),
@@ -182,6 +192,7 @@
         m.cache_type_k = body.cache_type_k;
         m.cache_type_v = body.cache_type_v;
         m.parallel     = body.parallel;
+        m.reasoning_budget = body.reasoning_budget;
         m.kv_class     = body.kv_class;
         if (Object.hasOwn(body, "llama_server")) m.llama_server = body.llama_server;
         if (Object.hasOwn(body, "env")) m.env = body.env;

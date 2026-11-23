@@ -1,6 +1,41 @@
 import { openChat, choosePaperModel, ADMIN_STATUS } from './harness.mjs';
 const json = body => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 
+export async function testModelThinkingBudgetSettings({ page, origin }) {
+  let budget = 256;
+  const edits = [];
+  await page.route('**/admin/status', route => route.fulfill(json({ ...ADMIN_STATUS,
+    models: ADMIN_STATUS.models.map(m => ({ ...m, reasoning_budget: m.name === 'qwen' ? budget : null })),
+  })));
+  await page.route('**/admin/models/qwen/edit', route => {
+    const body = route.request().postDataJSON();
+    edits.push(body);
+    budget = body.reasoning_budget;
+    return route.fulfill(json({ changed: ['reasoning_budget'] }));
+  });
+  await openChat(page, origin);
+  await page.click('#settings-toggle');
+  await page.waitForFunction(() => document.querySelector('#s-rbudget')?.value === '256');
+  if (await page.getAttribute('#s-rbudget', 'min') !== '-1' || !await page.getByText('-1 no limit, 0 off', { exact: true }).isVisible()) throw new Error('missing thinking budget range or hint');
+  for (const value of [512, null, 0, -1]) {
+    await page.fill('#s-rbudget', value === null ? '' : String(value));
+    await page.evaluate(() => document.activeElement.blur());
+    await page.evaluate(() => fetchStatus());
+    if (await page.inputValue('#s-rbudget') !== (value === null ? '' : String(value))) throw new Error('poll erased unsaved budget');
+    const count = edits.length;
+    await page.click('#s-apply');
+    await page.waitForFunction(() => document.querySelector('#s-feedback').textContent === 'Saved.');
+    if (edits.length !== count + 1 || edits.at(-1).reasoning_budget !== value) throw new Error('Apply sent the wrong thinking budget');
+    await page.waitForFunction(expected => models.find(m => m.id === 'qwen').reasoning_budget === expected, value);
+  }
+  budget = null;
+  await page.evaluate(() => fetchStatus());
+  await page.waitForFunction(() => document.querySelector('#s-rbudget').value === '');
+  budget = 1024;
+  await page.evaluate(() => fetchStatus());
+  await page.waitForFunction(() => document.querySelector('#s-rbudget').value === '1024');
+}
+
 export async function testPerModelRuntimeSettings({ page, origin }) {
   const runtime = new Map([['qwen', { llama_server: '/patched/ornith server', env: { LD_LIBRARY_PATH: '/patched/lib', FLAG: 'literal=value' } }], ['gemma', { llama_server: '', env: {} }]]);
   let editCount = 0;

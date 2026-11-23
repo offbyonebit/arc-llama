@@ -855,6 +855,29 @@ class TestBuildPlanFlashAttn:
         assert ("--reasoning" in plan.argv) is supported
         assert "--jinja" in plan.argv and ("off" in plan.argv) is supported
 
+    @pytest.mark.parametrize("budget,caps,extra,expected,warning", [
+        (256, {}, [], [], "has no --reasoning-budget"),
+        (256, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "-1"], "only accepts reasoning budget -1 or 0"),
+        (0, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "0"], None),
+        (-1, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "-1"], None),
+        (256, {"supports_reasoning_budget": True, "supports_positive_reasoning_budget": True}, [], ["--reasoning-budget", "256"], None),
+        (256, {}, ["--reasoning-budget", "64"], ["--reasoning-budget", "64"], None),
+        (256, {}, ["--reasoning-budget=64"], ["--reasoning-budget=64"], None),
+    ])
+    def test_reasoning_budget_compatibility_and_manual_override(self, monkeypatch, caplog, budget, caps, extra, expected, warning):
+        recipe = {"reasoning_budget": budget, "extra_flags": extra}
+        plan = self._plan(recipe, {**caps, "probed": True}, monkeypatch)
+        actual = []
+        for i, arg in enumerate(plan.argv):
+            if arg == "--reasoning-budget":
+                actual.extend(plan.argv[i:i + 2])
+            elif arg.startswith("--reasoning-budget="):
+                actual.append(arg)
+        assert actual == expected
+        assert recipe == {"reasoning_budget": budget, "extra_flags": extra}
+        if warning:
+            assert warning in caplog.text
+
     @pytest.mark.parametrize(
         ("extra", "caps", "expected"),
         [

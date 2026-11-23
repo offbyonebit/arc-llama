@@ -74,6 +74,25 @@ async function loadAdminToken() {
   }
 }
 
+async function loadUpdateNotice() {
+  try {
+    const response = await fetch("/admin/update-notice", { headers: authHeaders() });
+    if (!response.ok) return;
+    const notice = (await response.json()).update;
+    if (!notice?.latest || !notice.command) { $("#update-notice").hidden = true; return; }
+    let dismissed = null;
+    try { dismissed = localStorage.getItem("arc-llama-dismissed-update"); } catch (_) {}
+    if (dismissed === notice.latest) { $("#update-notice").hidden = true; return; }
+    $("#update-notice-message").textContent = `Arc Llama ${notice.latest} is available.`;
+    $("#update-notice-command").textContent = notice.command;
+    $("#update-notice").hidden = false;
+    $("#update-notice-dismiss").onclick = () => {
+      try { localStorage.setItem("arc-llama-dismissed-update", notice.latest); } catch (_) {}
+      $("#update-notice").hidden = true;
+    };
+  } catch (_) { /* Update checks never interrupt the dashboard. */ }
+}
+
 function setServerState(kind, text) {
   const state = $("#server-state");
   const intro = $("#intro-status");
@@ -1013,6 +1032,8 @@ $("#theme-toggle").addEventListener("click", () => { const next = document.docum
 (async () => {
   libraryController.bind();
   await initAdminToken();
+  void loadUpdateNotice();
+  setInterval(loadUpdateNotice, 24 * 60 * 60 * 1000);
   await fetchStatus(true);
   await pluginsController.start();
   pluginsController.bind();

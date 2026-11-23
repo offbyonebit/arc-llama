@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -63,6 +64,8 @@ class ServerCaps:
     supports_cache_ram: bool = False
     supports_ctx_checkpoints: bool = False
     """Whether this binary accepts ``-lv N`` (log verbosity)."""
+    supports_reasoning_budget: bool = False
+    supports_positive_reasoning_budget: bool = False
 
 
 def format_speculation_capability(caps: ServerCaps) -> str:
@@ -93,12 +96,16 @@ DEFAULT_CAPS = ServerCaps(
     supports_verbosity=True,
     supports_cache_ram=True,
     supports_ctx_checkpoints=True,
+    supports_reasoning_budget=True,
+    supports_positive_reasoning_budget=True,
 )
 
 _cache: dict[tuple[str, float, tuple[tuple[str, str], ...]], ServerCaps] = {}
 
 
 def _parse_help(help_text: str) -> ServerCaps:
+    budget = re.search(r"--reasoning-budget(?:\s|$)", help_text) is not None
+    legacy_budget = "currently only one of: -1 for unrestricted thinking budget, or 0 to disable thinking" in " ".join(help_text.split())
     features = {
         "probed": True,
         "supports_speculative": "--spec-type" in help_text,
@@ -114,6 +121,8 @@ def _parse_help(help_text: str) -> ServerCaps:
         "supports_verbosity": "--verbosity" in help_text,
         "supports_cache_ram": "--cache-ram" in help_text,
         "supports_ctx_checkpoints": "--ctx-checkpoints" in help_text,
+        "supports_reasoning_budget": budget,
+        "supports_positive_reasoning_budget": budget and not legacy_budget,
     }
     idx = help_text.find("--flash-attn")
     if idx < 0:

@@ -1,6 +1,34 @@
 // Existing regression cases; shared fixtures and browser setup live in harness.mjs.
 import { ADMIN_STATUS, METRICS } from "./harness.mjs";
 
+export async function testPackageUpdateNotice({ page, origin }) {
+  let latest = "1.3.0";
+  let authorization = null;
+  await page.route("**/admin/update-notice", route => {
+    authorization = route.request().headers().authorization;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      update: latest ? { current: "1.2.0", latest, command: "pip install -U arc-llama" } : null,
+    }) });
+  });
+  await page.goto(origin);
+  await page.waitForSelector("#update-notice:not([hidden])");
+  if (!authorization?.startsWith("Bearer ")) throw new Error("version request raced admin token initialization");
+  if (!(await page.locator("#update-notice").innerText()).includes("Arc Llama 1.3.0 is available.")) throw new Error("update version missing");
+  if (await page.locator("#update-notice-command").textContent() !== "pip install -U arc-llama") throw new Error("upgrade command missing");
+  await page.click("#update-notice-dismiss");
+  await page.reload();
+  await page.waitForSelector("#server-state.online", { state: "attached" });
+  await page.evaluate(() => loadUpdateNotice());
+  if (!(await page.locator("#update-notice").isHidden())) throw new Error("dismissed version reappeared after reload");
+  latest = "1.4.0";
+  await page.reload();
+  await page.waitForSelector("#update-notice:not([hidden])");
+  if (!(await page.locator("#update-notice").innerText()).includes("1.4.0")) throw new Error("next version stayed dismissed");
+  latest = null;
+  await page.evaluate(() => loadUpdateNotice());
+  if (!(await page.locator("#update-notice").isHidden())) throw new Error("disabled/unavailable notice stayed visible");
+}
+
 export async function testDashboardMeasurements({ page, origin }) {
   await page.goto(`${origin}/#system`);
   await page.waitForFunction(() => document.querySelector("#measurements")?.textContent.includes("24.8"));

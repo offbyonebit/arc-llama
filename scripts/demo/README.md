@@ -34,3 +34,62 @@ python3 scripts/demo/edit.py                                      # writes docs/
 Chrome's screencast at 2x as quality-100 JPEGs (Playwright's own video is low-bitrate VP8 that smears
 text), and notes when each event happened. `edit.py` speeds up waits 2-4x, keeps streamed text at real speed, adds the captions and
 fades, and exports the files. The shot list and prompts are at the top of each script.
+
+## 1.2 trailer
+
+The original `record.mjs all` / `edit.py` demo is unchanged. The trailer needs the same tools,
+plus ffmpeg's libass filter for kinetic Inter ExtraBold type. Use the setup above on the B60,
+with the release/1.2 wheel and a current catalog offering the Ornith 1.0 9B starter. Fresh setup
+chooses its runtime; both Vulkan and SYCL are accepted and the active backend is recorded.
+Every fresh take re-downloads the starter; `$DEMO/models` and its hand-linked Work model are preserved.
+Install the Hermes harness too (`arc-llama install-harness hermes`) for the montage. The saved
+`$DEMO/config-model.toml` still supplies the original Work model/harness configuration.
+
+The cut is a "what got better in 1.2" spot and needs the 27B take: register a 27B model in that
+saved config, with its MTP/draft recipe configured there, and set `TRAILER_27B_MODEL` to its
+registered model ID when recording. The edit uses the terminal, first-run, thinking and 27B takes;
+the other takes are still recorded but not cut in. The MTP speed-up line
+appears only if new server log lines during that take report accepted drafts (llama.cpp's MTP
+statistics line counts); its acceptance percentage comes from the same line. No recipe flag alone
+counts as active decoding. `record.mjs trailer-rest` re-records only the 27B take and the montage,
+keeping the other takes.
+
+```bash
+source scripts/demo/env.sh
+export TRAILER_27B_MODEL=<registered-27b-model-id>
+PLAYWRIGHT_BROWSERS_PATH=<dir> node scripts/demo/record.mjs trailer
+python3 scripts/demo/trailer.py --music /path/to/licensed-track.wav --bpm 120
+```
+
+The recorder uses the real first-run Download and start flow (allow time/disk space for weights),
+then captures its answer, Thinking budget 256 and save, the original Work flow, and the montage.
+The terminal's detected-device line is explicitly labelled as live app data: `start` no longer
+prints it. Trailer takes live in `$DEMO/rec/trailer`, separately from the demo takes.
+Every speed take stores its own UI-parsed tok/s and assigned GPU name/VRAM in JSON.
+The first-run JSON also stores the app's OpenAPI version, starter name and active backend.
+Missing speed/hardware evidence aborts the edit. Version cards use that app version, including
+`1.1.1` until the independent version bump merges; no trailer code changes the package version.
+
+The cut is 29 seconds at 120 BPM, 1440x900 at 30 fps: startup and first-load races, the 27B MTP
+counter, the terminal's device line, the thinking budget, newly recognised cards and an end card.
+The race numbers are the 1.2.0 release measurements on an Arc Pro B60, kept in `WINS` at the top
+of `trailer.py`; every live number comes from the takes. Other BPM values scale the beat schedule;
+streaming always plays at 1x, with a held last frame if the answer finishes early. The recorder stores
+element boxes (answer, budget field) that the push-ins centre on;
+older takes without them fall back to fixed points. `timing.json` records frame-quantized cuts and verifies beat alignment
+within one frame. Omit `--music` for silent MP4; no music is stored here. WebP is always silent and
+steps down fps/quality/size to stay below 3 MiB. Real output goes to `docs/media/trailer-1.2.mp4`,
+`trailer-1.2.webp` and `trailer-1.2-poster.png`; the existing README demo is never replaced.
+Grabs of each section land in `.trailer-work/grabs/` under the output directory. Watch the real render before deciding
+whether to update the README separately.
+
+No-GPU timing/type proof (never commit these outputs):
+
+```bash
+python3 scripts/demo/trailer.py --placeholder --out /tmp/trailer-1.2-proof
+```
+
+This synthesizes labelled dark clips and JSON with `"tps": "PLACEHOLDER"`, renders `##.#`,
+and exports eight PNG frame grabs plus `timing.json`. Placeholder output defaults to
+`/tmp/arc-trailer-placeholder`; writing placeholders under `docs/media` is rejected.
+`--rec <directory>` and `--out <directory>` can override the real take/output directories.
