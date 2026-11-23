@@ -22,6 +22,7 @@ from arc_llama.gguf_meta import (
     has_mtp_heads,
     is_hybrid_ssm,
     is_moe,
+    kv_bytes_f16_at_ctx,
     kv_bytes_per_token_f16,
     mtp_info,
     read_gguf_meta,
@@ -203,6 +204,29 @@ class TestReadGgufMeta:
     def test_missing_file_returns_empty(self):
         meta = read_gguf_meta("/nonexistent/file.gguf")
         assert meta == {}
+
+    @pytest.mark.parametrize("pattern", [2, [True, False]])
+    def test_reads_swa_metadata(self, tmp_path, pattern):
+        path = tmp_path / "swa.gguf"
+        writer = gguf.GGUFWriter(str(path), "gemma4")
+        key = "gemma4.attention.sliding_window_pattern"
+        if isinstance(pattern, list):
+            writer.add_array(key, pattern)
+        else:
+            writer.add_uint32(key, pattern)
+        writer.add_uint32("gemma4.attention.key_length_swa", 256)
+        writer.add_uint32("gemma4.attention.value_length_swa", 128)
+        writer.add_uint32("gemma4.attention.shared_kv_layers", 1)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+
+        meta = read_gguf_meta(path)
+        assert meta["attention.sliding_window_pattern"] == pattern
+        assert meta["attention.key_length_swa"] == 256
+        assert meta["attention.value_length_swa"] == 128
+        assert meta["attention.shared_kv_layers"] == 1
 
 
 class TestKvBytesPerToken:
@@ -394,6 +418,87 @@ class TestKvBytesPerToken:
 
     def test_incomplete_geometry_uses_family_fallback(self, tmp_path, monkeypatch):
         assert self._estimate(tmp_path, monkeypatch, {"block_count": 32}) is None
+
+
+class TestKvBytesAtContext:
+    def _estimate(self, tmp_path, monkeypatch, meta, ctx=32768, n_ubatch=512):
+        path = tmp_path / "swa-model.gguf"
+        path.write_bytes(b"GGUF")
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
+        return kv_bytes_f16_at_ctx(path, ctx, n_ubatch)
+
+    def _gemma3(self):
+        return {
+            "architecture": "gemma3", "block_count": 34,
+            "attention.head_count_kv": 4,
+            "attention.key_length": 256, "attention.value_length": 256,
+            "attention.sliding_window": 1024,
+        }
+
+    def test_gemma3_default_pattern(self, tmp_path, monkeypatch):
+        assert self._estimate(tmp_path, monkeypatch, self._gemma3()) == 814 * 1024**2
+
+    def test_gemma4_per_layer_heads_and_swa_dimensions(self, tmp_path, monkeypatch):
+        pattern = [i % 6 != 5 for i in range(30)]
+        meta = {
+            "architecture": "gemma4", "block_count": 30,
+            "attention.sliding_window_pattern": pattern,
+            "attention.head_count_kv": [8 if swa else 2 for swa in pattern],
+            "attention.key_length": 512, "attention.value_length": 512,
+            "attention.key_length_swa": 256, "attention.value_length_swa": 256,
+            "attention.sliding_window": 1024,
+        }
+        assert self._estimate(tmp_path, monkeypatch, meta) == 940 * 1024**2
+
+    def test_gpt_oss_default_pattern(self, tmp_path, monkeypatch):
+        meta = {
+            "architecture": "gpt-oss", "block_count": 24,
+            "attention.head_count_kv": 8,
+            "attention.key_length": 64, "attention.value_length": 64,
+            "attention.sliding_window": 128,
+        }
+        assert self._estimate(tmp_path, monkeypatch, meta) == 786 * 1024**2
+
+    def test_small_context_caps_swa_before_padding(self, tmp_path, monkeypatch):
+        assert self._estimate(tmp_path, monkeypatch, self._gemma3(), ctx=1024) == 136 * 1024**2
+        assert self._estimate(tmp_path, monkeypatch, self._gemma3(), ctx=257) == (
+            5 * 257 + 29 * 512
+        ) * 4096
+
+    @pytest.mark.parametrize("pattern, expected_mib", [(2, 2278), (0, 204), (1, 4352)])
+    def test_uint_pattern_overrides_default(self, tmp_path, monkeypatch, pattern, expected_mib):
+        meta = {**self._gemma3(), "attention.sliding_window_pattern": pattern}
+        assert self._estimate(tmp_path, monkeypatch, meta) == expected_mib * 1024**2
+
+    def test_ubatch_changes_swa_cells(self, tmp_path, monkeypatch):
+        assert self._estimate(tmp_path, monkeypatch, self._gemma3(), n_ubatch=1024) == 872 * 1024**2
+
+    def test_shared_kv_is_unsupported(self, tmp_path, monkeypatch):
+        meta = {**self._gemma3(), "attention.shared_kv_layers": 1}
+        assert self._estimate(tmp_path, monkeypatch, meta) is None
+
+    @pytest.mark.parametrize("missing", [
+        "block_count", "attention.head_count_kv", "attention.key_length",
+        "attention.value_length", "attention.sliding_window",
+    ])
+    def test_incomplete_swa_geometry_falls_back(self, tmp_path, monkeypatch, missing):
+        meta = self._gemma3()
+        del meta[missing]
+        assert self._estimate(tmp_path, monkeypatch, meta) is None
+
+    def test_gemma4_requires_its_pattern_and_swa_lengths(self, tmp_path, monkeypatch):
+        meta = {**self._gemma3(), "architecture": "gemma4"}
+        assert self._estimate(tmp_path, monkeypatch, meta) is None
+        meta["attention.sliding_window_pattern"] = [True] * 34
+        assert self._estimate(tmp_path, monkeypatch, meta) is None
+
+    def test_plain_transformer_is_per_token_times_context(self, tmp_path, monkeypatch):
+        meta = {
+            "architecture": "llama", "block_count": 32,
+            "attention.head_count_kv": 8,
+            "attention.key_length": 128, "attention.value_length": 128,
+        }
+        assert self._estimate(tmp_path, monkeypatch, meta) == 32 * 8 * 256 * 2 * 32768
 
 
 class TestMtpDetection:

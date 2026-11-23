@@ -28,6 +28,7 @@ from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import (
     estimate_weight_vram_bytes,
     gguf_total_bytes,
+    kv_bytes_f16_at_ctx,
     kv_bytes_per_token_f16,
     override_tensor_saved_bytes,
     scan_weight_tensors,
@@ -181,12 +182,20 @@ class ModelTimings:
         return out
 
 
+def _kv_f16_bytes_per_token_at_ctx(model: ModelConfig, ctx: int) -> int | None:
+    per_token = kv_bytes_per_token_f16(model.path)
+    if per_token is not None or ctx <= 0:
+        return per_token
+    total = kv_bytes_f16_at_ctx(model.path, ctx)
+    return (total + ctx - 1) // ctx if total is not None else None
+
+
 def _model_kv_mb(model: ModelConfig, ctx: int, kv_type: KVCacheType | None = None) -> int:
     """Size the K and V halves independently; a trial KV type overrides both."""
     recipe = model.recipe or {}
     k_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_k", "f16"))
     v_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_v", k_type.value))
-    f16_per_token = kv_bytes_per_token_f16(model.path)
+    f16_per_token = _kv_f16_bytes_per_token_at_ctx(model, ctx)
     kv_k = estimate_kv_bytes(ctx, k_type, model.kv_class, f16_per_token)
     kv_v = estimate_kv_bytes(ctx, v_type, model.kv_class, f16_per_token)
     return ((kv_k + kv_v) // 2) // 1_048_576
