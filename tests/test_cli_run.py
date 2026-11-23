@@ -58,7 +58,7 @@ def test_run_existing_model_prints_launch_contract(tmp_path, monkeypatch):
     backend_probe = MagicMock(return_value={Backend.VULKAN})
     monkeypatch.setattr("arc_llama.cli.load_config", lambda _path: cfg)
     monkeypatch.setattr("arc_llama.cli.detect_backends", backend_probe)
-    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 12288)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model, **_kw: 12288)
 
     result = CliRunner().invoke(
         cli,
@@ -85,7 +85,7 @@ def test_setup_is_beginner_friendly_alias_for_run_setup_only(tmp_path, monkeypat
     backend_probe = MagicMock(return_value={Backend.VULKAN})
     monkeypatch.setattr("arc_llama.cli.load_config", lambda _path: cfg)
     monkeypatch.setattr("arc_llama.cli.detect_backends", backend_probe)
-    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 12288)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model, **_kw: 12288)
 
     result = CliRunner().invoke(
         cli,
@@ -150,7 +150,7 @@ def test_run_new_machine_bootstraps_runtime_and_local_model(tmp_path, monkeypatc
 
     monkeypatch.setattr("arc_llama.runtime.install_runtime", fake_install_runtime)
     monkeypatch.setattr("arc_llama.cli.add_local_model", fake_add_local_model)
-    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 10000)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model, **_kw: 10000)
 
     result = CliRunner().invoke(
         cli,
@@ -219,7 +219,7 @@ def test_run_refuses_recipe_estimated_over_vram(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     monkeypatch.setattr("arc_llama.cli.load_config", lambda _path: cfg)
     monkeypatch.setattr("arc_llama.cli.detect_backends", lambda _path: {Backend.VULKAN})
-    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 26000)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model, **_kw: 26000)
 
     result = CliRunner().invoke(
         cli,
@@ -242,7 +242,7 @@ def test_run_keeps_recognised_sycl_runtime_by_default(tmp_path, monkeypatch):
     cfg.gpus[0].backend = "sycl"
     monkeypatch.setattr("arc_llama.cli.load_config", lambda _path: cfg)
     monkeypatch.setattr("arc_llama.cli.detect_backends", lambda _path: {Backend.SYCL})
-    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 12000)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model, **_kw: 12000)
 
     with patch("arc_llama.runtime.install_runtime") as install:
         result = CliRunner().invoke(
@@ -269,7 +269,7 @@ def test_run_starts_existing_serve_path(tmp_path, monkeypatch):
     monkeypatch.setattr("arc_llama.cli.detect_backends", lambda _path: {Backend.VULKAN})
     monkeypatch.setattr("arc_llama.cli._print_serve_banner", lambda _cfg: None)
     monkeypatch.setattr("arc_llama.cli._print_autotune_banner", lambda _cfg: None)
-    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model: 12000)
+    monkeypatch.setattr("arc_llama.router.estimate_model_vram_quick_mb", lambda _model, **_kw: 12000)
 
     with (
         patch("arc_llama.server.create_app", return_value=app),

@@ -23,6 +23,7 @@ from arc_llama.gguf_meta import (
     is_hybrid_ssm,
     is_moe,
     kv_bytes_per_token_f16,
+    max_layer_kv_bytes_f16_per_token,
     mtp_info,
     read_gguf_meta,
     scan_weight_tensors,
@@ -184,6 +185,22 @@ class TestReadGgufMeta:
         assert meta["nextn_predict_layers"] == 1
         assert meta["block_count"] == 65
 
+    def test_reads_hybrid_attention_metadata_and_bool_array(self, tmp_path):
+        path = tmp_path / "hybrid.gguf"
+        writer = gguf.GGUFWriter(str(path), "qwen35")
+        writer.add_uint32("qwen35.full_attention_interval", 4)
+        writer.add_uint32("qwen35.nextn_predict_layers", 1)
+        writer.add_array("qwen35.attention.recurrent_layers", [True, False])
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+
+        meta = read_gguf_meta(path)
+        assert meta["full_attention_interval"] == 4
+        assert meta["nextn_predict_layers"] == 1
+        assert meta["attention.recurrent_layers"] == [1, 0]
+
     def test_missing_file_returns_empty(self):
         meta = read_gguf_meta("/nonexistent/file.gguf")
         assert meta == {}
@@ -195,6 +212,39 @@ class TestKvBytesPerToken:
         path.write_bytes(b"GGUF")
         monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
         return kv_bytes_per_token_f16(path)
+
+    def test_max_attention_layer_f16_geometry(self, tmp_path):
+        path = tmp_path / "qwen35moe.gguf"
+        writer = gguf.GGUFWriter(str(path), "qwen35moe")
+        writer.add_block_count(40)
+        writer.add_head_count_kv(2)
+        writer.add_key_length(256)
+        writer.add_value_length(256)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        assert max_layer_kv_bytes_f16_per_token(path) == 2048
+
+    def test_max_attention_layer_skips_recurrent_and_mtp(self, monkeypatch):
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+            "architecture": "qwen35moe", "block_count": 4, "nextn_predict_layers": 1,
+            "attention.recurrent_layers": [True, False, False, False],
+            "attention.head_count_kv": [99, 1, 2, 99],
+            "attention.key_length": [256, 128, 256, 256],
+            "attention.value_length": [256, 128, 256, 256],
+        })
+        assert max_layer_kv_bytes_f16_per_token("synthetic.gguf") == 2048
+
+    def test_max_attention_layer_uses_derived_head_dimensions(self, monkeypatch):
+        monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+            "block_count": 2, "attention.head_count_kv": [1, 2],
+            "attention.head_count": 8, "embedding_length": 2048,
+        })
+        assert max_layer_kv_bytes_f16_per_token("synthetic.gguf") == 2048
+
+    def test_max_attention_layer_unknown_metadata(self):
+        assert max_layer_kv_bytes_f16_per_token("/nonexistent.gguf") is None
 
     def test_scalar_transformer_geometry(self, tmp_path, monkeypatch):
         # 32 layers × 8 KV heads × (128 K + 128 V) × 2-byte f16.
@@ -250,7 +300,7 @@ class TestKvBytesPerToken:
         )
         assert result is None
 
-    def test_qwen35_scalar_heads_use_hybrid_fallback(self, tmp_path, monkeypatch):
+    def test_qwen35_scalar_heads_count_only_full_attention(self, tmp_path, monkeypatch):
         result = self._estimate(
             tmp_path,
             monkeypatch,
@@ -264,7 +314,117 @@ class TestKvBytesPerToken:
                 "attention.value_length": 256,
             },
         )
-        assert result is None
+        assert result == 65536
+
+    def test_qwen35moe_default_attention_interval(self, tmp_path, monkeypatch):
+        assert (
+            self._estimate(
+                tmp_path,
+                monkeypatch,
+                {
+                    "architecture": "qwen35moe",
+                    "block_count": 40,
+                    "attention.head_count_kv": 2,
+                    "attention.key_length": 256,
+                    "attention.value_length": 256,
+                },
+            )
+            == 20480
+        )
+
+    def test_qwen35_excludes_mtp_layers(self, tmp_path, monkeypatch):
+        assert (
+            self._estimate(
+                tmp_path,
+                monkeypatch,
+                {
+                    "architecture": "qwen35",
+                    "block_count": 65,
+                    "nextn_predict_layers": 1,
+                    "attention.head_count_kv": 4,
+                    "full_attention_interval": 4,
+                    "attention.key_length": 256,
+                    "attention.value_length": 256,
+                },
+            )
+            == 65536
+        )
+
+    @pytest.mark.parametrize("architecture", ["qwen35", "qwen35moe", "qwen3next"])
+    def test_recurrent_array_overrides_interval(self, tmp_path, monkeypatch, architecture):
+        assert (
+            self._estimate(
+                tmp_path,
+                monkeypatch,
+                {
+                    "architecture": architecture,
+                    "block_count": 8,
+                    "full_attention_interval": 1,
+                    "attention.recurrent_layers": [True] * 6 + [False, False],
+                    "attention.head_count_kv": 2,
+                    "attention.key_length": 256,
+                    "attention.value_length": 256,
+                },
+            )
+            == 4096
+        )
+
+    def test_mtp_attention_layer_is_excluded(self, tmp_path, monkeypatch):
+        assert (
+            self._estimate(
+                tmp_path,
+                monkeypatch,
+                {
+                    "architecture": "qwen3next",
+                    "block_count": 8,
+                    "nextn_predict_layers": 1,
+                    "attention.recurrent_layers": [True] * 6 + [False, False],
+                    "attention.head_count_kv": [0] * 6 + [2, 4],
+                    "attention.key_length": 256,
+                    "attention.value_length": 256,
+                },
+            )
+            == 2048
+        )
+
+    @pytest.mark.parametrize("missing", ["attention.key_length", "attention.value_length"])
+    def test_hybrid_requires_explicit_head_lengths(self, tmp_path, monkeypatch, missing):
+        meta = {
+            "architecture": "qwen35",
+            "block_count": 8,
+            "embedding_length": 2048,
+            "attention.head_count": 16,
+            "attention.head_count_kv": 4,
+            "attention.key_length": 256,
+            "attention.value_length": 256,
+        }
+        del meta[missing]
+        assert self._estimate(tmp_path, monkeypatch, meta) is None
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"full_attention_interval": 0},
+            {"attention.recurrent_layers": [True]},
+            {"nextn_predict_layers": 9},
+        ],
+    )
+    def test_invalid_hybrid_layer_metadata_falls_back(self, tmp_path, monkeypatch, overrides):
+        assert (
+            self._estimate(
+                tmp_path,
+                monkeypatch,
+                {
+                    "architecture": "qwen35",
+                    "block_count": 8,
+                    "attention.head_count_kv": 4,
+                    "attention.key_length": 256,
+                    "attention.value_length": 256,
+                    **overrides,
+                },
+            )
+            is None
+        )
 
     def test_incomplete_geometry_uses_family_fallback(self, tmp_path, monkeypatch):
         assert self._estimate(tmp_path, monkeypatch, {"block_count": 32}) is None

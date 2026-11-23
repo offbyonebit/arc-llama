@@ -93,6 +93,7 @@ def kv_fits_at_ctx(
     gpu: GPUConfig | None,
     kv_type: str,
     ctx: int,
+    backend: str | None = None,
 ) -> bool:
     """True when the model with this KV type is estimated to fit at ``ctx``.
 
@@ -107,7 +108,9 @@ def kv_fits_at_ctx(
 
     if gpu is None or not gpu.vram_mb:
         return True
-    needed = _estimate_model_vram_mb(model, ctx=ctx, kv_type=KVCacheType(kv_type))
+    needed = _estimate_model_vram_mb(
+        model, ctx=ctx, kv_type=KVCacheType(kv_type), backend=backend
+    )
     if needed is None:
         return True
     return needed <= gpu.vram_mb

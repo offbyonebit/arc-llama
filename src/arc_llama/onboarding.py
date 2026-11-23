@@ -86,9 +86,11 @@ class FirstAnswerSetup:
         # Registration runs against the same enabled GPU used for the estimate.
         # Give Work room: Hermes refuses under 64,000 tokens and OpenCode's
         # first request is ~5K. Take the largest step the router will admit.
+        from arc_llama.launcher import model_backend
         from arc_llama.router import _estimate_model_vram_mb
 
         for model in added:
+            backend = model_backend(self.cfg, model, gpu).value
             fitted = model.recipe.get("ctx", 4096)
             model.recipe["parallel"] = 1
             # Thinking off, so a reasoning starter answers inside Chat's
@@ -101,7 +103,7 @@ class FirstAnswerSetup:
                     ctx
                     for ctx in (65536, 32768, 16384)
                     if ctx <= fitted
-                    and (need := _estimate_model_vram_mb(model, ctx=ctx)) is not None
+                    and (need := _estimate_model_vram_mb(model, ctx=ctx, backend=backend)) is not None
                     and need <= (gpu.vram_mb or 0)
                 ),
                 4096,
