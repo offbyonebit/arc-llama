@@ -1028,3 +1028,34 @@ def test_work_page_harness_installs_send_the_admin_token():
     work = chat[chat.index("window.ArcChat.createWork({") :]
     work = work[: work.index("});")]
     assert "authHeaders(" in work
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_thanksgiving_turkey_dates_and_once_per_browser():
+    """The turkey only shows in US Thanksgiving week, once, and never in automation."""
+    script = json.dumps(str(STATIC / "turkey.js"))
+    program = f"""
+      require('vm').runInThisContext(require('fs').readFileSync({script}, 'utf8'));
+      const T = globalThis.ArcTurkey;
+      const store = seen => ({{ getItem: () => seen }});
+      const nav = {{ webdriver: false }};
+      console.log(JSON.stringify({{
+        days: [2024, 2025, 2026, 2027, 2028].map(T.thanksgiving),
+        week: [
+          new Date(2026, 10, 22, 23, 59), new Date(2026, 10, 23, 0, 0), new Date(2026, 10, 29, 23, 59),
+          new Date(2026, 10, 30, 0, 0), new Date(2024, 11, 1, 12), new Date(2024, 11, 2, 0, 0),
+        ].map(T.isThanksgivingWeek),
+        fresh: T.shouldRun(new Date(2026, 10, 26), store(null), nav, false),
+        seen: T.shouldRun(new Date(2026, 10, 26), store('2026'), nav, false),
+        automated: T.shouldRun(new Date(2026, 10, 26), store(null), {{ webdriver: true }}, false),
+        reduced: T.shouldRun(new Date(2026, 10, 26), store(null), nav, true),
+        blocked: T.shouldRun(new Date(2026, 10, 26), {{ getItem() {{ throw new Error('no'); }} }}, nav, false),
+      }}));
+    """
+    out = json.loads(subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True).stdout)
+    assert out["days"] == [28, 27, 26, 25, 23]
+    assert out["week"] == [False, True, True, False, True, False]
+    assert out["fresh"] is True
+    assert not any(out[k] for k in ("seen", "automated", "reduced", "blocked"))
+    for page in ("chat.html", "index.html"):
+        assert '<script src="/turkey.js?v=turkey-1"></script>' in (STATIC / page).read_text(encoding="utf-8")

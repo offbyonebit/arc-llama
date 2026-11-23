@@ -205,3 +205,17 @@ export async function testPaperSystemSectionsAligned({page,origin}) {
   assert.ok(boxes.length>=4);
   for(const b of boxes) assert.deepEqual(b,boxes[0]);        // Agents for Work is as wide as the other System sections
 }
+
+export async function testThanksgivingTurkeyOnce({page,origin}) {
+  // Automation normally hides the turkey; pretend to be a person on Thanksgiving Day.
+  await page.addInitScript(()=>Object.defineProperty(Navigator.prototype,'webdriver',{get:()=>false}));
+  await page.clock.setFixedTime(new Date(2026,10,26,12));
+  const turkey=page.locator('span[aria-hidden="true"]',{hasText:'\u{1F983}'});
+  await page.goto(origin);await page.waitForSelector('.model-card');
+  await turkey.waitFor({state:'attached'});
+  assert.equal(await turkey.evaluate(n=>getComputedStyle(n).pointerEvents),'none');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('arc-llama-turkey-seen')),'2026');
+  await turkey.waitFor({state:'detached',timeout:10000});
+  await page.reload();await page.waitForSelector('.model-card');await page.waitForTimeout(1600);
+  assert.equal(await turkey.count(),0);
+}
