@@ -245,8 +245,9 @@ def sycl_runtime_error_hint(output: str) -> str | None:
         return None
     return (
         "This llama.cpp build needs the oneAPI 2026.2 SYCL runtime (builds after b12243). "
-        "Install oneAPI 2026.2 beside 2026.1, or set paths.oneapi_setvars to its setvars.sh, "
-        "or run with --runtime-version b12359 on a 2026.2 runtime / b12243 on 2026.1."
+        "Install Intel's 2026.2 runtime packages (see docs/gpu-setup.md), or set "
+        "paths.oneapi_setvars to a 2026.2 setvars.sh, and make sure LD_LIBRARY_PATH isn't "
+        "loading 2026.1 first. To stay on 2026.1, use --runtime-version b12243."
     )
 
 

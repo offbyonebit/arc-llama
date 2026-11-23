@@ -52,8 +52,9 @@ def test_runtime_hint(output, matched):
     if matched:
         assert hint == (
             "This llama.cpp build needs the oneAPI 2026.2 SYCL runtime (builds after b12243). "
-            "Install oneAPI 2026.2 beside 2026.1, or set paths.oneapi_setvars to its setvars.sh, "
-            "or run with --runtime-version b12359 on a 2026.2 runtime / b12243 on 2026.1."
+            "Install Intel's 2026.2 runtime packages (see docs/gpu-setup.md), or set "
+            "paths.oneapi_setvars to a 2026.2 setvars.sh, and make sure LD_LIBRARY_PATH isn't "
+            "loading 2026.1 first. To stay on 2026.1, use --runtime-version b12243."
         )
 
 
@@ -118,3 +119,32 @@ def test_doctor_reports_sycl_runtime_hint(tmp_path, monkeypatch):
     assert result.exit_code == 2, result.output
     assert "sycl_runtime" in result.output
     assert "oneAPI 2026.2 SYCL runtime" in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize("probe_error", [SYMBOL_ERROR, ""])
+def test_linux_sycl_install_reports_the_runtime_check(tmp_path, monkeypatch, probe_error):
+    from click.testing import CliRunner
+    from conftest import make_config
+
+    from arc_llama import runtime, server_caps
+    from arc_llama.cli import cli
+
+    config_path = tmp_path / "config.toml"
+    make_config(tmp_path).save(config_path)
+    binary = tmp_path / "llama-server"
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(runtime, "install_runtime", lambda **_kw: runtime.RuntimeInstallResult(
+        binary, None, "sycl", "b12395", tmp_path, False,
+    ))
+    monkeypatch.setattr(server_caps, "probe_server_caps", lambda *_a, **_k: server_caps.ServerCaps(
+        probe_error=probe_error,
+    ))
+    result = CliRunner().invoke(
+        cli, ["--config", str(config_path), "install-runtime", "--backend", "sycl"]
+    )
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())  # Rich wraps long lines.
+    if probe_error:
+        assert "needs the oneAPI 2026.2 SYCL runtime" in output
+    else:
+        assert "source setvars.sh" in output

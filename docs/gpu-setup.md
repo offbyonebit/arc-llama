@@ -51,6 +51,25 @@ group, but a full re-login is the reliable fix.
 Group checks do not apply. `doctor` prints that they are unavailable. Install
 the current Intel Arc graphics driver instead.
 
+## SYCL runtime for llama.cpp b12395 (Linux)
+
+The prebuilt SYCL llama-server from b12395 on needs the oneAPI 2026.2
+runtime. Intel's runtime packages are enough; you don't need the full
+toolkit, and an existing 2026.1 install can stay:
+
+```bash
+wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+  | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+  | sudo tee /etc/apt/sources.list.d/oneAPI.list
+sudo apt update
+sudo apt install --no-install-recommends intel-oneapi-runtime-libs=2026.2.0-178
+```
+
+If a shell or service puts 2026.1 on `LD_LIBRARY_PATH`, that still wins and
+llama-server fails with a symbol lookup error. To stay on 2026.1, use
+`--runtime-version b12243`. Windows needs nothing extra.
+
 ## First request is slow on SYCL (about 20 seconds)
 
 With the SYCL backend, the first inference after each cold start can take
