@@ -1059,3 +1059,5 @@ def test_thanksgiving_turkey_dates_and_once_per_browser():
     assert not any(out[k] for k in ("seen", "automated", "reduced", "blocked"))
     for page in ("chat.html", "index.html"):
         assert '<script src="/turkey.js?v=turkey-1"></script>' in (STATIC / page).read_text(encoding="utf-8")
+    for art in ("turkey-walk.png", "cornucopia.png"):
+        assert 0 < (STATIC / "assets" / art).stat().st_size < 40_000  # keep the egg tiny
