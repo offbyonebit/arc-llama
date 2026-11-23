@@ -19,9 +19,9 @@ async function fixture(page, origin, loaded=true, reloading=false) {
 }
 export async function testSettingsLivePreview({page,origin}) {
   const calls=await fixture(page,origin);
-  for(const name of ['Conversation capacity','Key cache precision','Value cache precision','Simultaneous conversations','Memory estimate model family'])
+  for(const name of ['Conversation capacity','Key cache precision','Value cache precision','Simultaneous conversations','Thinking budget','Memory estimate model family'])
     assert.equal(await page.getByLabel(new RegExp(name)).count(),1);
-  assert.equal(await page.locator('#s-fields .s-hint').count(),7);
+  assert.equal(await page.locator('#s-fields .s-hint').count(),8);
   assert.match(await page.locator('#s-fields').innerText(),/cache_type_k/);
   await page.fill('#s-ctx','16384');await page.selectOption('#s-ctk','q4_0');await page.selectOption('#s-ctv','q4_0');
   await page.waitForFunction(()=>document.querySelector('#s-fit').textContent.includes('7,000'));
