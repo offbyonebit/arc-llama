@@ -194,7 +194,7 @@ def _model_kv_mb(model: ModelConfig, ctx: int, kv_type: KVCacheType | None = Non
     """Size the K and V halves independently; a trial KV type overrides both."""
     recipe = model.recipe or {}
     k_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_k", "f16"))
-    v_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_v", k_type.value))
+    v_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_v", "f16"))
     f16_per_token = _kv_f16_bytes_per_token_at_ctx(model, ctx)
     kv_k = estimate_kv_bytes(ctx, k_type, model.kv_class, f16_per_token)
     kv_v = estimate_kv_bytes(ctx, v_type, model.kv_class, f16_per_token)

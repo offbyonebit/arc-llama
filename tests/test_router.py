@@ -51,7 +51,7 @@ def test_quick_vram_estimate_defers_offloaded_models(tmp_path):
 
 
 @pytest.mark.parametrize("estimator", [estimate_model_vram_quick_mb, router_mod._estimate_model_vram_mb])
-def test_vram_estimate_sizes_mixed_kv_and_defaults_v_to_k(tmp_path, monkeypatch, estimator):
+def test_vram_estimate_sizes_mixed_kv_and_defaults_v_to_f16(tmp_path, monkeypatch, estimator):
     model_file = tmp_path / "dense.gguf"
     model_file.write_bytes(b"GGUF")
     mib = 1_048_576
@@ -78,8 +78,9 @@ def test_vram_estimate_sizes_mixed_kv_and_defaults_v_to_k(tmp_path, monkeypatch,
     assert mixed == (q8 + f16) // 2
     model.recipe["cache_type_v"] = "q8_0"
     assert estimator(model) == mixed  # Reversing K/V has the same cost.
+    # The launcher passes --cache-type-v f16 when a recipe only sets K.
     model.recipe = {"ctx": 64, "cache_type_k": "q8_0"}
-    assert estimator(model) == q8
+    assert estimator(model) == mixed
 
 
 def test_min_moe_offload_uses_mixed_kv_cost(tmp_path, monkeypatch):
@@ -99,8 +100,8 @@ def test_min_moe_offload_uses_mixed_kv_cost(tmp_path, monkeypatch):
     assert router_mod.min_moe_offload_layers(model, budget) == 1
     # Tuner trial types continue to apply to both halves.
     assert router_mod.min_moe_offload_layers(model, budget, kv_type=KVCacheType.Q8_0) == 0
-    model.recipe.pop("cache_type_v")
-    assert router_mod.min_moe_offload_layers(model, budget) == 0
+    model.recipe.pop("cache_type_v")  # The launcher's V default is f16.
+    assert router_mod.min_moe_offload_layers(model, budget) == 1
 
 
 def test_exact_vram_trial_kv_overrides_both_halves(tmp_path, monkeypatch):
