@@ -216,6 +216,10 @@ export async function testThanksgivingTurkeyOnce({page,origin}) {
   assert.equal(await turkey.evaluate(n=>getComputedStyle(n).pointerEvents),'none');
   assert.equal(await page.evaluate(()=>localStorage.getItem('arc-llama-turkey-seen')),'2026');
   await turkey.waitFor({state:'detached',timeout:10000});
+  const note=page.locator('.arc-turkey-note');await note.waitFor({state:'attached'});
+  assert.match(await note.innerText(),/Happy Thanksgiving!/);
+  assert.equal(await note.evaluate(n=>getComputedStyle(n).pointerEvents),'none');
+  await note.waitFor({state:'detached',timeout:8000});
   await page.reload();await page.waitForSelector('.model-card');await page.waitForTimeout(1600);
   assert.equal(await turkey.count(),0);
 }
