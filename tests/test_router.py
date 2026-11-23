@@ -120,6 +120,28 @@ def test_admission_guard_counts_sycl_staging(tmp_path, monkeypatch):
         router._check_vram_fit(model, gpu)
 
 
+def test_admission_guard_uses_the_models_own_runtime_backend(tmp_path, monkeypatch):
+    """A model on a Vulkan-only runtime gets no SYCL staging on a SYCL GPU."""
+    from conftest import make_config
+
+    from arc_llama.arch import Backend
+
+    cfg = make_config(tmp_path, single_resident=True)
+    model, gpu = cfg.models[0], cfg.gpus[0]
+    model.recipe.update(ctx=262144, cache_type_k="q8_0", cache_type_v="q8_0")
+    gpu.vram_mb, gpu.backend = 1500, "sycl"
+    monkeypatch.setattr(router_mod, "_estimate_model_vram_mb", lambda _model: 1024)
+    monkeypatch.setattr(router_mod, "max_layer_kv_bytes_f16_per_token", lambda _path: 2048)
+    monkeypatch.setattr(router_mod, "estimate_model_vram_quick_mb", lambda *_a, **_k: 1024)
+    monkeypatch.setattr(router_mod, "model_backend", lambda *_args: Backend.VULKAN)
+    Router(cfg)._check_vram_fit(model, gpu)
+    info = router_mod.model_vram_fit_info(model, gpu, {}, cfg)
+    monkeypatch.setattr(router_mod, "model_backend", lambda *_args: Backend.SYCL)
+    assert router_mod.model_vram_fit_info(model, gpu, {}, cfg)["estimated_mb"] == (
+        info["estimated_mb"] + 512
+    )
+
+
 def test_quick_vram_estimate_uses_qwen_hybrid_metadata_over_family(tmp_path, monkeypatch):
     model_file = tmp_path / "qwen35moe.gguf"
     model_file.write_bytes(b"GGUF")

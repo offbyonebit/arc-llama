@@ -34,7 +34,7 @@ from arc_llama.gguf_meta import (
     scan_weight_tensors,
     weight_tensor_table,
 )
-from arc_llama.launcher import LlamaServer, build_plan, resolve_split_gpus
+from arc_llama.launcher import LlamaServer, build_plan, model_backend, resolve_split_gpus
 from arc_llama.preflight import preflight_launch
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
@@ -193,7 +193,7 @@ def _sycl_fa_staging_mb(
     if backend != "sycl" or recipe.get("flash_attn") == "off":
         return 0
     k_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_k", "f16"))
-    v_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_v", k_type.value))
+    v_type = kv_type if kv_type is not None else KVCacheType(recipe.get("cache_type_v", "f16"))
     if all(kv in (KVCacheType.F16, KVCacheType.F32) for kv in (k_type, v_type)):
         return 0
     per_token = max_layer_kv_bytes_f16_per_token(model.path)
@@ -396,6 +396,7 @@ def model_vram_fit_info(
     model: ModelConfig,
     gpu: GPUConfig | None,
     cache: dict[str, tuple[float, int | None]] | None = None,
+    cfg: Config | None = None,
 ) -> dict[str, Any] | None:
     """Admin-status VRAM fit preview for one model on its configured GPU.
 
@@ -418,9 +419,8 @@ def model_vram_fit_info(
         return None
     # Cache the backend-neutral base; add staging with the current GPU so a
     # backend change cannot reuse the other backend's staging allowance.
-    estimated += _sycl_fa_staging_mb(
-        model, model.recipe or {}, backend=gpu.backend if gpu else None
-    )
+    backend = (model_backend(cfg, model, gpu).value if cfg else gpu.backend) if gpu else None
+    estimated += _sycl_fa_staging_mb(model, model.recipe or {}, backend=backend)
     info: dict[str, Any] = {
         "estimated_mb": estimated,
         "confidence": confidence,
@@ -920,7 +920,9 @@ class Router:
                 target.name,
             )
             return
-        target_mb += _sycl_fa_staging_mb(target, target.recipe or {}, backend=target_gpu.backend)
+        target_mb += _sycl_fa_staging_mb(
+            target, target.recipe or {}, backend=model_backend(self.cfg, target, target_gpu).value
+        )
         used_mb = target_mb
         for name, srv in self._servers.items():
             if name == target.name or not srv.is_running:
@@ -939,7 +941,9 @@ class Router:
                 )
                 continue
             used_mb += other_mb
-            used_mb += _sycl_fa_staging_mb(other, other.recipe or {}, backend=target_gpu.backend)
+            used_mb += _sycl_fa_staging_mb(
+                other, other.recipe or {}, backend=model_backend(self.cfg, other, target_gpu).value
+            )
         if used_mb > capacity_mb:
             message = (
                 f"model {target.name!r} needs ~{target_mb} MiB on GPU "

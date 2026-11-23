@@ -1739,7 +1739,7 @@ def create_app(
                 else None
             )
             fit_info = await asyncio.to_thread(
-                model_vram_fit_info, m, c.find_gpu(m.gpu_pci_slot), vram_cache
+                model_vram_fit_info, m, c.find_gpu(m.gpu_pci_slot), vram_cache, c
             )
             if fit_info and not c.server.single_resident:
                 fit_info["headroom_mb"] = None

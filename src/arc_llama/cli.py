@@ -783,11 +783,13 @@ def _print_run_readiness(cfg: Config, model: ModelConfig) -> bool:
     recipe = model.launch_recipe()
     estimate: int | None = None
     try:
+        from arc_llama.launcher import model_backend
         from arc_llama.router import _estimate_model_vram_mb, estimate_model_vram_quick_mb
 
-        estimate = estimate_model_vram_quick_mb(model)
+        backend = model_backend(cfg, model, gpu).value if gpu else None
+        estimate = estimate_model_vram_quick_mb(model, backend=backend)
         if estimate is None:
-            estimate = _estimate_model_vram_mb(model)
+            estimate = _estimate_model_vram_mb(model, backend=backend)
     except Exception as exc:  # noqa: BLE001 - readiness is useful even without an estimate
         logging.getLogger("arc_llama.cli").debug("VRAM readiness estimate failed: %s", exc)
 

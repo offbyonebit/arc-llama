@@ -387,6 +387,7 @@ def _prune_ubatch_stage(
     kv_type: KVCacheType,
     n_cpu_moe: int | None = None,
     override_tensor: list[str] | None = None,
+    backend: str | None = None,
 ) -> None:
     """Mark ubatch candidates that no longer fit under the chosen offload.
 
@@ -406,6 +407,7 @@ def _prune_ubatch_stage(
             n_cpu_moe=n_cpu_moe,
             override_tensor=override_tensor,
             compute_buffer_mb=buffer_mb,
+            backend=backend,
         )
         if est is not None and est > vram_mb:
             step.skipped_reason = (
@@ -462,7 +464,9 @@ async def tune_model(
     gpu = cfg.find_gpu(model.gpu_pci_slot)
 
     from arc_llama.arch import Arch, profile_for
-    from arc_llama.launcher import probe_model_caps
+    from arc_llama.launcher import model_backend, probe_model_caps
+
+    backend = model_backend(cfg, model, gpu).value if gpu else None
 
     profile = profile_for(Arch(gpu.arch) if gpu and gpu.arch else Arch.UNKNOWN)
     # probe_server_caps shells out to `llama-server --help` (subprocess.run,
@@ -486,7 +490,7 @@ async def tune_model(
         # kv_fits_at_ctx reads GGUF metadata (sync file I/O); keep it off the
         # event loop for the same reason as the caps probe above.
         def _fitting_kv_types() -> list[str]:
-            return [kv for kv in ("f16", "q8_0") if workload.kv_fits_at_ctx(model, gpu, kv, wl_ctx)]
+            return [kv for kv in ("f16", "q8_0") if workload.kv_fits_at_ctx(model, gpu, kv, wl_ctx, backend)]
 
         fitting = await asyncio.to_thread(_fitting_kv_types)
         if not fitting:
@@ -911,6 +915,7 @@ async def tune_model(
                     kv_type=kv_winner,
                     override_tensor=[c],
                     compute_buffer_mb=_VRAM_COMPUTE_BUFFER_MB,
+                    backend=backend,
                 )
                 # Estimator must think it fits; also require it frees at least
                 # as many bytes as the n_cpu_moe winner freed, otherwise it
@@ -1052,6 +1057,7 @@ async def tune_model(
                             kv_type=kv_winner,
                             n_cpu_moe=eff_offload,
                             override_tensor=eff_ot,
+                            backend=backend,
                         )
                 stage_index += 1
                 if on_stage is not None:
