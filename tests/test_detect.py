@@ -22,6 +22,18 @@ from arc_llama.detect import (
 )
 
 
+def test_battlemage_pro_ids_from_intel_xe_table():
+    from arc_llama.arch import arch_for_device_id, known_vram_mib
+
+    assert arch_for_device_id(0xE212) == (Arch.BATTLEMAGE, "Arc Pro B50")
+    assert known_vram_mib(0xE212) == 16384
+    assert arch_for_device_id(0xE222) == (Arch.BATTLEMAGE, "Arc Pro B65")
+    assert arch_for_device_id(0xE223) == (Arch.BATTLEMAGE, "Arc Pro B70")
+    # No sourced VRAM size for B65/B70 yet: leave it to sysfs/registry/clinfo.
+    assert known_vram_mib(0xE222) is None
+    assert known_vram_mib(0xE223) is None
+
+
 def test_hardware_support_distinguishes_validation_from_detection():
     assert hardware_support(0xE211, Arch.BATTLEMAGE, Backend.SYCL).status == "validated"
     assert hardware_support(0xE20B, Arch.BATTLEMAGE, Backend.SYCL).status == "detected"
@@ -540,6 +552,71 @@ class TestEnrichWithClinfo:
         # clinfo probably not installed in CI, so this is a no-op.
         # We just assert it doesn't crash.
         assert gpu.vram_mb is None or isinstance(gpu.vram_mb, int)
+
+    # Captured-style clinfo block for an 8 GB A770 (same PCI ID 0x56A0 as 16 GB).
+    A770_8GB_CLINFO = (
+        "Number of platforms                               1\n"
+        "  Platform Name                                   Intel(R) OpenCL Graphics\n"
+        "Number of devices                                 1\n"
+        "  Device Name                                     Intel(R) Arc(TM) A770 Graphics\n"
+        "  Device Vendor                                   Intel(R) Corporation\n"
+        "  Global memory size                              8319852544 (7.748GiB)\n"
+    )
+
+    @staticmethod
+    def _fake_clinfo(monkeypatch, text):
+        import arc_llama.detect as dmod
+
+        monkeypatch.setattr(
+            dmod.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=text, stderr=""),
+        )
+
+    def test_clinfo_overrides_table_vram(self, make_sysfs_gpu, tmp_path, monkeypatch):
+        # Linux i915: no mem_info_vram_total, so the table says 16 GB.
+        make_sysfs_gpu(slot="0000:03:00.0", device_id=0x56A0, vram_bytes=None, driver="i915")
+        _patch_pci_root(monkeypatch, tmp_path / "sys" / "bus" / "pci" / "devices")
+        gpus = _scan_pci()
+        assert gpus[0].vram_mb == 16384
+
+        self._fake_clinfo(monkeypatch, self.A770_8GB_CLINFO)
+        _enrich_with_clinfo(gpus)
+
+        assert gpus[0].vram_mb == 8319852544 // (1024 * 1024)
+        assert any("OpenCL global memory size" in n for n in gpus[0].notes)
+
+    def test_clinfo_does_not_override_measured_vram(self, monkeypatch):
+        gpu = DetectedGPU(
+            pci_slot="0000:03:00.0",
+            device_id=0x56A0,
+            arch=Arch.ALCHEMIST,
+            name="Arc A770",
+            driver="xe",
+            vram_mb=16384,  # from sysfs / registry, no table note
+            drm_card="card1",
+            drm_render="renderD128",
+            sysfs_path="/sys/...",
+        )
+        self._fake_clinfo(monkeypatch, self.A770_8GB_CLINFO)
+        _enrich_with_clinfo([gpu])
+        assert gpu.vram_mb == 16384
+
+    def test_clinfo_overrides_windows_table_name_marker(self, monkeypatch):
+        gpu = DetectedGPU(
+            pci_slot="PCI\\VEN_8086&DEV_56A0",
+            device_id=0x56A0,
+            arch=Arch.ALCHEMIST,
+            name="Intel(R) Arc(TM) A770 Graphics (VRAM from device-ID table)",
+            driver=None,
+            vram_mb=16384,
+            drm_card=None,
+            drm_render=None,
+            sysfs_path="",
+        )
+        self._fake_clinfo(monkeypatch, self.A770_8GB_CLINFO)
+        _enrich_with_clinfo([gpu])
+        assert gpu.vram_mb == 8319852544 // (1024 * 1024)
 
 
 class TestLspciIntelGpus:

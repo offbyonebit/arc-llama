@@ -12,7 +12,7 @@ from arc_llama.arch import Arch, profile_for
 from arc_llama.benchmark import BenchmarkResult, benchmark_depths, usable_depths
 from arc_llama.cli import cli
 from arc_llama.config import Config, GPUConfig, ModelConfig, PathsConfig, TuneConfig
-from arc_llama.launcher import build_env, build_plan, resolve_split_gpus
+from arc_llama.launcher import build_env, build_plan, resolve_split_gpus, vulkan_device_arg
 from arc_llama.server_caps import ServerCaps
 from arc_llama.speculation import DraftCandidate
 
@@ -125,7 +125,7 @@ async def test_benchmark_depths_reports_engine_timings() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = __import__("json").loads(request.content)
         seen.append(body)
-        depth = len(body.get("prompt", "")) // 4
+        depth = len(body.get("prompt", "").split())  # about one token per word
         return httpx.Response(
             200,
             json={
@@ -144,8 +144,9 @@ async def test_benchmark_depths_reports_engine_timings() -> None:
     ) as client:
         rows = await benchmark_depths("http://t", "m", [0, 8000], gen_tokens=32, client=client)
     assert [r.depth for r in rows] == [0, 8000]
-    assert rows[1].generation_tok_s == pytest.approx(22.0)
-    assert rows[1].measured_depth == 8000
+    # the prose lead adds a few dozen words after the 8000
+    assert rows[1].generation_tok_s == pytest.approx(22.0, abs=0.1)
+    assert 8000 <= rows[1].measured_depth < 8100
     measured = [b for b in seen if b.get("ignore_eos")]
     assert all(b["cache_prompt"] is False and b["max_tokens"] == 32 for b in measured)
 
@@ -235,7 +236,12 @@ def test_split_exposes_every_device() -> None:
     assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:0,1"
     vk = _split_cfg(backend="vulkan")
     env = build_env(profile, vk.gpus[0], extra_gpus=[vk.gpus[1]])
-    assert env["GGML_VK_VISIBLE_DEVICES"] == "1,2"
+    # Vulkan exposes them with --device (list-devices numbering), not the env var.
+    assert "GGML_VK_VISIBLE_DEVICES" not in env
+    assert vulkan_device_arg(vk.gpus, None) == "Vulkan1,Vulkan2"
+    vk = _split_cfg(backend="vulkan", tensor_split=[1, 1], split_gpus=["a", "b"])
+    plan = build_plan(vk, vk.models[0], vk.gpus[0])
+    assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan1,Vulkan2"
 
 
 def test_plan_drops_tensor_split_without_valid_gpus() -> None:

@@ -1571,8 +1571,8 @@
       task.addEventListener("input", () => { refreshWorkContext(); autosize(); problem(""); notice(""); menuIndex = 0; if (typedCommand() !== null) loadCommands(); renderMenu(); });
       task.addEventListener("blur", () => { $("#work-commands").hidden = true; });
       $("#work-harness").addEventListener("change", () => {
-        const chosen = info?.harnesses?.find((h) => h.id === $("#work-harness").value);
-        if (chosen && !chosen.available) { offerInstall(chosen); return; }
+        const value = $("#work-harness").value, chosen = info?.harnesses?.find((h) => h.id === value.replace(/^install:/, ""));
+        if (chosen && (!chosen.available || value !== chosen.id)) { offerInstall(chosen); return; }
         lastHarness = $("#work-harness").value;
         commandsKey = ""; updateHarnessControls(); refreshWorkContext();
       });
@@ -1584,7 +1584,8 @@
       $("#work-manager").addEventListener("mousedown", (e) => { if (e.target === e.currentTarget) closeManager(); });
       document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#work-manager").hidden) closeManager(); });
       $("#work-root").addEventListener("change", () => { commandsKey = ""; });
-      $("#work-root").addEventListener("input", () => { problem(""); notice(""); refreshWorkContext(); });
+      // Remember a chosen folder without clearing it while the field is being edited.
+      $("#work-root").addEventListener("input", () => { problem(""); notice(""); const folder = $("#work-root").value; if (folder.trim()) store(ROOT_KEY, folder); refreshWorkContext(); });
       $("#work-root").addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); }
       });
@@ -1617,9 +1618,12 @@
     // ---- installing a missing agent: its menu entry opens the shared installer instead of selecting it
     let harnessInstaller = null, lastHarness = "builtin";
     function renderHarnessOptions() {
-      $("#work-harness").replaceChildren(...info.harnesses.map((h) => {
+      $("#work-harness").replaceChildren(...info.harnesses.flatMap((h) => {
         const installable = !h.available && h.install?.installable;
-        return el("option", { value: h.id, disabled: !h.available && !installable }, h.label + (h.available ? "" : installable ? " (install…)" : " (not installed)"));
+        const option = el("option", { value: h.id, disabled: !h.available && !installable }, h.label + (h.available ? "" : installable ? " (install…)" : " (not installed)"));
+        // Your own copy on PATH still leaves Arc Llama's tested copy one click away.
+        if (!h.available || h.source === "managed" || !h.install?.installable) return [option];
+        return [option, el("option", { value: "install:" + h.id }, `${h.label}: install Arc Llama’s copy…`)];
       }));
     }
     async function harnessInstalled(name) {
@@ -1678,7 +1682,10 @@
       harness.value = lastHarness = pick.id;
       updateHarnessControls();
       // Default to the user's home folder (never the server's own working directory), then remember their choice.
-      $("#work-root").value = recall(ROOT_KEY) || info.home || "";
+      const savedRoot = $("#work-root").value = recall(ROOT_KEY) || info.home || "";
+      // A remembered folder deleted since falls back to home; only the server can see its disk.
+      if (savedRoot !== info.home) ctx.request(`/v1/agent/folder?path=${encodeURIComponent(savedRoot)}`).then((r) => r.ok ? r.json() : null)
+        .then((d) => { if (d && d.folder && $("#work-root").value === savedRoot) { $("#work-root").value = d.folder; folderNote(); } }).catch(() => {});
       folderNote();
       syncModels();
       loadRecent();

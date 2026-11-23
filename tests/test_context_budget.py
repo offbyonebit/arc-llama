@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import httpx
@@ -87,6 +88,19 @@ def test_native_budget_uses_runtime_slot_and_preserves_template_inputs(budget_ap
         assert app.state.router.model_inflight == {}
         assert app.state.router.inflight == 0
         assert app.state.resources.active_leases == {}
+
+
+def test_budget_runtime_requests_stay_out_of_the_info_log(budget_app, caplog):
+    app, calls, _ = budget_app
+    with TestClient(app) as client:
+        caplog.set_level(logging.INFO)
+        client.post("/v1/chat/budget", json=_body())
+        assert [path for path, _ in calls] == ["/props", "/apply-template", "/tokenize"]
+        assert not [r for r in caplog.records if r.name == "httpx"]
+        caplog.clear()
+        caplog.set_level(logging.DEBUG)
+        client.post("/v1/chat/budget", json=_body())
+        assert any("/apply-template" in r.getMessage() for r in caplog.records if r.name == "httpx")
 
 
 def test_exact_budget_includes_reply_allowance(budget_app):

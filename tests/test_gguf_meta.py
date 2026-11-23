@@ -460,6 +460,45 @@ class TestFusedExpertProjections:
             scan_weight_tensors(f)
         assert "implausibly low" in caplog.text
 
+    def test_scan_is_parsed_once_per_file_and_hands_out_copies(self, tmp_path, monkeypatch):
+        f = tmp_path / "cached.gguf"
+        f.write_bytes(b"x")
+        reads = []
+        monkeypatch.setattr(
+            "arc_llama.gguf_meta.gguf.GGUFReader",
+            lambda path: reads.append(path) or _FakeReader(_moe_tensors(), "qwen3moe"),
+        )
+        _total, by_layer = scan_weight_tensors(f)
+        by_layer.clear()
+        assert scan_weight_tensors(f)[1] == {0: 600, 1: 1200}
+        assert len(reads) == 1
+        f.write_bytes(b"xy")  # a changed file is parsed again
+        scan_weight_tensors(f)
+        assert len(reads) == 2
+
+    def test_weight_cache_refreshes_for_a_same_size_file_replacement(self, tmp_path, monkeypatch):
+        import os
+
+        path = tmp_path / "weights.gguf"
+        path.write_bytes(b"first")
+        os.utime(path, (1700000000, 1700000000))
+        reads = []
+
+        def reader(filename):
+            contents = Path(filename).read_bytes()
+            reads.append(contents)
+            size = 100 if contents == b"first" else 200
+            return _FakeReader([_FakeTensor("blk.0.ffn_up_exps.weight", size)], "qwen3moe")
+
+        monkeypatch.setattr("arc_llama.gguf_meta.gguf.GGUFReader", reader)
+        assert scan_weight_tensors(path) == (100, {0: 100})
+        path.write_bytes(b"other")
+        os.utime(path, (1700000002, 1700000002))
+        assert scan_weight_tensors(path) == (200, {0: 200})
+        assert reads == [b"first", b"other"]
+        path.unlink()
+        assert scan_weight_tensors(path) is None
+
     def test_healthy_moe_does_not_warn(self, tmp_path, monkeypatch, caplog):
         f = tmp_path / "gemma.gguf"
         f.write_bytes(b"x")
@@ -612,3 +651,121 @@ def test_non_gguf_file_is_left_to_the_reader(tmp_path):
     path.write_bytes(b"not a model at all, just text" * 4)
     check_gguf_header(path)
     assert read_gguf_meta(path) == {}
+
+
+# ---------------------------------------------------------------------------
+# Light header reader: the load path must not build a GGUFReader, whose
+# per-string numpy parsing of a large tokenizer took ~9 s per file.
+# ---------------------------------------------------------------------------
+
+def _write_real_gguf(path: Path, *, vocab: int = 3, layers: int = 2) -> Path:
+    writer = gguf.GGUFWriter(str(path), "qwen3moe")
+    writer.add_block_count(layers)
+    writer.add_context_length(8192)
+    writer.add_embedding_length(64)
+    writer.add_head_count(4)
+    writer.add_head_count_kv([0, 2] if layers == 2 else 2)
+    writer.add_expert_count(8)
+    writer.add_array("tokenizer.ggml.tokens", [f"t{i}" for i in range(vocab)])
+    writer.add_array("tokenizer.ggml.token_type", [1] * vocab)
+    writer.add_tensor("token_embd.weight", np.zeros((4, 8), dtype="float32"))
+    writer.add_tensor("blk.0.attn_q.weight", np.zeros((8, 8), dtype="float16"))
+    q8 = np.zeros((1, 68), dtype=np.uint8)  # one row of 64 values = two Q8_0 blocks of 34 bytes
+    writer.add_tensor("blk.1.ffn_up_exps.weight", q8, raw_shape=(1, 68), raw_dtype=gguf.GGMLQuantizationType.Q8_0)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def _full_reader_results(path: Path) -> tuple[dict[str, Any], dict[str, int]]:
+    from arc_llama import gguf_meta as gm
+
+    original = gm._read_gguf_light
+
+    def fail(_path):
+        raise ValueError("forced fallback")
+
+    gm._read_gguf_light = fail
+    try:
+        meta = gm._read_gguf_meta(path)
+    finally:
+        gm._read_gguf_light = original
+    tensors = {t.name: int(t.n_bytes) for t in gguf.GGUFReader(path).tensors}
+    return meta, tensors
+
+
+def test_light_reader_matches_gguf_reader(tmp_path):
+    from arc_llama import gguf_meta as gm
+
+    path = _write_real_gguf(tmp_path / "real.gguf")
+    full_meta, full_tensors = _full_reader_results(path)
+    light = gm._read_gguf_light(path)
+    assert gm._read_gguf_meta(path) == full_meta
+    assert full_meta["attention.head_count_kv"] == [0, 2] and full_meta["expert_count"] == 8
+    assert {t.name: t.n_bytes for t in light.tensors} == full_tensors
+    assert full_tensors["blk.1.ffn_up_exps.weight"] == 68  # Q8_0: 2 blocks x 34 bytes
+
+
+def test_light_reader_skips_tokenizer_and_never_builds_gguf_reader(tmp_path, monkeypatch):
+    from arc_llama import gguf_meta as gm
+
+    path = _write_real_gguf(tmp_path / "big-vocab.gguf", vocab=gm._LIGHT_ARRAY_LIMIT + 10)
+
+    def no_full_reader(_path):
+        raise AssertionError("GGUFReader must not run on the load path")
+
+    monkeypatch.setattr(gguf, "GGUFReader", no_full_reader)
+    light = gm._read_gguf_light(path)
+    assert "tokenizer.ggml.tokens" not in light.fields
+    assert "tokenizer.ggml.token_type" not in light.fields
+    assert read_gguf_meta(path)["block_count"] == 2
+    total, by_layer = scan_weight_tensors(path)
+    assert by_layer == {1: 68} and total == 4 * 8 * 4 + 8 * 8 * 2 + 68
+
+
+def test_load_path_reads_are_cached_until_the_file_changes(tmp_path, monkeypatch):
+    import os
+
+    from arc_llama import gguf_meta as gm
+
+    path = _write_real_gguf(tmp_path / "cache.gguf")
+    os.utime(path, (1700000000, 1700000000))
+    reads: list[Path] = []
+    real_light = gm._read_gguf_light
+
+    def counting_light(p):
+        reads.append(Path(p))
+        return real_light(p)
+
+    monkeypatch.setattr(gm, "_read_gguf_light", counting_light)
+    first_meta = read_gguf_meta(path)
+    first_scan = scan_weight_tensors(path)
+    after_first = len(reads)
+    assert after_first == 2  # one metadata read, one tensor scan
+
+    # Same path, size and mtime: both come from the cache.
+    assert read_gguf_meta(path) == first_meta
+    assert scan_weight_tensors(path) == first_scan
+    assert len(reads) == after_first
+
+    # Same contents and size, newer mtime: both are read again.
+    os.utime(path, (1700000005, 1700000005))
+    assert read_gguf_meta(path) == first_meta
+    assert scan_weight_tensors(path) == first_scan
+    assert len(reads) == after_first + 2
+
+
+def test_gguf_reader_is_the_fallback_when_the_light_read_fails(tmp_path, monkeypatch):
+    from arc_llama import gguf_meta as gm
+
+    path = _write_real_gguf(tmp_path / "fallback.gguf")
+    expected_meta, expected_tensors = _full_reader_results(path)
+
+    def broken(_path):
+        raise ValueError("unsupported layout")
+
+    monkeypatch.setattr(gm, "_read_gguf_light", broken)
+    assert read_gguf_meta(path) == expected_meta
+    assert scan_weight_tensors(path) == (sum(expected_tensors.values()), {1: 68})

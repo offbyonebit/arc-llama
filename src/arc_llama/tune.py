@@ -300,6 +300,7 @@ async def _restore_final_state(
                 from arc_llama.config import default_config_path
 
                 _apply_state_to_recipe(model, final_state)
+                cfg.model_saved_settings.pop(model_name, None)
                 cfg.save(default_config_path())
                 log.warning(
                     "tune %s: restored the final recipe via a direct config "
@@ -638,7 +639,8 @@ async def tune_model(
         if key in measured:
             res, sc = measured[key]
             return res, sc, "same config as an earlier run"
-        err = await _apply_edits(client, model_name, state)
+        # Trials stay in memory; only the final restore below writes config.toml.
+        err = await _apply_edits(client, model_name, {**state, "persist": False})
         if err:
             res = BenchmarkResult(
                 model=model_name,
@@ -965,6 +967,10 @@ async def tune_model(
                     client, {**base_state, **best_edits}
                 )
             report.steps.append(baseline_step)
+            if should_abort and should_abort():
+                # A user request during the baseline aborts the tune, even when
+                # it made the baseline fail (e.g. by evicting the model).
+                report.aborted = True
             if baseline_step.score is None and not report.aborted and offload_info is not None:
                 # MoE model whose recipe does not load even from the seeded
                 # minimum (the estimator was optimistic). Run the offload

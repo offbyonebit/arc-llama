@@ -10,7 +10,9 @@ from arc_llama.arch import Backend
 from arc_llama.binary import (
     detect_backends,
     detect_llama_server_backend,
+    list_devices,
     list_vulkan_devices,
+    pick_intel_by_memory,
     resolve_vulkan_index,
 )
 
@@ -20,6 +22,24 @@ def _make_fake_binary(tmp_path: Path, content: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return path
+
+
+def test_list_devices_replaces_undecodable_tool_output(monkeypatch, tmp_path):
+    run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        return run(
+            [sys.executable, "-c", (
+                "import sys; "
+                "sys.stdout.buffer.write(b'  SYCL0: Intel Arc \\x81 (24576 MiB)\\n'); "
+                "sys.stderr.buffer.write(b'driver warning \\x9d\\n')"
+            )],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    devices = list_devices(tmp_path / "llama-server", "SYCL")
+    assert devices == [(0, "Intel Arc \ufffd", 24576)]
 
 
 def _sibling_lib(name: str) -> str:
@@ -246,3 +266,96 @@ class TestVulkanDeviceResolution:
 
     def test_unrunnable_binary_returns_empty(self, tmp_path):
         assert list_vulkan_devices(tmp_path / "does-not-exist") == []
+
+
+# Captured-style ``--list-devices`` outputs for the device-pick fixtures.
+LIST_DEVICES = {
+    "igpu_arc": (
+        "Available devices:\n"
+        "  Vulkan0: Intel(R) UHD Graphics 770 (ADL-S GT1) (23950 MiB, 23950 MiB free)\n"
+        "  Vulkan1: Intel(R) Arc(tm) B580 Graphics (BMG G21) (12216 MiB, 11800 MiB free)\n"
+    ),
+    "arc_nvidia": (
+        "Available devices:\n"
+        "  Vulkan0: NVIDIA GeForce RTX 4060 Ti (16380 MiB, 13404 MiB free)\n"
+        "  Vulkan1: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 21994 MiB free)\n"
+    ),
+    "two_arcs_nvidia": (
+        "Available devices:\n"
+        "  Vulkan0: NVIDIA GeForce RTX 4060 Ti (16380 MiB, 13404 MiB free)\n"
+        "  Vulkan1: Intel(R) Arc(tm) B580 Graphics (BMG G21) (12216 MiB, 11800 MiB free)\n"
+        "  Vulkan2: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 21994 MiB free)\n"
+    ),
+    "two_same_arcs": (
+        "  Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 24000 MiB free)\n"
+        "  Vulkan1: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 21994 MiB free)\n"
+    ),
+    "sycl": (
+        "ggml_sycl_init: found 2 SYCL devices:\n"
+        "Available devices:\n"
+        "  SYCL0: Intel(R) Arc(TM) B580 Graphics (12216 MiB, 12216 MiB free)\n"
+        "  SYCL1: Intel(R) UHD Graphics 770 (23950 MiB, 23950 MiB free)\n"
+    ),
+    "empty": "",
+}
+
+
+def _listed(monkeypatch, tmp_path, key: str, backend: str = "Vulkan"):
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=LIST_DEVICES[key], stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return list_devices(tmp_path / "llama-server", backend)
+
+
+class TestDevicePickFixtures:
+    """Name first; when names can't decide among Intel devices, memory size."""
+
+    def test_keeps_total_memory(self, monkeypatch, tmp_path):
+        assert _listed(monkeypatch, tmp_path, "arc_nvidia") == [
+            (0, "NVIDIA GeForce RTX 4060 Ti", 16380),
+            (1, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480),
+        ]
+
+    def test_igpu_and_arc(self, monkeypatch, tmp_path):
+        devices = _listed(monkeypatch, tmp_path, "igpu_arc")
+        names = [(i, n) for i, n, _ in devices]
+        assert resolve_vulkan_index(names, gpu_name="Arc B580 Graphics") == 1
+        # A fallback name matches nothing; the iGPU reports more memory than
+        # the card, so the pick goes by the card's detected VRAM, not size.
+        assert resolve_vulkan_index(names, gpu_name="Arc B-series (variant)") is None
+        assert pick_intel_by_memory(devices, 12288) == 1
+
+    def test_arc_with_nvidia_listed_first(self, monkeypatch, tmp_path):
+        devices = _listed(monkeypatch, tmp_path, "arc_nvidia")
+        names = [(i, n) for i, n, _ in devices]
+        assert resolve_vulkan_index(names, gpu_name="Arc Pro B-series") == 1
+
+    def test_two_arcs_with_unknown_name(self, monkeypatch, tmp_path):
+        devices = _listed(monkeypatch, tmp_path, "two_arcs_nvidia")
+        names = [(i, n) for i, n, _ in devices]
+        assert resolve_vulkan_index(names, gpu_name="Arc Pro B60 Graphics") == 2
+        assert resolve_vulkan_index(names, gpu_name="Arc B580 Graphics") == 1
+        assert resolve_vulkan_index(names, gpu_name="Arc Pro B-series") is None
+        assert pick_intel_by_memory(devices, 24576) == 2
+        assert pick_intel_by_memory(devices, 12288) == 1
+        assert pick_intel_by_memory(devices) == 2  # no VRAM known: most memory, never NVIDIA
+
+    def test_identical_cards_stay_unpicked(self, monkeypatch, tmp_path):
+        devices = _listed(monkeypatch, tmp_path, "two_same_arcs")
+        assert pick_intel_by_memory(devices, 24576) is None
+        assert pick_intel_by_memory(devices) is None
+
+    def test_empty_output(self, monkeypatch, tmp_path):
+        devices = _listed(monkeypatch, tmp_path, "empty")
+        assert devices == []
+        assert resolve_vulkan_index([]) is None
+        assert pick_intel_by_memory(devices) is None
+
+    def test_parses_sycl_lines_by_prefix(self, monkeypatch, tmp_path):
+        assert _listed(monkeypatch, tmp_path, "sycl", "SYCL") == [
+            (0, "Intel(R) Arc(TM) B580 Graphics", 12216),
+            (1, "Intel(R) UHD Graphics 770", 23950),
+        ]
+        assert _listed(monkeypatch, tmp_path, "sycl") == []
+

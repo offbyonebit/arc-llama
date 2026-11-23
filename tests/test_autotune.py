@@ -8,6 +8,7 @@ tuning search implementation — autotune.py owns *when* to run, tune.py owns
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -404,7 +405,7 @@ async def test_multi_resident_core_running_marks_skipped(cfg: Config) -> None:
 
 
 async def test_successful_sweep_sets_tuned_and_fingerprint(
-    cfg: Config, monkeypatch: pytest.MonkeyPatch
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     router = FakeRouter(cfg)
     router.last_activity = -1000.0
@@ -413,18 +414,24 @@ async def test_successful_sweep_sets_tuned_and_fingerprint(
     tuner.bump_use("m")
 
     async def fake_tune_model(*args, **kwargs):  # noqa: ARG001
-        return TuneReport(model="m", target="balanced", applied=True)
+        return TuneReport(
+            model="m", target="balanced", applied=True, best_edits={"ubatch_size": 1024}
+        )
 
     monkeypatch.setattr("arc_llama.tune.tune_model", fake_tune_model)
 
-    await tuner._tick()
+    with caplog.at_level(logging.INFO, logger="arc_llama.autotune"):
+        await tuner._tick()
 
     assert cfg.models[0].tune_state == "tuned"
     assert cfg.models[0].tune_fingerprint
     assert cfg.models[0].tuned_at is not None
+    assert "finished tuning m: ubatch_size=1024" in caplog.text
 
 
-async def test_failed_sweep_sets_failed(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_failed_sweep_sets_failed(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     router = FakeRouter(cfg)
     router.last_activity = -1000.0
     cfg.tune.idle_seconds = 0
@@ -436,10 +443,12 @@ async def test_failed_sweep_sets_failed(cfg: Config, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("arc_llama.tune.tune_model", fake_tune_model)
 
-    await tuner._tick()
+    with caplog.at_level(logging.INFO, logger="arc_llama.autotune"):
+        await tuner._tick()
 
     assert cfg.models[0].tune_state == "failed"
     assert cfg.models[0].tune_error == "boom"
+    assert "sweep of m failed: boom" in caplog.text
 
 
 async def test_aborted_sweep_leaves_untuned(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -671,6 +680,37 @@ async def test_deferred_restore_does_not_consume_abort_signal(cfg: Config) -> No
 # ---------------------------------------------------------------------------
 # #34 — start()/stop() serialization
 # ---------------------------------------------------------------------------
+
+
+async def test_shutdown_skipping_deferred_restore_saves_the_final_recipe(cfg: Config) -> None:
+    """Trials are not persisted, so when shutdown skips the deferred restore
+    POST the in-memory recipe must go back to the final pick before the save
+    that follows the sweep, or that save writes the last trial."""
+    router = FakeRouter(cfg)
+    saved: list[dict[str, Any]] = []
+    tuner = Autotuner(
+        cfg,
+        router,
+        version="0.6.0",
+        on_save=lambda: saved.append(dict(cfg.models[0].recipe)),
+    )
+
+    import arc_llama.tune as tune_mod
+
+    async def fake_tune_model(*args, **kwargs):
+        cfg.models[0].recipe["ubatch_size"] = 2048  # the last trial, memory only
+        tuner._stopping = True
+        await kwargs["on_deferred_restore"]({"cache_type_k": "q8_0", "ubatch_size": 512})
+        return TuneReport(model="m", target="balanced", aborted=True)
+
+    original = tune_mod.tune_model
+    tune_mod.tune_model = fake_tune_model
+    try:
+        await tuner._run_sweep(cfg.models[0])
+    finally:
+        tune_mod.tune_model = original
+
+    assert saved and saved[-1]["ubatch_size"] == 512
 
 
 async def test_start_is_noop_while_running(cfg: Config) -> None:

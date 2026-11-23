@@ -907,6 +907,12 @@ def test_work_view_is_wired_and_ships_behind_the_experimental_switch():
     assert "innerHTML" not in work
 
 
+def test_work_offers_arc_llamas_copy_beside_an_agent_found_on_path():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert 'value: "install:" + h.id' in work and "install Arc Llama’s copy…" in work
+    assert 'h.source === "managed"' in work and "offerInstall(chosen)" in work
+
+
 @pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
 def test_work_step_translation_is_plain_language_and_flags_risk():
     helper = STATIC / "chat" / "work.js"
@@ -951,6 +957,15 @@ def test_work_view_never_defaults_to_the_servers_own_folder():
     assert "Choose a project folder first." in work
     css = (STATIC / "chat" / "work.css").read_text(encoding="utf-8")
     assert "body.work-mode .compact-controls" in css      # chat-only controls stay out of the Work view
+
+
+def test_work_view_uses_current_script_version():
+    assert "/chat/work.js?v=paper-24" in (STATIC / "chat.html").read_text(encoding="utf-8")
+
+
+def test_work_view_checks_the_remembered_folder_still_exists():
+    work = (STATIC / "chat" / "work.js").read_text(encoding="utf-8")
+    assert "/v1/agent/folder?path=" in work and "$(\"#work-root\").value === savedRoot" in work
 
 
 def test_work_view_surfaces_problems_and_waiting_states():
@@ -1013,3 +1028,36 @@ def test_work_page_harness_installs_send_the_admin_token():
     work = chat[chat.index("window.ArcChat.createWork({") :]
     work = work[: work.index("});")]
     assert "authHeaders(" in work
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_thanksgiving_turkey_dates_and_once_per_browser():
+    """The turkey only shows in US Thanksgiving week, once, and never in automation."""
+    script = json.dumps(str(STATIC / "turkey.js"))
+    program = f"""
+      require('vm').runInThisContext(require('fs').readFileSync({script}, 'utf8'));
+      const T = globalThis.ArcTurkey;
+      const store = seen => ({{ getItem: () => seen }});
+      const nav = {{ webdriver: false }};
+      console.log(JSON.stringify({{
+        days: [2024, 2025, 2026, 2027, 2028].map(T.thanksgiving),
+        week: [
+          new Date(2026, 10, 22, 23, 59), new Date(2026, 10, 23, 0, 0), new Date(2026, 10, 29, 23, 59),
+          new Date(2026, 10, 30, 0, 0), new Date(2024, 11, 1, 12), new Date(2024, 11, 2, 0, 0),
+        ].map(T.isThanksgivingWeek),
+        fresh: T.shouldRun(new Date(2026, 10, 26), store(null), nav, false),
+        seen: T.shouldRun(new Date(2026, 10, 26), store('2026'), nav, false),
+        automated: T.shouldRun(new Date(2026, 10, 26), store(null), {{ webdriver: true }}, false),
+        reduced: T.shouldRun(new Date(2026, 10, 26), store(null), nav, true),
+        blocked: T.shouldRun(new Date(2026, 10, 26), {{ getItem() {{ throw new Error('no'); }} }}, nav, false),
+      }}));
+    """
+    out = json.loads(subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True).stdout)
+    assert out["days"] == [28, 27, 26, 25, 23]
+    assert out["week"] == [False, True, True, False, True, False]
+    assert out["fresh"] is True
+    assert not any(out[k] for k in ("seen", "automated", "reduced", "blocked"))
+    for page in ("chat.html", "index.html"):
+        assert '<script src="/turkey.js?v=turkey-1"></script>' in (STATIC / page).read_text(encoding="utf-8")
+    for art in ("turkey-walk.png", "cornucopia.png"):
+        assert 0 < (STATIC / "assets" / art).stat().st_size < 40_000  # keep the egg tiny

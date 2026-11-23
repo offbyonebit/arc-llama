@@ -305,3 +305,15 @@ def test_gateway_serving_another_home_is_left_alone(tmp_path):
 
 def test_no_gateway_record_names_no_process(tmp_path):
     assert adapter._recorded_gateway_pids(tmp_path) == set()
+
+
+
+def test_recorded_gateway_is_stopped_with_the_run_on_posix(tmp_path, monkeypatch):
+    signalled = []
+    monkeypatch.setattr(adapter.sys, "platform", "linux")
+    monkeypatch.setattr(adapter.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    (tmp_path / "gateway.pid").write_text(_gateway_record(tmp_path))
+
+    asyncio.run(adapter._stop_gateway(tmp_path))
+
+    assert signalled == [(4242, adapter.signal.SIGTERM)]

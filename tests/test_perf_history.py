@@ -85,6 +85,7 @@ async def test_history_endpoint(monkeypatch, tmp_path) -> None:
     app = server_mod.create_app(cfg, plugins=[])
     auth = {"Authorization": "Bearer tok"}
     async with app.router.lifespan_context(app):
+        await app.state.ready.wait()
         app.state.perf_history.add("qwen", "generation_tok_s", 22.0)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             assert (await client.get("/admin/metrics/history")).status_code == 401

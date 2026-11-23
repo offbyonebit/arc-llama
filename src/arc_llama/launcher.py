@@ -16,12 +16,13 @@ import ctypes
 import errno
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,12 @@ except ImportError:
 import httpx
 
 from arc_llama.arch import Arch, ArchProfile, Backend, profile_for
-from arc_llama.binary import list_vulkan_devices, resolve_vulkan_index
+from arc_llama.binary import (
+    detect_backends,
+    list_devices,
+    pick_intel_by_memory,
+    resolve_vulkan_index,
+)
 from arc_llama.config import Config, GPUConfig, ModelConfig, default_state_dir
 from arc_llama.failures import StartupFailureError
 from arc_llama.gguf_meta import has_mtp_heads
@@ -71,11 +77,62 @@ async def _await_cleanup(future: asyncio.Future[Any]) -> Any:
 
 
 DEFAULT_HEALTH_TIMEOUT = 120  # seconds — generous for cold-start SYCL JIT
-HEALTH_POLL_INTERVAL = 1.5
+# Only used while a model starts. A refused connection or llama-server's 503
+# costs nothing, and a 1.5 s interval added 0.75 s to the average load.
+HEALTH_POLL_INTERVAL = 0.25
 
 # Log rotation for llama-server subprocess logs.
 _MAX_LOG_BYTES = 50 * 1024 * 1024
 _LOG_BACKUPS = 3
+
+# llama.cpp's own startup lines: which device a model loaded on, how many
+# layers went to it, and where the weights live.
+_USING_DEVICE_RE = re.compile(r"using device (\S+) \((.*)\) - \d+ MiB free")
+_OFFLOADED_RE = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
+_MODEL_BUFFER_RE = re.compile(r"load_tensors:\s+(\S+) model buffer size")
+
+
+def _used_devices(log_text: str) -> dict[str, str]:
+    """{"Vulkan0": "Intel(R) Arc(tm) Pro B60 Graphics", ...} from "using device" lines."""
+    return {
+        m.group(1): re.sub(r"\) \((?:unknown id|[0-9A-Fa-f:.]+)$", "", m.group(2))
+        for m in _USING_DEVICE_RE.finditer(log_text)
+    }
+
+
+def startup_device_warning(log_text: str, gpu_name: str = "") -> str | None:
+    """Why llama-server's startup log looks like a CPU or wrong-GPU load, or None.
+
+    A log without the lines is unknown, never reported as a fallback.
+    """
+    offloaded = _OFFLOADED_RE.search(log_text)  # first one is the main model
+    buffers = _MODEL_BUFFER_RE.findall(log_text)
+    devices = _used_devices(log_text)
+    if offloaded and offloaded.group(1) == "0":
+        return f"0/{offloaded.group(2)} layers were offloaded to the GPU, so the model runs on the CPU"
+    if buffers and all("CPU" in b or b.endswith("_Host") for b in buffers):
+        return "llama.cpp put all model weights in CPU memory, so the model runs on the CPU"
+    wanted = set(re.findall(r"[0-9a-z]+", gpu_name.lower()))
+    wanted_models = {t for t in wanted if re.fullmatch(r"[ab]\d{2,3}[a-z]?", t)}  # b60, a770
+    for dev, desc in devices.items():
+        have = set(re.findall(r"[0-9a-z]+", desc.lower()))
+        if "intel" not in have or (
+            len(devices) == 1
+            and (("arc" in wanted and "arc" not in have) or (wanted_models and not wanted_models & have))
+        ):
+            return f"llama.cpp loaded the model on {dev} ({desc}), not the configured GPU {gpu_name or ''}".rstrip()
+    return None
+
+
+def startup_device_summary(log_text: str) -> str | None:
+    """" on Vulkan0: <GPU name>, 65/65 layers on GPU" from the startup log, or None."""
+    devices = ", ".join(f"{dev}: {desc}" for dev, desc in _used_devices(log_text).items())
+    offloaded = _OFFLOADED_RE.search(log_text)
+    if not devices and not offloaded:
+        return None
+    where = f" on {devices}" if devices else ""
+    return where + (f", {offloaded.group(1)}/{offloaded.group(2)} layers on GPU" if offloaded else "")
+
 
 _IS_WINDOWS = sys.platform == "win32"
 # Not defined on POSIX. Fallback lets the Windows code path stay import-safe
@@ -174,6 +231,7 @@ class LaunchPlan:
     # mode is enabled. This coordinates separate arc-llama processes too.
     resident_lock_path: Path | None = None
     gpu_pci_slot: str | None = None
+    gpu_name: str = ""
 
 
 # Environment variables that only make sense for the SYCL backend; they can
@@ -192,15 +250,30 @@ _SYCL_ONLY_ENVS: frozenset[str] = frozenset(
 )
 
 
+# -ctxcp 8 is what kept the production 27B's RSS flat (Nov 11). A 2048 MiB
+# prompt cache was too small: a hybrid 27B's saved state passes it near 14K
+# tokens, and a side request evicted the main chat's state at 6K.
+DEFAULT_CTX_CHECKPOINTS = 8
+
+
+def default_cache_ram_mib() -> int:
+    """llama.cpp's own 8 GiB, or a quarter of RAM on smaller machines."""
+    from arc_llama.issue_report import _total_ram_mib
+
+    ram = _total_ram_mib()
+    return min(8192, ram // 4) if ram else 4096
+
+
 @lru_cache(maxsize=8)
-def _vulkan_devices_cached(binary_path: str, env_key: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[int, str], ...]:
-    return tuple(list_vulkan_devices(binary_path, env=dict(env_key))) if env_key else tuple(list_vulkan_devices(binary_path))
+def _devices_cached(binary_path: str, backend: str = "Vulkan", env_key: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[int, str, int | None], ...]:
+    return tuple(list_devices(binary_path, backend, env=dict(env_key) if env_key else None))
 
 
 def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env: dict[str, str] | None = None) -> int | None:
     """Resolve the Vulkan device index for *gpu*, or None to leave it unset.
 
-    Returning None means "don't set GGML_VK_VISIBLE_DEVICES at all", which lets
+    The index is the N of ``VulkanN`` in ``--list-devices``, passed as
+    ``--device VulkanN``. Returning None means "pass no --device", which lets
     llama.cpp apply its own default. That is deliberately preferred over
     guessing: a wrong index runs the model on another vendor's GPU and looks
     like success.
@@ -209,21 +282,27 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env
         return gpu.vulkan_index
 
     if llama_server:
-        devices = list(_vulkan_devices_cached(str(llama_server), tuple(sorted(probe_env.items())))) if probe_env else list(_vulkan_devices_cached(str(llama_server)))
-        index = resolve_vulkan_index(devices, gpu_name=gpu.name)
+        devices = list(_devices_cached(str(llama_server), "Vulkan", tuple(sorted(probe_env.items())) if probe_env else ()))
+        index = resolve_vulkan_index([(i, n) for i, n, _ in devices], gpu_name=gpu.name)
+        if index is None and len(devices) > 1:
+            # Several Intel devices and the name fits none or several: the
+            # default would spread the model over every GPU, NVIDIA included.
+            index = pick_intel_by_memory(devices, gpu.vram_mb)
+            if index is not None:
+                log.info("Vulkan: %s matched no single device by name; using Vulkan%d by memory size", gpu.name or gpu.pci_slot, index)
         if index is not None:
             return index
         if len(devices) > 1:
             log.warning(
                 "Vulkan: could not identify which of %d devices is %s (%s). "
-                "Not setting GGML_VK_VISIBLE_DEVICES; llama.cpp will pick its "
+                "Not passing --device; llama.cpp will pick its "
                 "own default, which may be a different vendor's GPU. Set "
                 "vulkan_index for this GPU in the config to be certain. "
                 "Devices: %s",
                 len(devices),
                 gpu.name or "the configured GPU",
                 gpu.pci_slot,
-                ", ".join(f"{i}={n}" for i, n in devices),
+                ", ".join(f"{i}={n}" for i, n, _ in devices),
             )
             return None
         if len(devices) == 1:
@@ -231,6 +310,54 @@ def _vulkan_index_for(gpu: GPUConfig, llama_server: str | Path | None, probe_env
 
     # No binary to ask, so no way to map. Only safe when there is nothing to
     # confuse: a single-vendor box makes index 0 the right answer anyway.
+    return None
+
+
+def _sycl_index_for(gpu: GPUConfig, llama_server: str | Path, probe_env: dict[str, str]) -> int:
+    """Level Zero index of *gpu*, matched by name; its sycl_index when unsure.
+
+    The N of ``SYCLN`` in ``--list-devices`` is not the N of level_zero:N
+    (llama.cpp lists its default device first), so each level_zero:N is
+    listed on its own and the GPU's name is matched against those.
+    """
+    devices = _devices_cached(str(llama_server), "SYCL", tuple(sorted(probe_env.items())))
+    by_selector = [(0, devices[0][1])] if len(devices) == 1 else []
+    for n in range(len(devices) if len(devices) > 1 else 0):
+        selected = {**probe_env, "ONEAPI_DEVICE_SELECTOR": f"level_zero:{n}"}
+        listed = _devices_cached(str(llama_server), "SYCL", tuple(sorted(selected.items())))
+        if len(listed) != 1:
+            return gpu.sycl_index
+        by_selector.append((n, listed[0][1]))
+    index = resolve_vulkan_index(by_selector, gpu_name=gpu.name)
+    if index is None:
+        return gpu.sycl_index
+    if index != gpu.sycl_index:
+        log.info("SYCL: %s is level_zero:%d, not sycl_index %d", gpu.name or gpu.pci_slot, index, gpu.sycl_index)
+    return index
+
+
+def vulkan_device_arg(
+    gpus: list[GPUConfig], llama_server: str | Path | None, probe_env: dict[str, str] | None = None
+) -> str | None:
+    """``--device`` value pinning a Vulkan model to its GPU(s), primary first.
+
+    Uses ``VulkanN`` names, which share ``--list-devices`` numbering. The older
+    GGML_VK_VISIBLE_DEVICES indexes the raw Vulkan list instead (before CPU
+    and unsupported devices are dropped), so the same N could name another GPU.
+
+    This must NOT be sycl_index. SYCL enumerates Intel devices only, so
+    sycl_index 0 is the first Arc card; Vulkan enumerates every vendor, so on
+    a box with a discrete NVIDIA/AMD card the Arc can be Vulkan1 while
+    sycl_index is still 0.
+    """
+    indices = [_vulkan_index_for(g, llama_server, probe_env) for g in gpus]
+    if all(i is not None for i in indices) and len(set(indices)) == len(indices):
+        return ",".join(f"Vulkan{i}" for i in indices)
+    if len(gpus) > 1:
+        log.warning(
+            "Vulkan: could not map every split GPU to its own device; set "
+            "vulkan_index for each GPU. Not restricting devices."
+        )
     return None
 
 
@@ -291,24 +418,7 @@ def build_env(
         # Vulkan path: keep the environment clean of SYCL/oneAPI selectors.
         for k in _SYCL_ONLY_ENVS:
             env.pop(k, None)
-        # Restrict visible Vulkan devices to the one this model is bound to.
-        # GGML_VK_VISIBLE_DEVICES accepts a comma-separated list; we expose
-        # exactly one device so the model cannot accidentally land elsewhere.
-        #
-        # This must NOT be sycl_index. SYCL enumerates Intel devices only, so
-        # sycl_index 0 is the first Arc card; Vulkan enumerates every vendor,
-        # so on a box with a discrete NVIDIA/AMD card the Arc can be Vulkan1
-        # while sycl_index is still 0. Using sycl_index there silently ran
-        # models on the other vendor's GPU.
-        probe_env = {**env, **overrides} if overrides else None
-        indices = [_vulkan_index_for(g, llama_server, probe_env) if probe_env else _vulkan_index_for(g, llama_server) for g in [gpu, *(extra_gpus or [])]]
-        if all(i is not None for i in indices):
-            env["GGML_VK_VISIBLE_DEVICES"] = ",".join(str(i) for i in indices)
-        elif extra_gpus:
-            log.warning(
-                "Vulkan: could not map every split GPU to a device index; set "
-                "vulkan_index for each GPU. Not restricting visible devices."
-            )
+        # The device itself is picked with --device in build_plan.
         return env
 
     # SYCL path: apply arch-specific env, stripping known-bad inherited vars.
@@ -350,12 +460,41 @@ def build_env(
                 "found. If llama-server fails to start, source your oneAPI "
                 "setvars.sh before running arc-llama."
             )
+    # sycl_index is a guess from PCI order; ask the runtime which Level Zero
+    # device carries this GPU's name. A selector the model sets itself wins.
+    if llama_server and "ONEAPI_DEVICE_SELECTOR" not in (overrides or {}):
+        probe = {k: v for k, v in {**env, **(overrides or {})}.items() if k != "ONEAPI_DEVICE_SELECTOR"}
+        indices = [_sycl_index_for(g, llama_server, probe) for g in [gpu, *(extra_gpus or [])]]
+        if len(set(indices)) == len(indices):
+            env["ONEAPI_DEVICE_SELECTOR"] = "level_zero:" + ",".join(str(i) for i in indices)
     return env
+
+
+@lru_cache(maxsize=32)
+def _backends_cached(binary: str, mtime: float) -> frozenset[Backend]:
+    return frozenset(detect_backends(binary))
+
+
+def model_backend(cfg: Config, model: ModelConfig, gpu: GPUConfig) -> Backend:
+    """The GPU's backend, unless this model's own runtime carries only the other one."""
+    backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
+    if model.llama_server:
+        binary = cfg.model_llama_server(model)
+        try:
+            found = _backends_cached(binary, Path(binary).stat().st_mtime)
+        except OSError:
+            return backend
+        if found and backend not in found:
+            return Backend.SYCL if Backend.SYCL in found else Backend.VULKAN
+    return backend
 
 
 def build_model_env(cfg: Config, model: ModelConfig, gpu: GPUConfig) -> dict[str, str]:
     """Automatic GPU/oneAPI defaults followed by explicit model-only overrides."""
     split_gpus = resolve_split_gpus(cfg, model)
+    backend = model_backend(cfg, model, gpu)
+    if backend.value != gpu.backend:
+        gpu = replace(gpu, backend=backend.value)
     env = build_env(
         profile_for(Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN), gpu,
         llama_server=cfg.model_llama_server(model),
@@ -387,7 +526,7 @@ def build_plan(
     cfg: Config, model: ModelConfig, gpu: GPUConfig, host: str = "127.0.0.1"
 ) -> LaunchPlan:
     arch = Arch(gpu.arch) if gpu.arch else Arch.UNKNOWN
-    backend = Backend(gpu.backend) if gpu.backend else Backend.SYCL
+    backend = model_backend(cfg, model, gpu)
     split_gpus = resolve_split_gpus(cfg, model)
     binary = cfg.model_llama_server(model)
     env = build_model_env(cfg, model, gpu)
@@ -405,7 +544,7 @@ def build_plan(
     # 2. Validate the draft-mtp wiring. A model may carry MTP heads either
     #    embedded in its own GGUF, or in a sidecar draft (--spec-draft-model).
     #    Warn only when neither source actually provides them.
-    if recipe.spec_type == "draft-mtp":
+    if "draft-mtp" in (recipe.spec_type or "").split(","):
         if recipe.spec_draft_model:
             draft_path = Path(recipe.spec_draft_model)
             if not draft_path.exists():
@@ -476,18 +615,17 @@ def build_plan(
         )
         recipe.spec_type = None
         recipe.spec_draft_model = None
-    elif (
-        recipe.spec_type is not None
-        and recipe.spec_type.startswith("ngram-")
-        and not caps.supports_ngram
-    ):
+    elif recipe.spec_type is not None and "ngram-" in recipe.spec_type and not caps.supports_ngram:
+        # Keep draft-mtp from a "draft-mtp,ngram-mod" list; drop the n-gram part.
+        kept = ",".join(t for t in recipe.spec_type.split(",") if not t.startswith("ngram-"))
         log.warning(
-            "[%s] %s has no n-gram speculation; starting target-only",
+            "[%s] %s has no n-gram speculation; starting %s",
             model.name,
             binary,
+            kept or "target-only",
         )
-        recipe.spec_type = None
-    elif recipe.spec_draft_model and not caps.supports_draft_model:
+        recipe.spec_type = kept or None
+    if recipe.spec_draft_model and not caps.supports_draft_model:
         log.warning(
             "[%s] %s has no --spec-draft-model; starting target-only",
             model.name,
@@ -513,6 +651,15 @@ def build_plan(
             "[%s] %s has no --tensor-split; using a single GPU", model.name, binary
         )
         recipe.tensor_split = None
+    if any(a == "--reasoning-budget" or a.startswith("--reasoning-budget=") for a in recipe.extra_flags):
+        recipe.reasoning_budget = None
+    elif recipe.reasoning_budget is not None:
+        if not caps.supports_reasoning_budget:
+            log.warning("[%s] %s has no --reasoning-budget; ignoring the thinking budget", model.name, binary)
+            recipe.reasoning_budget = None
+        elif recipe.reasoning_budget > 0 and not caps.supports_positive_reasoning_budget:
+            log.warning("[%s] %s only accepts reasoning budget -1 or 0; using -1 instead of %d", model.name, binary, recipe.reasoning_budget)
+            recipe.reasoning_budget = -1
     if "--reasoning" in recipe.extra_flags and not caps.supports_reasoning_off:
         log.warning("[%s] %s has no --reasoning; thinking stays on", model.name, binary)
         i = recipe.extra_flags.index("--reasoning")
@@ -533,6 +680,33 @@ def build_plan(
             load_mode_flag=caps.supports_load_mode,
         )
     )
+    # A --device in the model's own flags wins over the automatic pick.
+    if backend == Backend.VULKAN and not any(a in ("--device", "-dev") or a.startswith("--device=") for a in argv):
+        device = vulkan_device_arg([gpu, *(split_gpus[1:] if split_gpus else [])], binary, env if model.env else None)
+        if device:
+            argv += ["--device", device]
+    # llama.cpp prints the device, offload and buffer lines the startup check
+    # reads only at trace level (-lv 4); a verbosity in the model's flags wins.
+    if caps.supports_verbosity and not any(
+        a in ("-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose")
+        or a.startswith(("--verbosity=", "--log-verbosity="))
+        for a in argv
+    ):
+        argv += ["-lv", "4"]
+    # llama-server keeps up to 8 GiB of prompt cache and 32 context checkpoints
+    # per slot in host RAM, so RAM grows over a long session. Cap both (the cache
+    # to a quarter of RAM) unless the model's flags set them.
+    for supported, names, env_key, value in (
+        (caps.supports_cache_ram, ("-cram", "--cache-ram"), "LLAMA_ARG_CACHE_RAM", default_cache_ram_mib()),
+        (
+            caps.supports_ctx_checkpoints,
+            ("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"),
+            "LLAMA_ARG_CTX_CHECKPOINTS",
+            DEFAULT_CTX_CHECKPOINTS,
+        ),
+    ):
+        if supported and env_key not in env and not any(a.split("=", 1)[0] in names for a in argv):
+            argv += [names[1], str(value)]
     backend_url = f"http://{host}:{model.port}"
     return LaunchPlan(
         argv=argv,
@@ -540,6 +714,7 @@ def build_plan(
         backend_url=backend_url,
         health_url=f"{backend_url}/health",
         gpu_pci_slot=gpu.pci_slot,
+        gpu_name=gpu.name,
         resident_lock_path=(
             Path(getattr(cfg.paths, "state_dir", default_state_dir())) / "llama-server.lock"
             if cfg.server.single_resident
@@ -581,6 +756,7 @@ class LlamaServer:
         self.ready: bool = False
         self._log_file: Any = None  # file handle opened in start(), closed in stop()
         self._log_path: Path | None = None
+        self._log_offset = 0  # where this run's output starts in the appended log
         self._resident_lock: Any = None
         self._stop_lock = threading.RLock()
 
@@ -606,6 +782,7 @@ class LlamaServer:
             log_path = log_dir / f"{self.name}.log"
             _rotate_log(log_path)
             self._log_path = log_path
+            self._log_offset = log_path.stat().st_size if log_path.exists() else 0
             log_file = open(log_path, "ab")
             stdout = log_file
             stderr = subprocess.STDOUT
@@ -743,6 +920,7 @@ class LlamaServer:
                         elapsed = time.time() - self.started_at if self.started_at else 0
                         log.info("[%s] ready after %.1fs", self.name, elapsed)
                         self.ready = True
+                        self._check_startup_device()
                         return True
                 except Exception:
                     pass
@@ -759,6 +937,24 @@ class LlamaServer:
                 await asyncio.sleep(HEALTH_POLL_INTERVAL)
         log.warning("[%s] health-check timed out after %.0fs", self.name, timeout)
         return False
+
+    def _check_startup_device(self) -> None:
+        """Log the device this run loaded on; warn on a CPU or wrong-GPU load. Never fails a load."""
+        if self._log_path is None:
+            return
+        try:
+            with open(self._log_path, "rb") as fh:
+                fh.seek(self._log_offset)
+                text = fh.read().decode("utf-8", errors="replace")
+            summary = startup_device_summary(text)
+            warning = startup_device_warning(text, self.plan.gpu_name or "")
+        except Exception:
+            log.debug("[%s] could not read the startup log", self.name, exc_info=True)
+            return
+        if summary:
+            log.info("Loaded %s%s", self.name, summary)
+        if warning:
+            log.warning("[%s] %s. It will be slow; see %s", self.name, warning, self._log_path)
 
     def tail_log(self, lines: int = 50) -> str:
         """Return the last *lines* of the llama-server log, if any."""

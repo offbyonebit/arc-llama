@@ -9,6 +9,25 @@ from arc_llama.cli import cli
 from arc_llama.config import Config, GPUConfig, PathsConfig
 
 
+def test_llama_cpp_build_replaces_undecodable_output(monkeypatch):
+    import subprocess
+    import sys
+
+    from arc_llama.benchmark import llama_cpp_build
+
+    run = subprocess.run
+
+    def fake_run(args, **kwargs):
+        program = (
+            "import sys; sys.stdout.buffer.write(b'version: 12243 (8f1d2e3)\\n\\x81\\n'); "
+            "sys.stderr.buffer.write(b'backend path \\x9d\\x98\\n')"
+        )
+        return run([sys.executable, "-c", program], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert llama_cpp_build("llama-server") == "b12243 (8f1d2e3)"
+
+
 def _make_test_config(tmp_path: Path) -> Config:
     return Config(
         paths=PathsConfig(models_dir=str(tmp_path / "models")),
@@ -43,3 +62,151 @@ def test_benchmark_rejects_unknown_model(monkeypatch, tmp_path, cli_runner):
     )
     assert result.exit_code == 1
     assert "not registered" in result.output
+
+
+def _bench_config(tmp_path: Path) -> Config:
+    from arc_llama.config import ModelConfig
+
+    cfg = _make_test_config(tmp_path)
+    cfg.gpus[0].backend = "sycl"
+    cfg.models.append(
+        ModelConfig(
+            name="qwen-27b",
+            path=str(tmp_path / "secret-user" / "qwen-27b-Q4_K_M.gguf"),
+            port=8091,
+            gpu_pci_slot="0000:03:00.0",
+            recipe={"ctx": 8192, "cache_type_k": "q4_0", "cache_type_v": "q4_0",
+                    "spec_type": "draft-mtp,ngram-mod"},
+        )
+    )
+    return cfg
+
+
+class _Health:
+    def __init__(self, loaded):
+        self._loaded = loaded
+
+    def json(self):
+        return {"status": "ok", "loaded_models": self._loaded}
+
+
+def test_bench_runs_on_the_loaded_model_and_prints_plain_text(monkeypatch, tmp_path, cli_runner):
+    from arc_llama import benchmark
+
+    cfg = _bench_config(tmp_path)
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
+    monkeypatch.setattr("httpx.get", lambda *a, **k: _Health(["qwen-27b"]))
+    monkeypatch.setattr(benchmark, "llama_cpp_build", lambda binary: "b12243 (abc1234)")
+    seen = {}
+
+    async def fake_depths(url, model, depths, *, gen_tokens, headers=None):
+        seen.update(model=model, depths=depths)
+        return [
+            benchmark.DepthResult(depth=d, measured_depth=d, prompt_eval_tok_s=900.0,
+                                  generation_tok_s=29.2)
+            for d in depths
+        ]
+
+    monkeypatch.setattr(benchmark, "benchmark_depths", fake_depths)
+    result = cli_runner.invoke(cli, ["--config", str(tmp_path / "c.toml"), "bench"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"model": "qwen-27b", "depths": [512]}  # 16384 > ctx 8192
+    out = result.output
+    assert "Backend: sycl on Arc Pro B60 (battlemage, 24576 MiB)" in out
+    assert "llama.cpp: b12243 (abc1234)" in out
+    assert "Settings: ctx 8192, KV q4_0/q4_0, flash attention auto, speculation draft-mtp,ngram-mod" in out
+    assert "Prompt 512: prefill 900.0 tok/s, decode 29.2 tok/s" in out
+    assert "Prompt 16384: skipped" in out
+    assert "secret-user" not in out and str(tmp_path) not in out
+
+
+def test_bench_stops_cleanly_without_a_server(monkeypatch, tmp_path, cli_runner):
+    import httpx
+
+    cfg = _bench_config(tmp_path)
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
+
+    def refuse(*a, **k):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr("httpx.get", refuse)
+    result = cli_runner.invoke(cli, ["--config", str(tmp_path / "c.toml"), "bench"])
+    assert result.exit_code == 1
+    assert "No arc-llama server answered" in result.output
+
+
+@pytest.mark.parametrize("token", ["test-admin-token", ""])
+@pytest.mark.parametrize("command", [["bench"], ["benchmark", "qwen-27b", "--depths", "512"]])
+def test_depth_commands_send_the_admin_token(monkeypatch, tmp_path, cli_runner, token, command):
+    import httpx
+
+    from arc_llama import benchmark
+
+    cfg = _bench_config(tmp_path)
+    cfg.server.admin_token = token
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
+    monkeypatch.setattr("httpx.get", lambda *a, **k: _Health(["qwen-27b"]))
+    monkeypatch.setattr(benchmark, "llama_cpp_build", lambda binary: None)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"timings": {"predicted_per_second": 1.0}})
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    result = cli_runner.invoke(
+        cli, ["--config", str(tmp_path / "c.toml"), *command, "--server", "https://remote.example"],
+    )
+    assert result.exit_code == 0, result.output
+    assert {r.url.path for r in requests} == {"/v1/chat/completions", "/v1/completions"}
+    assert all(r.url.host == "remote.example" for r in requests)
+    expected = f"Bearer {token}" if token else None
+    assert [r.headers.get("Authorization") for r in requests] == [expected] * len(requests)
+    assert not token or token not in result.output
+
+
+def test_bench_needs_a_model_when_none_is_loaded(monkeypatch, tmp_path, cli_runner):
+    cfg = _bench_config(tmp_path)
+    monkeypatch.setattr("arc_llama.cli.load_config", lambda path: cfg)
+    monkeypatch.setattr("httpx.get", lambda *a, **k: _Health([]))
+    result = cli_runner.invoke(cli, ["--config", str(tmp_path / "c.toml"), "bench"])
+    assert result.exit_code == 1
+    assert "No model is loaded" in result.output
+
+
+def test_llama_cpp_build_reads_version_output(monkeypatch):
+    import subprocess
+
+    from arc_llama.benchmark import llama_cpp_build
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="version: 12243 (8f1d2e3)\nbuilt with gcc")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert llama_cpp_build("llama-server") == "b12243 (8f1d2e3)"
+    out = "version: 0.9.0-dev (build 12243, commit 8f1d2e3)\nbuilt with gcc"
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=""))
+    assert llama_cpp_build("llama-server") == "b12243 (8f1d2e3)"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    assert llama_cpp_build("llama-server") is None
+
+
+def test_bench_backend_follows_the_models_own_runtime(tmp_path, monkeypatch):
+    from arc_llama import launcher
+    from arc_llama.arch import Backend
+    from arc_llama.benchmark import bench_lines
+
+    cfg = _bench_config(tmp_path)
+    cfg.gpus[0].backend = "vulkan"
+    binary = tmp_path / "sycl" / "llama-server"
+    binary.parent.mkdir()
+    binary.write_bytes(b"")
+    cfg.models[0].llama_server = str(binary)
+    monkeypatch.setattr(launcher, "detect_backends", lambda path: {Backend.SYCL})
+    monkeypatch.setattr("arc_llama.benchmark.llama_cpp_build", lambda binary: None)
+    assert any(line.startswith("Backend: sycl on") for line in bench_lines(cfg, cfg.models[0].name, [], []))

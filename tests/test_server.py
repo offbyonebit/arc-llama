@@ -180,6 +180,7 @@ class FakeRouter:
             aliases=["qwen.gguf"],
         )
         self._servers = {"qwen": FakeBackend()}
+        self._loading_futures = {}
         self.metrics = {
             "loads": 5,
             "stops": 2,
@@ -570,6 +571,7 @@ def test_health_includes_loaded_models_and_uptime(monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "ok"
+    assert data["loading_models"] == []
     assert data["loaded_model_count"] == 1
     assert "qwen" in data["loaded_models"]
     assert data["uptime_seconds"] >= 0
@@ -728,9 +730,96 @@ async def test_server_lifespan_uses_active_profile_mcp_servers(monkeypatch):
 
     app = create_app(cfg)
     async with app.router.lifespan_context(app):
-        pass
+        await app.state.ready.wait()
 
     assert [s.name for s in CapturingMCPClientManager.started_servers] == ["fs"]
+
+
+class BlockingMCPClientManager:
+    """MCP start that holds startup open until the test releases it."""
+
+    release: asyncio.Event
+    error: Exception | None = None
+    stopped = False
+
+    def __init__(self, servers):
+        pass
+
+    async def start(self):
+        await BlockingMCPClientManager.release.wait()
+        if BlockingMCPClientManager.error is not None:
+            raise BlockingMCPClientManager.error
+
+    async def stop(self):
+        BlockingMCPClientManager.stopped = True
+
+
+def _blocking_startup_app(monkeypatch, error: Exception | None = None):
+    import arc_llama.server as server_mod
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod, "MCPClientManager", BlockingMCPClientManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    BlockingMCPClientManager.release = asyncio.Event()
+    BlockingMCPClientManager.error = error
+    BlockingMCPClientManager.stopped = False
+    return create_app(Config(server=ServerConfig(admin_token=None)), plugins=[])
+
+
+async def test_health_answers_starting_until_startup_finishes(monkeypatch):
+    app = _blocking_startup_app(monkeypatch)
+    async with app.router.lifespan_context(app):
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/health")
+            assert r.status_code == 503
+            assert r.json() == {"status": "starting"}
+            # Other routes wait for startup instead of touching half-built state.
+            models = asyncio.create_task(client.get("/v1/models"))
+            await asyncio.sleep(0.05)
+            assert not models.done()
+
+            BlockingMCPClientManager.release.set()
+            assert (await asyncio.wait_for(models, 5)).status_code == 200
+            r = await client.get("/health")
+            assert r.status_code == 200
+            assert r.json()["status"] == "ok"
+
+
+async def test_shutdown_during_startup_cancels_and_cleans_up(monkeypatch):
+    app = _blocking_startup_app(monkeypatch)
+
+    async def enter_and_leave():
+        async with app.router.lifespan_context(app):
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(enter_and_leave(), 5)
+    assert not app.state.ready.is_set()
+    assert BlockingMCPClientManager.stopped
+
+
+async def test_failed_startup_reports_error_instead_of_hanging(monkeypatch):
+    app = _blocking_startup_app(monkeypatch, error=RuntimeError("mcp broke"))
+    BlockingMCPClientManager.release.set()
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(app.state.started.wait(), 5)
+        transport = _ASGITransport(app=app)
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/health")
+            assert r.status_code == 503
+            assert r.json() == {"status": "error", "detail": "mcp broke"}
+            assert (await client.get("/v1/models")).status_code == 503
+
+
+async def test_failed_startup_calls_the_serve_exit_hook(monkeypatch):
+    app = _blocking_startup_app(monkeypatch, error=RuntimeError("mcp broke"))
+    calls = []
+    app.state.on_startup_failure = lambda: calls.append(app.state.startup_error)
+    BlockingMCPClientManager.release.set()
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(app.state.started.wait(), 5)
+    assert calls == ["mcp broke"]
 
 
 class AgentFakeAsyncClient:
@@ -916,6 +1005,7 @@ def _edit_app(monkeypatch, tmp_path):
 
     # Keep cfg.save() away from the real ~/.config.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))  # Windows config home
     monkeypatch.setattr(server_mod, "Router", FakeRouterWithRebuild)
     monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
     cfg = Config(
@@ -948,6 +1038,204 @@ def test_admin_edit_accepts_flash_attn_and_batch_size(monkeypatch, tmp_path):
     assert model.recipe["flash_attn"] == "on"
     assert model.recipe["batch_size"] == 2048
     assert model.recipe["ubatch_size"] == 1024
+
+
+@pytest.mark.parametrize("budget", [-1, 0, 256, 131072, None, ""])
+def test_admin_edit_reasoning_budget(monkeypatch, tmp_path, budget):
+    from arc_llama.config import load_config
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    cfg.models[0].recipe["reasoning_budget"] = 64
+    with TestClient(app) as client:
+        app.state.router.model = cfg.models[0]
+        response = client.post("/admin/models/qwen/edit", json={"reasoning_budget": budget})
+        assert response.status_code == 200, response.text
+        assert response.json()["changed"] == ["reasoning_budget"]
+        expected = None if budget is None or budget == "" else budget
+        assert cfg.models[0].recipe.get("reasoning_budget") == expected
+        assert client.get("/admin/status").json()["models"][0]["reasoning_budget"] == expected
+    path = tmp_path / "config" / "arc-llama" / "config.toml"
+    assert load_config(path).models[0].recipe.get("reasoning_budget") == expected
+
+
+@pytest.mark.parametrize("budget", [131073, -2, "abc", "256", 1.5, 256.0, True, [], {}])
+def test_admin_edit_rejects_invalid_reasoning_budget_atomically(monkeypatch, tmp_path, budget):
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"ctx": 16384, "reasoning_budget": budget})
+    assert response.status_code == 400
+    assert cfg.models[0].recipe == {"ctx": 8192}
+
+
+def test_reasoning_budget_persist_false_does_not_leak_to_an_unrelated_save(monkeypatch, tmp_path):
+    from arc_llama.config import load_config
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    path = tmp_path / "config" / "arc-llama" / "config.toml"
+    with TestClient(app) as client:
+        assert client.post("/admin/models/qwen/edit", json={"reasoning_budget": 256, "persist": False}).status_code == 200
+        assert cfg.models[0].recipe["reasoning_budget"] == 256 and not path.exists()
+        cfg.save(path)
+        assert "reasoning_budget" not in load_config(path).models[0].recipe
+        assert client.post("/admin/models/qwen/edit", json={"reasoning_budget": 0}).status_code == 200
+    assert load_config(path).models[0].recipe["reasoning_budget"] == 0
+
+
+def test_admin_edit_persist_false_keeps_the_edit_out_of_config_toml(monkeypatch, tmp_path):
+    # Auto-tune trials: the running recipe changes, the file on disk does not.
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    saved = tmp_path / "config" / "arc-llama" / "config.toml"
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit", json={"ubatch_size": 1024, "persist": False}
+        )
+        assert response.status_code == 200
+        assert response.json()["changed"] == ["ubatch_size"]
+        model = next(m for m in cfg.models if m.name == "qwen")
+        assert model.recipe["ubatch_size"] == 1024
+        assert not saved.exists()
+        assert client.post("/admin/models/qwen/edit", json={"ubatch_size": 512}).status_code == 200
+    assert 'ubatch_size = 512' in saved.read_text()
+
+
+@pytest.mark.parametrize("fail_final_save", [False, True])
+def test_trial_survives_unrelated_save_without_leaking(monkeypatch, tmp_path, fail_final_save):
+    from arc_llama.config import load_config
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    original = cfg.models[0]
+    original.llama_server = "original-server"
+    original.env = {"TEST_RUNTIME": "original"}
+    cfg.models.append(ModelConfig(
+        name="other", path="/models/other.gguf", port=18081,
+        gpu_pci_slot="0000:03:00.0", recipe={"ctx": 4096},
+    ))
+    saved = tmp_path / "config" / "arc-llama" / "config.toml"
+    cfg.save(saved)
+    with TestClient(app) as client:
+        for ubatch in (1024, 2048):
+            assert client.post("/admin/models/qwen/edit", json={
+                "ubatch_size": ubatch, "kv_class": "moe_a3b", "persist": False,
+                "llama_server": "trial-server", "env": {"TEST_RUNTIME": "trial"},
+            }).status_code == 200
+        assert original.recipe["ubatch_size"] == 2048
+        assert original.llama_server == "trial-server"
+        assert client.post("/admin/models/other/edit", json={"ctx": 16384}).status_code == 200
+        disk = load_config(saved)
+        assert disk.models[0].recipe == {"ctx": 8192}
+        assert disk.models[0].kv_class == "default"
+        assert disk.models[0].llama_server == "original-server"
+        assert disk.models[0].env == {"TEST_RUNTIME": "original"}
+        assert disk.models[1].recipe["ctx"] == 16384
+
+        with monkeypatch.context() as patch:
+            if fail_final_save:
+                def fail_save(self, path=None):
+                    raise OSError("disk full")
+                patch.setattr(Config, "save", fail_save)
+            final = client.post("/admin/models/qwen/edit", json={"ubatch_size": 512})
+        assert final.status_code == (500 if fail_final_save else 200)
+        # A subsequent settings/scan save must respect either the rollback or final pick.
+        cfg.save(saved)
+        disk = load_config(saved)
+        if fail_final_save:
+            assert disk.models[0].recipe == {"ctx": 8192}
+            assert disk.models[0].env == {"TEST_RUNTIME": "original"}
+            assert original.recipe["ubatch_size"] == 2048
+        else:
+            assert disk.models[0].recipe["ubatch_size"] == 512
+            assert disk.models[0].kv_class == "moe_a3b"
+            assert disk.models[0].llama_server == "trial-server"
+            assert disk.models[0].env == {"TEST_RUNTIME": "trial"}
+
+
+class FakeRouterRunningRebuild(FakeRouterWithRebuild):
+    loads: list[str] = []
+
+    async def rebuild_model(self, name):
+        return True, True
+
+    async def ensure_active(self, query, *, acquire: bool = False):
+        self.loads.append(query)
+        if query == "broken":
+            raise RuntimeError("llama-server exited")
+        return await super().ensure_active(query, acquire=acquire)
+
+
+def _wait_for(predicate):
+    import time
+
+    for _ in range(200):
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_admin_edit_reload_restarts_a_loaded_model(monkeypatch, tmp_path):
+    # Settings Apply (e.g. KV cache to q8_0) brings the model straight back.
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(server_mod, "Router", FakeRouterRunningRebuild)
+    monkeypatch.setattr(FakeRouterRunningRebuild, "loads", [])
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit",
+            json={"cache_type_k": "q8_0", "cache_type_v": "q8_0", "reload": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["reloading"] is True
+        assert _wait_for(lambda: FakeRouterRunningRebuild.loads == ["qwen"])
+
+
+def test_admin_edit_without_reload_leaves_the_model_stopped(monkeypatch, tmp_path):
+    # Tuner trials load the model themselves; the edit must not load it too.
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(server_mod, "Router", FakeRouterRunningRebuild)
+    monkeypatch.setattr(FakeRouterRunningRebuild, "loads", [])
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/models/qwen/edit", json={"ubatch_size": 1024, "persist": False}
+        )
+        assert response.status_code == 200
+        assert response.json()["reloading"] is False
+        assert response.json()["stopped_running_instance"] is True
+    assert FakeRouterRunningRebuild.loads == []
+
+
+def test_admin_edit_reload_skips_a_model_that_was_not_loaded(monkeypatch, tmp_path):
+    app, _cfg = _edit_app(monkeypatch, tmp_path)
+    with TestClient(app) as client:
+        response = client.post("/admin/models/qwen/edit", json={"ctx": 4096, "reload": True})
+    assert response.status_code == 200
+    assert response.json()["reloading"] is False
+
+
+def test_admin_edit_reload_failure_is_logged(monkeypatch, tmp_path, caplog):
+    import logging
+
+    import arc_llama.server as server_mod
+
+    app, cfg = _edit_app(monkeypatch, tmp_path)
+    cfg.models[0].name = "broken"
+    monkeypatch.setattr(server_mod, "Router", FakeRouterRunningRebuild)
+    monkeypatch.setattr(FakeRouterRunningRebuild, "loads", [])
+    app = create_app(cfg)
+    with caplog.at_level(logging.ERROR, logger="arc_llama.server"):
+        with TestClient(app) as client:
+            response = client.post("/admin/models/broken/edit", json={"ctx": 4096, "reload": True})
+            assert response.status_code == 200
+            assert response.json()["reloading"] is True
+            assert _wait_for(
+                lambda: any(
+                    "reload with the new settings failed" in r.message for r in caplog.records
+                )
+            )
 
 
 def test_admin_edit_flash_attn_null_clears(monkeypatch, tmp_path):
@@ -994,6 +1282,9 @@ def test_admin_edit_can_set_and_clear_speculation(monkeypatch, tmp_path):
             },
         )
         assert response.status_code == 200
+        response = client.post("/admin/models/qwen/edit", json={"spec_type": "draft-mtp,ngram-mod"})
+        assert response.status_code == 200
+        assert cfg.find_model("qwen").recipe["spec_type"] == "draft-mtp,ngram-mod"
         response = client.post(
             "/admin/models/qwen/edit",
             json={
@@ -1138,6 +1429,9 @@ def test_local_request_bumps_tuner_use_count(monkeypatch, tmp_path):
         def bump_use(self, name: str) -> None:
             bumped.append(name)
 
+        def abort_sweep(self) -> bool:
+            return False
+
         async def stop(self) -> None:
             pass
 
@@ -1153,6 +1447,58 @@ def test_local_request_bumps_tuner_use_count(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert "qwen" in bumped
+
+
+@pytest.mark.parametrize("from_benchmark", [False, True])
+def test_user_request_aborts_a_running_sweep(monkeypatch, tmp_path, from_benchmark):
+    """A user chat aborts the sweep as it arrives, so one that finishes inside
+    the tune's baseline measurement isn't missed. The tune's own benchmark
+    requests don't abort it."""
+    import arc_llama.server as server_mod
+    from arc_llama.benchmark import BENCHMARK_HEADER
+
+    monkeypatch.setattr(server_mod, "Router", FakeRouter)
+    monkeypatch.setattr(server_mod, "UpstreamManager", FakeUpstreamManager)
+    monkeypatch.setattr(server_mod.httpx, "AsyncClient", FakeAsyncClient)
+    cfg = Config(
+        server=ServerConfig(admin_token=None),
+        paths=PathsConfig(models_dir=str(tmp_path / "models")),
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage")],
+        models=[
+            ModelConfig(
+                name="qwen",
+                path=str(tmp_path / "qwen.gguf"),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+            ),
+        ],
+        tune=TuneConfig(auto=False),
+    )
+    aborts: list[bool] = []
+
+    class FakeTuner:
+        def bump_use(self, name: str) -> None:
+            pass
+
+        def abort_sweep(self) -> bool:
+            aborts.append(True)
+            return True
+
+        async def stop(self) -> None:
+            pass
+
+    app = create_app(cfg)
+    app.state.tuner = FakeTuner()
+    headers = {BENCHMARK_HEADER: "1"} if from_benchmark else {}
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert aborts == ([] if from_benchmark else [True])
 
 
 def test_custom_config_path_used_by_autotune_save(monkeypatch, tmp_path):
@@ -1459,11 +1805,20 @@ async def test_health_does_not_report_cold_start_as_loaded(monkeypatch):
     app = create_app(Config(server=ServerConfig(admin_token=None)))
 
     async with app.router.lifespan_context(app):
+        await app.state.ready.wait()
         app.state.router._servers["qwen"] = ColdStartBackend()
         transport = _ASGITransport(app=app)
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
             health = (await client.get("/health")).json()
         assert health["loaded_models"] == [], "cold-starting model reported as loaded"
+        # Not loading either: outside ensure_active this is a model being stopped.
+        assert health["status"] == "ok"
+        app.state.router._loading_futures["qwen"] = asyncio.get_running_loop().create_future()
+        async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
+            health = (await client.get("/health")).json()
+        del app.state.router._loading_futures["qwen"]
+        assert health["status"] == "loading"
+        assert health["loading_models"] == ["qwen"]
         async with _HttpxAsyncClient(transport=transport, base_url="http://test") as client:
             status = (await client.get("/admin/status")).json()
         entry = next(m for m in status["models"] if m["name"] == "qwen")

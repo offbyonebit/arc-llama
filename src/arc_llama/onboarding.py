@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from arc_llama.arch import Backend
+from arc_llama.arch import Arch, Backend
 from arc_llama.binary import detect_backends
 from arc_llama.config import Config, GPUConfig
 from arc_llama.failures import StartupFailureError
@@ -94,6 +94,7 @@ class FirstAnswerSetup:
             # Thinking off, so a reasoning starter answers inside Chat's
             # 1024-token default reply instead of spending it on thinking.
             model.recipe["extra_flags"] = [*model.recipe.get("extra_flags", []), *STARTER_THINKING_OFF]
+            model.recipe.pop("reasoning_budget", None)
             model.recipe.update(STARTER_SAMPLING)
             model.recipe["ctx"] = next(
                 (
@@ -147,7 +148,10 @@ class FirstAnswerSetup:
         self.discovery_error = None
         gpu = enabled_gpu(self.cfg)
         if not gpu or not gpu.vram_mb:
-            self.discovery_status = "hardware"
+            # Integrated GPUs (Lunar Lake, or no Arc ID match) report no VRAM and
+            # aren't tuned for; say so instead of "memory capacity unavailable".
+            integrated = gpu is not None and gpu.arch in (Arch.LUNAR_LAKE.value, Arch.UNKNOWN.value)
+            self.discovery_status = "integrated" if integrated else "hardware"
             self.discovery_at = time.monotonic()
             return
         self.discovery_status = "searching"

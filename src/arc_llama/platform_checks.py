@@ -446,6 +446,78 @@ def kernel_module_loaded(name: str) -> bool:
     return Path(f"/sys/module/{name}").exists()
 
 
+# Vulkan on Linux measured about 2x faster with Mesa 26.1+ than with 25.2.8
+# (Arc Pro B60, starter model, same box).
+MESA_FAST_VULKAN = (26, 1)
+_MESA_VERSION_RE = re.compile(r"\bMesa (\d+)\.(\d+)")
+
+
+def parse_mesa_version(text: str) -> tuple[int, int] | None:
+    """Return (major, minor) from vulkaninfo/glxinfo text like ``Mesa 25.2.8``."""
+    m = _MESA_VERSION_RE.search(text or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def mesa_version() -> tuple[int, int] | None:
+    """Best-effort installed Mesa version on Linux; None on Windows or if unknown."""
+    if sys.platform == "win32":
+        return None
+    for cmd in (["vulkaninfo", "--summary"], ["glxinfo", "-B"]):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        version = parse_mesa_version(out.stdout)
+        if version is not None:
+            return version
+    return None
+
+
+def old_mesa_vulkan_warning(version: tuple[int, int] | None) -> str | None:
+    """Warning text when Mesa is known and older than 26.1, else None."""
+    if version is None or version >= MESA_FAST_VULKAN:
+        return None
+    return (
+        f"Mesa {version[0]}.{version[1]} is older than 26.1. Vulkan on Linux ran about "
+        "2x slower on older Mesa in our tests; update Mesa to 26.1 or newer."
+    )
+
+
+MESA_PPA = "ppa:kisak/kisak-mesa"
+
+
+def _os_release(path: Path = Path("/etc/os-release")) -> dict[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    pairs = (line.split("=", 1) for line in text.splitlines() if "=" in line)
+    return {k.strip(): v.strip().strip('"') for k, v in pairs}
+
+
+def mesa_upgrade_steps(os_release: dict[str, str] | None = None) -> list[str]:
+    """Commands to get Mesa 26.1+ on this distro. Printed only, never run."""
+    info = _os_release() if os_release is None else os_release
+    ids = {info.get("ID", ""), *info.get("ID_LIKE", "").split()}
+    base = info.get("UBUNTU_CODENAME") or (
+        info.get("VERSION_CODENAME", "") if info.get("ID") == "ubuntu" else ""
+    )
+    if "ubuntu" not in ids or not base:
+        return ["Update Mesa to 26.1 or newer with your distro's package manager."]
+    return [
+        "On Ubuntu and Mint, the kisak-mesa PPA has new Mesa. Arc Llama does not run these:",
+        f"  sudo add-apt-repository {MESA_PPA}",
+        "  sudo apt update",
+        "  apt-cache policy mesa-vulkan-drivers   # Candidate should be 26.1 or newer",
+        "  sudo apt full-upgrade",
+        "Then reboot. To undo it, and before upgrading your Ubuntu or Mint release:",
+        "  sudo apt install ppa-purge",
+        f"  sudo ppa-purge -d {base} {MESA_PPA}",
+    ]
+
+
 def parse_kernel_version(release: str | None = None) -> tuple[int, int] | None:
     """Return (major, minor) from ``uname -r`` style string."""
     if release is None:

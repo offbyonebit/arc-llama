@@ -12,7 +12,7 @@ import pytest
 
 from arc_llama.arch import Arch, Backend
 from arc_llama.config import Config, GPUConfig, ModelConfig
-from arc_llama.launcher import LaunchPlan, LlamaServer, build_env, build_plan
+from arc_llama.launcher import LaunchPlan, LlamaServer, build_env, build_plan, vulkan_device_arg
 from arc_llama.recipes import KVCacheType
 
 
@@ -68,7 +68,10 @@ class TestBuildEnv:
         gpu = _gpu(sycl_index=2, backend=Backend.VULKAN)
         gpu.vulkan_index = 3
         env = build_env(profile, gpu)
-        assert env["GGML_VK_VISIBLE_DEVICES"] == "3"
+        # Picked with --device (same numbering as --list-devices), not the
+        # env var, which indexes the raw Vulkan list in llama.cpp.
+        assert vulkan_device_arg([gpu], None) == "Vulkan3"
+        assert "GGML_VK_VISIBLE_DEVICES" not in env
         assert "ONEAPI_DEVICE_SELECTOR" not in env
 
     def test_vulkan_never_falls_back_to_sycl_index(self, monkeypatch: pytest.MonkeyPatch):
@@ -86,6 +89,7 @@ class TestBuildEnv:
         profile = profile_for(Arch.BATTLEMAGE)
         env = build_env(profile, _gpu(sycl_index=2, backend=Backend.VULKAN))
         assert "GGML_VK_VISIBLE_DEVICES" not in env
+        assert vulkan_device_arg([_gpu(sycl_index=2, backend=Backend.VULKAN)], None) is None
 
     def test_vulkan_strips_sycl_env(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
@@ -229,6 +233,7 @@ class TestBuildPlan:
         # cannot be resolved and the variable is deliberately left unset
         # rather than guessed from sycl_index.
         assert "GGML_VK_VISIBLE_DEVICES" not in plan.env
+        assert "--device" not in plan.argv
 
     def test_vulkan_q8_with_flash_attn_already_set(self):
         cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
@@ -248,6 +253,131 @@ class TestBuildPlan:
         )
         plan = build_plan(cfg, model, gpu)
         assert plan.argv.count("--flash-attn") == 1
+
+
+class TestVulkanDevicePick:
+    """Vulkan models are pinned with --device VulkanN from --list-devices."""
+
+    @pytest.fixture(autouse=True)
+    def _listing(self, monkeypatch: pytest.MonkeyPatch):
+        import arc_llama.launcher as launcher_mod
+
+        self.listing: list[tuple[int, str, int | None]] = []
+        monkeypatch.setattr(launcher_mod, "list_devices", lambda *_a, **_k: list(self.listing))
+        launcher_mod._devices_cached.cache_clear()
+        yield
+        launcher_mod._devices_cached.cache_clear()
+
+    def _plan(self, name: str = "", vram_mb: int | None = None, extra_flags: list[str] | None = None):
+        cfg = Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})())
+        model = ModelConfig(
+            name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0",
+            recipe={"extra_flags": extra_flags} if extra_flags else None,
+        )
+        gpu = GPUConfig(
+            pci_slot="00:00.0", sycl_index=0, arch="battlemage", backend=Backend.VULKAN.value,
+            name=name, vram_mb=vram_mb,
+        )
+        return build_plan(cfg, model, gpu)
+
+    def test_arc_behind_nvidia(self):
+        self.listing = [(0, "NVIDIA GeForce RTX 4060 Ti", 16380), (1, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480)]
+        plan = self._plan("Arc Pro B60 Graphics")
+        assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan1"
+        assert "GGML_VK_VISIBLE_DEVICES" not in plan.env
+
+    def test_unknown_name_picks_intel_by_memory_not_every_gpu(self):
+        self.listing = [
+            (0, "NVIDIA GeForce RTX 4060 Ti", 16380),
+            (1, "Intel(R) Arc(tm) B580 Graphics (BMG G21)", 12216),
+            (2, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480),
+        ]
+        plan = self._plan("Arc Pro B-series", vram_mb=24576)
+        assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan2"
+
+    def test_users_own_device_flag_wins(self):
+        self.listing = [(0, "NVIDIA GeForce RTX 4060 Ti", 16380), (1, "Intel(R) Arc(tm) Pro B60 Graphics (BMG G21)", 24480)]
+        plan = self._plan("Arc Pro B60 Graphics", extra_flags=["--device", "Vulkan0"])
+        assert plan.argv.count("--device") == 1
+        assert plan.argv[plan.argv.index("--device") + 1] == "Vulkan0"
+
+    def test_empty_listing_passes_no_device(self):
+        plan = self._plan("Arc Pro B60 Graphics")
+        assert "--device" not in plan.argv
+
+
+class TestSyclDevicePick:
+    """level_zero:N is matched by name, listing each N on its own."""
+
+    @pytest.fixture(autouse=True)
+    def _listing(self, monkeypatch: pytest.MonkeyPatch):
+        import arc_llama.launcher as launcher_mod
+
+        monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
+        monkeypatch.setattr(launcher_mod, "oneapi_runtime_env_needed", lambda: False)
+        # Level Zero order; what each level_zero:N selector shows as SYCL0.
+        self.level_zero: list[tuple[str, int]] = []
+        self.calls: list[str | None] = []
+
+        def fake_list(_binary, backend="Vulkan", env=None, **_k):
+            assert backend == "SYCL"
+            selector = (env or {}).get("ONEAPI_DEVICE_SELECTOR")
+            self.calls.append(selector)
+            if selector is None:  # llama.cpp order: default (biggest) device first
+                ordered = sorted(self.level_zero, key=lambda d: -d[1])
+                return [(i, n, m) for i, (n, m) in enumerate(ordered)]
+            n = int(selector.split(":")[1])
+            return [(0, *self.level_zero[n])] if n < len(self.level_zero) else []
+
+        monkeypatch.setattr(launcher_mod, "list_devices", fake_list)
+        launcher_mod._devices_cached.cache_clear()
+        yield
+        launcher_mod._devices_cached.cache_clear()
+
+    def _env(self, *gpus: GPUConfig, overrides: dict[str, str] | None = None) -> dict[str, str]:
+        from arc_llama.arch import profile_for
+
+        return build_env(
+            profile_for(Arch.BATTLEMAGE), gpus[0], llama_server="/bin/llama-server",
+            extra_gpus=list(gpus[1:]) or None, overrides=overrides,
+        )
+
+    @staticmethod
+    def _sycl_gpu(name: str, sycl_index: int) -> GPUConfig:
+        return GPUConfig(pci_slot=f"0000:0{sycl_index}:00.0", sycl_index=sycl_index, arch="battlemage", name=name)
+
+    def test_igpu_numbered_first_by_level_zero(self):
+        """Windows drops the iGPU from detection, so the Arc's guess is 0."""
+        self.level_zero = [("Intel(R) UHD Graphics 770", 23950), ("Intel(R) Arc(TM) B580 Graphics", 12216)]
+        env = self._env(self._sycl_gpu("Arc B580 Graphics", 0))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1"
+        assert self.calls[0] is None  # first listing runs without a selector
+
+    def test_single_device_is_level_zero_0(self):
+        """Linux keeps an old iGPU Level Zero can't see, so the Arc's guess is 1."""
+        self.level_zero = [("Intel(R) Arc(TM) A770 Graphics", 16225)]
+        env = self._env(self._sycl_gpu("Arc A770 Graphics", 1))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:0"
+        assert self.calls == [None]
+
+    def test_two_arcs_split(self):
+        self.level_zero = [("Intel(R) Arc(TM) B580 Graphics", 12216), ("Intel(R) Arc(TM) Pro B60 Graphics", 24480)]
+        env = self._env(self._sycl_gpu("Arc Pro B60 Graphics", 0), self._sycl_gpu("Arc B580 Graphics", 1))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1,0"
+
+    def test_unknown_name_keeps_sycl_index(self):
+        self.level_zero = [("Intel(R) Arc(TM) B580 Graphics", 12216), ("Intel(R) Arc(TM) Pro B60 Graphics", 24480)]
+        env = self._env(self._sycl_gpu("Arc Pro B-series", 1))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:1"
+
+    def test_empty_listing_keeps_sycl_index(self):
+        env = self._env(self._sycl_gpu("Arc Pro B60 Graphics", 2))
+        assert env["ONEAPI_DEVICE_SELECTOR"] == "level_zero:2"
+
+    def test_models_own_selector_skips_probe(self):
+        self.level_zero = [("Intel(R) Arc(TM) Pro B60 Graphics", 24480)]
+        self._env(self._sycl_gpu("Arc Pro B60 Graphics", 1), overrides={"ONEAPI_DEVICE_SELECTOR": "level_zero:3"})
+        assert self.calls == []
 
 
 class TestBuildPlanMtp:
@@ -724,6 +854,112 @@ class TestBuildPlanFlashAttn:
         )
         assert ("--reasoning" in plan.argv) is supported
         assert "--jinja" in plan.argv and ("off" in plan.argv) is supported
+
+    @pytest.mark.parametrize("budget,caps,extra,expected,warning", [
+        (256, {}, [], [], "has no --reasoning-budget"),
+        (256, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "-1"], "only accepts reasoning budget -1 or 0"),
+        (0, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "0"], None),
+        (-1, {"supports_reasoning_budget": True}, [], ["--reasoning-budget", "-1"], None),
+        (256, {"supports_reasoning_budget": True, "supports_positive_reasoning_budget": True}, [], ["--reasoning-budget", "256"], None),
+        (256, {}, ["--reasoning-budget", "64"], ["--reasoning-budget", "64"], None),
+        (256, {}, ["--reasoning-budget=64"], ["--reasoning-budget=64"], None),
+    ])
+    def test_reasoning_budget_compatibility_and_manual_override(self, monkeypatch, caplog, budget, caps, extra, expected, warning):
+        recipe = {"reasoning_budget": budget, "extra_flags": extra}
+        plan = self._plan(recipe, {**caps, "probed": True}, monkeypatch)
+        actual = []
+        for i, arg in enumerate(plan.argv):
+            if arg == "--reasoning-budget":
+                actual.extend(plan.argv[i:i + 2])
+            elif arg.startswith("--reasoning-budget="):
+                actual.append(arg)
+        assert actual == expected
+        assert recipe == {"reasoning_budget": budget, "extra_flags": extra}
+        if warning:
+            assert warning in caplog.text
+
+    @pytest.mark.parametrize(
+        ("extra", "caps", "expected"),
+        [
+            ([], {"supports_verbosity": True}, ["-lv", "4"]),
+            ([], {"supports_verbosity": False}, []),
+            (["-lv", "2"], {"supports_verbosity": True}, ["-lv", "2"]),
+            (["--verbose"], {"supports_verbosity": True}, []),
+        ],
+    )
+    def test_trace_verbosity_for_the_startup_device_lines(self, monkeypatch, extra, caps, expected):
+        plan = self._plan({"extra_flags": extra}, {**caps, "probed": True}, monkeypatch)
+        lv = plan.argv[plan.argv.index("-lv") : plan.argv.index("-lv") + 2] if "-lv" in plan.argv else []
+        assert lv == expected
+        assert plan.argv.count("-lv") <= 1
+
+    @pytest.mark.parametrize(
+        ("extra", "caps", "cram", "ctxcp"),
+        [
+            ([], {"supports_cache_ram": True, "supports_ctx_checkpoints": True}, "4000", "8"),
+            ([], {}, None, None),  # an older binary without the flags
+            (["-cram", "4096", "-ctxcp", "16"], {"supports_cache_ram": True, "supports_ctx_checkpoints": True}, None, None),
+            (["--cache-ram=-1"], {"supports_cache_ram": True, "supports_ctx_checkpoints": True}, None, "8"),
+        ],
+    )
+    def test_prompt_cache_ram_is_capped_unless_the_model_sets_it(self, monkeypatch, extra, caps, cram, ctxcp):
+        monkeypatch.setattr("arc_llama.issue_report._total_ram_mib", lambda: 16000)  # a quarter of RAM
+        argv = self._plan({"extra_flags": extra}, {**caps, "probed": True}, monkeypatch).argv
+
+        def value(flag):
+            return argv[argv.index(flag) + 1] if flag in argv else None
+
+        assert value("--cache-ram") == cram
+        assert value("--ctx-checkpoints") == ctxcp
+
+    @pytest.mark.parametrize(
+        ("key", "flag", "value"),
+        [("LLAMA_ARG_CACHE_RAM", "--cache-ram", "0"),
+         ("LLAMA_ARG_CTX_CHECKPOINTS", "--ctx-checkpoints", "24")],
+    )
+    def test_memory_control_environment_wins_over_automatic_flags(self, monkeypatch, key, flag, value):
+        monkeypatch.delenv("LLAMA_ARG_CACHE_RAM", raising=False)
+        monkeypatch.delenv("LLAMA_ARG_CTX_CHECKPOINTS", raising=False)
+        monkeypatch.setenv(key, value)
+        monkeypatch.setattr("arc_llama.issue_report._total_ram_mib", lambda: 16000)
+        plan = self._plan({}, {
+            "supports_cache_ram": True, "supports_ctx_checkpoints": True, "probed": True,
+        }, monkeypatch)
+        assert plan.env[key] == value
+        assert flag not in plan.argv
+        other = "--ctx-checkpoints" if flag == "--cache-ram" else "--cache-ram"
+        assert other in plan.argv
+
+    def test_prompt_cache_ram_stops_at_llama_cpps_own_default(self, monkeypatch):
+        from arc_llama.launcher import default_cache_ram_mib
+
+        monkeypatch.setattr("arc_llama.issue_report._total_ram_mib", lambda: 65536)
+        assert default_cache_ram_mib() == 8192
+
+    @pytest.mark.parametrize(("ngram", "expected"), [(True, "draft-mtp,ngram-mod"), (False, "draft-mtp")])
+    def test_mtp_ngram_list_keeps_mtp_without_ngram_support(self, monkeypatch, ngram, expected):
+        monkeypatch.setattr("arc_llama.launcher.has_mtp_heads", lambda path: True)
+        plan = self._plan(
+            {"spec_type": "draft-mtp,ngram-mod", "spec_draft_n_max": 3},
+            {"supports_speculative": True, "supports_ngram": ngram, "probed": True},
+            monkeypatch,
+        )
+        assert plan.argv[plan.argv.index("--spec-type") + 1] == expected
+
+    @pytest.mark.parametrize("spec_type", ["ngram-mod", "draft-mtp,ngram-mod"])
+    def test_unsupported_ngram_and_draft_model_both_fall_back(self, monkeypatch, tmp_path, spec_type):
+        draft = tmp_path / "draft.gguf"
+        draft.write_bytes(b"test")
+        monkeypatch.setattr("arc_llama.launcher.has_mtp_heads", lambda path: True)
+        plan = self._plan(
+            {"spec_type": spec_type, "spec_draft_model": str(draft), "spec_draft_n_max": 3},
+            {"supports_speculative": True, "supports_ngram": False,
+             "supports_draft_model": False, "probed": True},
+            monkeypatch,
+        )
+        assert "--spec-type" not in plan.argv
+        assert "--spec-draft-model" not in plan.argv
+        assert "--spec-draft-n-max" not in plan.argv
 
     def test_modern_binary_gets_fa_with_value(self, monkeypatch):
         plan = self._plan(

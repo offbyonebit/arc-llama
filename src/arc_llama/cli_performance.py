@@ -130,8 +130,10 @@ def register_performance_commands(
                 if not runnable:
                     console.print(f"[red]No depth fits in {model}'s context ({ctx_size}).[/red]")
                     return 1
+                token = cfg.server.admin_token
                 rows = await benchmark_mod.benchmark_depths(
-                    url, model, runnable, gen_tokens=gen_tokens
+                    url, model, runnable, gen_tokens=gen_tokens,
+                    headers={"Authorization": f"Bearer {token}"} if token else None,
                 )
                 if as_json:
                     click.echo(
@@ -176,6 +178,57 @@ def register_performance_commands(
         except KeyboardInterrupt:
             console.print("[yellow]Benchmark interrupted.[/yellow]")
             sys.exit(130)
+
+    @cli.command("bench")
+    @click.argument("model", required=False)
+    @click.option(
+        "--server",
+        "server_url",
+        default=None,
+        help="Base URL of a running `arc-llama serve` (default: http://HOST:PORT from config).",
+    )
+    @click.pass_context
+    def bench_cmd(ctx: click.Context, model: str | None, server_url: str | None) -> None:
+        """Run a short standard bench on the loaded model and print plain text.
+
+        Prefill and decode at a short prompt and at ~16K, through the running
+        server, so it never takes the GPU from it or changes its settings.
+        Post the output with `arc-llama report --text`.
+        """
+        cfg = load_config(ctx.obj["config_path"])
+        url = server_url_from(ctx, server_url)
+        try:
+            health = httpx.get(f"{url}/health", timeout=10).json()
+        except (httpx.HTTPError, ValueError):
+            raise click.ClickException(
+                "No arc-llama server answered. Start it with `arc-llama serve`, "
+                "then run bench again."
+            ) from None
+        loaded = health.get("loaded_models") or []
+        model = model or (loaded[0] if loaded else None)
+        if model is None:
+            raise click.ClickException(
+                "No model is loaded. Run `arc-llama bench MODEL` to load one and bench it."
+            )
+        model_cfg = cfg.find_model(model)
+        if model_cfg is None:
+            raise click.ClickException(f"Model '{model}' is not registered in the config.")
+        if model_cfg.name not in loaded:
+            console.print(f"Loading {model_cfg.name} first; this replaces what the server has loaded.")
+        gen = benchmark_mod.DEFAULT_GEN_TOKENS
+        runnable, skipped = benchmark_mod.usable_depths(
+            list(benchmark_mod.BENCH_DEPTHS), (model_cfg.recipe or {}).get("ctx"), gen
+        )
+        token = cfg.server.admin_token
+        rows = asyncio.run(
+            benchmark_mod.benchmark_depths(
+                url, model_cfg.name, runnable, gen_tokens=gen,
+                headers={"Authorization": f"Bearer {token}"} if token else None,
+            )
+        )
+        click.echo("\n".join(benchmark_mod.bench_lines(cfg, model_cfg.name, rows, skipped)))
+        if rows and all(r.error for r in rows):
+            sys.exit(1)
 
     @cli.command("tune")
     @click.argument("model", required=False)
@@ -716,6 +769,7 @@ def register_performance_commands(
 
     return {
         "benchmark_cmd": benchmark_cmd,
+        "bench_cmd": bench_cmd,
         "tune_cmd": tune_cmd,
         "speculative_cmd": speculative_cmd,
     }

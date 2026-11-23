@@ -732,6 +732,7 @@ async function fetchStatus() {
         m.state         = s.state;
         m.ctx           = s.ctx           ?? m.ctx;
         m.cache_type_k  = s.cache_type_k  ?? m.cache_type_k;
+        if (Object.hasOwn(s, "reasoning_budget")) m.reasoning_budget = s.reasoning_budget;
         m.cache_type_v  = s.cache_type_v  ?? m.cache_type_v;
         m.kv_class      = s.kv_class      ?? m.kv_class;
         m.vram_estimate = s.vram_estimate || null;

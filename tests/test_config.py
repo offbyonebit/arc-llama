@@ -18,6 +18,29 @@ from arc_llama.config import (
 )
 
 
+@pytest.mark.parametrize("value,expected", [(256, 256), (-1, -1), (0, 0), ("512", 512), ("-1", -1), (131072, 131072)])
+def test_launch_recipe_parses_valid_reasoning_budget(value, expected, caplog):
+    model = ModelConfig("budget-model", "/m.gguf", 18080, "gpu", recipe={"reasoning_budget": value})
+    assert model.launch_recipe().reasoning_budget == expected
+    assert not caplog.records
+    assert model.recipe["reasoning_budget"] == value
+
+
+@pytest.mark.parametrize("value", ["abc", 2.5, 256.0, True, False, -2, 131073, "131073", "", [], {}])
+def test_launch_recipe_ignores_bad_reasoning_budget_with_one_warning(value, caplog):
+    model = ModelConfig("budget-model", "/m.gguf", 18080, "gpu", recipe={"reasoning_budget": value})
+    recipe = model.launch_recipe()
+    assert recipe.reasoning_budget is None and "--reasoning-budget" not in recipe.to_argv()
+    assert len(caplog.records) == 1
+    assert "budget-model" in caplog.text and repr(value) in caplog.text
+    assert model.recipe["reasoning_budget"] == value
+
+
+def test_launch_recipe_without_reasoning_budget_stays_unset(caplog):
+    assert ModelConfig("old", "/m.gguf", 18080, "gpu").launch_recipe().reasoning_budget is None
+    assert not caplog.records
+
+
 def test_config_round_trips_models_gpus_and_paths(tmp_path):
     path = tmp_path / "config.toml"
     cfg = Config()
@@ -322,3 +345,43 @@ def test_env_admin_token_without_file_token_saves_none(tmp_path, monkeypatch):
     cfg = load_config(path)
     cfg.save(path)
     assert "from-env" not in path.read_text()
+
+
+@pytest.mark.parametrize("backend", ["vulkan", "sycl"])
+def test_saved_flash_attn_off_survives_a_quantized_kv_round_trip(tmp_path, backend):
+    # Launch policy forces FA on for a quantized V cache, but the saved "off"
+    # stays so switching back to f16 runs -fa off again.
+    path = tmp_path / "config.toml"
+    cfg = Config(
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", backend=backend)],
+        models=[
+            ModelConfig(
+                name="m",
+                path=str(tmp_path / "m.gguf"),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                recipe={"ctx": 8192, "cache_type_k": "q8_0", "cache_type_v": "q8_0", "flash_attn": "off"},
+            )
+        ],
+    )
+    cfg.save(path)
+    assert load_config(path).models[0].recipe["flash_attn"] == "off"
+
+
+def test_saved_flash_attn_off_kept_for_quantized_k_only_on_sycl(tmp_path):
+    # Only a quantized V cache needs FA; SYCL runs q8_0 K with FA off.
+    path = tmp_path / "config.toml"
+    cfg = Config(
+        gpus=[GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage", backend="sycl")],
+        models=[
+            ModelConfig(
+                name="m",
+                path=str(tmp_path / "m.gguf"),
+                port=18080,
+                gpu_pci_slot="0000:03:00.0",
+                recipe={"cache_type_k": "q8_0", "cache_type_v": "f16", "flash_attn": "off"},
+            )
+        ],
+    )
+    cfg.save(path)
+    assert load_config(path).models[0].recipe.get("flash_attn") == "off"

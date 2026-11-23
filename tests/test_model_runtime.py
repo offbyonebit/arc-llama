@@ -67,6 +67,35 @@ def test_model_runtime_launch_isolation_and_literal_arguments(runtime_cfg, tmp_p
     assert not (tmp_path / "BAD").exists()
 
 
+def test_model_backend_refreshes_when_the_override_binary_is_replaced(runtime_cfg, tmp_path):
+    from arc_llama import launcher
+    from arc_llama.arch import Backend
+
+    cfg = runtime_cfg
+    model, other = cfg.models
+    gpu = cfg.gpus[0]
+    gpu.backend = "vulkan"
+    binary = tmp_path / "runtime with spaces" / "llama-server.exe"
+    binary.parent.mkdir()
+    binary.write_bytes(b"ggml_backend_sycl")
+    os.utime(binary, (1700000000, 1700000000))
+    model.llama_server = str(binary)
+    launcher._backends_cached.cache_clear()
+    try:
+        assert launcher.model_backend(cfg, model, gpu) == Backend.SYCL
+        assert launcher.model_backend(cfg, other, gpu) == Backend.VULKAN
+        binary.write_bytes(b"ggml_backend_vulkan")
+        os.utime(binary, (1700000002, 1700000002))
+        assert launcher.model_backend(cfg, model, gpu) == Backend.VULKAN
+        gpu.backend = "sycl"
+        assert launcher.model_backend(cfg, model, gpu) == Backend.VULKAN
+        binary.unlink()
+        assert launcher.model_backend(cfg, model, gpu) == Backend.SYCL
+        assert gpu.backend == "sycl"
+    finally:
+        launcher._backends_cached.cache_clear()
+
+
 def test_config_roundtrip_old_defaults_and_model_path(runtime_cfg, tmp_path):
     cfg = runtime_cfg
     model = cfg.models[0]
@@ -257,3 +286,17 @@ def test_ui_layout_rejects_invalid_json_with_400(runtime_cfg, tmp_path):
     with TestClient(app) as client:
         assert client.put("/admin/ui/layout", content=b"{not json", headers=auth).status_code == 400
         assert client.put("/admin/ui/layout", content=b"[]", headers=auth).status_code == 400
+
+
+def test_cli_sycl_runtime_on_a_vulkan_gpu_turns_flash_attention_on(runtime_cfg, tmp_path, monkeypatch):
+    from arc_llama.arch import Backend
+
+    cfg = runtime_cfg
+    cfg.gpus[0].backend = "vulkan"
+    cfg.models[0].recipe = {"flash_attn": "off", "cache_type_k": "f16", "cache_type_v": "f16"}
+    sycl = executable(tmp_path / "sycl-server", "usage")
+    monkeypatch.setattr("arc_llama.launcher.detect_backends", lambda path: {Backend.SYCL})
+    path = cfg.save(tmp_path / "config.toml")
+    result = CliRunner().invoke(cli, ["--config", str(path), "model-runtime", "ornith", "--llama-server", sycl])
+    assert result.exit_code == 0, result.output
+    assert load_config(path).models[0].recipe["flash_attn"] == "on"

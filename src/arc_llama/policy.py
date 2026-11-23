@@ -152,5 +152,11 @@ def apply_launch_policy(
             )
         # One flash-attn flag only: the recipe field would add its own -fa.
         out = replace(out, flash_attn=None, extra_flags=_ensure_flash_attn_on(out.extra_flags))
+    elif out.flash_attn == "off" and out.cache_type_v in _QUANT_KV:
+        # Every backend: llama.cpp refuses a quantized V cache with FA off
+        # ("V cache quantization requires flash_attn"). Leave FA to llama.cpp's
+        # default (auto), as production SYCL q8 V configs run.
+        log.warning("[%s] quantized V cache needs flash-attn; ignoring flash_attn=off", label)
+        out = replace(out, flash_attn=None)
 
     return out

@@ -1,0 +1,12 @@
+build: 12193 (a1b2c3d4) with MSVC 19.44.35211.0 for x64
+system info: n_threads = 8, n_threads_batch = 8, total_threads = 16
+main: loading model
+srv    load_model: loading model 'C:\models\Qwen3-32B-Q4_K_M.gguf'
+llama_model_load_from_file_impl: using device Vulkan0 (NVIDIA GeForce RTX 4060 Ti) (0000:01:00.0) - 15488 MiB free
+print_info: n_layer          = 64
+load_tensors: loading model tensors, this can take a while... (mmap = false)
+load_tensors: offloaded 65/65 layers to GPU
+load_tensors:      Vulkan0 model buffer size = 18136.11 MiB
+load_tensors:   CPU_Mapped model buffer size =   417.66 MiB
+main: model loaded
+main: server is listening on http://127.0.0.1:18080 - starting the main loop

@@ -125,7 +125,7 @@ def resolve_release(client: httpx.Client, version: str) -> dict:
     if version not in ("latest", "", None) and getattr(r, "status_code", None) == 404:
         raise RuntimeInstallError(
             f"llama.cpp build {version} was not found on GitHub ({LLAMA_CPP_REPO}). "
-            "Choose another build with --runtime-version (a tag such as b12193, or 'latest')."
+            "Choose another build with --runtime-version (a tag such as b12243, or 'latest')."
         )
     r.raise_for_status()
     return r.json()
@@ -210,6 +210,31 @@ def download_asset(
         dest_file.unlink(missing_ok=True)
         raise
     return dest_file
+
+
+def older_runtime_notice(llama_server: str | Path) -> str | None:
+    """One line when the configured runtime is an Arc Llama install older than the pin.
+
+    Only reads the install's marker; it never downloads or switches anything.
+    """
+    binary = Path(llama_server).expanduser()
+    if not binary.is_absolute() or not binary.is_file():
+        return None
+    for folder in list(binary.parents)[:3]:
+        try:
+            marker = json.loads((folder / ".arc-llama-runtime.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        tag, backend = str(marker.get("tag", "")), str(marker.get("backend", ""))
+        have, pinned = re.fullmatch(r"b(\d+)", tag), re.fullmatch(r"b(\d+)", LLAMA_CPP_BUILD)
+        if have and pinned and int(have[1]) < int(pinned[1]) and backend in ("vulkan", "sycl"):
+            return (
+                f"A newer llama.cpp runtime is available: you have {tag}, and this Arc Llama is "
+                f"tested with {LLAMA_CPP_BUILD}. Run `arc-llama install-runtime --backend {backend}` "
+                "to update. Nothing changes until you do."
+            )
+        return None
+    return None
 
 
 def _find_llama_server(root: Path) -> Path | None:

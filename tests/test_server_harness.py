@@ -434,3 +434,18 @@ def test_removing_an_install_that_is_in_use_is_a_409_with_the_reason(tmp_path, m
     with TestClient(app) as client:
         r = client.delete("/admin/harnesses/opencode/v1", headers={"Authorization": "Bearer secret"})
     assert r.status_code == 409 and "is in use" in r.json()["detail"]
+
+
+def test_remembered_work_folder_falls_back_to_home_once_deleted(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "projects").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    gone = tmp_path / "deleted project"
+    with TestClient(_app(tmp_path, monkeypatch, token="secret")) as client:
+        auth = {"Authorization": "Bearer secret"}
+        assert client.get("/v1/agent/folder", params={"path": str(home / "projects")}).status_code == 401
+        assert client.get("/v1/agent/folder", params={"path": str(home / "projects")}, headers=auth).json() == {"folder": str(home / "projects")}
+        assert client.get("/v1/agent/folder", params={"path": "projects"}, headers=auth).json() == {"folder": "projects"}
+        assert client.get("/v1/agent/folder", params={"path": str(gone)}, headers=auth).json() == {"folder": str(home)}
+        assert client.get("/v1/agent/folder", params={"path": ""}, headers=auth).json() == {"folder": str(home)}

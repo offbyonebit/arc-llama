@@ -211,6 +211,20 @@ async def test_tune_picks_and_applies_winner(cfg, monkeypatch):
     assert imp["prompt_eval"] == pytest.approx(75.0, abs=0.2)
 
 
+async def test_tune_trials_are_not_persisted_only_the_final_recipe(cfg, monkeypatch):
+    # A crash or abort mid-sweep must not leave a trial in config.toml: every
+    # candidate edit asks the endpoint not to persist, the final restore does.
+    fake = FakeMeasurements({}, cfg)
+    monkeypatch.setattr("arc_llama.tune._apply_edits", fake.apply)
+    monkeypatch.setattr("arc_llama.tune.benchmark_model", fake.bench)
+
+    await tune_model("http://127.0.0.1:11437", "m", cfg=cfg)
+
+    *trials, final = fake.edits_seen
+    assert trials and all(e.get("persist") is False for e in trials)
+    assert "persist" not in final
+
+
 async def test_tune_keeps_baseline_when_nothing_beats_it(cfg, monkeypatch):
     table = {("q8_0", 512, None): (2000.0, 50.0)}  # everything else: (100, 10)
     fake = FakeMeasurements(table, cfg)
@@ -801,6 +815,27 @@ async def test_measure_rechecks_abort_after_the_edit_await(cfg, monkeypatch):
     assert aborted, "the aborted candidate was not recorded"
 
 
+async def test_chat_during_baseline_aborts_rather_than_fails_the_tune(cfg, monkeypatch):
+    """A user chat lands while the baseline is measuring and evicts the model,
+    so the baseline fails. That is an abort (retry later), not a failed tune."""
+    fake = FakeMeasurements({}, cfg)
+    user_chatted = False
+
+    async def bench(server_url, model_name, **kw):
+        nonlocal user_chatted
+        user_chatted = True
+        return _result(None, None, error="model was unloaded")
+
+    monkeypatch.setattr("arc_llama.tune._apply_edits", fake.apply)
+    monkeypatch.setattr("arc_llama.tune.benchmark_model", bench)
+
+    report = await tune_model(
+        "http://127.0.0.1:11437", "m", cfg=cfg, should_abort=lambda: user_chatted
+    )
+
+    assert report.aborted
+
+
 async def test_restore_final_state_retries_then_succeeds(cfg, monkeypatch):
     """#37: a flaky edit endpoint must not leave the last candidate persisted
     when a retry would have worked."""
@@ -819,12 +854,16 @@ async def test_restore_final_state_retries_then_succeeds(cfg, monkeypatch):
     assert calls == 3
 
 
-async def test_restore_final_state_direct_write_fallback(cfg, monkeypatch):
+@pytest.mark.parametrize("active_trial", [False, True])
+async def test_restore_final_state_direct_write_fallback(cfg, monkeypatch, active_trial):
     """#37: endpoint permanently down → the intended recipe is written to the
     local config directly rather than leaving the last candidate on disk.
     XDG_CONFIG_HOME is redirected to tmp by conftest."""
     from arc_llama.config import default_config_path, load_config
     from arc_llama.tune import _restore_final_state
+
+    if active_trial:
+        cfg.model_saved_settings["m"] = {"recipe": dict(cfg.models[0].recipe)}
 
     async def dead(client, name, edits):
         return "connection refused"
@@ -885,10 +924,12 @@ async def test_apply_state_to_recipe_mirrors_endpoint_rules():
     assert m.recipe == {"cache_type_k": "q8_0", "ubatch_size": 1024}
 
 
-async def test_battlemage_vulkan_keeps_f16_kv_and_fa_off(cfg, monkeypatch):
+@pytest.mark.parametrize("arch", ["battlemage", "lunar_lake"])
+async def test_battlemage_vulkan_keeps_f16_kv_and_fa_off(cfg, monkeypatch, arch):
     """Battlemage on Vulkan never tries q8_0 KV or a flash-attn mode: q8_0
     forces FA on, which the scalar FA path makes slower at depth."""
     cfg.gpus[0].backend = "vulkan"
+    cfg.gpus[0].arch = arch
     cfg.models[0].recipe = {
         "ctx": 8192,
         "cache_type_k": "f16",

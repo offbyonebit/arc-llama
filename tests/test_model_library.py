@@ -295,6 +295,39 @@ def test_file_readiness_detects_read_access_failure(tmp_path: Path, monkeypatch)
     assert result["status"] == "inaccessible" and result["available"] is False
 
 
+async def test_download_reads_the_gguf_off_the_event_loop_before_registering(tmp_path, monkeypatch) -> None:
+    import threading
+
+    import arc_llama.model_library as library_mod
+    import arc_llama.models as models_mod
+
+    events: list[tuple[str, bool]] = []
+
+    def fake_download(spec, *, target_dir, progress):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out = target_dir / spec.file
+        out.write_bytes(b"x")
+        return out
+
+    def warm(_path):
+        events.append(("warm", threading.current_thread() is threading.main_thread()))
+
+    monkeypatch.setattr(models_mod, "download_from_hf", fake_download)
+    monkeypatch.setattr(library_mod, "_warm_gguf_caches", warm)
+
+    async def register(_path):
+        events.append(("register", threading.current_thread() is threading.main_thread()))
+        return ["m"]
+
+    job = DownloadManager(_cfg(tmp_path), register).submit("u/repo", "m.gguf", None, str(tmp_path / "d"))
+    for _ in range(100):
+        if job.status in ("done", "error"):
+            break
+        await asyncio.sleep(0.02)
+    assert job.status == "done", job.error
+    assert events == [("warm", False), ("register", True)]
+
+
 async def test_download_goes_to_chosen_folder(tmp_path, monkeypatch) -> None:
     import arc_llama.models as models_mod
 

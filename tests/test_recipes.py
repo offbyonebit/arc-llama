@@ -17,14 +17,31 @@ from arc_llama.recipes import (
 )
 
 
+@pytest.mark.parametrize("budget", [None, -1, 0, 256, 131072])
+def test_reasoning_budget_argv_and_dict_round_trip(budget):
+    from arc_llama.config import ModelConfig
+    from arc_llama.recipes import recipe_to_dict
+
+    recipe = LaunchRecipe(reasoning_budget=budget)
+    data = recipe_to_dict(recipe)
+    restored = ModelConfig("m", "/m.gguf", 18080, "gpu", recipe=data).launch_recipe()
+    assert restored.reasoning_budget == budget
+    argv = restored.to_argv()
+    if budget is None:
+        assert "reasoning_budget" not in data and "--reasoning-budget" not in argv
+    else:
+        assert data["reasoning_budget"] == budget
+        assert argv[argv.index("--reasoning-budget") + 1] == str(budget)
+
+
 class TestEstimateKvBytes:
     def test_default_f16(self):
         # 70 KiB/token at f16 for default class
         assert estimate_kv_bytes(1024, KVCacheType.F16, "default") == 1024 * 70 * 1024
 
     def test_moe_a3b_q8(self):
-        # 20 KiB/token f16, q8_0 halves it
-        assert estimate_kv_bytes(4096, KVCacheType.Q8_0, "moe_a3b") == 4096 * 20 * 1024 * 0.5
+        # Each q8_0 block uses 34 bytes for the 32 values that take 64 bytes at f16.
+        assert estimate_kv_bytes(4096, KVCacheType.Q8_0, "moe_a3b") == 4096 * 20 * 1024 * 34 // 64
 
     def test_gemma_swa_f16(self):
         assert estimate_kv_bytes(8192, KVCacheType.F16, "gemma_swa") == 8192 * 16 * 1024
@@ -47,6 +64,23 @@ class TestEstimateKvBytes:
 
 
 class TestSuggestCtx:
+    def test_q8_context_accounts_for_block_scale_bytes(self):
+        f16_per_token = 64 * 1024
+        ctx = suggest_ctx(
+            vram_mb=8 * 1024,
+            model_file_mb=6 * 1024,
+            kv_type=KVCacheType.Q8_0,
+            f16_bytes_per_token=f16_per_token,
+        )
+        # After the default compute/safety reserves, KV has exactly 1 GiB.
+        assert ctx == 28672
+        assert estimate_kv_bytes(
+            ctx, KVCacheType.Q8_0, f16_bytes_per_token=f16_per_token,
+        ) == ctx * f16_per_token * 34 // 64
+        assert estimate_kv_bytes(
+            ctx + 4096, KVCacheType.Q8_0, f16_bytes_per_token=f16_per_token,
+        ) > 1024**3
+
     def test_basic_fit(self):
         # 24 GB VRAM, 4 GB model, q8_0 KV
         ctx = suggest_ctx(
@@ -492,6 +526,11 @@ class TestLaunchRecipeArgv:
         assert argv[argv.index("--spec-draft-ngl") + 1] == "999"
         assert argv[argv.index("--spec-draft-n-max") + 1] == "3"
 
+    def test_draft_tuning_flags_dropped_when_speculation_is_off(self):
+        argv = LaunchRecipe(spec_draft_n_max=3, spec_draft_p_min=0.75).to_argv()
+        assert "--spec-draft-n-max" not in argv
+        assert "--spec-draft-p-min" not in argv
+
     def test_spec_draft_model_omitted_when_none(self):
         r = LaunchRecipe(spec_type="draft-mtp")
         argv = r.to_argv()
@@ -779,6 +818,24 @@ class TestBattlemageVulkanFlashAttention:
         argv = r.to_argv(fa_takes_value=True)
         assert argv[argv.index("-fa") + 1] == "off"
 
+    def test_new_lunar_lake_vulkan_model_gets_f16_kv_and_fa_off(self):
+        from arc_llama.arch import Backend
+
+        r = default_recipe(Arch.LUNAR_LAKE, vram_mb=16 * 1024, model_file_mb=4 * 1024, backend=Backend.VULKAN)
+        assert r.cache_type_k == KVCacheType.F16
+        assert r.cache_type_v == KVCacheType.F16
+        assert r.flash_attn == "off"
+        assert "--flash-attn" not in r.extra_flags
+
+    def test_alchemist_vulkan_keeps_q8_kv_and_fa_on(self):
+        from arc_llama.arch import Backend
+
+        r = default_recipe(Arch.ALCHEMIST, vram_mb=16 * 1024, model_file_mb=4 * 1024, backend=Backend.VULKAN)
+        assert r.cache_type_k == KVCacheType.Q8_0
+        assert r.cache_type_v == KVCacheType.Q8_0
+        assert r.flash_attn is None
+        assert r.extra_flags[-2:] == ["--flash-attn", "on"]
+
     def test_context_is_sized_for_f16_kv(self):
         from arc_llama.arch import Backend
         from arc_llama.recipes import suggest_ctx
@@ -799,7 +856,7 @@ class TestBattlemageVulkanFlashAttention:
         for arch, backend in (
             (Arch.BATTLEMAGE, Backend.SYCL),
             (Arch.ALCHEMIST, Backend.VULKAN),
-            (Arch.LUNAR_LAKE, Backend.VULKAN),
+            (Arch.LUNAR_LAKE, Backend.SYCL),
         ):
             r = default_recipe(arch, vram_mb=24 * 1024, model_file_mb=5 * 1024, backend=backend)
             assert r.cache_type_k == KVCacheType.Q8_0, (arch, backend)
@@ -827,6 +884,7 @@ class TestBattlemageVulkanFlashAttention:
         assert new_model_kv_type("battlemage", "vulkan") == KVCacheType.F16
         assert new_model_kv_type(Arch.BATTLEMAGE, Backend.SYCL) == KVCacheType.Q8_0
         assert new_model_kv_type("alchemist", "vulkan") == KVCacheType.Q8_0
-        assert new_model_kv_type("lunar_lake", "vulkan") == KVCacheType.Q8_0
+        assert new_model_kv_type("lunar_lake", "vulkan") == KVCacheType.F16
+        assert new_model_kv_type("lunar_lake", "sycl") == KVCacheType.Q8_0
         assert new_model_kv_type("nonsense", "vulkan") == KVCacheType.Q8_0
         assert memory_need_mb(5000, kv_type=KVCacheType.F16) > memory_need_mb(5000)

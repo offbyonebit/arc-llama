@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import copy
 import io
 import json
 import logging
@@ -76,6 +77,7 @@ from arc_llama.api.integration import register_integration_route
 from arc_llama.api.library import register_library_routes
 from arc_llama.api.work import ensure_work, register_work_routes
 from arc_llama.api_keys import ApiKeyStore
+from arc_llama.benchmark import BENCHMARK_HEADER
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
 from arc_llama.config import Config, default_config_path, load_config
 from arc_llama.failures import StartupFailureError
@@ -306,7 +308,7 @@ def create_app(
         app_plugins = list(plugins)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def services(app: FastAPI):
         app.state.router = Router(cfg, log_dir=state_dir)
         app.state.upstream_mgr = UpstreamManager(cfg.upstreams)
         app.state.cfg = cfg
@@ -391,6 +393,47 @@ def create_app(
             await app.state.mcp_manager.stop()
             await app.state.router.shutdown()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # uvicorn binds the port only after startup returns, so run the slow
+        # startup in a task and let /health answer "starting" meanwhile. The
+        # task also runs the teardown: MCP sessions must close in the task
+        # that opened them.
+        ready = app.state.ready = asyncio.Event()
+        started = app.state.started = asyncio.Event()
+        app.state.startup_error = None
+        stop = asyncio.Event()
+
+        async def run() -> None:
+            try:
+                async with services(app):
+                    ready.set()
+                    started.set()
+                    await stop.wait()
+            except Exception as exc:
+                if ready.is_set():
+                    raise
+                log.exception("arc-llama startup failed")
+                app.state.startup_error = str(exc) or type(exc).__name__
+                # `arc-llama serve` sets this so a failed startup still exits
+                # with code 3 and systemd's Restart=on-failure retries it.
+                on_failure = getattr(app.state, "on_startup_failure", None)
+                if on_failure is not None:
+                    on_failure()
+            finally:
+                started.set()
+
+        task = asyncio.create_task(run())
+        try:
+            yield
+        finally:
+            stop.set()
+            if not ready.is_set():
+                task.cancel()
+            await asyncio.wait({task})
+            if not task.cancelled():
+                task.result()
+
     app = FastAPI(title="arc-llama", version=__version__, lifespan=lifespan)
     app.state.plugin_discovery = discovery
 
@@ -405,6 +448,25 @@ def create_app(
     app.state.api_keys = (
         ApiKeyStore.for_state_dir(cfg.paths.state_dir) if cfg.paths.state_dir else None
     )
+
+    def _startup_pending(request: Request) -> JSONResponse | None:
+        ready = getattr(request.app.state, "ready", None)
+        if ready is None or ready.is_set():
+            return None
+        error = request.app.state.startup_error
+        body = {"status": "error", "detail": error} if error else {"status": "starting"}
+        return JSONResponse(status_code=503, content=body)
+
+    @app.middleware("http")
+    async def wait_for_startup(request: Request, call_next):
+        # Everything but /health waits for startup rather than reach half-built state.
+        started = getattr(request.app.state, "started", None)
+        if started is not None and request.url.path != "/health":
+            await started.wait()
+            pending = _startup_pending(request)
+            if pending is not None:
+                return pending
+        return await call_next(request)
 
     @app.middleware("http")
     async def require_client_key(request: Request, call_next):
@@ -468,9 +530,12 @@ def create_app(
         allow_headers=["*"],
     )
 
-    @app.get("/health")
-    async def health(request: Request) -> dict[str, Any]:
-        """Liveness probe for the arc-llama router itself."""
+    @app.get("/health", response_model=None)
+    async def health(request: Request) -> dict[str, Any] | JSONResponse:
+        """Liveness probe for the arc-llama router itself; 503 "starting" until startup ends."""
+        pending = _startup_pending(request)
+        if pending is not None:
+            return pending
         rt: Router = request.app.state.router
         uptime = time.time() - request.app.state.started_at
         # "Loaded" means the health check passed, not merely that a process
@@ -484,11 +549,17 @@ def create_app(
             and rt._servers[m.name].is_running
             and rt._servers[m.name].ready
         ]
+        # A model launch or relaunch (first load, tuner, settings Apply) says
+        # "loading". Still 200: the router itself is up, and clients that only
+        # check the code keep working. Every launch goes through ensure_active,
+        # so a running-but-not-ready server outside it is one being stopped.
+        loading = sorted(rt._loading_futures)
         return {
-            "status": "ok",
+            "status": "loading" if loading else "ok",
             "uptime_seconds": round(uptime, 2),
             "loaded_models": loaded,
             "loaded_model_count": len(loaded),
+            "loading_models": loading,
         }
 
     @app.get("/admin/session-token")
@@ -1277,6 +1348,18 @@ def create_app(
             ],
         }
 
+    @app.get("/v1/agent/folder")
+    async def agent_folder(path: str = "", _auth: None = Depends(_require_admin)) -> dict[str, str]:
+        """The remembered Work folder if it still exists here, otherwise the home folder."""
+        folder = Path(path).expanduser()
+        if not folder.is_absolute():
+            folder = Path.home() / folder
+        try:
+            exists = bool(path.strip()) and os.path.isdir(folder)
+        except (OSError, ValueError):
+            exists = False
+        return {"folder": path if exists else str(Path.home())}
+
     @app.get("/v1/agent/{run_id}/changes/{path:path}")
     async def agent_change_diff(
         run_id: str, path: str, request: Request, _auth: None = Depends(_require_admin)
@@ -1691,6 +1774,7 @@ def create_app(
                     "ctx": r.get("ctx"),
                     "cache_type_k": r.get("cache_type_k"),
                     "cache_type_v": r.get("cache_type_v"),
+                    "reasoning_budget": r.get("reasoning_budget"),
                     "flash_attn": r.get("flash_attn"),
                     "ubatch_size": r.get("ubatch_size"),
                     "batch_size": r.get("batch_size"),
@@ -1979,6 +2063,14 @@ def create_app(
 
         return {"filename": file.filename, "text": text}
 
+    reload_tasks: set[asyncio.Task[None]] = set()
+
+    async def _reload_after_edit(rt: Router, name: str) -> None:
+        try:
+            await rt.ensure_active(name)
+        except Exception:
+            log.exception("edit %s: reload with the new settings failed", name)
+
     @app.post("/admin/models/{name}/edit")
     async def admin_edit_model(
         name: str, request: Request, _auth: None = Depends(_require_admin)
@@ -1986,7 +2078,7 @@ def create_app(
         """Update a model's recipe in-place.
 
         Body is a partial recipe dict — only provided fields change. Recognised
-        fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `kv_class`,
+        fields: `ctx`, `cache_type_k`, `cache_type_v`, `parallel`, `reasoning_budget`, `kv_class`,
         `spec_type`, `spec_draft_name`, `spec_draft_n_max`, `spec_draft_p_min`,
         `spec_draft_model`, `spec_draft_ngl`, `ubatch_size`,
         `batch_size`, `flash_attn` (null clears), `llama_server` (empty inherits
@@ -1995,8 +2087,10 @@ def create_app(
         patterns, null clears). When `override_tensor` is set, `n_cpu_moe` is
         cleared and vice versa: the two flags are alternative means to the
         same end and applying both would double-count the offload.
-        If the model is currently loaded, the server is stopped first; callers
-        decide whether to reload it afterwards via /admin/load.
+        If the model is currently loaded, the server is stopped first. With
+        `"reload": true` (the settings panel's Apply) a model that was loaded
+        is started again in the background with the new recipe; otherwise it
+        comes back on the next request or /admin/load.
         """
         from arc_llama.config import validate_model_runtime
         from arc_llama.gguf_meta import validate_override_patterns, weight_tensor_table
@@ -2070,6 +2164,15 @@ def create_app(
                 raise HTTPException(status_code=400, detail="parallel must be 1..32")
             recipe["parallel"] = par
             changed.append("parallel")
+        if "reasoning_budget" in body:
+            budget = body["reasoning_budget"]
+            if budget is None or budget == "":
+                recipe.pop("reasoning_budget", None)
+            elif type(budget) is int and -1 <= budget <= 131072:
+                recipe["reasoning_budget"] = budget
+            else:
+                raise HTTPException(status_code=400, detail="reasoning_budget must be an integer from -1 to 131072, or null")
+            changed.append("reasoning_budget")
         kv_class = model.kv_class
         if "kv_class" in body:
             v = str(body["kv_class"])
@@ -2085,11 +2188,11 @@ def create_app(
             if v is None or v == "":
                 recipe.pop("spec_type", None)
             elif (
-                isinstance(v, str) and len(v) <= 64 and all(ch.isalnum() or ch in "-_" for ch in v)
+                isinstance(v, str) and len(v) <= 64 and all(ch.isalnum() or ch in "-_," for ch in v)
             ):
                 # llama.cpp adds speculation strategies faster than arc-llama
                 # releases. Keep this future-compatible while rejecting values
-                # that cannot be one argv atom.
+                # that cannot be one argv atom; commas list several (draft-mtp,ngram-mod).
                 recipe["spec_type"] = v
             else:
                 raise HTTPException(
@@ -2325,10 +2428,20 @@ def create_app(
             raise HTTPException(status_code=400, detail="no recognised fields to edit")
         previous_recipe, previous_kv_class = model.recipe, model.kv_class
         previous_runtime = model.llama_server, model.env
+        saved_settings = c.model_saved_settings.get(name)
+        persist = body.get("persist", True) is not False
+        if not persist and saved_settings is None:
+            c.model_saved_settings[name] = copy.deepcopy({
+                "recipe": previous_recipe, "kv_class": previous_kv_class,
+                "llama_server": model.llama_server, "env": model.env,
+            })
         model.recipe, model.kv_class = recipe, kv_class
         model.llama_server, model.env = runtime_binary, dict(runtime_env)
         try:
-            c.save(config_path or default_config_path())
+            # Auto-tune trials send persist=false: only its final pick is saved.
+            if persist:
+                c.model_saved_settings.pop(name, None)
+                c.save(config_path or default_config_path())
         except OSError as e:
             # Previously this was logged and the edit continued, so the caller
             # got a 200 listing the fields it "changed" while the config on
@@ -2339,12 +2452,20 @@ def create_app(
             # that silently un-applies later is not.
             model.recipe, model.kv_class = previous_recipe, previous_kv_class
             model.llama_server, model.env = previous_runtime
+            if saved_settings is not None:
+                c.model_saved_settings[name] = saved_settings
             log.warning("edit %s: persist failed: %s", name, e)
             raise HTTPException(
                 status_code=500,
                 detail=f"Could not persist config; edit rolled back: {e}",
             ) from e
         rebuilt, was_running = await rt.rebuild_model(name)
+        # Tuners leave reload unset: they load each trial themselves.
+        reloading = body.get("reload") is True and rebuilt and was_running
+        if reloading:
+            task = asyncio.create_task(_reload_after_edit(rt, name))
+            reload_tasks.add(task)
+            task.add_done_callback(reload_tasks.discard)
         return {
             "name": name,
             "changed": changed,
@@ -2354,6 +2475,7 @@ def create_app(
             "kv_class": model.kv_class,
             "stopped_running_instance": was_running,
             "rebuilt": rebuilt,
+            "reloading": reloading,
         }
 
     @app.post("/admin/scan")
@@ -2726,6 +2848,12 @@ async def _proxy_post(request: Request, target_path: str, streaming_ok: bool = T
     if lease_context is not None:
         await lease_context.__aenter__()
     rt.inflight += 1
+    tuner = getattr(request.app.state, "tuner", None)
+    if tuner is not None and BENCHMARK_HEADER not in request.headers:
+        # Latch the abort: a short chat can start and finish inside one tune
+        # measurement (the baseline is the longest), so inflight is back to
+        # zero by the time the sweep checks it.
+        tuner.abort_sweep()
     streaming_response_started = False
     resolved_at: float | None = None
     # Set once the request has resolved to a local model, so the router can

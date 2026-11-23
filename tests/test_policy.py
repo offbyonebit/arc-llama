@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from arc_llama.arch import Arch, Backend
 from arc_llama.policy import apply_launch_policy, needs_flash_attn
 from arc_llama.recipes import KVCacheType, LaunchRecipe
@@ -96,6 +98,29 @@ class TestApplyLaunchPolicy:
             model_path="/m.gguf",
         )
         assert out.extra_flags == ["--flash-attn", "off"]
+
+    @pytest.mark.parametrize("backend", [Backend.SYCL, Backend.VULKAN])
+    def test_quantized_v_with_fa_off_field_never_launches_fa_off(self, backend):
+        # llama.cpp refuses a quantized V cache with FA off on every backend.
+        recipe = LaunchRecipe(
+            cache_type_k=KVCacheType.Q8_0,
+            cache_type_v=KVCacheType.Q8_0,
+            flash_attn="off",
+        )
+        out = apply_launch_policy(
+            recipe, arch=Arch.BATTLEMAGE, backend=backend, model_path="/m.gguf"
+        )
+        argv = out.to_argv()
+        fa = [i for i, a in enumerate(argv) if a in ("-fa", "--flash-attn")]
+        assert all(argv[i + 1] != "off" for i in fa)
+        assert len(fa) <= 1
+
+    def test_sycl_quantized_k_only_keeps_fa_off(self):
+        recipe = LaunchRecipe(cache_type_k=KVCacheType.Q8_0, flash_attn="off")
+        out = apply_launch_policy(
+            recipe, arch=Arch.BATTLEMAGE, backend=Backend.SYCL, model_path="/m.gguf"
+        )
+        assert out.flash_attn == "off"
 
     def test_does_not_strip_draft_mtp(self):
         recipe = LaunchRecipe(spec_type="draft-mtp")

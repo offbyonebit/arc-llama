@@ -66,8 +66,12 @@ from arc_llama.models import (
     parse_hf_spec,
 )
 from arc_llama.platform_checks import (
+    mesa_upgrade_steps,
+    mesa_version,
+    old_mesa_vulkan_warning,
     rebar_likely_enabled,
 )
+from arc_llama.runtime import older_runtime_notice
 from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -197,6 +201,7 @@ support_bundle_cmd = _diagnostic_command_exports["support_bundle_cmd"]
 
 _do_scan: Any
 _print_gpu_table: Any
+_installed_runtimes: Any
 
 _model_command_exports = register_model_commands(
     cli,
@@ -204,6 +209,7 @@ _model_command_exports = register_model_commands(
     load_config=lambda path: load_config(path),
     save_or_die=lambda cfg, path: _save_or_die(cfg, path),
     add_local_model=lambda *args, **kwargs: add_local_model(*args, **kwargs),
+    installed_runtimes=lambda cfg: _installed_runtimes(cfg),
     download_from_hf=lambda *args, **kwargs: download_from_hf(*args, **kwargs),
     detect_gpus=lambda: detect_gpus(),
     do_scan=lambda cfg, paths: _do_scan(cfg, paths),
@@ -1004,6 +1010,16 @@ def setup_cmd(
     )
 
 
+def _detect_missing_gpus(cfg: Config) -> None:
+    """Fill an empty GPU list from hardware detection, as on a fresh home."""
+    if not cfg.gpus:
+        try:
+            detected = detect_gpus()
+            cfg.gpus = init_config_from_detection(detected).gpus
+        except Exception as exc:
+            console.print(f"[yellow]Hardware detection needs attention: {exc}[/yellow]")
+
+
 @cli.command("start")
 @click.option("--port", type=click.IntRange(1, 65535), default=None, help="Local web UI port.")
 @click.option("--open/--no-open", "open_browser", default=True, help="Open the browser when ready.")
@@ -1016,12 +1032,7 @@ def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
     """
     path = ctx.obj["config_path"]
     cfg = load_config(path)
-    if not cfg.gpus:
-        try:
-            detected = detect_gpus()
-            cfg.gpus = init_config_from_detection(detected).gpus
-        except Exception as exc:
-            console.print(f"[yellow]Hardware detection needs attention: {exc}[/yellow]")
+    _detect_missing_gpus(cfg)
     _save_or_die(cfg, path)
     browser_path = "/chat" if cfg.models else "/"
     url = f"http://127.0.0.1:{port or cfg.server.port}{browser_path}"
@@ -1091,6 +1102,10 @@ def serve(
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
+    if not cfg.gpus and not ctx.obj.get("guided_start"):
+        _detect_missing_gpus(cfg)
+        if cfg.gpus:
+            _save_or_die(cfg, ctx.obj["config_path"])
     # Command-line overrides apply to this run only. Remember the saved values
     # so a startup-scan save doesn't write them to config.toml (``start``
     # always passes host=127.0.0.1, which used to replace a saved LAN host).
@@ -1151,12 +1166,29 @@ def serve(
                 f"guided setup, drop a GGUF in {cfg.paths.models_dir}, or run "
                 "`arc-llama add`.[/yellow]"
             )
+    if not guided and any(not m.llama_server for m in cfg.models):
+        from arc_llama.onboarding import runtime_path
+
+        if runtime_path(cfg) is None:
+            # Exit like a failed startup so systemd's Restart=on-failure sees it.
+            console.print(f"[red]llama-server binary not found: {cfg.paths.llama_server}[/red]")
+            console.print("Run `arc-llama install-runtime` or fix paths.llama_server in config.toml.")
+            sys.exit(3)
     if cfg.server.host not in ("127.0.0.1", "localhost", "::1"):
         console.print(
             f"[yellow]Binding to {cfg.server.host!r}, not loopback -- make sure "
             "admin_token is set to something you control (it was auto-generated "
             "if you never set one).[/yellow]"
         )
+    if any(g.enabled and g.backend == Backend.VULKAN.value for g in cfg.gpus):
+        mesa_warning = old_mesa_vulkan_warning(mesa_version())
+        if mesa_warning:
+            console.print(f"[yellow]{mesa_warning}[/yellow]")
+            for line in mesa_upgrade_steps():
+                console.print(line, markup=False, highlight=False)
+    runtime_notice = older_runtime_notice(cfg.paths.llama_server)
+    if runtime_notice:
+        console.print(runtime_notice, style="yellow", markup=False, highlight=False)
     if guided:
         # The local browser UI authenticates itself, so token details would
         # only distract here; they matter to API callers of plain `serve`.
@@ -1201,6 +1233,15 @@ def serve(
                 pass
 
     atexit.register(_shutdown_subprocesses)
+
+    def _exit_on_startup_failure() -> None:
+        # The port is already open, so uvicorn won't exit on its own; keep the
+        # old exit code 3 that systemd's Restart=on-failure acts on.
+        _shutdown_subprocesses()
+        logging.shutdown()
+        os._exit(3)
+
+    app.state.on_startup_failure = _exit_on_startup_failure
 
     def _on_signal(signum: int, _frame) -> None:  # noqa: ANN001
         _shutdown_subprocesses()

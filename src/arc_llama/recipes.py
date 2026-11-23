@@ -69,6 +69,7 @@ class LaunchRecipe:
     n_gpu_layers: int = 999
     ctx: int = 8192
     parallel: int = 1
+    reasoning_budget: int | None = None
     cache_type_k: KVCacheType = KVCacheType.F16
     cache_type_v: KVCacheType = KVCacheType.F16
     threads: int | None = None
@@ -157,6 +158,8 @@ class LaunchRecipe:
             "--cache-type-v",
             self.cache_type_v.value,
         ]
+        if self.reasoning_budget is not None:
+            argv += ["--reasoning-budget", str(self.reasoning_budget)]
         if self.threads is not None:
             argv += ["-t", str(self.threads)]
         if self.temp is not None:
@@ -171,7 +174,7 @@ class LaunchRecipe:
             argv += ["--spec-draft-model", self.spec_draft_model]
         if self.spec_draft_ngl is not None:
             argv += ["--spec-draft-ngl", str(self.spec_draft_ngl)]
-        if self.spec_draft_n_max is not None:
+        if self.spec_type and self.spec_draft_n_max is not None:
             argv += ["--spec-draft-n-max", str(self.spec_draft_n_max)]
         if self.ubatch_size is not None:
             argv += ["-ub", str(self.ubatch_size)]
@@ -219,7 +222,7 @@ class LaunchRecipe:
             if self.split_mode in SPLIT_MODES:
                 argv += ["--split-mode", self.split_mode]
         extra = list(self.extra_flags)
-        if self.spec_draft_p_min is not None:
+        if self.spec_type and self.spec_draft_p_min is not None:
             from arc_llama.speculation import confidence_value, without_confidence_flags
 
             value = confidence_value(self.spec_draft_p_min)
@@ -244,7 +247,7 @@ def estimate_kv_bytes(
     scale = {
         KVCacheType.F32: 2.0,
         KVCacheType.F16: 1.0,
-        KVCacheType.Q8_0: 0.5,
+        KVCacheType.Q8_0: 0.53125,
         KVCacheType.Q5_1: 0.375,
         KVCacheType.Q5_0: 0.375,
         KVCacheType.Q4_1: 0.3125,
@@ -292,7 +295,7 @@ def suggest_ctx(
     scale = {
         KVCacheType.F32: 2.0,
         KVCacheType.F16: 1.0,
-        KVCacheType.Q8_0: 0.5,
+        KVCacheType.Q8_0: 0.53125,
         KVCacheType.Q5_1: 0.375,
         KVCacheType.Q5_0: 0.375,
         KVCacheType.Q4_1: 0.3125,
@@ -376,15 +379,18 @@ def _xmx_sdpa_worth_it(
     return True
 
 
-VULKAN_SCALAR_FA_ARCHES = frozenset({Arch.BATTLEMAGE})
+# TODO: bench f16/FA-off vs q8_0/FA-on on an A-series card before adding
+# Alchemist here (b12243 has no Vulkan coopmat on Alchemist dGPUs).
+VULKAN_SCALAR_FA_ARCHES = frozenset({Arch.BATTLEMAGE, Arch.LUNAR_LAKE})
 """Arches whose Vulkan flash attention runs a slow scalar path.
 
 Xe2 drivers report only an 8x16x16 cooperative-matrix shape, so llama.cpp's
 Vulkan FA shader falls back to scalar code (llama.cpp issues 30503, 27638).
 Measured on an Arc Pro B60, Ornith 1.5 9B Q4_K_M, llama.cpp b12193: f16 KV with
 FA off vs q8_0 KV with FA on, pp16384 532 -> 820 tok/s and tg128 at 16K depth
-13.6 -> 19.1 tok/s. New models there start with f16 KV and FA off. Revisit once
-llama.cpp PR 30351 ships."""
+13.6 -> 19.1 tok/s. Lunar Lake (Arc 130V, LFM3 1.7B Q4_0) shows the same:
+prefill ~1.8x faster with FA off, q8_0 decode ~40% slower at depth. New models
+there start with f16 KV and FA off. Revisit once llama.cpp PR 30351 ships."""
 
 
 def new_model_kv_type(arch: Arch | str, backend: Backend | str) -> KVCacheType:
@@ -530,6 +536,8 @@ def recipe_to_dict(recipe: LaunchRecipe) -> dict:
         "cache_type_k": recipe.cache_type_k.value,
         "cache_type_v": recipe.cache_type_v.value,
     }
+    if recipe.reasoning_budget is not None:
+        d["reasoning_budget"] = recipe.reasoning_budget
     if recipe.threads is not None:
         d["threads"] = recipe.threads
     if recipe.temp is not None:

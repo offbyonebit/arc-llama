@@ -347,6 +347,43 @@ def _make_config_with_gpu(tmp_path):
     return cfg
 
 
+@pytest.mark.parametrize("discover", [False, True])
+@pytest.mark.parametrize("flags", [[], ["--reasoning", "off"], ["--reasoning=off"]])
+def test_new_model_gets_budget_unless_reasoning_is_off(tmp_path, mock_recipe_and_mtp, monkeypatch, discover, flags):
+    from arc_llama.recipes import LaunchRecipe
+
+    monkeypatch.setattr("arc_llama.models.default_recipe", lambda **_: LaunchRecipe(extra_flags=flags))
+    cfg = _make_config_with_gpu(tmp_path)
+    path = tmp_path / "thinking.gguf"
+    path.write_bytes(b"fixture")
+    model = register_discovered(cfg, [path])[0] if discover else add_local_model(
+        cfg, name="thinking", path=str(path), gpu_pci_slot=cfg.gpus[0].pci_slot,
+    )
+    assert model.recipe.get("reasoning_budget") == (None if flags else 256)
+
+
+def test_adding_with_manual_reasoning_off_skips_default(tmp_path, mock_recipe_and_mtp):
+    cfg = _make_config_with_gpu(tmp_path)
+    path = tmp_path / "thinking.gguf"
+    path.write_bytes(b"fixture")
+    model = add_local_model(cfg, name="thinking", path=str(path), gpu_pci_slot=cfg.gpus[0].pci_slot,
+                            recipe_overrides={"extra_flags": ["--reasoning", "off"]})
+    assert "reasoning_budget" not in model.recipe
+
+
+def test_existing_config_does_not_gain_a_budget_on_load_save(tmp_path):
+    from arc_llama.config import load_config
+
+    cfg = _make_config_with_gpu(tmp_path)
+    cfg.models = [ModelConfig("old", "/old.gguf", 18080, cfg.gpus[0].pci_slot, recipe={"ctx": 8192})]
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    restored = load_config(path)
+    assert restored.models[0].launch_recipe().reasoning_budget is None
+    restored.save(path)
+    assert "reasoning_budget" not in path.read_text()
+
+
 @pytest.mark.parametrize(
     "bad_name",
     [
@@ -955,11 +992,21 @@ def test_register_discovered_skips_draft_and_wires_parent(tmp_path):
     assert Path(mc.recipe["spec_draft_model"]).resolve() == draft.resolve()
 
 
-def test_add_local_model_skips_mtp_for_hybrid_ssm(tmp_path):
-    """qwen35* hybrids carry MTP heads but are documented as slow with SYCL
-    MTP on Xe2 (see is_hybrid_ssm) — discovery must not auto-enable a known
-    regression."""
+_HYBRID_MTP_PRESET = {"spec_type": "draft-mtp,ngram-mod", "spec_draft_n_max": 3, "spec_draft_p_min": 0.75}
+
+
+@pytest.mark.parametrize(
+    ("backend", "moe", "expected"),
+    [
+        ("sycl", False, _HYBRID_MTP_PRESET),  # dense 27B on SYCL: measured win
+        ("vulkan", False, {}),  # Vulkan MTP on Intel is untested
+        ("sycl", True, {}),  # MoE hybrids lost speed with MTP
+    ],
+)
+@pytest.mark.parametrize("discovered", [False, True])
+def test_hybrid_mtp_preset_only_for_dense_models_on_sycl(tmp_path, backend, moe, expected, discovered):
     cfg = _make_config_with_gpu(tmp_path)
+    cfg.gpus[0].backend = backend
     model_file = tmp_path / "model.gguf"
     model_file.write_bytes(b"fake")
 
@@ -967,6 +1014,8 @@ def test_add_local_model_skips_mtp_for_hybrid_ssm(tmp_path):
         patch("arc_llama.models.default_recipe") as mock_recipe,
         patch("arc_llama.models.has_mtp_heads", return_value=True),
         patch("arc_llama.models.is_hybrid_ssm", return_value=True),
+        patch("arc_llama.models.is_moe", return_value=moe),
+        patch("arc_llama.models._suggest_moe_offload", return_value=None),
     ):
         from arc_llama.recipes import KVCacheType, LaunchRecipe
 
@@ -977,45 +1026,14 @@ def test_add_local_model_skips_mtp_for_hybrid_ssm(tmp_path):
             cache_type_k=KVCacheType.Q8_0,
             cache_type_v=KVCacheType.Q8_0,
         )
-        mc = add_local_model(
-            cfg,
-            name="hybrid-model",
-            path=str(model_file),
-            gpu_pci_slot="0000:03:00.0",
-        )
+        if discovered:
+            recipe = register_discovered(cfg, [model_file])[0].recipe or {}
+        else:
+            recipe = add_local_model(
+                cfg, name="hybrid-model", path=str(model_file), gpu_pci_slot="0000:03:00.0"
+            ).recipe or {}
 
-    recipe = mc.recipe or {}
-    assert recipe.get("spec_type") != "draft-mtp", (
-        "auto-enabled draft-mtp on a hybrid SSM model the project itself "
-        "documents as regressing with it"
-    )
-
-
-def test_register_discovered_skips_mtp_for_hybrid_ssm(tmp_path):
-    cfg = _make_config_with_gpu(tmp_path)
-    found = tmp_path / "found.gguf"
-    found.write_bytes(b"fake")
-
-    with (
-        patch("arc_llama.models.default_recipe") as mock_recipe,
-        patch("arc_llama.models.has_mtp_heads", return_value=True),
-        patch("arc_llama.models.is_hybrid_ssm", return_value=True),
-    ):
-        from arc_llama.recipes import KVCacheType, LaunchRecipe
-
-        mock_recipe.return_value = LaunchRecipe(
-            n_gpu_layers=999,
-            ctx=8192,
-            parallel=1,
-            cache_type_k=KVCacheType.Q8_0,
-            cache_type_v=KVCacheType.Q8_0,
-        )
-        added = register_discovered(cfg, [found])
-
-    assert added, "model was not registered at all"
-    recipe = added[0].recipe or {}
-    assert recipe.get("spec_type") != "draft-mtp"
-
+    assert {k: recipe[k] for k in _HYBRID_MTP_PRESET if k in recipe} == expected
 
 
 def test_download_honors_accepted_revision_even_when_head_changes(mock_hf_module, tmp_path):

@@ -10,6 +10,7 @@ benchmark inherits the correct SYCL env, arch profile, and router policy.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import statistics
 import time
@@ -25,6 +26,9 @@ log = logging.getLogger("arc_llama.benchmark")
 
 WARMUP_PROMPT = "The quick brown fox jumps over the lazy dog. "
 # We repeat this to build arbitrary-length prompts without tokenisation.
+
+BENCHMARK_HEADER = "X-Arc-Llama-Benchmark"
+"""Marks benchmark traffic, so the server doesn't take it for a user request."""
 
 DEFAULT_PROMPT_TOKENS = 512
 DEFAULT_GEN_TOKENS = 128
@@ -202,6 +206,36 @@ def _build_prompt(target_tokens: int) -> str:
     repeats = max(1, needed_chars // len(word))
     prompt = (word + " ") * repeats
     return prompt[:needed_chars]
+
+
+_VARIED_WORDS = (
+    "time year people way day man thing woman life child world school state family "
+    "student group country problem hand part place case week company system program "
+    "question work government number night point home water room mother area money "
+    "story fact month lot right study book eye job word business issue side kind head "
+    "house service friend father power hour game line end member law car city name "
+    "team minute idea kid body face others level office door health person art war "
+    "history party result change morning reason research girl guy moment air teacher "
+    "force education foot boy age policy music market sense nation plan college"
+).split()
+
+
+def _varied_prompt(target_tokens: int, seed: int = 0) -> str:
+    """About *target_tokens* seeded random common words (most are one token).
+
+    Unlike :func:`_build_prompt`, nothing repeats, so n-gram speculation
+    (which needs a 24-token match) has nothing to copy and decode isn't inflated.
+    """
+    rng = random.Random(seed)
+    return " ".join(rng.choice(_VARIED_WORDS) for _ in range(target_tokens))
+
+
+# Decode continues this as ordinary prose, so MTP drafts what a real answer
+# looks like instead of more random words.
+_PROSE_LEAD = (
+    "\n\nThat was a list of words. Here is a short story, told plainly, about a "
+    "lighthouse keeper and the night the fog came in.\n\nThe"
+)
 
 
 # ------------------------------------------------------------------
@@ -473,6 +507,7 @@ async def benchmark_model(
     headers = (
         {"Authorization": f"Bearer {cfg.server.admin_token}"} if cfg.server.admin_token else {}
     )
+    headers[BENCHMARK_HEADER] = "1"
     async with httpx.AsyncClient(base_url=server_url, timeout=300.0, headers=headers) as client:
         # Ensure model is loaded
         if load:
@@ -705,6 +740,7 @@ async def benchmark_depths(
     *,
     gen_tokens: int = DEFAULT_GEN_TOKENS,
     client: httpx.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
 ) -> list[DepthResult]:
     """Measure generation speed after prefilling ``depth`` tokens.
 
@@ -715,13 +751,13 @@ async def benchmark_depths(
     tokens and reports llama-server's own prompt and decode rates.
     """
     own = client is None
-    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0)
+    http = client or httpx.AsyncClient(base_url=server_url, timeout=900.0, headers=headers)
     results: list[DepthResult] = []
     try:
         await _warmup(http, model_name)
         for depth in depths:
             row = DepthResult(depth=depth)
-            prompt = _build_prompt(depth) if depth > 0 else "Hello"
+            prompt = _varied_prompt(depth, seed=depth) + _PROSE_LEAD if depth > 0 else "Hello"
             try:
                 wall, obj = await _complete(
                     http,
@@ -858,3 +894,75 @@ def print_sweep_table(results: list[BenchmarkResult]) -> None:
             fit,
         )
     console.print(table)
+
+
+# ------------------------------------------------------------------
+# `arc-llama bench`: one fixed run whose numbers compare across setups
+# ------------------------------------------------------------------
+
+BENCH_DEPTHS = (512, 16384)
+
+
+def llama_cpp_build(binary: str) -> str | None:
+    """``b12243 (abc1234)`` from ``llama-server --version``, or None."""
+    import subprocess
+
+    from arc_llama.server_caps import _env_with_oneapi
+
+    env = None
+    for _ in range(2):
+        try:
+            out = subprocess.run(
+                [binary, "--version"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=20, env=env
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        text = (out.stdout or "") + (out.stderr or "")
+        # "version: 12243 (abc1234)" before b12243, "version: 0.9.0-dev (build 12243, commit abc1234)" after
+        m = re.search(r"version: (\d+) \((\w+)\)", text) or re.search(r"\(build (\d+), commit (\w+)\)", text)
+        if m:
+            return f"b{m.group(1)} ({m.group(2)})"
+        # A SYCL build outside a oneAPI shell can't load its libraries; source setvars once.
+        env = _env_with_oneapi(None) if "error while loading shared libraries" in text else None
+        if env is None:
+            return None
+    return None
+
+
+def bench_lines(
+    cfg: Config, model_name: str, results: list[DepthResult], skipped: list[int]
+) -> list[str]:
+    """Plain text for `arc-llama bench`. No paths, user names or host names."""
+    from arc_llama import __version__
+    from arc_llama.launcher import model_backend
+    from arc_llama.runtime_pin import LLAMA_CPP_BUILD
+
+    model = cfg.find_model(model_name)
+    assert model is not None
+    recipe = model.recipe or {}
+    gpu = next((g for g in cfg.gpus if g.pci_slot == model.gpu_pci_slot), None)
+    backend = model_backend(cfg, model, gpu).value if gpu else "unknown"
+    binary = model.llama_server or cfg.paths.llama_server
+    build = (llama_cpp_build(binary) if binary else None) or f"unknown (pinned {LLAMA_CPP_BUILD})"
+    kv = f"{recipe.get('cache_type_k', 'f16')}/{recipe.get('cache_type_v', 'f16')}"
+    spec = recipe.get("spec_type") or "off"
+    lines = [
+        f"Arc Llama: {__version__}",
+        f"Model: {model.name} ({Path(model.path).name})",
+        f"Backend: {backend} on "
+        + (f"{gpu.name or 'Intel GPU'} ({gpu.arch}, {gpu.vram_mb or '?'} MiB)" if gpu else "unknown GPU"),
+        f"llama.cpp: {build}",
+        f"Settings: ctx {recipe.get('ctx', 'default')}, KV {kv}, "
+        f"flash attention {recipe.get('flash_attn', 'auto')}, speculation {spec}",
+    ]
+    for r in results:
+        label = f"Prompt {r.measured_depth or r.depth}"
+        if r.error:
+            lines.append(f"{label}: failed ({r.error})")
+            continue
+        pp = f"{r.prompt_eval_tok_s:.1f}" if r.prompt_eval_tok_s else "?"
+        tg = f"{r.generation_tok_s:.1f}" if r.generation_tok_s else "?"
+        lines.append(f"{label}: prefill {pp} tok/s, decode {tg} tok/s")
+    lines += [f"Prompt {d}: skipped, larger than the model's context" for d in skipped]
+    return lines

@@ -205,3 +205,23 @@ export async function testPaperSystemSectionsAligned({page,origin}) {
   assert.ok(boxes.length>=4);
   for(const b of boxes) assert.deepEqual(b,boxes[0]);        // Agents for Work is as wide as the other System sections
 }
+
+export async function testThanksgivingTurkeyOnce({page,origin}) {
+  // Automation normally hides the turkey; pretend to be a person on Thanksgiving Day.
+  await page.addInitScript(()=>Object.defineProperty(Navigator.prototype,'webdriver',{get:()=>false}));
+  await page.clock.setFixedTime(new Date(2026,10,26,12));
+  const turkey=page.locator('.arc-turkey');
+  await page.goto(origin);await page.waitForSelector('.model-card');
+  await turkey.waitFor({state:'attached'});
+  assert.equal(await turkey.evaluate(n=>getComputedStyle(n).pointerEvents),'none');
+  assert.match(await turkey.evaluate(n=>getComputedStyle(n).backgroundImage),/turkey-walk\.png/);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('arc-llama-turkey-seen')),'2026');
+  await turkey.waitFor({state:'detached',timeout:10000});
+  const note=page.locator('.arc-turkey-note');await note.waitFor({state:'attached'});
+  assert.match(await note.innerText(),/Happy Thanksgiving!/);
+  assert.equal(await note.evaluate(n=>getComputedStyle(n).pointerEvents),'none');
+  assert.equal(await note.locator('img').evaluate(n=>n.complete&&n.naturalWidth>0),true);
+  await note.waitFor({state:'detached',timeout:8000});
+  await page.reload();await page.waitForSelector('.model-card');await page.waitForTimeout(1600);
+  assert.equal(await turkey.count(),0);
+}

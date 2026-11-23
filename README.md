@@ -1,6 +1,6 @@
 # Arc Llama
 
-![Arc Llama demo: arc-llama start detects an Arc Pro B60, Discover suggests models that fit its 24 GB, a chat answer streams at about 76 tokens per second, and a Work agent asks which language to use and for approval before writing a file](https://raw.githubusercontent.com/offbyonebit/arc-llama/v1.1.0/docs/media/demo.webp)
+![Arc Llama 1.2 trailer: service start drops from 66.8 to 6.1 seconds and a first model load from 21.0 to 10.8 seconds on an Arc Pro B60, a 27B model streams at 23.5 tokens per second with MTP drafting, arc-llama start picks the Arc card, a thinking budget caps how long a model thinks, and Arc Pro B50, B65 and B70 cards are recognised](https://raw.githubusercontent.com/offbyonebit/arc-llama/637b173adb8db3e38a6160112f8d923ff841eba2/docs/media/trailer-1.2.webp)
 
 > Run local LLMs on your Intel Arc GPU with one command.
 
@@ -21,7 +21,8 @@ does the same in one line. See [Quick start](#quick-start) for more.
 
 **Works with:** Arc B-series (Battlemage), A-series (Alchemist) and Lunar Lake,
 on Linux and Windows 11, Python 3.10 or newer. Validated hardware is listed in
-[Tested hardware](#tested-hardware).
+[Tested hardware](#tested-hardware). Integrated GPUs without a known VRAM
+budget get no guided starter; choose a model manually in Discover.
 
 **Something broke?** Click **Report a problem** on the System page, or run
 `arc-llama report`. It opens a GitHub issue with your version, GPU, backend and
@@ -44,17 +45,18 @@ Release notes for every version are in the [changelog](CHANGELOG.md) and on the
 - **Auto-discovery of GPUs *and models*.** `arc-llama init` finds your Intel
   card and walks the configured scan paths for `.gguf` files, registering
   every one with a sensible recipe, context length sized to your VRAM,
-  KV-cache class inferred from the filename. You should never need
+  KV-cache class inferred from GGUF metadata when available, with a filename fallback. You should never need
   `arc-llama add` for a GGUF that's already on disk.
 - **Auto-discovery** of every Intel GPU on the host (`Alchemist`, `Battlemage`,
-  Lunar Lake iGPU). PCI device-ID table covers the common SKUs and falls back
+  Lunar Lake iGPU). The PCI table includes Pro B50, B60, B65 and B70 IDs and falls back
   to OpenCL device-name parsing for the rest.
 - **Per-arch SYCL profiles** , env vars like `SYCL_CACHE_PERSISTENT=0` are
   applied automatically, and known-bad ones (e.g. `GGML_SYCL_DISABLE_OPT`,
   `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS`) are stripped from the
   inherited shell environment.
 - **Smart defaults** for `-ctx`, `--cache-type-k/v`, and `-ngl` based on the
-  detected VRAM and the model's quantized tensor size, never starts a model you can't fit.
+  detected VRAM and the model's quantized tensor size. Fit is an estimate; runtime
+  allocations or other GPU users can still prevent a load.
 - **Model registry** in TOML at `$XDG_CONFIG_HOME/arc-llama/config.toml`,
   trivially editable.
 - **One process per model**, swapped in/out by an internal router. Default
@@ -78,14 +80,13 @@ Release notes for every version are in the [changelog](CHANGELOG.md) and on the
   controls, no browser needed. Optional install: `pip install 'arc-llama[tui]'`.
 - **Background autotune.** Drop in a GGUF, use it once, and `arc-llama serve`
   measures a faster recipe in the next idle window — no manual `tune`. Sweeps
-  abort instantly if a real request arrives.
+  abort at the next cancellation check if a real request arrives.
 - **No magic with your existing stack.** It uses your `llama-server` binary;
   you're never locked into a specific build.
 
 ## Quick start
 
-The guided launcher is new in the 1.1 development branch. On 1.0, use the
-`run` examples below. With 1.1 installed, open the guided browser setup:
+The guided launcher has been available since 1.1. Open the guided browser setup:
 
 ```bash
 pip install arc-llama
@@ -109,8 +110,8 @@ metadata and complete standard 4–8-bit GGUF files, and checks a bounded model
 header. It shows the publisher’s license and pins the accepted repository commit.
 The runtime must recognize its architecture before downloading weights; this
 does not guarantee GPU execution or answer quality. Recommendations cache for
-five minutes; an unavailable catalog or no suitable match offers retry and
-manual discovery. Catalog popularity orders candidates; it is not a benchmark.
+five minutes; if neither the catalog nor the pinned fallback yields a suitable
+model, setup offers retry and manual discovery. Catalog popularity orders candidates; it is not a benchmark.
 
 **Pause after this step** lets the current download or load finish safely;
 continue later without repeating completed steps. Refreshing the browser
@@ -201,6 +202,7 @@ curl http://127.0.0.1:11437/v1/chat/completions \
 
 ### Updating llama.cpp safely
 
+New portable installs default to llama.cpp **b12243**.
 `arc-llama runtime update` installs the newest llama.cpp release beside your
 current one and switches only after it passes two checks: its flags cover
 every recipe you have registered, and a canary launch of your smallest model
@@ -292,8 +294,8 @@ by the agent. Use **Stop** to cancel the active task.
 ### Supported agents
 
 Work integrates each harness through an adapter; support is specific to the
-agents below. External agents must be installed separately and available to
-the process running Arc Llama.
+agents below. Install external agents from the Agent menu or System page,
+or make an existing installation available to the process running Arc Llama.
 
 | Agent | Integration | Available controls |
 | --- | --- | --- |
@@ -301,13 +303,14 @@ the process running Arc Llama.
 | OpenCode | Installed `opencode` executable | Streamed replies, approvals, tool profiles, and native slash commands |
 | Hermes Agent | Installed `hermes` with ACP support | Streamed replies and thought activity, file-edit and flagged-command approvals; no auto-approve |
 
-Arc Llama finds OpenCode on PATH, or through `ARC_LLAMA_OPENCODE_BIN`. OpenCode
+Arc Llama uses `agent.opencode_bin` first, then `ARC_LLAMA_OPENCODE_BIN` or PATH.
+The Agent menu offers managed copies beside external OpenCode or Hermes installations. OpenCode
 uses its existing project/user tool setup. Named tool profiles let you choose
 which MCP servers, skills, web tools, and other tools a task can use.
 Type `/` in the composer to see available commands, including Work's `/compact`.
 
 For Hermes, `hermes acp --check` should succeed. Arc Llama discovers the binary
-on PATH, or you can set `ARC_LLAMA_HERMES_BIN`. Each task uses an isolated
+through `agent.hermes_bin`, then `ARC_LLAMA_HERMES_BIN` or PATH. Each task uses an isolated
 Hermes home; global Hermes credentials, MCP configuration, skills, and memory
 are not imported. Primary and auxiliary model requests use Arc Llama's selected
 local model, with cloud fallback disabled. Hermes uses its native approval
@@ -410,7 +413,8 @@ checks you have not run; mark them as “not run” so the remaining coverage is
 ### Windows
 
 - Windows 10/11 with Intel Arc graphics drivers installed.
-- For the SYCL backend: Intel oneAPI Base Toolkit installed.
+- For SYCL: runtime libraries compatible with the selected llama-server build.
+  Building it yourself also requires the oneAPI compiler/toolkit.
 - `arc-llama doctor` will report which tools and runtime libraries it finds.
 - The `systemd` command is not available on Windows; use Task Scheduler or run
   `arc-llama serve` manually.
@@ -446,6 +450,10 @@ f16 or q8_0 KV cache, a 512 or 2048 ubatch, or flash attention on/off — the
 SYCL backend's answer genuinely differs per SKU and per revision. So measure:
 
 ```bash
+# Short standard bench on the running service, then a plain hardware report:
+arc-llama bench qwen3-7b
+arc-llama report --text
+
 # One-shot measurement (prompt-eval + generation tok/s, VRAM)
 arc-llama benchmark qwen3-7b
 
@@ -475,7 +483,10 @@ to start (e.g. compute-buffer OOM from a bigger ubatch) simply lose the round
 
 arc-llama also probes your `llama-server --help` once per binary to emit the
 right flag dialect (`-fa on|off|auto` on current builds vs boolean `-fa` on
-pre-b6300 ones), so hand-built and prebuilt binaries both work.
+pre-b6300 ones), so hand-built and prebuilt binaries both work. For runtimes
+with the relevant flags, host prompt cache is capped at a quarter of RAM up to
+8 GiB (4 GiB if RAM is unknown), with eight context checkpoints. Explicit model
+flags or `LLAMA_ARG_CACHE_RAM` / `LLAMA_ARG_CTX_CHECKPOINTS` take precedence.
 
 ## Multi-GPU
 
@@ -507,8 +518,12 @@ authoritative. Cross-vendor or cross-GPU draft/target pipelines are not
 implemented; verification remains inside one llama-server process.
 
 `arc-llama init` registers every Intel GPU it finds. Each model in the config
-is bound to a specific PCI slot, and the SYCL device selector
-(`ONEAPI_DEVICE_SELECTOR=level_zero:N`) is set per-model. Add your second card,
+is bound to a specific PCI slot. Vulkan uses `--device` for a configured index,
+a unique name/memory match, or the only listed device. Without a resolved index,
+llama.cpp chooses its default; ambiguous multi-device lists produce a warning.
+SYCL probes Level Zero devices by
+name before setting `ONEAPI_DEVICE_SELECTOR=level_zero:N`; if no unique match
+is found, it keeps the configured SYCL index. Explicit model selectors win. Add your second card,
 re-run `arc-llama init --force` to refresh `[[gpus]]`, then add models against
 either GPU.
 
@@ -585,7 +600,7 @@ auto         = true      # idle-time background sweeps
 idle_seconds = 120
 
 [[gpus]]
-pci_slot   = "0000:03:00.0"   # Windows: PNPDeviceID such as "PCI\\VEN_8086&DEV_E211&..."
+pci_slot   = "0000:03:00.0"   # use the slot printed by arc-llama gpus on either OS
 sycl_index = 0
 arch       = "battlemage"
 backend    = "sycl"          # or "vulkan" for a Vulkan llama-server build
@@ -717,7 +732,7 @@ modifies an external Open WebUI account.
 
 - **Open WebUI** — Shows the exact Base URL (`http://127.0.0.1:11437/v1` by
   default) with a copy button, plus API-key guidance (any non-empty string
-  works). If the server binds all interfaces, the panel also notes which
+  works for loopback calls; remote clients need a valid key once client keys are configured). If the server binds all interfaces, the panel also notes which
   address to substitute when connecting from another machine.
 - **Ollama** — Explains the existing `arc-llama upstream add` flow and
   provides a copyable command; registered upstreams are never overwritten.
@@ -783,7 +798,7 @@ The first time you open `http://localhost:3000` you'll create a local admin acco
 1. Run `arc-llama serve` (listening on `127.0.0.1:11437` by default)
 2. In Open WebUI → **Settings → Admin Panel → Connections**, add an OpenAI connection:
    - **Base URL:** `http://127.0.0.1:11437/v1`
-   - **API Key:** any non-empty string (arc-llama does not validate keys)
+   - **API Key:** any non-empty string for loopback access; remote clients need a valid client key or admin token once client keys are configured
 3. Models appear immediately in the chat model picker.
 
 If Open WebUI and arc-llama are on different machines, replace `127.0.0.1` with the host IP and run `arc-llama serve --host 0.0.0.0` (or set `ARC_LLAMA_HOST=0.0.0.0`).
@@ -903,7 +918,7 @@ A winner must improve both decode and request throughput by at least 5% against
 the original recipe and target-only inference, then pass fresh confirmation.
 Target-only may win when speculation costs more than it saves. Otherwise the
 original settings are restored, including confidence flags and sidecar settings.
-Trials temporarily persist recipes, as with ordinary tuning; interruption and
+MTP tuning trials temporarily persist recipes; interruption and
 errors trigger rollback. Do not edit recipes or run another tuner during a sweep.
 This does not run in background autotuning and does not guarantee a speedup on
 other prompts. `--repeats` increases sampling; `--gen-tokens` changes response length.

@@ -16,6 +16,6 @@ case "${1:-start}" in
     cmd=serve; [ "$1" = start-cmd ] && cmd=start
     COLUMNS=100 setsid arc-llama $cmd > "$DEMO/$cmd.log" 2>&1 < /dev/null &
     echo $! > "$pidfile"
-    for _ in $(seq 60); do curl -s -o /dev/null 127.0.0.1:11437/health && exit 0; sleep 1; done
+    for _ in $(seq 60); do curl -sf -o /dev/null 127.0.0.1:11437/health && exit 0; sleep 1; done
     echo "demo server did not come up" >&2; exit 1 ;;
 esac

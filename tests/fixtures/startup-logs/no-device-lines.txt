@@ -1,0 +1,8 @@
+build: 12193 (a1b2c3d4) with cc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0 for x86_64-linux-gnu
+system info: n_threads = 8, n_threads_batch = 8, total_threads = 16
+main: binding port with default address family
+main: loading model
+srv    load_model: loading model '/models/Qwen3-32B-Q4_K_M.gguf'
+main: model loaded
+main: server is listening on http://127.0.0.1:18080 - starting the main loop
+srv  update_slots: all slots are idle
