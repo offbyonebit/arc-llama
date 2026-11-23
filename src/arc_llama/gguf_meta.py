@@ -126,6 +126,179 @@ def _gguf_reader(path: Path | str) -> Any:
     return gguf.GGUFReader(path)
 
 
+# struct format characters for GGUF scalar value types (8 = string, 9 = array).
+_GGUF_SCALAR_FORMATS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+# Arrays longer than this are skipped, not decoded. Per-layer values (head
+# counts, sliding-window flags) are at most a few hundred entries; the big
+# arrays are tokenizer vocabularies, scores and merges, which no load-path
+# caller reads.
+_LIGHT_ARRAY_LIMIT = 4096
+
+
+class _LightTensor:
+    """The tensor-table fields the VRAM estimate needs, without tensor data."""
+
+    __slots__ = ("name", "tensor_type", "n_elements", "n_bytes")
+
+    def __init__(self, name: str, tensor_type: int, n_elements: int, n_bytes: int) -> None:
+        self.name = name
+        self.tensor_type = tensor_type
+        self.n_elements = n_elements
+        self.n_bytes = n_bytes
+
+
+class _LightGGUF:
+    """Metadata values and tensor table read by :func:`_read_gguf_light`."""
+
+    def __init__(self, fields: dict[str, Any], tensors: list[_LightTensor]) -> None:
+        self.fields = fields
+        self.tensors = tensors
+
+    def get_field(self, key: str) -> _LightField | None:
+        """Same lookup shape as ``GGUFReader.get_field(key).contents()``."""
+        if key not in self.fields:
+            return None
+        return _LightField(self.fields[key])
+
+
+class _LightField:
+    __slots__ = ("_value",)
+
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def contents(self) -> Any:
+        return self._value
+
+
+def _read_gguf_light(path: Path | str) -> _LightGGUF:
+    """Read GGUF metadata and the tensor table without building a GGUFReader.
+
+    ``gguf.GGUFReader`` turns every metadata value into numpy objects,
+    including the tokenizer's hundreds of thousands of strings, which takes
+    several seconds per file. This walks the header once with ``struct``:
+    scalars, strings and short arrays are decoded, long arrays (the
+    tokenizer) are skipped by their declared size, and each tensor's packed
+    byte size is computed the same way gguf-py does. Every declared length
+    is bounds-checked against the file, so a hostile header raises
+    ValueError instead of allocating. Raises on anything unexpected; callers
+    fall back to GGUFReader.
+    """
+    with open(path, "rb") as f:
+        size = f.seek(0, 2)
+        f.seek(0)
+        if size < 24 or f.read(4) != b"GGUF":
+            raise ValueError("not a GGUF file")
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            order = "<"
+            if struct.unpack_from("<I", m, 4)[0] not in (2, 3):
+                order = ">"
+                if struct.unpack_from(">I", m, 4)[0] not in (2, 3):
+                    raise ValueError("unsupported GGUF version")
+            u32, u64 = struct.Struct(order + "I"), struct.Struct(order + "Q")
+            n_tensors, n_kv = struct.unpack_from(order + "QQ", m, 8)
+            pos = 24
+
+            def need(n: int) -> None:
+                if n < 0 or pos + n > size:
+                    raise ValueError(f"GGUF header declares {n} bytes at offset {pos}, past the end of the file")
+
+            def read_string() -> str:
+                nonlocal pos
+                need(8)
+                length = u64.unpack_from(m, pos)[0]
+                pos += 8
+                need(length)
+                text = bytes(m[pos : pos + length]).decode("utf-8", errors="replace")
+                pos += length
+                return text
+
+            def skip_string() -> None:
+                nonlocal pos
+                need(8)
+                length = u64.unpack_from(m, pos)[0]
+                pos += 8
+                need(length)
+                pos += length
+
+            def read_value(kind: int, depth: int = 0) -> Any:
+                nonlocal pos
+                fmt = _GGUF_SCALAR_FORMATS.get(kind)
+                if fmt is not None:
+                    width = _GGUF_SCALAR_SIZES[kind]
+                    need(width)
+                    value = struct.unpack_from(order + fmt, m, pos)[0]
+                    pos += width
+                    return value
+                if kind == 8:
+                    return read_string()
+                if kind != 9:
+                    raise ValueError(f"unknown GGUF metadata type {kind}")
+                if depth > 4:
+                    raise ValueError("GGUF arrays nested too deeply")
+                need(12)
+                inner = u32.unpack_from(m, pos)[0]
+                count = u64.unpack_from(m, pos + 4)[0]
+                pos += 12
+                inner_fmt = _GGUF_SCALAR_FORMATS.get(inner)
+                if inner_fmt is not None:
+                    width = _GGUF_SCALAR_SIZES[inner]
+                    need(count * width)
+                    if count > _LIGHT_ARRAY_LIMIT:
+                        pos += count * width
+                        return None
+                    values = list(struct.unpack_from(f"{order}{count}{inner_fmt}", m, pos))
+                    pos += count * width
+                    return values
+                need(count * (8 if inner == 8 else 12))  # every element needs at least its own header
+                if inner == 8 and count > _LIGHT_ARRAY_LIMIT:
+                    for _ in range(count):
+                        skip_string()
+                    return None
+                return [read_value(inner, depth + 1) for _ in range(count)]
+
+            fields: dict[str, Any] = {}
+            need(n_kv * 12)
+            for _ in range(n_kv):
+                key = read_string()
+                need(4)
+                kind = u32.unpack_from(m, pos)[0]
+                pos += 4
+                value = read_value(kind)
+                if value is not None:
+                    fields[key] = value
+
+            tensors: list[_LightTensor] = []
+            need(n_tensors * 24)  # name length, dimension count, type and offset at minimum
+            for _ in range(n_tensors):
+                name = read_string()
+                need(4)
+                n_dims = u32.unpack_from(m, pos)[0]
+                pos += 4
+                if n_dims > 8:
+                    raise ValueError(f"tensor {name!r} declares {n_dims} dimensions")
+                need(8 * n_dims + 12)
+                dims = struct.unpack_from(f"{order}{n_dims}Q", m, pos)
+                pos += 8 * n_dims
+                raw_type = u32.unpack_from(m, pos)[0]
+                pos += 12  # type and data offset
+                block_size, type_size = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(raw_type)]
+                n_elements = 1
+                for dim in dims:
+                    n_elements *= int(dim)
+                tensors.append(_LightTensor(name, raw_type, n_elements, n_elements * type_size // block_size))
+    return _LightGGUF(fields, tensors)
+
+
+def _gguf_tensors(path: Path | str) -> list[Any]:
+    """Tensor table of one GGUF file: the light reader, else GGUFReader."""
+    try:
+        return list(_read_gguf_light(path).tensors)
+    except Exception as exc:
+        log.debug("light gguf tensor read failed for %s, using GGUFReader: %s", path, exc)
+    return list(_gguf_reader(path).tensors)
+
+
 def _integer_metadata_value(value: Any) -> int | list[int] | None:
     """Normalise a scalar/array GGUF integer field to plain Python values."""
     tolist = getattr(value, "tolist", None)
@@ -166,11 +339,16 @@ def _read_gguf_meta(path: Path | str) -> dict[str, Any]:
     p = Path(path)
     if not p.exists():
         return {}
+    reader: Any
     try:
-        reader = _gguf_reader(p)
-    except Exception as exc:
-        log.debug("gguf read failed for %s: %s", p, exc)
-        return {}
+        reader = _read_gguf_light(p)
+    except Exception as light_exc:
+        log.debug("light gguf read failed for %s, using GGUFReader: %s", p, light_exc)
+        try:
+            reader = _gguf_reader(p)
+        except Exception as exc:
+            log.debug("gguf read failed for %s: %s", p, exc)
+            return {}
 
     meta: dict[str, Any] = {}
     arch_field = reader.get_field(gguf.Keys.General.ARCHITECTURE)
@@ -824,7 +1002,7 @@ def _scan_weight_tensors(path: Path | str) -> tuple[int, dict[int, int]] | None:
     tensors: list[Any] = []
     for shard in gguf_shards(p):
         try:
-            tensors.extend(_gguf_reader(shard).tensors)
+            tensors.extend(_gguf_tensors(shard))
         except Exception as exc:
             log.debug("gguf weight scan failed for %s: %s", shard, exc)
             return None
@@ -922,10 +1100,10 @@ def weight_tensor_table(path: Path | str) -> dict[str, int] | None:
     table: dict[str, int] = {}
     for shard in gguf_shards(p):
         try:
-            reader = _gguf_reader(shard)
+            shard_tensors = _gguf_tensors(shard)
         except Exception as exc:
             log.debug("gguf weight table read failed for %s: %s", shard, exc)
             return None
-        for tensor in reader.tensors:
+        for tensor in shard_tensors:
             table[getattr(tensor, "name", "") or ""] = _tensor_vram_bytes(tensor)
     return table

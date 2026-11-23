@@ -212,6 +212,31 @@ def download_asset(
     return dest_file
 
 
+def older_runtime_notice(llama_server: str | Path) -> str | None:
+    """One line when the configured runtime is an Arc Llama install older than the pin.
+
+    Only reads the install's marker; it never downloads or switches anything.
+    """
+    binary = Path(llama_server).expanduser()
+    if not binary.is_absolute() or not binary.is_file():
+        return None
+    for folder in list(binary.parents)[:3]:
+        try:
+            marker = json.loads((folder / ".arc-llama-runtime.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        tag, backend = str(marker.get("tag", "")), str(marker.get("backend", ""))
+        have, pinned = re.fullmatch(r"b(\d+)", tag), re.fullmatch(r"b(\d+)", LLAMA_CPP_BUILD)
+        if have and pinned and int(have[1]) < int(pinned[1]) and backend in ("vulkan", "sycl"):
+            return (
+                f"A newer llama.cpp runtime is available: you have {tag}, and this Arc Llama is "
+                f"tested with {LLAMA_CPP_BUILD}. Run `arc-llama install-runtime --backend {backend}` "
+                "to update. Nothing changes until you do."
+            )
+        return None
+    return None
+
+
 def _find_llama_server(root: Path) -> Path | None:
     """Recursively search *root* for llama-server / llama-server.exe (shallowest first)."""
     candidates: list[Path] = []

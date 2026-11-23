@@ -17,6 +17,23 @@ from arc_llama.recipes import (
 )
 
 
+@pytest.mark.parametrize("budget", [None, -1, 0, 256, 131072])
+def test_reasoning_budget_argv_and_dict_round_trip(budget):
+    from arc_llama.config import ModelConfig
+    from arc_llama.recipes import recipe_to_dict
+
+    recipe = LaunchRecipe(reasoning_budget=budget)
+    data = recipe_to_dict(recipe)
+    restored = ModelConfig("m", "/m.gguf", 18080, "gpu", recipe=data).launch_recipe()
+    assert restored.reasoning_budget == budget
+    argv = restored.to_argv()
+    if budget is None:
+        assert "reasoning_budget" not in data and "--reasoning-budget" not in argv
+    else:
+        assert data["reasoning_budget"] == budget
+        assert argv[argv.index("--reasoning-budget") + 1] == str(budget)
+
+
 class TestEstimateKvBytes:
     def test_default_f16(self):
         # 70 KiB/token at f16 for default class

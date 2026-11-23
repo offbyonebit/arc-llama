@@ -30,6 +30,7 @@ from arc_llama.platform_checks import (
     sycl_runtime_error_hint,
     user_in_groups,
 )
+from arc_llama.runtime import older_runtime_notice
 
 
 def register_diagnostic_commands(
@@ -320,6 +321,10 @@ def register_diagnostic_commands(
         else:
             console.print("    [dim]no config loaded[/dim]")
 
+        runtime_notice = older_runtime_notice(cfg.paths.llama_server) if cfg is not None else None
+        if runtime_notice:
+            report.add("llama_server_version", False, runtime_notice, severity="warn")
+
         # Mesa: old releases make Vulkan on Linux much slower (no-op on Windows).
         if cfg is not None and any(g.enabled and g.backend == Backend.VULKAN.value for g in cfg.gpus):
             mesa_warning = old_mesa_vulkan_warning(mesa_version())
@@ -383,6 +388,13 @@ def register_diagnostic_commands(
                 )
 
         # Summary of competitive-inference gates
+        if cfg is not None:
+            from arc_llama.update_notice import cached_notice
+
+            update = cached_notice(cfg)
+            if update:
+                console.print(f"\n  update: Arc Llama {update['latest']} available — {update['command']}")
+
         fails = report.failures
         warns = report.warnings
         console.print("\n  [bold]competitive-inference gates[/bold]")

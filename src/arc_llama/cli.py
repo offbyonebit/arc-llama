@@ -71,6 +71,7 @@ from arc_llama.platform_checks import (
     old_mesa_vulkan_warning,
     rebar_likely_enabled,
 )
+from arc_llama.runtime import older_runtime_notice
 from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -200,6 +201,7 @@ support_bundle_cmd = _diagnostic_command_exports["support_bundle_cmd"]
 
 _do_scan: Any
 _print_gpu_table: Any
+_installed_runtimes: Any
 
 _model_command_exports = register_model_commands(
     cli,
@@ -207,6 +209,7 @@ _model_command_exports = register_model_commands(
     load_config=lambda path: load_config(path),
     save_or_die=lambda cfg, path: _save_or_die(cfg, path),
     add_local_model=lambda *args, **kwargs: add_local_model(*args, **kwargs),
+    installed_runtimes=lambda cfg: _installed_runtimes(cfg),
     download_from_hf=lambda *args, **kwargs: download_from_hf(*args, **kwargs),
     detect_gpus=lambda: detect_gpus(),
     do_scan=lambda cfg, paths: _do_scan(cfg, paths),
@@ -1085,6 +1088,13 @@ def start(ctx: click.Context, port: int | None, open_browser: bool) -> None:
     "one is created if none exists.",
 )
 @click.option("--yes", "assume_yes", is_flag=True, help="Skip the --lan confirmation.")
+@click.option(
+    "--check-updates/--no-check-updates",
+    "check_updates",
+    default=None,
+    help="Ask PyPI once a day whether a newer Arc Llama exists, for this run only "
+    "(default: from config server.check_updates, which is off).",
+)
 @click.pass_context
 def serve(
     ctx: click.Context,
@@ -1096,6 +1106,7 @@ def serve(
     auto_tune: bool | None,
     lan: bool,
     assume_yes: bool,
+    check_updates: bool | None = None,
 ) -> None:
     """Run the OpenAI-compatible router."""
     cfg = load_config(ctx.obj["config_path"])
@@ -1122,6 +1133,11 @@ def serve(
         cfg.server.admin_token = admin_token
     if auto_tune is not None:
         cfg.tune.auto = auto_tune
+    if check_updates is not None:
+        from arc_llama.update_notice import RUN_SWITCH
+
+        # Process-only, never saved: settings saves must not keep a one-run opt-in.
+        os.environ[RUN_SWITCH] = "1" if check_updates else "0"
 
     # Zero-config discovery: pick up any GGUF dropped into models_dir/scan_paths
     # since the last run, so `serve` reflects the filesystem without a manual
@@ -1183,6 +1199,9 @@ def serve(
             console.print(f"[yellow]{mesa_warning}[/yellow]")
             for line in mesa_upgrade_steps():
                 console.print(line, markup=False, highlight=False)
+    runtime_notice = older_runtime_notice(cfg.paths.llama_server)
+    if runtime_notice:
+        console.print(runtime_notice, style="yellow", markup=False, highlight=False)
     if guided:
         # The local browser UI authenticates itself, so token details would
         # only distract here; they matter to API callers of plain `serve`.

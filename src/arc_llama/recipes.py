@@ -69,6 +69,7 @@ class LaunchRecipe:
     n_gpu_layers: int = 999
     ctx: int = 8192
     parallel: int = 1
+    reasoning_budget: int | None = None
     cache_type_k: KVCacheType = KVCacheType.F16
     cache_type_v: KVCacheType = KVCacheType.F16
     threads: int | None = None
@@ -157,6 +158,8 @@ class LaunchRecipe:
             "--cache-type-v",
             self.cache_type_v.value,
         ]
+        if self.reasoning_budget is not None:
+            argv += ["--reasoning-budget", str(self.reasoning_budget)]
         if self.threads is not None:
             argv += ["-t", str(self.threads)]
         if self.temp is not None:
@@ -533,6 +536,8 @@ def recipe_to_dict(recipe: LaunchRecipe) -> dict:
         "cache_type_k": recipe.cache_type_k.value,
         "cache_type_v": recipe.cache_type_v.value,
     }
+    if recipe.reasoning_budget is not None:
+        d["reasoning_budget"] = recipe.reasoning_budget
     if recipe.threads is not None:
         d["threads"] = recipe.threads
     if recipe.temp is not None:

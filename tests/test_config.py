@@ -18,6 +18,29 @@ from arc_llama.config import (
 )
 
 
+@pytest.mark.parametrize("value,expected", [(256, 256), (-1, -1), (0, 0), ("512", 512), ("-1", -1), (131072, 131072)])
+def test_launch_recipe_parses_valid_reasoning_budget(value, expected, caplog):
+    model = ModelConfig("budget-model", "/m.gguf", 18080, "gpu", recipe={"reasoning_budget": value})
+    assert model.launch_recipe().reasoning_budget == expected
+    assert not caplog.records
+    assert model.recipe["reasoning_budget"] == value
+
+
+@pytest.mark.parametrize("value", ["abc", 2.5, 256.0, True, False, -2, 131073, "131073", "", [], {}])
+def test_launch_recipe_ignores_bad_reasoning_budget_with_one_warning(value, caplog):
+    model = ModelConfig("budget-model", "/m.gguf", 18080, "gpu", recipe={"reasoning_budget": value})
+    recipe = model.launch_recipe()
+    assert recipe.reasoning_budget is None and "--reasoning-budget" not in recipe.to_argv()
+    assert len(caplog.records) == 1
+    assert "budget-model" in caplog.text and repr(value) in caplog.text
+    assert model.recipe["reasoning_budget"] == value
+
+
+def test_launch_recipe_without_reasoning_budget_stays_unset(caplog):
+    assert ModelConfig("old", "/m.gguf", 18080, "gpu").launch_recipe().reasoning_budget is None
+    assert not caplog.records
+
+
 def test_config_round_trips_models_gpus_and_paths(tmp_path):
     path = tmp_path / "config.toml"
     cfg = Config()
