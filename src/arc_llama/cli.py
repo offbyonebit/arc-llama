@@ -1504,6 +1504,7 @@ def systemd_unit(service_name: str, description: str, write: bool) -> None:
     arc = shutil.which("arc-llama")
     if not arc:
         arc = str(Path(sys.argv[0]).resolve())
+    arc = '"' + arc.replace("\\", "\\\\").replace('"', '\\"') + '"'
     unit = f"""[Unit]
 Description={description}
 After=network.target
@@ -1522,7 +1523,7 @@ WantedBy=default.target
         return
     target = Path.home() / ".config" / "systemd" / "user" / service_name
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(unit)
+    target.write_text(unit, encoding="utf-8")
     console.print(f"[green]Wrote {target}[/green]")
     console.print(
         "Enable with: [bold]systemctl --user daemon-reload && "
