@@ -10,6 +10,8 @@ from typing import Any
 
 import click
 
+from arc_llama.cli_support import unknown_model_message
+
 
 def register_performance_commands(
     cli: click.Group,
@@ -95,7 +97,7 @@ def register_performance_commands(
         """
         cfg = load_config(ctx.obj["config_path"])
         if cfg.find_model(model) is None:
-            console.print(f"[red]Model '{model}' is not registered in the config.[/red]")
+            console.print(f"[red]{unknown_model_message(cfg, model)}[/red]")
             sys.exit(1)
         url = server_url_from(ctx, server_url)
 
@@ -212,7 +214,7 @@ def register_performance_commands(
             )
         model_cfg = cfg.find_model(model)
         if model_cfg is None:
-            raise click.ClickException(f"Model '{model}' is not registered in the config.")
+            raise click.ClickException(unknown_model_message(cfg, model))
         if model_cfg.name not in loaded:
             console.print(f"Loading {model_cfg.name} first; this replaces what the server has loaded.")
         gen = benchmark_mod.DEFAULT_GEN_TOKENS
@@ -372,7 +374,7 @@ def register_performance_commands(
 
             assert model is not None
             if cfg.find_model(model) is None:
-                console.print(f"[red]Model '{model}' is not registered in the config.[/red]")
+                console.print(f"[red]{unknown_model_message(cfg, model)}[/red]")
                 sys.exit(1)
             report = asyncio.run(
                 tune_model(
@@ -496,7 +498,7 @@ def register_performance_commands(
         cfg = load_config(cfg_path)
         target = cfg.find_model(model)
         if target is None:
-            raise click.ClickException(f"unknown model {model!r}")
+            raise click.ClickException(unknown_model_message(cfg, model))
         caps = probe_model_caps(cfg, target)
         if tune_mtp:
             from dataclasses import asdict

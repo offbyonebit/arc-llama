@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import json
 import sys
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
 import click
 from rich.console import Console
 from rich.table import Table
+
+from arc_llama.config import Config
+
+
+def unknown_model_message(cfg: Config, query: str) -> str:
+    if not cfg.models:
+        return "No models are registered yet. Add one with arc-llama add."
+    names = sorted({name for model in cfg.models for name in (model.name, *model.aliases)})
+    matches = get_close_matches(query, names, n=3, cutoff=0.6)
+    suggestion = " Did you mean " + " or ".join(repr(name) for name in matches) + "?" if matches else ""
+    return f"No model named {query!r}.{suggestion} Run arc-llama list to see your models."
 
 
 def register_support_commands(

@@ -61,7 +61,7 @@ def test_benchmark_rejects_unknown_model(monkeypatch, tmp_path, cli_runner):
         ["--config", str(config_file), "benchmark", "not-a-model"],
     )
     assert result.exit_code == 1
-    assert "not registered" in result.output
+    assert "No models are registered yet. Add one with arc-llama add." in result.output
 
 
 def _bench_config(tmp_path: Path) -> Config:

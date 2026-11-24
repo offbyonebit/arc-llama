@@ -11,6 +11,8 @@ from typing import Any
 import click
 from rich.console import Console
 
+from arc_llama.cli_support import unknown_model_message
+
 
 def register_recipe_commands(
     cli: click.Group,
@@ -41,7 +43,7 @@ def register_recipe_commands(
         cfg = load_config(ctx.obj["config_path"])
         m = cfg.find_model(model)
         if m is None:
-            console.print(f"[red]Model '{model}' is not registered.[/red]")
+            console.print(f"[red]{unknown_model_message(cfg, model)}[/red]")
             sys.exit(1)
         gpu = cfg.find_gpu(m.gpu_pci_slot)
         fp = share_fingerprint(
@@ -136,7 +138,7 @@ def register_recipe_commands(
         cfg = load_config(ctx.obj["config_path"])
         m = cfg.find_model(model)
         if m is None:
-            raise click.ClickException(f"model {model!r} is not registered")
+            raise click.ClickException(unknown_model_message(cfg, model))
         gpu = cfg.find_gpu(m.gpu_pci_slot)
         fp = share_fingerprint(
             gpu_arch=(gpu.arch if gpu else "unknown"),
