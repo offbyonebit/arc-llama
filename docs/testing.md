@@ -3,6 +3,41 @@
 
 ## Guided first answer
 
+For a real release check on an Arc host, run the standard-library runner from
+this checkout with either a local distribution or an exact PyPI version:
+
+```bash
+python scripts/first_run_check.py --dist dist/arc_llama-1.3.0-py3-none-any.whl --work-dir /large-disk/checks
+python scripts/first_run_check.py --version 1.3.0 --work-dir D:\checks
+python scripts/first_run_check.py --version 1.3.0 --dry-run
+```
+
+The version/file names above are examples. The runner creates a fresh venv and
+home, launches `arc-llama start --no-open`, accepts the discovered starter through
+the browser's setup API, and requires one real nonempty chat answer. It does not
+reuse an existing config, model, runtime or client key. `--timeout` sets the
+setup/install deadline (1800 seconds by default); `--log-dir` chooses a permanent
+log parent independently of the model/runtime work drive.
+
+An isolated `sitecustomize` hook records external HTTP statuses from the
+installed application's httpx, requests and urllib clients, plus pip's vendored
+requests client during installation, including redirects.
+Xet and hf_transfer are disabled for this check so transfers use those observable
+Python clients. Signed query credentials are redacted; headers are never logged.
+Every captured non-2xx/3xx response or transport error fails the check, including
+optional missing resources, so inspect `urls.jsonl` when setup otherwise works.
+This audits actual fetch responses rather than guessing future URLs or sending
+duplicate HEAD requests. Loopback readiness polling is excluded.
+
+On success, work files are removed and logs remain in
+`WORK/first-run-logs/RUN` by default. On failure, both are retained and their paths
+are printed. Logs include the plan, install/application output, URL statuses and
+a JSON summary. Dry-run writes a plan and performs no install, network, GPU or
+chat check. The unit tests use controlled responses; they do not prove the real
+flow works. Run the real check on the B60 machine on **both Linux and Windows**
+before shipping, and repeat against the published PyPI version. This real GPU
+check is deliberately not added to CI.
+
 `tests/test_onboarding.py` covers read-only recommendations, fit boundaries,
 explicit download consent, duplicate starts, runtime preservation, pause/resume,
 retry, registration/loading failures, and refusal to evict another running model.
