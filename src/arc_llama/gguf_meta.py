@@ -312,7 +312,7 @@ def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> 
 
 
 def recurrent_state_bytes(path: Path | str, n_seq: int = 1) -> int | None:
-    """Qwen hybrid f32 state with llama-server's default zero rollback snapshots."""
+    """Qwen hybrid f32 state; n_seq is state rows (sequences x (1 + rollback snapshots))."""
     meta = read_gguf_meta(path)
     if str(meta.get("architecture", "")).lower() not in {"qwen35", "qwen35moe", "qwen3next"}:
         return None

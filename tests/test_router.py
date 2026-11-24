@@ -614,3 +614,28 @@ def test_recurrent_state_empty_parallel_uses_one_sequence(tmp_path, monkeypatch,
 
     model.recipe["parallel"] = parallel
     assert estimate_model_vram_quick_mb(model) == one_sequence_mb
+
+
+@pytest.mark.parametrize("spec_type, n_max, parallel, state_mb", [
+    ("draft-mtp,ngram-mod", 3, 1, 598),  # 27B prod args: 1 cell + 3 rollback rows
+    ("draft-mtp", None, 1, 598),  # llama.cpp default spec-draft-n-max is 3
+    ("draft-mtp", 1, 1, 299),
+    ("draft-mtp,ngram-mod", 3, 2, 1197),
+    ("ngram-mod", 3, 1, 149),  # ngram-only keeps no rollback rows
+    (None, 3, 1, 149),
+])
+def test_recurrent_state_counts_spec_rollback_rows(
+    tmp_path, monkeypatch, spec_type, n_max, parallel, state_mb
+):
+    path = tmp_path / "qwen35-spec.gguf"
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: {
+        "architecture": "qwen35", "block_count": 64,
+        "ssm.conv_kernel": 4, "ssm.inner_size": 6144,
+        "ssm.state_size": 128, "ssm.group_count": 16,
+    })
+    model = ModelConfig(
+        name="qwen35", path=str(path), port=18080, gpu_pci_slot="gpu",
+        recipe={"parallel": parallel, "spec_type": spec_type, "spec_draft_n_max": n_max},
+    )
+    assert router_mod._recurrent_state_mb(model) == state_mb

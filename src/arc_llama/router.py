@@ -221,9 +221,20 @@ def estimate_model_vram_quick_mb(model: ModelConfig) -> int | None:
     )
 
 
+# llama.cpp b12243 need_n_rs_seq(): these draft types keep spec-draft-n-max
+# (default 3) rollback rows per sequence on top of the live recurrent cell.
+_RS_ROLLBACK_SPEC_TYPES = {"draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark"}
+
+
 def _recurrent_state_mb(model: ModelConfig) -> int:
-    parallel = max(1, int((model.recipe or {}).get("parallel") or 1))
-    return (recurrent_state_bytes(model.path, n_seq=parallel) or 0) // 1_048_576
+    recipe = model.recipe or {}
+    parallel = max(1, int(recipe.get("parallel") or 1))
+    rollback = 0
+    if {t.strip() for t in str(recipe.get("spec_type") or "").split(",")} & _RS_ROLLBACK_SPEC_TYPES:
+        n_max = recipe.get("spec_draft_n_max")
+        rollback = max(0, int(n_max if n_max is not None else 3))
+    rows = parallel * (1 + rollback)
+    return (recurrent_state_bytes(model.path, n_seq=rows) or 0) // 1_048_576
 
 
 def mmproj_vram_mb(recipe: dict[str, Any]) -> int:
