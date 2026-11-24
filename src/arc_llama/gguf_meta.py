@@ -45,6 +45,12 @@ _KV_METADATA_SUFFIXES = (
     "attention.key_length",
     "attention.value_length",
     "attention.sliding_window",
+    "full_attention_interval",
+    "attention.recurrent_layers",
+    "attention.sliding_window_pattern",
+    "attention.key_length_swa",
+    "attention.value_length_swa",
+    "attention.shared_kv_layers",
 )
 
 
@@ -446,11 +452,8 @@ def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> 
 
     raw_kv_heads = meta.get("attention.head_count_kv")
     architecture = str(meta.get("architecture", "")).lower()
-    if architecture.startswith("qwen35") and isinstance(raw_kv_heads, int):
-        # Qwen 3.5-family GGUFs can report one scalar KV-head count even though
-        # only a subset of their GDN/attention hybrid layers allocate KV. A
-        # scalar broadcast would multiply the cache by every recurrent layer.
-        return None
+    if architecture in {"qwen35", "qwen35moe", "qwen3next"}:
+        return _hybrid_kv_bytes_per_token_f16(meta, layers)
     kv_heads = _per_layer_values(raw_kv_heads, layers)
     if kv_heads is None:
         return None
@@ -486,6 +489,40 @@ def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> 
     return total_elements * 2 if total_elements > 0 else None
 
 
+def _hybrid_kv_bytes_per_token_f16(meta: dict[str, Any], layers: int) -> int | None:
+    """Count only main-model attention layers, excluding recurrent and MTP KV."""
+    kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
+    key_lengths = _per_layer_values(meta.get("attention.key_length"), layers)
+    value_lengths = _per_layer_values(meta.get("attention.value_length"), layers)
+    if kv_heads is None or key_lengths is None or value_lengths is None:
+        return None
+    try:
+        main_layers = layers - int(meta.get("nextn_predict_layers", 0))
+    except (TypeError, ValueError):
+        return None
+    if not 0 < main_layers <= layers:
+        return None
+    recurrent = meta.get("attention.recurrent_layers")
+    if recurrent is not None:
+        if not isinstance(recurrent, list) or len(recurrent) != layers:
+            return None
+        attention_layers = [i for i in range(main_layers) if not recurrent[i]]
+    else:
+        try:
+            interval = int(meta.get("full_attention_interval", 4))
+        except (TypeError, ValueError):
+            return None
+        if interval <= 0:
+            return None
+        attention_layers = [i for i in range(main_layers) if (i + 1) % interval == 0]
+    total_elements = 0
+    for i in attention_layers:
+        if kv_heads[i] < 0 or key_lengths[i] <= 0 or value_lengths[i] <= 0:
+            return None
+        total_elements += kv_heads[i] * (key_lengths[i] + value_lengths[i])
+    return total_elements * 2 if total_elements > 0 else None
+
+
 def kv_bytes_per_token_f16(path: Path | str) -> int | None:
     """Calculate f16 KV bytes/token from GGUF attention geometry when safe.
 
@@ -500,6 +537,64 @@ def kv_bytes_per_token_f16(path: Path | str) -> int | None:
     except OSError:
         return None
     return _kv_bytes_per_token_f16_cached(resolved, stat.st_size, stat.st_mtime_ns)
+
+
+def kv_bytes_f16_at_ctx(
+    path: Path | str, ctx: int, n_ubatch: int = 512, n_seq: int = 1
+) -> int | None:
+    """Calculate the f16 KV allocation at *ctx*, including supported SWA caches.
+
+    With ``n_seq`` > 1 (``--parallel``, non-unified KV) llama.cpp gives each
+    sequence its own SWA window, so the SWA cells scale with ``n_seq``.
+    """
+    if ctx <= 0 or n_ubatch < 0 or n_seq <= 0:
+        return None
+    meta = read_gguf_meta(path)
+    arch = str(meta.get("architecture", "")).lower()
+    if arch not in {"gemma3", "gemma4", "gpt-oss"}:
+        per_token = kv_bytes_per_token_f16(path)
+        return per_token * ctx if per_token is not None else None
+    try:
+        layers = int(meta["block_count"])
+        window = int(meta["attention.sliding_window"])
+        shared = int(meta.get("attention.shared_kv_layers", 0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if layers <= 0 or window <= 0 or shared != 0:
+        return None
+    pattern = meta.get("attention.sliding_window_pattern", {"gemma3": 6, "gpt-oss": 2}.get(arch))
+    if isinstance(pattern, list) and len(pattern) == layers:
+        swa_layers = [bool(value) for value in pattern]
+    elif isinstance(pattern, int) and pattern >= 0:
+        swa_layers = [pattern == 0 or i % pattern < pattern - 1 for i in range(layers)]
+    else:
+        return None
+    kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
+    key_lengths = _per_layer_values(meta.get("attention.key_length"), layers)
+    value_lengths = _per_layer_values(meta.get("attention.value_length"), layers)
+    swa_key_lengths = _per_layer_values(
+        meta.get("attention.key_length_swa") if arch == "gemma4" else meta.get("attention.key_length"),
+        layers,
+    )
+    swa_value_lengths = _per_layer_values(
+        meta.get("attention.value_length_swa") if arch == "gemma4" else meta.get("attention.value_length"),
+        layers,
+    )
+    if kv_heads is None or key_lengths is None or value_lengths is None:
+        return None
+    if swa_key_lengths is None or swa_value_lengths is None:
+        return None
+    seq_ctx = ctx if n_seq == 1 else ((ctx // n_seq + 255) // 256) * 256
+    swa_cells = ((min(seq_ctx, window + n_ubatch) + 255) // 256) * 256 * n_seq
+    ctx = seq_ctx * n_seq
+    total = 0
+    for i, is_swa in enumerate(swa_layers):
+        key_length = swa_key_lengths[i] if is_swa else key_lengths[i]
+        value_length = swa_value_lengths[i] if is_swa else value_lengths[i]
+        if kv_heads[i] < 0 or key_length <= 0 or value_length <= 0:
+            return None
+        total += kv_heads[i] * (key_length + value_length) * 2 * (swa_cells if is_swa else ctx)
+    return total if total > 0 else None
 
 
 def _hash_metadata_value(digest: Any, value: Any) -> None:
