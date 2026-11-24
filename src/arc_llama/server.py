@@ -20,6 +20,8 @@ ships with the install.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import collections
 import copy
 import io
@@ -30,7 +32,7 @@ import re
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -82,7 +84,7 @@ from arc_llama.benchmark import BENCHMARK_HEADER
 from arc_llama.chat_store import Chat, ChatMessage, ChatStore, validate_compaction
 from arc_llama.config import Config, default_config_path, load_config
 from arc_llama.failures import StartupFailureError
-from arc_llama.gguf_meta import gguf_total_bytes
+from arc_llama.gguf_meta import gguf_total_bytes, read_gguf_meta
 from arc_llama.harness_install import (
     HarnessInstallError,
     HarnessInstallManager,
@@ -779,10 +781,11 @@ def create_app(
         body = await _read_json_body(request)
         messages = body.get("messages")
         if not isinstance(messages, list):
-            raise HTTPException(
-                status_code=400, detail="Ollama chat requests require a messages array"
-            )
-        payload = _ollama_to_openai(body, messages=messages)
+            return JSONResponse({"error": "Ollama chat requests require a messages array"}, status_code=400)
+        try:
+            payload = _ollama_to_openai(body, messages=messages)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
         response = await _proxy_post(request, "/v1/chat/completions")
         return _openai_response_as_ollama(response, body.get("model", ""), generate=False)
@@ -792,15 +795,50 @@ def create_app(
         body = await _read_json_body(request)
         prompt = body.get("prompt", "")
         if not isinstance(prompt, str):
-            raise HTTPException(
-                status_code=400, detail="Ollama generate requests require a string prompt"
-            )
-        payload = _ollama_to_openai(body, messages=[{"role": "user", "content": prompt}])
-        payload.pop("messages")
-        payload["prompt"] = prompt
+            return JSONResponse({"error": "Ollama generate requests require a string prompt"}, status_code=400)
+        if not prompt:
+            return JSONResponse({"error": "Load-only requests are not supported; use Arc Llama's model load controls"}, status_code=400)
+        messages = []
+        if "system" in body:
+            messages.append({"role": "system", "content": body["system"]})
+        messages.append({"role": "user", "content": prompt, "images": body.get("images", [])})
+        try:
+            payload = _ollama_to_openai(body, messages=messages, generate=True)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         request._body = json.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
-        response = await _proxy_post(request, "/v1/completions")
+        response = await _proxy_post(request, "/v1/chat/completions")
         return _openai_response_as_ollama(response, body.get("model", ""), generate=True)
+
+    @app.post("/api/show")
+    async def ollama_show(request: Request):
+        body = await _read_json_body(request)
+        query = body.get("model")
+        if not isinstance(query, str) or not query:
+            return JSONResponse({"error": "model must be a nonempty string"}, status_code=400)
+        if body.get("verbose"):
+            return JSONResponse({"error": "Only basic library metadata is available; verbose tokenizer metadata is unsupported"}, status_code=400)
+        model = next((m for m in request.app.state.router.all_models() if query in [m.name, *m.aliases]), None)
+        if model is None:
+            return JSONResponse({"error": "No local model metadata for that name"}, status_code=404)
+        return await asyncio.to_thread(_ollama_model_info, model)
+
+    @app.get("/api/ps")
+    async def ollama_ps(request: Request):
+        router = request.app.state.router
+        loaded = []
+        for model in router.all_models():
+            server = router._servers.get(model.name)
+            if not (server and server.is_running and server.ready):
+                continue
+            info = await asyncio.to_thread(_ollama_model_info, model)
+            entry: dict[str, Any] = {"name": model.name, "model": model.name, "details": info["details"]}
+            try:
+                entry["size"] = await asyncio.to_thread(gguf_total_bytes, model.path)
+            except OSError:
+                pass
+            loaded.append(entry)
+        return {"models": loaded}
 
     @app.post("/v1/agent")
     async def agent_endpoint(request: Request):
@@ -2566,117 +2604,301 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
     return body
 
 
-def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any]) -> dict[str, Any]:
-    raw_options = body.get("options")
-    options: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
-    payload: dict[str, Any] = {
-        "model": body.get("model", ""),
-        "messages": messages,
-        "stream": bool(body.get("stream", True)),
+def _ollama_model_info(model: Any) -> dict[str, Any]:
+    meta = read_gguf_meta(model.path)
+    details: dict[str, Any] = {"format": "gguf"}
+    model_info = {}
+    arch = meta.get("architecture")
+    if arch:
+        details.update(family=arch, families=[arch])
+        model_info["general.architecture"] = arch
+        for key in ("context_length", "block_count", "embedding_length", "attention.head_count", "attention.head_count_kv"):
+            if key in meta:
+                model_info[f"{arch}.{key}"] = meta[key]
+    result: dict[str, Any] = {
+        "details": details, "model_info": model_info,
+        "capabilities": [c for c in model_capabilities(model) if c in {"completion", "embedding", "vision"}],
     }
-    for ollama_key, openai_key in (
-        ("temperature", "temperature"),
-        ("top_p", "top_p"),
-        ("stop", "stop"),
-    ):
-        if ollama_key in options:
-            payload[openai_key] = options[ollama_key]
-    if "num_predict" in options:
-        payload["max_tokens"] = options["num_predict"]
+    ctx = (model.recipe or {}).get("ctx")
+    if ctx is not None:
+        result["parameters"] = f"num_ctx {ctx}"
+    return result
+
+
+def _ollama_messages(messages: list[Any]) -> list[dict[str, Any]]:
+    if not messages:
+        raise ValueError("Load-only requests are not supported; use Arc Llama's model load controls")
+    result = []
+    pending: list[tuple[str, str]] = []
+    call_index = 0
+    for original in messages:
+        if not isinstance(original, dict):
+            raise ValueError("Every message must be an object")
+        unknown = set(original) - {"role", "content", "images", "tool_calls", "tool_name", "tool_call_id", "thinking"}
+        if unknown:
+            raise ValueError(f"Unsupported message fields: {', '.join(sorted(unknown))}")
+        role = original.get("role")
+        if not isinstance(role, str) or role not in {"system", "user", "assistant", "tool"}:
+            raise ValueError("Message role must be system, user, assistant or tool")
+        content = original.get("content", "")
+        if content is None and role == "assistant" and original.get("tool_calls"):
+            content = ""
+        if not isinstance(content, str):
+            raise ValueError("Message content must be a string")
+        message: dict[str, Any] = {"role": role, "content": content}
+        if original.get("thinking") is not None:
+            if not isinstance(original["thinking"], str):
+                raise ValueError("Message thinking must be a string")
+            message["reasoning_content"] = original["thinking"]
+        images = original.get("images", [])
+        if not isinstance(images, list):
+            raise ValueError("Message images must be an array of base64 strings")
+        if images:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+            for encoded in images:
+                try:
+                    image = base64.b64decode(encoded, validate=True) if isinstance(encoded, str) else b""
+                except (ValueError, binascii.Error):
+                    raise ValueError("Images must contain valid base64-encoded image bytes") from None
+                mime = (
+                    "image/png" if image.startswith(b"\x89PNG\r\n\x1a\n") else
+                    "image/jpeg" if image.startswith(b"\xff\xd8\xff") else
+                    "image/gif" if image.startswith((b"GIF87a", b"GIF89a")) else
+                    "image/webp" if image.startswith(b"RIFF") and image[8:12] == b"WEBP" else None
+                )
+                if mime is None:
+                    raise ValueError("Supported image encodings are PNG, JPEG, GIF and WebP")
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+            message["content"] = parts
+        calls = original.get("tool_calls", [])
+        if not isinstance(calls, list) or (calls and role != "assistant"):
+            raise ValueError("tool_calls must be an array on an assistant message")
+        if calls:
+            converted = []
+            for call in calls:
+                function = call.get("function") if isinstance(call, dict) else None
+                if not isinstance(function, dict) or not isinstance(function.get("name"), str) or not function["name"]:
+                    raise ValueError("Tool calls require a function name")
+                arguments = function.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    raise ValueError("Ollama tool-call arguments must be a JSON object")
+                call_id = call.get("id") or f"call_{call_index}"
+                if not isinstance(call_id, str) or any(call_id == item[0] for item in pending):
+                    raise ValueError("Tool-call ids must be unique strings")
+                call_index += 1
+                converted.append({"id": call_id, "type": "function", "function": {
+                    "name": function["name"], "arguments": json.dumps(arguments),
+                }})
+                pending.append((call_id, function["name"]))
+            message["tool_calls"] = converted
+        if role == "tool":
+            call_id, name = original.get("tool_call_id"), original.get("tool_name")
+            matches = [item for item in pending if (item[0] == call_id if call_id else item[1] == name if name else len(pending) == 1)]
+            if not matches:
+                raise ValueError("Tool results must match a preceding tool call; provide tool_name when needed")
+            matched = matches[0]
+            message["tool_call_id"] = matched[0]
+            pending.remove(matched)
+        elif original.get("tool_name") or original.get("tool_call_id"):
+            raise ValueError("tool_name and tool_call_id belong only on tool result messages")
+        result.append(message)
+    return result
+
+
+def _ollama_to_openai(body: dict[str, Any], *, messages: list[Any], generate: bool = False) -> dict[str, Any]:
+    allowed = {"model", "stream", "options", "format", "keep_alive", "think"} | (
+        {"prompt", "system", "images", "raw"} if generate else {"messages", "tools"}
+    )
+    unknown = {key for key, value in body.items() if key not in allowed and value is not None}
+    if unknown:
+        raise ValueError(f"Unsupported Ollama fields: {', '.join(sorted(unknown))}; configure model lifetime/context in Arc Llama")
+    if "raw" in body and not isinstance(body["raw"], bool):
+        raise ValueError("raw must be a boolean")
+    if body.get("raw"):
+        raise ValueError("raw prompt templates cannot be mapped to the chat API")
+    if not isinstance(body.get("model"), str) or not body["model"].strip():
+        raise ValueError("model must be a nonempty string")
+    if "stream" in body and not isinstance(body["stream"], bool):
+        raise ValueError("stream must be a boolean")
+    options = body.get("options")
+    if options is None:
+        options = {}
+    if not isinstance(options, dict):
+        raise ValueError("options must be an object")
+    mapping = {"temperature": "temperature", "top_p": "top_p", "stop": "stop", "num_predict": "max_tokens",
+               "seed": "seed", "top_k": "top_k", "min_p": "min_p", "repeat_penalty": "repeat_penalty"}
+    # These are commonly sent by clients; Arc Llama's model config owns the
+    # runtime settings. keep_alive and think above are likewise not forwarded.
+    load_options = {"num_ctx", "num_batch", "num_gpu", "main_gpu", "num_thread", "numa",
+                    "low_vram", "f16_kv", "logits_all", "vocab_only", "use_mmap", "use_mlock", "num_gqa"}
+    unknown_options = set(options) - mapping.keys() - load_options
+    if unknown_options:
+        raise ValueError(f"Unsupported Ollama options: {', '.join(sorted(unknown_options))}")
+    payload: dict[str, Any] = {
+        "model": body["model"], "messages": _ollama_messages(messages), "stream": body.get("stream", True),
+        **{mapping[key]: value for key, value in options.items() if key in mapping},
+    }
+    if body.get("format") is not None:
+        fmt = body["format"]
+        if fmt == "json":
+            payload["response_format"] = {"type": "json_object"}
+        elif isinstance(fmt, dict):
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "ollama_response", "schema": fmt}}
+        else:
+            raise ValueError("format must be 'json' or a JSON schema object")
+    if "tools" in body:
+        tools = body["tools"]
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, dict) or tool.get("type") != "function" or
+            not isinstance(tool.get("function"), dict) or not isinstance(tool["function"].get("name"), str) or not tool["function"]["name"]
+            for tool in tools
+        ):
+            raise ValueError("tools must be an array of named function tools")
+        payload["tools"] = tools
     return payload
+
+
+def _ollama_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted = []
+    for call in calls:
+        function = call.get("function", {})
+        arguments = function.get("arguments", "{}")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (ValueError, TypeError):
+                raise ValueError("Upstream tool-call arguments are not valid JSON") from None
+        if not isinstance(arguments, dict) or not isinstance(function.get("name"), str) or not function["name"]:
+            raise ValueError("Upstream tool calls require a function name and JSON object arguments")
+        converted.append({"function": {"name": function["name"], "arguments": arguments}})
+    return converted
+
+
+def _ollama_usage(obj: dict[str, Any]) -> dict[str, int]:
+    usage = obj.get("usage") or {}
+    return {dest: usage[source] for source, dest in (("prompt_tokens", "prompt_eval_count"), ("completion_tokens", "eval_count"))
+            if type(usage.get(source)) is int}
+
+
+async def _ollama_events(response: StreamingResponse) -> AsyncGenerator[dict[str, Any], None]:
+    buffer = b""
+    data: list[bytes] = []
+    try:
+        async for chunk in response.body_iterator:
+            buffer += chunk.encode() if isinstance(chunk, str) else bytes(chunk)
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.rstrip(b"\r")
+                if line.startswith(b"data:"):
+                    data.append(line[5:].lstrip())
+                elif not line and data:
+                    raw = b"\n".join(data)
+                    data.clear()
+                    if raw.strip() == b"[DONE]":
+                        return
+                    try:
+                        value = json.loads(raw)
+                    except ValueError:
+                        raise ValueError("Invalid JSON in upstream completion stream") from None
+                    if not isinstance(value, dict):
+                        raise ValueError("Upstream completion event must be an object")
+                    yield value
+        raise ValueError("Upstream completion stream ended before [DONE]")
+    finally:
+        close = getattr(response.body_iterator, "aclose", None)
+        if close is not None:
+            await close()
 
 
 def _openai_response_as_ollama(response: Response, model: str, *, generate: bool):
     if response.status_code >= 400:
+        if isinstance(response, StreamingResponse):
+            return response
         try:
             body = json.loads(bytes(response.body))
         except (TypeError, json.JSONDecodeError):
             body = {}
-        # Structured startup failures carry their readable message under
-        # "error.message"; flat errors keep using "detail". Either way the
-        # Ollama-compat client sees one plain string, never nested JSON.
-        if isinstance(body, dict):
-            error_obj = body.get("error")
-            if isinstance(error_obj, dict) and isinstance(error_obj.get("message"), str):
-                detail = error_obj["message"]
-            else:
-                detail = str(body.get("detail", "Upstream request failed"))
-        else:
-            detail = "Upstream request failed"
-        return JSONResponse({"error": str(detail)}, status_code=response.status_code)
+        error = body.get("error", body.get("detail", "Upstream request failed")) if isinstance(body, dict) else "Upstream request failed"
+        if isinstance(error, dict):
+            error = error.get("message", "Upstream request failed")
+        return JSONResponse({"error": str(error)}, status_code=response.status_code)
+
+    def envelope(done: bool = False) -> dict[str, Any]:
+        return {"model": model, "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "done": done}
+
+    def message_result(message: dict[str, Any]) -> dict[str, Any]:
+        if message.get("content") is not None and not isinstance(message["content"], str):
+            raise ValueError("Upstream message content must be text")
+        if message.get("reasoning_content") is not None and not isinstance(message["reasoning_content"], str):
+            raise ValueError("Upstream thinking content must be text")
+        if generate:
+            result = {"response": message.get("content") or ""}
+            if message.get("reasoning_content"):
+                result["thinking"] = message["reasoning_content"]
+            return result
+        return {"message": {"role": "assistant", "content": message.get("content") or "",
+                            **({"thinking": message["reasoning_content"]} if message.get("reasoning_content") else {})}}
+
     if isinstance(response, StreamingResponse):
-
         async def stream() -> AsyncIterator[bytes]:
-            buffer = b""
-            async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-                buffer += chunk.encode() if isinstance(chunk, str) else bytes(chunk)
-                while b"\n\n" in buffer:
-                    raw, buffer = buffer.split(b"\n\n", 1)
-                    for line in raw.splitlines():
-                        if not line.startswith(b"data:"):
-                            continue
-                        text = line[5:].strip()
-                        if text == b"[DONE]":
-                            continue
-                        try:
-                            obj = json.loads(text)
-                        except json.JSONDecodeError:
-                            continue
-                        choice = (obj.get("choices") or [{}])[0]
-                        delta = choice.get("delta") or {}
-                        value = delta.get("content") if not generate else choice.get("text", "")
-                        if value:
-                            yield (
-                                json.dumps(
-                                    {
-                                        "model": model,
-                                        "created_at": time.strftime(
-                                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                                        ),
-                                        "message": {"role": "assistant", "content": value},
-                                        "response": value if generate else "",
-                                        "done": False,
-                                    }
-                                )
-                                + "\n"
-                            ).encode()
-                        if choice.get("finish_reason"):
-                            yield (
-                                json.dumps(
-                                    {
-                                        "model": model,
-                                        "created_at": time.strftime(
-                                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                                        ),
-                                        "done": True,
-                                        "done_reason": choice["finish_reason"],
-                                    }
-                                )
-                                + "\n"
-                            ).encode()
-
-        return StreamingResponse(stream(), media_type="application/x-ndjson")
+            calls: dict[int, dict[str, Any]] = {}
+            usage: dict[str, int] = {}
+            finish = None
+            events = _ollama_events(response)
+            try:
+                async for obj in events:
+                    if obj.get("error"):
+                        error = obj["error"]
+                        raise ValueError(error.get("message", "Upstream stream failed") if isinstance(error, dict) else str(error))
+                    usage.update(_ollama_usage(obj))
+                    choice = (obj.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") or choice.get("text", "")
+                    thinking = delta.get("reasoning_content") or delta.get("reasoning")
+                    if content or thinking:
+                        packet = {**envelope(), **message_result({"content": content, "reasoning_content": thinking})}
+                        yield (json.dumps(packet) + "\n").encode()
+                    for call in delta.get("tool_calls") or []:
+                        index = call.get("index", 0)
+                        if type(index) is not int or index < 0:
+                            raise ValueError("Invalid upstream tool-call index")
+                        function = call.get("function") or {}
+                        part = calls.setdefault(index, {"function": {"name": "", "arguments": ""}})["function"]
+                        for key in ("name", "arguments"):
+                            value = function.get(key, "")
+                            if not isinstance(value, str):
+                                raise ValueError("Upstream streamed tool fields must be strings")
+                            part[key] += value
+                    if choice.get("finish_reason"):
+                        finish = choice["finish_reason"]
+                if calls:
+                    if generate:
+                        raise ValueError("Tool calls cannot be represented by /api/generate; use /api/chat")
+                    packet = {**envelope(), "message": {"role": "assistant", "content": "",
+                              "tool_calls": _ollama_tool_calls([calls[i] for i in sorted(calls)])}}
+                    yield (json.dumps(packet) + "\n").encode()
+                final = {**envelope(True), **message_result({}), **usage,
+                         "done_reason": "stop" if finish == "tool_calls" else finish}
+                yield (json.dumps(final) + "\n").encode()
+            except (ValueError, TypeError, KeyError, AttributeError, httpx.HTTPError) as exc:
+                yield (json.dumps({"error": str(exc)}) + "\n").encode()
+            finally:
+                await events.aclose()
+        return _LocalStreamingResponse(stream(), status_code=response.status_code,
+                                       media_type="application/x-ndjson", background=response.background)
     try:
         obj = json.loads(bytes(response.body))
-    except (TypeError, json.JSONDecodeError):
-        return response
-    choice = (obj.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    content = choice.get("text", "") if generate else message.get("content", "")
-    result: dict[str, Any] = {
-        "model": model,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "done": True,
-        "done_reason": choice.get("finish_reason"),
-    }
-    if generate:
-        result["response"] = content
-    else:
-        result["message"] = {"role": message.get("role", "assistant"), "content": content}
-        if message.get("reasoning_content"):
-            result["message"]["thinking"] = message["reasoning_content"]
+        choice = obj["choices"][0]
+        message = choice.get("message") or {"content": choice.get("text", "")}
+        result = {**envelope(True), **message_result(message), **_ollama_usage(obj),
+                  "done_reason": "stop" if choice.get("finish_reason") == "tool_calls" else choice.get("finish_reason")}
+        if message.get("tool_calls"):
+            if generate:
+                raise ValueError("Tool calls cannot be represented by /api/generate; use /api/chat")
+            result["message"]["tool_calls"] = _ollama_tool_calls(message["tool_calls"])
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        return JSONResponse({"error": f"Invalid upstream completion: {exc}"}, status_code=502)
     return JSONResponse(result, status_code=response.status_code)
-
 
 _IMAGE_PART_TYPES = {"image_url", "input_image", "image"}
 
