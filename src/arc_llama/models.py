@@ -965,6 +965,7 @@ def download_from_hf(
     token: str | None = None,
     progress: bool = True,
     revision: str | None = None,
+    staging_root: Path | None = None,
 ) -> Path:
     """Resolve a HFModelSpec to a concrete file path under `target_dir`.
 
@@ -1012,7 +1013,7 @@ def download_from_hf(
     # dropped connection or a restart resumes partial files and keeps finished
     # shards; every file is verified again before it is published.
     key = hashlib.sha256(f"{spec.repo}@{revision}".encode()).hexdigest()[:16]
-    staging = target_dir / f".arc-download-{key}"
+    staging = (staging_root or target_dir) / f".arc-download-{key}"
     staging.mkdir(parents=True, exist_ok=True)
     published: set[str] = set()
     for name in names:
