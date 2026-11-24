@@ -638,7 +638,7 @@ async function fetchModels() {
     const r = await fetch("/v1/models");
     if (!r.ok) throw new Error(`status ${r.status}`);
     const data = await r.json();
-    const local = (data.data || []).filter(m => m.object === "model" && m.owned_by !== "arc-llama-alias");
+    const local = (data.data || []).filter(m => m.object === "model" && m.owned_by !== "arc-llama-alias" && m.metadata?.missing !== true);
     for (const m of local) {
       m.ctx = m.ctx ?? m.metadata?.ctx;
       m.capabilities = m.metadata?.capabilities || [];

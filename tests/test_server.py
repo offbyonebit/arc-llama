@@ -499,6 +499,29 @@ def test_list_models_includes_upstream(monkeypatch):
     assert upstream["owned_by"] == "upstream:ollama"
 
 
+def test_list_models_reports_missing_files_without_changing_config(tmp_path):
+    from conftest import make_config
+
+    cfg = make_config(tmp_path)
+    cfg.admin_token = "test-admin-token"
+    model_path = tmp_path / "model with spaces.gguf"
+    model_path.write_bytes(b"GGUF")
+    cfg.models[0].path = str(model_path)
+    config_path = tmp_path / "config.toml"
+    cfg.save(config_path)
+    before = config_path.read_bytes()
+
+    with TestClient(create_app(cfg, config_path=config_path)) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    models = {m["id"]: m for m in response.json()["data"]}
+    assert models["qwen"]["metadata"]["missing"] is False
+    assert models["gemma"]["metadata"]["missing"] is True
+    assert {"qwen.gguf", "gemma.gguf"} <= models.keys()
+    assert config_path.read_bytes() == before
+
+
 def test_admin_status_includes_upstreams(monkeypatch):
     import arc_llama.server as server_mod
 

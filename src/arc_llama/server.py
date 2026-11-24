@@ -694,6 +694,7 @@ def create_app(
                     "metadata": {
                         "display_name": m.display_name,
                         "path": m.path,
+                        "missing": not os.path.exists(m.path),
                         "model_file_mb": getattr(m, "model_file_mb", None),
                         "gpu_pci_slot": m.gpu_pci_slot,
                         "loaded": bool(srv and srv.is_running and srv.ready),
