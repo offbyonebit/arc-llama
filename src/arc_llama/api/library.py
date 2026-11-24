@@ -232,7 +232,8 @@ def register_library_routes(
         failed: list[str] = []
         for path in doomed:
             try:
-                size = path.stat().st_size
+                info = path.stat()
+                size = info.st_size if info.st_nlink <= 1 else 0
                 path.unlink()
                 freed += size
             except OSError:

@@ -390,7 +390,8 @@ def disk_report(cfg: Config, last_used: dict[str, float] | None = None) -> dict[
                 "size_mb": size // 1_048_576,
                 "files": len(files),
                 "missing": not Path(model.path).expanduser().exists(),
-                "managed": _inside(Path(model.path).expanduser(), models_dir),
+                "managed": bool(deletable_files(cfg, model)) if model.import_source else
+                    _inside(Path(model.path).expanduser(), models_dir),
                 "last_used": (last_used or {}).get(model.name),
             }
         )
@@ -420,11 +421,23 @@ def deletable_files(cfg: Config, model: ModelConfig) -> list[Path]:
     registered model (a projector can serve several quants).
     """
     root = Path(cfg.paths.models_dir).expanduser()
+    if model.import_source:
+        # A source can itself live under imports. Delete only the exact link
+        # recorded when Arc created it, never a source or its projector.
+        if not model.import_link_path:
+            return []
+        link = Path(model.import_link_path).expanduser()
+        if (link.is_symlink() or not link.is_file() or not _inside(link, root / "imports")
+                or link.resolve() != Path(model.path).expanduser().resolve()):
+            return []
+        files = [link]
+    else:
+        files = model_files(model)
     shared: set[Path] = set()
     for other in cfg.models:
         if other.name != model.name:
             shared.update(p.resolve() for p in model_files(other))
-    return [p for p in model_files(model) if _inside(p, root) and p.resolve() not in shared]
+    return [p for p in files if _inside(p, root) and p.resolve() not in shared]
 
 
 def file_readiness(model: ModelConfig) -> dict[str, Any]:

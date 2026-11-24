@@ -141,6 +141,32 @@ prints the fit estimate and endpoints, then serves. An existing recognised
 SYCL runtime is preserved. Use `--setup-only` to prepare and inspect the launch
 plan without starting the service, or `--backend sycl` to request SYCL.
 
+To reuse weights already downloaded by another app, inspect then import them:
+
+```bash
+arc-llama import --from ollama --dry-run
+arc-llama import --from ollama
+arc-llama import --from lmstudio --dry-run
+arc-llama import --from lmstudio
+```
+
+Ollama manifests map model names/tags to local GGUF blobs under
+`OLLAMA_MODELS` or `~/.ollama/models`. LM Studio uses `~/.lmstudio/models` and
+`~/.cache/lm-studio/models`; Windows defaults use `USERPROFILE`. Override either
+source with `--root PATH`, and optionally choose a configured GPU with `--gpu`.
+Initialize Arc Llama's GPU config before a real import; dry-run only lists files
+and does not create config. Multi-part, auxiliary and non-GGUF models are skipped
+with reasons. Newer Ollama manifest lists select an installed single-file GGUF
+variant, preferring the llama.cpp runner. No model bytes are downloaded or copied.
+
+Linux registers the original path. Windows prefers an ordinary hardlink in the
+Arc models directory on the same volume and falls back to the original path
+when linking is unavailable, including across volumes; no symlinks are created.
+Imported source files are protected. Library deletion can remove only a hardlink
+Arc created under its `models/imports` directory; it never deletes the other
+app's original file or projector. Moving/removing the source can break a
+referenced model; a hardlinked model keeps its own directory entry until deleted.
+
 The individual steps remain available when you want explicit control:
 
 ```bash
