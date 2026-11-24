@@ -76,7 +76,10 @@ def pcie_link_warning(pci_slot: str, sysfs_root: Path = Path("/sys/bus/pci/devic
         generation = generations.get(rate)
         return f"Gen{generation} x{lanes}" if generation else f"{rate:g} GT/s x{lanes}"
 
-    return f"{pci_slot} running at {label(speed, width)}, card supports {label(max_speed, max_width)}"
+    # Name the port that was measured; it differs from the GPU behind on-card switches.
+    walked = device != (sysfs_root / pci_slot).resolve()
+    port = f"slot port {device.name} (GPU {pci_slot})" if walked else pci_slot
+    return f"{port} running at {label(speed, width)}, card supports {label(max_speed, max_width)}"
 
 
 @dataclass

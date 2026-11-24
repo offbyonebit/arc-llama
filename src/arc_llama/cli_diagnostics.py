@@ -141,8 +141,8 @@ def register_diagnostic_commands(
                     if link_warning:
                         report.add(
                             "pcie_link", False, link_warning, severity="warn",
-                            hint="Reseat the card or check the BIOS slot setting. "
-                            "A chipset slot may limit the link; idle power saving can lower speed, so confirm under load.",
+                            hint="The slot is likely chipset-wired or lane-limited; check the board manual and BIOS slot setting. "
+                            "If it should run full width, reseat the card. Idle power saving can lower speed, so confirm under load.",
                         )
                 # ReBAR aperture — critical for Arc llama.cpp performance
                 if not is_windows() and g.sysfs_path:

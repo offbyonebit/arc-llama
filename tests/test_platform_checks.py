@@ -445,6 +445,8 @@ def test_doctor_link_and_driver_checks_are_platform_specific_warnings(tmp_path, 
     assert calls == ([] if windows else ['gpu0'])
     assert 'FAIL' not in text
     assert ('Update the Arc graphics driver from Intel' in text) is windows
+    if not windows:
+        assert text.index('chipset-wired') < text.index('reseat the card')
 
 
 def _write_pcie_link(path, speed, width, max_speed, max_width):
@@ -469,6 +471,7 @@ def test_pcie_checks_card_upstream_port_instead_of_internal_switch_link(tmp_path
         (bridge / 'vendor').write_text('0x8086')
     (gpu / 'class').write_text('0x030000')
     slot = str(gpu.relative_to(tmp_path))
+    assert pcie_link_warning(slot, tmp_path).startswith('slot port card-upstream (GPU ')
     assert 'Gen3 x4, card supports Gen4 x8' in pcie_link_warning(slot, tmp_path)
     # The internal endpoint and root port are both full width. Only the card's
     # upstream port reveals the slot-width restriction, and idle speed is benign.
@@ -485,7 +488,8 @@ def test_direct_gpu_uses_its_own_slot_facing_link(tmp_path):
     _write_pcie_link(root, '16.0 GT/s PCIe', 8, '16.0 GT/s PCIe', 8)
     (root / 'class').write_text('0x060400')
     _write_pcie_link(gpu, '16.0 GT/s PCIe', 4, '16.0 GT/s PCIe', 8)
-    assert 'Gen4 x4, card supports Gen4 x8' in pcie_link_warning(str(gpu.relative_to(tmp_path)), tmp_path)
+    warning = pcie_link_warning(str(gpu.relative_to(tmp_path)), tmp_path)
+    assert warning == f'{gpu.relative_to(tmp_path)} running at Gen4 x4, card supports Gen4 x8'
 
 
 def test_pcie_stops_at_card_above_non_intel_chipset(tmp_path):
