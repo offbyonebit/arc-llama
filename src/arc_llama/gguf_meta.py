@@ -39,12 +39,18 @@ _TOKENIZER_IDENTITY_KEYS = (
 # ---------------------------------------------------------------------------
 
 _KV_METADATA_SUFFIXES = (
+    "ssm.conv_kernel",
+    "ssm.inner_size",
+    "ssm.state_size",
+    "ssm.group_count",
     "embedding_length",
     "attention.head_count",
     "attention.head_count_kv",
     "attention.key_length",
     "attention.value_length",
     "attention.sliding_window",
+    "full_attention_interval",
+    "attention.recurrent_layers",
 )
 
 
@@ -446,11 +452,8 @@ def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> 
 
     raw_kv_heads = meta.get("attention.head_count_kv")
     architecture = str(meta.get("architecture", "")).lower()
-    if architecture.startswith("qwen35") and isinstance(raw_kv_heads, int):
-        # Qwen 3.5-family GGUFs can report one scalar KV-head count even though
-        # only a subset of their GDN/attention hybrid layers allocate KV. A
-        # scalar broadcast would multiply the cache by every recurrent layer.
-        return None
+    if architecture in {"qwen35", "qwen35moe", "qwen3next"}:
+        return _hybrid_kv_bytes_per_token_f16(meta, layers)
     kv_heads = _per_layer_values(raw_kv_heads, layers)
     if kv_heads is None:
         return None
@@ -483,6 +486,74 @@ def _kv_bytes_per_token_f16_cached(path: str, file_size: int, mtime_ns: int) -> 
 
     # One f16 K element and one f16 V element are already represented in the
     # sum above; each element occupies two bytes.
+    return total_elements * 2 if total_elements > 0 else None
+
+
+def recurrent_state_bytes(path: Path | str, n_seq: int = 1) -> int | None:
+    """Qwen hybrid f32 state; n_seq is state rows (sequences x (1 + rollback snapshots))."""
+    meta = read_gguf_meta(path)
+    if str(meta.get("architecture", "")).lower() not in {"qwen35", "qwen35moe", "qwen3next"}:
+        return None
+    try:
+        layers = int(meta["block_count"])
+        main_layers = layers - int(meta.get("nextn_predict_layers", 0))
+        conv = int(meta["ssm.conv_kernel"])
+        inner = int(meta["ssm.inner_size"])
+        state = int(meta["ssm.state_size"])
+        groups = int(meta["ssm.group_count"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 0 < main_layers <= layers or n_seq <= 0 or min(conv, inner, state, groups) < 0:
+        return None
+    recurrent = meta.get("attention.recurrent_layers")
+    if recurrent is not None:
+        if not isinstance(recurrent, list) or len(recurrent) != layers:
+            return None
+        n_recurrent = sum(bool(value) for value in recurrent[:main_layers])
+    else:
+        try:
+            interval = int(meta.get("full_attention_interval", 4))
+        except (TypeError, ValueError):
+            return None
+        if interval <= 0:
+            return None
+        n_recurrent = sum((i + 1) % interval != 0 for i in range(main_layers))
+    n_embd_r = max(conv - 1, 0) * (inner + 2 * groups * state)
+    n_embd_s = state * inner
+    return n_recurrent * (n_embd_r + n_embd_s) * 4 * n_seq
+
+
+def _hybrid_kv_bytes_per_token_f16(meta: dict[str, Any], layers: int) -> int | None:
+    """Count only main-model attention layers, excluding recurrent and MTP KV."""
+    kv_heads = _per_layer_values(meta.get("attention.head_count_kv"), layers)
+    key_lengths = _per_layer_values(meta.get("attention.key_length"), layers)
+    value_lengths = _per_layer_values(meta.get("attention.value_length"), layers)
+    if kv_heads is None or key_lengths is None or value_lengths is None:
+        return None
+    try:
+        main_layers = layers - int(meta.get("nextn_predict_layers", 0))
+    except (TypeError, ValueError):
+        return None
+    if not 0 < main_layers <= layers:
+        return None
+    recurrent = meta.get("attention.recurrent_layers")
+    if recurrent is not None:
+        if not isinstance(recurrent, list) or len(recurrent) != layers:
+            return None
+        attention_layers = [i for i in range(main_layers) if not recurrent[i]]
+    else:
+        try:
+            interval = int(meta.get("full_attention_interval", 4))
+        except (TypeError, ValueError):
+            return None
+        if interval <= 0:
+            return None
+        attention_layers = [i for i in range(main_layers) if (i + 1) % interval == 0]
+    total_elements = 0
+    for i in attention_layers:
+        if kv_heads[i] < 0 or key_lengths[i] <= 0 or value_lengths[i] <= 0:
+            return None
+        total_elements += kv_heads[i] * (key_lengths[i] + value_lengths[i])
     return total_elements * 2 if total_elements > 0 else None
 
 
