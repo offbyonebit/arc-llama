@@ -421,11 +421,11 @@ class TestKvBytesPerToken:
 
 
 class TestKvBytesAtContext:
-    def _estimate(self, tmp_path, monkeypatch, meta, ctx=32768, n_ubatch=512):
+    def _estimate(self, tmp_path, monkeypatch, meta, ctx=32768, n_ubatch=512, n_seq=1):
         path = tmp_path / "swa-model.gguf"
         path.write_bytes(b"GGUF")
         monkeypatch.setattr("arc_llama.gguf_meta.read_gguf_meta", lambda _path: meta)
-        return kv_bytes_f16_at_ctx(path, ctx, n_ubatch)
+        return kv_bytes_f16_at_ctx(path, ctx, n_ubatch, n_seq)
 
     def _gemma3(self):
         return {
@@ -449,6 +449,23 @@ class TestKvBytesAtContext:
             "attention.sliding_window": 1024,
         }
         assert self._estimate(tmp_path, monkeypatch, meta) == 940 * 1024**2
+
+    def test_gemma4_swa_window_is_per_parallel_sequence(self, tmp_path, monkeypatch):
+        # B60, b12243: -c 32768 -ub 4096 --parallel 2 allocated 2 x 5120 SWA
+        # cells (2000 MiB) plus 640 MiB of full-attention KV.
+        pattern = [i % 6 != 5 for i in range(30)]
+        meta = {
+            "architecture": "gemma4", "block_count": 30,
+            "attention.sliding_window_pattern": pattern,
+            "attention.head_count_kv": [8 if swa else 2 for swa in pattern],
+            "attention.key_length": 512, "attention.value_length": 512,
+            "attention.key_length_swa": 256, "attention.value_length_swa": 256,
+            "attention.sliding_window": 1024,
+        }
+        assert self._estimate(tmp_path, monkeypatch, meta, n_ubatch=4096) == 1640 * 1024**2
+        assert self._estimate(tmp_path, monkeypatch, meta, n_ubatch=4096, n_seq=2) == (
+            2640 * 1024**2
+        )
 
     def test_gpt_oss_default_pattern(self, tmp_path, monkeypatch):
         meta = {

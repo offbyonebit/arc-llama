@@ -186,7 +186,10 @@ def _kv_f16_bytes_per_token_at_ctx(model: ModelConfig, ctx: int) -> int | None:
     per_token = kv_bytes_per_token_f16(model.path)
     if per_token is not None or ctx <= 0:
         return per_token
-    total = kv_bytes_f16_at_ctx(model.path, ctx)
+    recipe = model.recipe or {}
+    n_ubatch = int(recipe.get("ubatch_size") or 512)
+    n_seq = max(1, int(recipe.get("parallel") or 1))
+    total = kv_bytes_f16_at_ctx(model.path, ctx, n_ubatch, n_seq)
     return (total + ctx - 1) // ctx if total is not None else None
 
 

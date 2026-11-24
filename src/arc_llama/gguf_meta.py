@@ -361,9 +361,15 @@ def kv_bytes_per_token_f16(path: Path | str) -> int | None:
     return _kv_bytes_per_token_f16_cached(resolved, stat.st_size, stat.st_mtime_ns)
 
 
-def kv_bytes_f16_at_ctx(path: Path | str, ctx: int, n_ubatch: int = 512) -> int | None:
-    """Calculate one sequence's f16 KV allocation, including supported SWA caches."""
-    if ctx <= 0 or n_ubatch < 0:
+def kv_bytes_f16_at_ctx(
+    path: Path | str, ctx: int, n_ubatch: int = 512, n_seq: int = 1
+) -> int | None:
+    """Calculate the f16 KV allocation at *ctx*, including supported SWA caches.
+
+    With ``n_seq`` > 1 (``--parallel``, non-unified KV) llama.cpp gives each
+    sequence its own SWA window, so the SWA cells scale with ``n_seq``.
+    """
+    if ctx <= 0 or n_ubatch < 0 or n_seq <= 0:
         return None
     meta = read_gguf_meta(path)
     arch = str(meta.get("architecture", "")).lower()
@@ -400,7 +406,9 @@ def kv_bytes_f16_at_ctx(path: Path | str, ctx: int, n_ubatch: int = 512) -> int 
         return None
     if swa_key_lengths is None or swa_value_lengths is None:
         return None
-    swa_cells = ((min(ctx, window + n_ubatch) + 255) // 256) * 256
+    seq_ctx = ctx if n_seq == 1 else ((ctx // n_seq + 255) // 256) * 256
+    swa_cells = ((min(seq_ctx, window + n_ubatch) + 255) // 256) * 256 * n_seq
+    ctx = seq_ctx * n_seq
     total = 0
     for i, is_swa in enumerate(swa_layers):
         key_length = swa_key_lengths[i] if is_swa else key_lengths[i]

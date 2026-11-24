@@ -101,13 +101,30 @@ def test_context_sized_kv_per_token_rounds_up(tmp_path, monkeypatch):
     monkeypatch.setattr(router_mod, "kv_bytes_per_token_f16", lambda _path: None)
     seen = []
 
-    def at_context(path, ctx):
-        seen.append((path, ctx))
+    def at_context(path, ctx, n_ubatch, n_seq):
+        seen.append((path, ctx, n_ubatch, n_seq))
         return 32769
 
     monkeypatch.setattr(router_mod, "kv_bytes_f16_at_ctx", at_context)
     assert router_mod._kv_f16_bytes_per_token_at_ctx(model, 32) == 1025
-    assert seen == [(model.path, 32)]
+    assert seen == [(model.path, 32, 512, 1)]
+
+
+def test_context_sized_kv_passes_recipe_ubatch_and_parallel(tmp_path, monkeypatch):
+    model = ModelConfig(
+        name="swa", path=str(tmp_path / "model.gguf"), port=18080, gpu_pci_slot="gpu",
+        recipe={"ctx": 32768, "ubatch_size": 4096, "parallel": 2},
+    )
+    monkeypatch.setattr(router_mod, "kv_bytes_per_token_f16", lambda _path: None)
+    seen = []
+
+    def at_context(path, ctx, n_ubatch, n_seq):
+        seen.append((ctx, n_ubatch, n_seq))
+        return ctx
+
+    monkeypatch.setattr(router_mod, "kv_bytes_f16_at_ctx", at_context)
+    router_mod._kv_f16_bytes_per_token_at_ctx(model, 32768)
+    assert seen == [(32768, 4096, 2)]
 
 
 async def test_single_resident_policy_stops_other_models_before_starting_target(
