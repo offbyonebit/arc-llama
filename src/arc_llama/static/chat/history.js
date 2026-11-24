@@ -196,6 +196,9 @@
         const card = document.createElement("div");
         card.className = "h-card";
         card.dataset.id = c.id;
+        card.tabIndex = 0;
+        card.setAttribute("role", "group");
+        card.setAttribute("aria-label", `${c.title}. Enter or Space to open chat.`);
         const ICON_CLOSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>';
         card.innerHTML = `
           <div class="h-card-head">
@@ -210,15 +213,65 @@
         `;
         card.appendChild(buildMoveSelect(c));
         card.addEventListener("click", (e) => {
-          if (e.target.closest(".h-delete") || e.target.closest(".h-move")) return;
+          if (e.target.closest("button, select, .h-delete-confirm")) return;
+          loadChat(c.id);
+        });
+        card.addEventListener("keydown", (event) => {
+          if (event.target !== card || !["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
           loadChat(c.id);
         });
         card.querySelector(".h-delete").addEventListener("click", (e) => {
           e.stopPropagation();
-          deleteChat(c.id);
+          confirmDelete(c, card);
         });
         ctx.hList.appendChild(card);
       }
+    }
+
+    function confirmDelete(chat, card) {
+      if (!ctx.allowChatChange() || card.querySelector(".h-delete-confirm")) return;
+      const trigger = card.querySelector(".h-delete");
+      const confirmation = document.createElement("div");
+      confirmation.className = "h-delete-confirm";
+      confirmation.setAttribute("role", "group");
+      confirmation.setAttribute("aria-label", `Delete ${chat.title}?`);
+      const prompt = document.createElement("span");
+      prompt.textContent = "Delete this chat?";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Delete chat";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Cancel";
+      const close = () => {
+        confirmation.remove(); card.classList.remove("confirming-delete");
+        trigger.disabled = false; trigger.focus();
+      };
+      cancel.addEventListener("click", close);
+      confirmation.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || remove.disabled) return;
+        event.stopPropagation();
+        event.preventDefault();
+        close();
+      });
+      remove.addEventListener("click", async () => {
+        const cards = Array.from(ctx.hList.querySelectorAll(".h-card"));
+        const index = cards.indexOf(card);
+        remove.disabled = cancel.disabled = true;
+        if (await deleteChat(chat.id)) {
+          const remaining = ctx.hList.querySelectorAll(".h-card");
+          (remaining[Math.min(index, remaining.length - 1)] || ctx.hNew)?.focus();
+        } else {
+          remove.disabled = cancel.disabled = false;
+          cancel.focus();
+        }
+      });
+      confirmation.append(prompt, remove, cancel);
+      card.appendChild(confirmation);
+      card.classList.add("confirming-delete");
+      trigger.disabled = true;
+      cancel.focus();
     }
 
     async function loadChat(id) {
@@ -281,11 +334,12 @@
     }
 
     async function deleteChat(id) {
-      if (!ctx.allowChatChange()) return;
+      if (!ctx.allowChatChange()) return false;
       try {
         await apiRequest(`/v1/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
       } catch (e) {
-        console.warn("Could not delete chat on server:", e.message);
+        ctx.showError("Could not delete chat: " + e.message);
+        return false;
       }
       const chats = loadChats().filter(c => c.id !== id);
       saveChats(chats);
@@ -293,6 +347,7 @@
         ctx.currentChatId = null;
       }
       renderHistoryPanel();
+      return true;
     }
 
     function getFolderLabel(name) {
@@ -447,7 +502,19 @@
           if (ctx.hExport) ctx.hExport.addEventListener("click", exportChats);
           if (ctx.hImport) ctx.hImport.addEventListener("click", () => ctx.hImportInput?.click());
           if (ctx.hImportInput) ctx.hImportInput.addEventListener("change", importChatsFromFile);
-          ctx.historyToggle?.addEventListener("click", async () => { const open = ctx.historyPanel.classList.toggle("open"); ctx.historyToggle.classList.toggle("open", open); if (open) { await loadFolders(); await syncChatsFromServer(); renderHistoryPanel(); } });
+          ctx.historyToggle?.addEventListener("click", async () => {
+            const open = ctx.historyPanel.classList.toggle("open");
+            ctx.historyToggle.classList.toggle("open", open);
+            if (!open) return;
+            ctx.historyPanel.setAttribute("aria-busy", "true");
+            ctx.hList.inert = true;
+            try {
+              await loadFolders(); await syncChatsFromServer(); renderHistoryPanel();
+            } finally {
+              ctx.hList.inert = false;
+              ctx.historyPanel.setAttribute("aria-busy", "false");
+            }
+          });
     }
     return {
       getChats: () => chatCache,
