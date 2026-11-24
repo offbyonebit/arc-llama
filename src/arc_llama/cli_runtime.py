@@ -71,7 +71,7 @@ def register_runtime_commands(
 
     @runtime_group.command("use")
     @click.argument("tag")
-    @click.option("--backend", type=click.Choice(["vulkan", "sycl"]), default=None)
+    @click.option("--backend", type=click.Choice(["vulkan", "sycl"]), default=None, help="Backend of the installed runtime to select.")
     @click.pass_context
     def runtime_use_cmd(ctx: click.Context, tag: str, backend: str | None) -> None:
         """Select an already-installed runtime by release tag."""

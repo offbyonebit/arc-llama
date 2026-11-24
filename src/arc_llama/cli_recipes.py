@@ -101,6 +101,7 @@ def register_recipe_commands(
         type=click.FloatRange(min=0.0, max=1.0),
         default=0.5,
         show_default=True,
+        help="Minimum recipe confidence score (0 to 1).",
     )
     @click.option(
         "--allow-unverified",
