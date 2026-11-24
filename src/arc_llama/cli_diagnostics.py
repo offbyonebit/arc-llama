@@ -24,8 +24,10 @@ from arc_llama.platform_checks import (
     mesa_upgrade_steps,
     mesa_version,
     old_mesa_vulkan_warning,
+    old_windows_arc_driver_warning,
     oneapi_setvars_path,
     parse_kernel_version,
+    pcie_link_warning,
     rebar_likely_enabled,
     user_in_groups,
 )
@@ -127,6 +129,22 @@ def register_diagnostic_commands(
                 if g.notes:
                     for n in g.notes:
                         console.print(f"        note: {n}")
+                if is_windows():
+                    if g.arch in (Arch.ALCHEMIST, Arch.BATTLEMAGE):
+                        driver_warning = old_windows_arc_driver_warning(g.driver)
+                        if driver_warning:
+                            report.add(
+                                "windows_arc_driver", False, driver_warning, severity="warn",
+                                hint="Update the Arc graphics driver from Intel: https://www.intel.com/ArcDrivers",
+                            )
+                elif sys.platform.startswith("linux"):
+                    link_warning = pcie_link_warning(g.pci_slot)
+                    if link_warning:
+                        report.add(
+                            "pcie_link", False, link_warning, severity="warn",
+                            hint="The slot is likely chipset-wired or lane-limited; check the board manual and BIOS slot setting. "
+                            "If it should run full width, reseat the card. Idle power saving can lower speed, so confirm under load.",
+                        )
                 # ReBAR aperture — critical for Arc llama.cpp performance
                 if not is_windows() and g.sysfs_path:
                     bar = max_memory_bar_bytes(g.sysfs_path)

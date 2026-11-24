@@ -22,6 +22,65 @@ _IORESOURCE_MEM = 0x00000200
 _REBAR_OFF_MAX = 512 * 1024 * 1024
 _REBAR_ON_MIN = 1024 * 1024 * 1024
 
+# Review threshold, not a claim that every older driver is incompatible.
+MIN_WINDOWS_ARC_DRIVER = "32.0.101.8735"
+
+
+def old_windows_arc_driver_warning(version: str | None) -> str | None:
+    if not version or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", version.strip()):
+        return None
+    current = tuple(int(part) for part in version.strip().split("."))
+    minimum = tuple(int(part) for part in MIN_WINDOWS_ARC_DRIVER.split("."))
+    if current < minimum:
+        return f"Intel Arc driver {version.strip()} is older than recommended {MIN_WINDOWS_ARC_DRIVER}"
+    return None
+
+
+def _pci_bridge(device: Path) -> bool:
+    try:
+        return int((device / "class").read_text().strip(), 16) >> 8 == 0x0604
+    except (OSError, ValueError):
+        return False
+
+
+def pcie_link_warning(pci_slot: str, sysfs_root: Path = Path("/sys/bus/pci/devices")) -> str | None:
+    """Inspect the slot-facing link, resolving sysfs aliases past on-card switches."""
+    device = (sysfs_root / pci_slot).resolve()
+    parent = device.parent
+    # Arc's on-card downstream/upstream ports are Intel bridges. Bound the
+    # walk so a chipset switch/uplink can never become the card's slot link.
+    for _ in range(2):
+        if not (_pci_bridge(parent) and _pci_bridge(parent.parent)):
+            break
+        try:
+            if int((parent / "vendor").read_text().strip(), 16) != 0x8086:
+                break
+        except (OSError, ValueError):
+            break
+        device, parent = parent, parent.parent
+    try:
+        speed = float((device / "current_link_speed").read_text().split()[0])
+        width = int((device / "current_link_width").read_text().strip())
+        max_speed = float((device / "max_link_speed").read_text().split()[0])
+        max_width = int((device / "max_link_width").read_text().strip())
+    except (OSError, ValueError, IndexError):
+        return None
+    if not (0 < speed <= 256 and 0 < max_speed <= 256 and width > 0 and max_width > 0):
+        return None
+    # Speed alone falls at idle with ASPM; it is not evidence of a bad slot.
+    if width >= max_width:
+        return None
+    generations = {2.5: 1, 5: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7}
+
+    def label(rate: float, lanes: int) -> str:
+        generation = generations.get(rate)
+        return f"Gen{generation} x{lanes}" if generation else f"{rate:g} GT/s x{lanes}"
+
+    # Name the port that was measured; it differs from the GPU behind on-card switches.
+    walked = device != (sysfs_root / pci_slot).resolve()
+    port = f"slot port {device.name} (GPU {pci_slot})" if walked else pci_slot
+    return f"{port} running at {label(speed, width)}, card supports {label(max_speed, max_width)}"
+
 
 @dataclass
 class CheckResult:
