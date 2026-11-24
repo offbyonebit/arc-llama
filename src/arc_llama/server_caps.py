@@ -139,27 +139,40 @@ def _parse_help(help_text: str) -> ServerCaps:
     return ServerCaps(probe_error="", supports_flash_attn=True, flash_attn_takes_value=takes_value, **features)
 
 
-def _env_with_oneapi(env: dict[str, str] | None, *, force: bool = False) -> dict[str, str] | None:
-    """*env* (or the process environment) with oneAPI's setvars applied, or None if that cannot help."""
+def _env_with_oneapi(
+    env: dict[str, str] | None, *, force: bool = False, oneapi_setvars: str | None = None
+) -> dict[str, str] | None:
+    """*env* (or the process environment) with oneAPI's setvars applied, or None if that cannot help.
+
+    A configured ``paths.oneapi_setvars`` wins over discovery, as it does at launch.
+    """
     from arc_llama.platform_checks import (
         oneapi_runtime_env_needed,
         oneapi_setvars_path,
         source_setvars,
     )
 
-    if not force and not oneapi_runtime_env_needed():
+    configured = Path(oneapi_setvars).expanduser() if oneapi_setvars else None
+    if configured is not None and not configured.exists():
+        configured = None
+    if not force and configured is None and not oneapi_runtime_env_needed():
         return None
-    setvars = oneapi_setvars_path()
+    setvars = configured or oneapi_setvars_path()
     sourced = (source_setvars(setvars, force=True) if force else source_setvars(setvars)) if setvars is not None else {}
     if not sourced:
         return None
     return {**(env if env is not None else os.environ), **sourced}
 
 
-def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -> ServerCaps:
-    """Return the capabilities of the given llama-server binary, cached."""
+def probe_server_caps(
+    llama_server: str, *, env: dict[str, str] | None = None, oneapi_setvars: str | None = None
+) -> ServerCaps:
+    """Return the capabilities of the given llama-server binary, cached.
+
+    *oneapi_setvars* is the configured ``paths.oneapi_setvars``; a failed probe retries with it.
+    """
     llama_server = shutil.which(llama_server, path=env.get("PATH", "") if env is not None else None) or str(Path(llama_server).expanduser())
-    env_key = tuple(sorted(env.items())) if env is not None else ()
+    env_key = (tuple(sorted(env.items())) if env is not None else ()) + ((("", oneapi_setvars),) if oneapi_setvars else ())
     try:
         mtime = Path(llama_server).stat().st_mtime
     except OSError:
@@ -195,7 +208,7 @@ def probe_server_caps(llama_server: str, *, env: dict[str, str] | None = None) -
         symbol_error = sycl_runtime_error_hint(output)
         if proc.returncode != 0 and (symbol_error or "error while loading shared libraries" in output):
             # A SYCL build started outside a oneAPI shell; launches source setvars, so the probe must too.
-            oneapi_env = _env_with_oneapi(env, force=True) if symbol_error else _env_with_oneapi(env)
+            oneapi_env = _env_with_oneapi(env, force=bool(symbol_error), oneapi_setvars=oneapi_setvars)
             if oneapi_env is not None:
                 proc = subprocess.run(
                     [llama_server, "--help"],

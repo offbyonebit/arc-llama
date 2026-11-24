@@ -114,7 +114,7 @@ def test_doctor_reports_sycl_runtime_hint(tmp_path, monkeypatch):
     cfg.save(tmp_path / "config.toml")
     monkeypatch.setattr(diagnostics, "detect_backends", lambda _: {Backend.SYCL})
     monkeypatch.setattr(diagnostics, "detect_llama_server_backend", lambda _: Backend.SYCL)
-    monkeypatch.setattr(caps_mod, "probe_server_caps", lambda _: caps_mod.ServerCaps(probe_error=SYMBOL_ERROR))
+    monkeypatch.setattr(caps_mod, "probe_server_caps", lambda *_a, **_k: caps_mod.ServerCaps(probe_error=SYMBOL_ERROR))
     result = CliRunner().invoke(cli, ["-c", str(tmp_path / "config.toml"), "doctor"])
     assert result.exit_code == 2, result.output
     assert "sycl_runtime" in result.output
@@ -148,3 +148,99 @@ def test_linux_sycl_install_reports_the_runtime_check(tmp_path, monkeypatch, pro
         assert "needs the oneAPI 2026.2 SYCL runtime" in output
     else:
         assert "source setvars.sh" in output
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_probe_retries_with_configured_setvars_first(tmp_path, monkeypatch, configured):
+    import arc_llama.platform_checks as checks
+    import arc_llama.server_caps as caps_mod
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"fixture")
+    discovered = tmp_path / "discovered" / "setvars.sh"
+    chosen = tmp_path / "oneapi 2026.2" / ("setvars.bat" if checks.sys.platform == "win32" else "setvars.sh")
+    chosen.parent.mkdir()
+    chosen.touch()
+    sources, calls = [], []
+    monkeypatch.setattr(checks, "oneapi_runtime_env_needed", lambda: False)
+    monkeypatch.setattr(checks, "oneapi_setvars_path", lambda: discovered)
+    monkeypatch.setattr(checks, "source_setvars", lambda path, *, force=False: sources.append(path) or {"X": "1"})
+
+    def run(cmd, **kwargs):
+        calls.append(kwargs.get("env"))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=SYMBOL_ERROR)
+        return subprocess.CompletedProcess(cmd, 0, stdout="--flash-attn on off auto", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    caps = caps_mod.probe_server_caps(str(binary), oneapi_setvars=str(chosen) if configured else None)
+    assert caps.probed
+    assert sources == [chosen if configured else discovered]
+
+
+def test_configured_setvars_helps_a_missing_library(tmp_path, monkeypatch):
+    import arc_llama.platform_checks as checks
+    from arc_llama.server_caps import _env_with_oneapi
+
+    chosen = tmp_path / "setvars.sh"
+    chosen.touch()
+    monkeypatch.setattr(checks, "oneapi_runtime_env_needed", lambda: False)
+    monkeypatch.setattr(checks, "source_setvars", lambda path, *, force=False: {"FROM": str(path)})
+    assert _env_with_oneapi({}, oneapi_setvars=str(chosen)) == {"FROM": str(chosen)}
+    assert _env_with_oneapi({}, oneapi_setvars=str(tmp_path / "missing.sh")) is None
+
+
+def test_install_and_doctor_pass_the_configured_setvars(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from conftest import make_config
+
+    import arc_llama.cli_diagnostics as diagnostics
+    from arc_llama import runtime, server_caps
+    from arc_llama.arch import Backend
+    from arc_llama.cli import cli
+
+    chosen = tmp_path / "setvars.sh"
+    chosen.touch()
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"fixture")
+    cfg = make_config(tmp_path)
+    cfg.paths.llama_server = str(binary)
+    cfg.paths.oneapi_setvars = str(chosen)
+    config_path = tmp_path / "config.toml"
+    cfg.save(config_path)
+    seen = []
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr(runtime, "install_runtime", lambda **_kw: runtime.RuntimeInstallResult(
+        binary, None, "sycl", "b12395", tmp_path, False,
+    ))
+    monkeypatch.setattr(server_caps, "probe_server_caps", lambda _b, **kw: seen.append(kw) or server_caps.ServerCaps())
+    monkeypatch.setattr(diagnostics, "detect_backends", lambda _: {Backend.SYCL})
+    monkeypatch.setattr(diagnostics, "detect_llama_server_backend", lambda _: Backend.SYCL)
+    runner = CliRunner()
+    runner.invoke(cli, ["--config", str(config_path), "install-runtime", "--backend", "sycl"])
+    doctor = runner.invoke(cli, ["--config", str(config_path), "doctor"])
+    assert seen == [{"oneapi_setvars": str(chosen)}] * 2
+    assert str(chosen) in "".join(doctor.output.split())
+
+
+async def test_compatibility_check_names_the_sycl_runtime_problem(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import arc_llama.model_compatibility as compat
+    from arc_llama.config import Config, ModelConfig
+
+    compat._PROBE_CACHE.clear()
+    monkeypatch.setattr(compat, "probe_output", AsyncMock(return_value=(127, SYMBOL_ERROR)))
+    assert await compat.probe_architecture("runtime", "identity", "llama") == "sycl_runtime"
+    assert not compat._PROBE_CACHE
+
+    file = tmp_path / "m.gguf"
+    file.write_bytes(b"GGUF")
+    cfg = Config()
+    cfg.models = [ModelConfig("local", str(file), 18080, "gpu")]
+    monkeypatch.setattr(compat, "runtime_identity", lambda _: ("/runtime", "fingerprint"))
+    monkeypatch.setattr(compat, "header_architecture", lambda _: "llama")
+    result = await compat.assess_compatibility(cfg, {"name": "local"})
+    assert result["label"] == "SYCL runtime ABI mismatch"
+    assert result["status"] == "incompatible"
+    assert result["action"] == sycl_runtime_error_hint(SYMBOL_ERROR)
