@@ -124,6 +124,13 @@ def test_local_chat_preserves_supported_explicit_reasoning_format():
     assert json.loads(_local_request_body(body, "/v1/chat/completions")) == body
 
 
+def test_local_chat_forwards_template_thinking_control():
+    body = {"model": "qwen", "messages": [], "chat_template_kwargs": {"enable_thinking": False}}
+    forwarded = json.loads(_local_request_body(body, "/v1/chat/completions"))
+    assert forwarded["chat_template_kwargs"] == {"enable_thinking": False}
+    assert forwarded["reasoning_format"] == "auto"
+
+
 def test_local_chat_rejects_unknown_reasoning_format():
     from fastapi import HTTPException
 

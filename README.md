@@ -218,6 +218,14 @@ arc-llama runtime rollback               # undo the last switch
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
 
+### Thinking models
+
+The **Think** checkbox beside the chat composer remembers its choice per chat.
+It defaults on, preserving the model's configured behavior. Off asks compatible
+thinking templates for a direct answer using `enable_thinking: false`; templates
+that do not support this setting can ignore it. Work mode and model recipes are
+unaffected.
+
 ### Keeping long chats usable
 
 In the bundled chat, use **Compact chat** or `/compact` (optionally
