@@ -91,6 +91,7 @@ export async function testDashboardPluginLayoutController({ page, origin }) {
 export async function testFrontendIntegrationController({ page, origin }) {
   let integrationReads = 0;
   let authHeader = null;
+  const guidance = "On localhost, clients can use any non-empty API key string. For LAN callers, create a key with `arc-llama keys create <name>` and use it as the API key; remote keys are validated once any key exists (`arc-llama serve --lan` creates one automatically).";
   await page.addInitScript(() => {
     window.__copiedText = null;
     window.__failClipboard = false;
@@ -107,7 +108,7 @@ export async function testFrontendIntegrationController({ page, origin }) {
     authHeader = route.request().headers().authorization;
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
       base_url: "http://127.0.0.1:11437/v1",
-      api_key_guidance: "any non-empty string",
+      api_key_guidance: guidance,
       curl_example: "curl http://127.0.0.1:11437/v1/models",
       curl_example_windows: "curl.exe http://127.0.0.1:11437/v1/models",
       server: { port: 11437 },
@@ -118,7 +119,7 @@ export async function testFrontendIntegrationController({ page, origin }) {
   await page.getByRole("button", { name: "Connect a frontend" }).click();
   await page.waitForFunction(() => document.querySelector("#openwebui-url")?.textContent === "http://127.0.0.1:11437/v1");
   if (authHeader !== "Bearer browser-test-token") throw new Error("integration request omitted admin authentication");
-  if ((await page.locator("#openwebui-key-note").innerText()) !== "API Key: any non-empty string") throw new Error("API key guidance was not rendered");
+  if ((await page.locator("#openwebui-key-note").innerText()) !== `API Key: ${guidance}`) throw new Error("LAN API key guidance was not rendered as plain text");
   await page.click("#tab-generic");
   if (await page.locator("#tab-generic").getAttribute("aria-selected") !== "true" || !(await page.locator("#panel-generic").isVisible())) throw new Error("generic tab did not activate accessibly");
   await page.click("#copy-generic-url");

@@ -191,11 +191,13 @@ class TestIntegrationPayload:
 
     def test_payload_exposes_api_key_guidance_not_a_key(self, tmp_path: Path):
         payload = self._base_fields(_gguf=tmp_path / "m.gguf")
-        assert "non-empty" in payload["api_key_guidance"]
-        assert (
-            "key" not in payload["api_key_guidance"].lower()
-            or "valid" in payload["api_key_guidance"].lower()
-        )
+        guidance = payload["api_key_guidance"]
+        assert "On localhost" in guidance and "any non-empty" in guidance
+        assert "For LAN callers" in guidance
+        assert "arc-llama keys create <name>" in guidance
+        assert "validated once any key exists" in guidance
+        assert "arc-llama serve --lan" in guidance
+        assert "does not validate" not in guidance
 
     def test_upstreams_listed_without_change(self, tmp_path: Path):
         upstreams = [UpstreamConfig(name="lmstudio", url="http://127.0.0.1:1234")]
