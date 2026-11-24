@@ -201,6 +201,7 @@
           <div class="h-card-head">
             <div class="h-card-title">${ctx.escapeHtml(c.title)}</div>
             ${c.updatedAt ? `<time class="h-card-date" datetime="${new Date(c.updatedAt).toISOString()}" title="${ctx.escapeHtml(new Date(c.updatedAt).toLocaleString())}">${formatChatDate(c.updatedAt)}</time>` : ""}
+            <button class="h-rename" type="button">Rename</button>
           </div>
           <div class="h-card-meta">
             <span>${ctx.escapeHtml(c.model || "unknown")}</span>
@@ -210,15 +211,63 @@
         `;
         card.appendChild(buildMoveSelect(c));
         card.addEventListener("click", (e) => {
-          if (e.target.closest(".h-delete") || e.target.closest(".h-move")) return;
+          if (e.target.closest("button, input, select")) return;
           loadChat(c.id);
         });
+        card.querySelector(".h-rename").addEventListener("click", () => renameChat(c, card));
         card.querySelector(".h-delete").addEventListener("click", (e) => {
           e.stopPropagation();
           deleteChat(c.id);
         });
         ctx.hList.appendChild(card);
       }
+    }
+
+    function renameChat(chat, card) {
+      if (!ctx.allowChatChange()) return;
+      const title = card.querySelector(".h-card-title");
+      const button = card.querySelector(".h-rename");
+      const editor = document.createElement("input");
+      editor.className = "h-rename-input";
+      editor.value = chat.title;
+      editor.maxLength = 200;
+      editor.setAttribute("aria-label", "Chat title");
+      editor.title = "Enter to save, Escape to cancel";
+      button.disabled = true;
+      title.replaceWith(editor);
+      editor.focus();
+      editor.select();
+      function finish() {
+        editor.replaceWith(title);
+        button.disabled = false;
+        button.focus();
+      }
+      editor.addEventListener("keydown", async (event) => {
+        if (event.key !== "Enter" && event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (editor.disabled) return;
+        if (event.key === "Escape") { finish(); return; }
+        const value = editor.value.replace(/\s+/g, " ").trim();
+        editor.setCustomValidity(value ? "" : "Enter a chat title.");
+        if (!editor.reportValidity()) return;
+        editor.disabled = true;
+        try {
+          const saved = await apiRequest(`/v1/chats/${encodeURIComponent(chat.id)}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: value }),
+          });
+          chat.title = saved.title || value;
+          title.textContent = chat.title;
+          saveChats(loadChats());
+          finish();
+        } catch (error) {
+          editor.disabled = false;
+          editor.focus();
+          ctx.showError("Could not rename chat: " + error.message);
+        }
+      });
+      editor.addEventListener("input", () => editor.setCustomValidity(""));
     }
 
     async function loadChat(id) {
