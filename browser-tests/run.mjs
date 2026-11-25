@@ -1,7 +1,7 @@
 import { testGuidedDynamicCatalogStates, testGuidedFirstAnswer, testGuidedPauseRetryAndErrors, testGuidedHardwareAndSmallScreen, testWelcomePreservesDraftAndDoesNotClaimFailureAsSuccess, testWelcomeNeedsCompleteNonemptyReply, testGuidedHidesEmptyLibraryUntilSetupAnswers, testGuidedLibraryReturnsWhenSetupStatusFails, testChatWithoutModelsPointsToSetup, testWorkNavHiddenWhenWorkIsOff, testWorkNavShownWhenWorkIsOn } from "./onboarding-cases.mjs";
 import { testChatSseFraming, testChatSseErrorsKeepPartial } from "./streaming-cases.mjs";
 import { testWorkAgentInstallFlow, testWorkAgentInstallCancelKeepsSelection, testWorkOffersManagedCopyBesideOwnOpenCode, testSystemAgentsPanel, testSystemAgentsOffWithoutExperimental } from "./harness-install-cases.mjs";
-import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker, testThanksgivingTurkeyOnce } from "./paper-cases.mjs";
+import { testPaperPickerListVisibility, testPaperDiscoverNavigation, testPaperShellAndModelPicker, testPaperMobileSheets, testPaperRealClaimsAndContext, testPaperModelLoadStop, testPaperModelDelete, testPaperSystemSectionsAligned, testPaperWorkModelPicker, testThanksgivingTurkeyOnce, testAmbientOnce } from "./paper-cases.mjs";
 import { testChatPollKeepsExactBudget, testChatPollKeepsSettingsOpen, testModelPanelKeepsFocusAcrossPolls, testActionResultSurvivesNextPoll, testWorkClockKeepsApprovalFocus } from "./smooth-cases.mjs";
 import { testPerModelRuntimeSettings, testRuntimeOverridesSurviveUnrelatedEdits, testModelThinkingBudgetSettings } from "./runtime-cases.mjs";
 // Browser regression runner. Importing shared harness/cases starts no browser or server.
@@ -132,6 +132,7 @@ const TESTS = [
   ["paper-discover-navigation", testPaperDiscoverNavigation],
   ["paper-shell-model-picker", testPaperShellAndModelPicker],
   ["thanksgiving-turkey-once", testThanksgivingTurkeyOnce],
+  ["ambient-once", testAmbientOnce],
   ["paper-mobile-sheets", testPaperMobileSheets],
   ["paper-claims-context", testPaperRealClaimsAndContext],
   ["paper-model-load-stop", testPaperModelLoadStop],
