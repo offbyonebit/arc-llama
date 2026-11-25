@@ -85,7 +85,7 @@ def test_probe_replaces_undecodable_output_including_oneapi_retry(tmp_path, monk
         return run([sys.executable, "-c", program], **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(caps_mod, "_env_with_oneapi", lambda env: {**os.environ, "ONEAPI_MARK": "1"})
+    monkeypatch.setattr(caps_mod, "_env_with_oneapi", lambda env, **_kw: {**os.environ, "ONEAPI_MARK": "1"})
     caps = probe_server_caps(str(binary))
     assert caps.probed and caps.supports_flash_attn and caps.flash_attn_takes_value
     assert len(calls) == (2 if retry else 1)

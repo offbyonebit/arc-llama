@@ -320,6 +320,21 @@ async def test_failed_load_raises_with_log_tail_and_waiter_fails_fast(tmp_path, 
     assert rt.metrics["load_errors"] >= 1
 
 
+async def test_failed_load_includes_sycl_runtime_guidance(tmp_path, monkeypatch):
+    from conftest import make_config
+
+    import arc_llama.router as router_mod
+    from arc_llama.platform_checks import sycl_runtime_error_hint
+
+    error = "symbol lookup error: libsycl.so: undefined symbol: defaultAsyncHandler"
+    monkeypatch.setattr(NeverReadyServer, "tail_log", lambda self, lines=50: error)
+    monkeypatch.setattr(router_mod, "LlamaServer", NeverReadyServer)
+    rt = Router(make_config(tmp_path, single_resident=False))
+    with pytest.raises(StartupFailureError) as caught:
+        await rt.ensure_active("qwen")
+    assert caught.value.action == sycl_runtime_error_hint(error)
+
+
 async def test_failed_load_without_waiter_does_not_leak_future_exception(tmp_path, monkeypatch):
     """A lone failed starter must not trigger asyncio's unhandled-future warning."""
     from conftest import make_config

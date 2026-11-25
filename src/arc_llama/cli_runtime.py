@@ -349,7 +349,13 @@ def register_runtime_commands(
         if result.set_as_default:
             console.print("  [dim]config paths.llama_server updated.[/dim]")
         if backend == "sycl" and _platform.system() == "Linux":
+            from arc_llama.platform_checks import sycl_runtime_error_hint
+            from arc_llama.server_caps import probe_server_caps
+
+            caps = probe_server_caps(str(result.binary_path), oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None))
+            hint = sycl_runtime_error_hint(caps.probe_error)
             console.print(
+                f"  [yellow]{hint}[/yellow]" if hint else
                 "  [yellow]SYCL on Linux needs the oneAPI runtime present at run time "
                 "(source setvars.sh). Use --backend vulkan if you don't have oneAPI.[/yellow]"
             )

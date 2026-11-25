@@ -107,7 +107,7 @@ def test_older_runtime_notice_only_for_installs_older_than_the_pin(tmp_path, tag
 
     assert (notice is not None) == nudged
     if nudged:
-        assert f"you have {tag}" in notice and "arc-llama install-runtime --backend sycl" in notice
+        assert f"you have {tag}" in notice and "arc-llama runtime update --runtime-version" in notice and "--backend sycl" in notice
 
 
 def test_older_runtime_notice_ignores_unmarked_and_path_binaries(tmp_path):

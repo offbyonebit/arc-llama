@@ -20,6 +20,7 @@ import httpx
 
 from arc_llama.compatibility_io import probe_output, remote_header, remote_metadata
 from arc_llama.config import Config, ModelConfig
+from arc_llama.platform_checks import SYCL_RUNTIME_HINT, sycl_runtime_error_hint
 
 _MAX_HEADER = 262_144
 _ARCH = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -120,6 +121,8 @@ async def probe_architecture(binary: str, fingerprint: str, architecture: str, *
     returncode, output = await probe_output(binary, architecture, env=env) if env is not None else await probe_output(binary, architecture)
     if returncode == 0:
         return "unknown"
+    if sycl_runtime_error_hint(output):
+        return "sycl_runtime"  # Not cached: installing the 2026.2 runtime fixes it without a new binary.
     if re.search(
         r"unknown model architecture:\s*['\"]" + re.escape(architecture) + r"['\"]", output
     ):
@@ -246,12 +249,13 @@ async def assess_compatibility(cfg: Config, body: dict[str, Any]) -> dict[str, A
             }
         answer["architecture"] = architecture
         phase = "runtime probe"
-        if model and model.env:
+        if model and (gpu or model.env):
             import os
 
             from arc_llama.launcher import build_model_env
 
-            env = build_model_env(cfg, model, gpu) if gpu else {**os.environ, **model.env}
+            # Probe in the launch environment, so a SYCL runtime gets the oneAPI setvars serve would source.
+            env = await asyncio.to_thread(build_model_env, cfg, model, gpu) if gpu else {**os.environ, **model.env}
             outcome = await probe_architecture(binary, fingerprint, architecture, env=env)
         else:
             outcome = await probe_architecture(binary, fingerprint, architecture)
@@ -260,6 +264,14 @@ async def assess_compatibility(cfg: Config, body: dict[str, Any]) -> dict[str, A
                 **answer,
                 "detail": "The runtime changed during this check.",
                 "action": "Check again using the current runtime.",
+            }
+        if outcome == "sycl_runtime":
+            return {
+                **answer,
+                "status": "incompatible",
+                "label": "SYCL runtime ABI mismatch",
+                "detail": "This runtime could not load its SYCL libraries.",
+                "action": SYCL_RUNTIME_HINT,
             }
         if outcome == "rejected":
             return {

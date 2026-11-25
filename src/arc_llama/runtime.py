@@ -230,8 +230,9 @@ def older_runtime_notice(llama_server: str | Path) -> str | None:
         if have and pinned and int(have[1]) < int(pinned[1]) and backend in ("vulkan", "sycl"):
             return (
                 f"A newer llama.cpp runtime is available: you have {tag}, and this Arc Llama is "
-                f"tested with {LLAMA_CPP_BUILD}. Run `arc-llama install-runtime --backend {backend}` "
-                "to update. Nothing changes until you do."
+                f"tested with {LLAMA_CPP_BUILD}. Run `arc-llama runtime update --runtime-version "
+                f"{LLAMA_CPP_BUILD} --backend {backend}` to update; it keeps your current runtime "
+                "if the new one fails a test launch. Nothing changes until you do."
             )
         return None
     return None

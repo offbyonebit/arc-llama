@@ -34,6 +34,7 @@ from arc_llama.gguf_meta import (
     weight_tensor_table,
 )
 from arc_llama.launcher import LlamaServer, build_plan, resolve_split_gpus
+from arc_llama.platform_checks import sycl_runtime_error_hint
 from arc_llama.preflight import preflight_launch
 from arc_llama.recipes import KVCacheType, estimate_kv_bytes
 
@@ -788,7 +789,8 @@ class Router:
                             if exit_code is not None
                             else f"llama-server timed out while loading {target_model.name}."
                         ),
-                        "Open the retained model log, correct the reported problem, and retry.",
+                        sycl_runtime_error_hint(tail)
+                        or "Open the retained model log, correct the reported problem, and retry.",
                         details={
                             "model": target_model.name,
                             "backend": target_gpu.backend,

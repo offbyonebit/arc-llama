@@ -27,6 +27,7 @@ from arc_llama.platform_checks import (
     oneapi_setvars_path,
     parse_kernel_version,
     rebar_likely_enabled,
+    sycl_runtime_error_hint,
     user_in_groups,
 )
 from arc_llama.runtime import older_runtime_notice
@@ -242,7 +243,8 @@ def register_diagnostic_commands(
 
         # oneAPI
         console.print("\n  oneAPI:")
-        setvars = oneapi_setvars_path()
+        configured = Path(cfg.paths.oneapi_setvars).expanduser() if cfg is not None and cfg.paths.oneapi_setvars else None
+        setvars = configured if configured is not None and configured.exists() else oneapi_setvars_path()
         if setvars is not None:
             console.print(f"    setvars:     {_doctor_marker(True)}  {setvars}")
             report.add("oneapi_setvars", True, str(setvars))
@@ -271,6 +273,13 @@ def register_diagnostic_commands(
                 )
                 console.print(f"    path:        {llama_server}")
                 console.print(f"    backends:    {backend_list}")
+                if Backend.SYCL in backends:
+                    from arc_llama.server_caps import probe_server_caps
+
+                    caps = probe_server_caps(str(llama_server), oneapi_setvars=getattr(cfg.paths, "oneapi_setvars", None))
+                    hint = sycl_runtime_error_hint(caps.probe_error)
+                    if hint:
+                        report.add("sycl_runtime", False, "SYCL runtime ABI mismatch", severity="fail", hint=hint)
                 if primary is None:
                     report.add(
                         "llama_server",
