@@ -1061,3 +1061,33 @@ def test_thanksgiving_turkey_dates_and_once_per_browser():
         assert '<script src="/turkey.js?v=turkey-1"></script>' in (STATIC / page).read_text(encoding="utf-8")
     for art in ("turkey-walk.png", "cornucopia.png"):
         assert 0 < (STATIC / "assets" / art).stat().st_size < 40_000  # keep the egg tiny
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js is unavailable")
+def test_ambient_dates_and_once_per_browser():
+    """The ambient animation only runs in December, once, and never in automation."""
+    script = json.dumps(str(STATIC / "ambient.js"))
+    program = f"""
+      require('vm').runInThisContext(require('fs').readFileSync({script}, 'utf8'));
+      const A = globalThis.ArcAmbient;
+      const store = seen => ({{ getItem: () => seen }});
+      const nav = {{ webdriver: false }};
+      console.log(JSON.stringify({{
+        month: [
+          new Date(2026, 10, 30, 23, 59), new Date(2026, 11, 1, 0, 0), new Date(2026, 11, 31, 23, 59), new Date(2027, 0, 1, 0, 0),
+        ].map(A.isDecember),
+        fresh: A.shouldRun(new Date(2026, 11, 3), store(null), nav, false),
+        seen: A.shouldRun(new Date(2026, 11, 3), store('2026'), nav, false),
+        automated: A.shouldRun(new Date(2026, 11, 3), store(null), {{ webdriver: true }}, false),
+        reduced: A.shouldRun(new Date(2026, 11, 3), store(null), nav, true),
+        blocked: A.shouldRun(new Date(2026, 11, 3), {{ getItem() {{ throw new Error('no'); }} }}, nav, false),
+      }}));
+    """
+    out = json.loads(subprocess.run([NODE, "-e", program], check=True, capture_output=True, text=True).stdout)
+    assert out["month"] == [False, True, True, False]
+    assert out["fresh"] is True
+    assert not any(out[k] for k in ("seen", "automated", "reduced", "blocked"))
+    for page in ("chat.html", "index.html"):
+        html = (STATIC / page).read_text(encoding="utf-8")
+        assert '<script src="/ambient.js?v=ambient-1"></script>' in html
+        assert html.index("/turkey.js") < html.index("/ambient.js")  # it checks the November week first

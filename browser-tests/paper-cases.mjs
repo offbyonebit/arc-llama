@@ -225,3 +225,20 @@ export async function testThanksgivingTurkeyOnce({page,origin}) {
   await page.reload();await page.waitForSelector('.model-card');await page.waitForTimeout(1600);
   assert.equal(await turkey.count(),0);
 }
+
+export async function testAmbientOnce({page,origin}) {
+  await page.addInitScript(()=>Object.defineProperty(Navigator.prototype,'webdriver',{get:()=>false}));
+  await page.clock.setFixedTime(new Date(2026,11,3,12));
+  const star=page.locator('.arc-ambient-star'),train=page.locator('.arc-ambient-train'),snow=page.locator('.arc-ambient-snow');
+  await page.goto(origin);await page.waitForSelector('.model-card');
+  await star.waitFor({state:'attached'});
+  for(const n of [star,train,snow]) assert.equal(await n.evaluate(e=>getComputedStyle(e).pointerEvents),'none');
+  assert.equal(await train.locator('svg').count(),3);
+  assert.ok(await snow.locator('span').count()>0);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('arc-llama-ambient-seen')),'2026');
+  await snow.waitFor({state:'detached',timeout:12000});
+  await train.waitFor({state:'detached',timeout:4000});
+  assert.equal(await star.count(),0);
+  await page.reload();await page.waitForSelector('.model-card');await page.waitForTimeout(1600);
+  assert.equal(await star.count(),0);
+}
