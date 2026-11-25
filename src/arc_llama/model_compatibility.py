@@ -249,12 +249,13 @@ async def assess_compatibility(cfg: Config, body: dict[str, Any]) -> dict[str, A
             }
         answer["architecture"] = architecture
         phase = "runtime probe"
-        if model and model.env:
+        if model and (gpu or model.env):
             import os
 
             from arc_llama.launcher import build_model_env
 
-            env = build_model_env(cfg, model, gpu) if gpu else {**os.environ, **model.env}
+            # Probe in the launch environment, so a SYCL runtime gets the oneAPI setvars serve would source.
+            env = await asyncio.to_thread(build_model_env, cfg, model, gpu) if gpu else {**os.environ, **model.env}
             outcome = await probe_architecture(binary, fingerprint, architecture, env=env)
         else:
             outcome = await probe_architecture(binary, fingerprint, architecture)

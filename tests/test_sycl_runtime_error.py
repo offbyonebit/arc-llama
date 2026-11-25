@@ -244,3 +244,25 @@ async def test_compatibility_check_names_the_sycl_runtime_problem(tmp_path, monk
     assert result["label"] == "SYCL runtime ABI mismatch"
     assert result["status"] == "incompatible"
     assert result["action"] == sycl_runtime_error_hint(SYMBOL_ERROR)
+
+
+async def test_compatibility_probe_uses_the_launch_env_without_a_model_env(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import arc_llama.launcher as launcher
+    import arc_llama.model_compatibility as compat
+    from arc_llama.config import Config, GPUConfig, ModelConfig
+
+    file = tmp_path / "m.gguf"
+    file.write_bytes(b"GGUF")
+    cfg = Config()
+    cfg.gpus = [GPUConfig(pci_slot="0000:03:00.0", sycl_index=0, arch="battlemage")]
+    cfg.models = [ModelConfig("local", str(file), 18080, "0000:03:00.0")]
+    monkeypatch.setattr(compat, "runtime_identity", lambda _: ("/runtime", "fingerprint"))
+    monkeypatch.setattr(compat, "header_architecture", lambda _: "llama")
+    monkeypatch.setattr(launcher, "build_model_env", lambda *_a: {"FROM": "launch"})
+    probe = AsyncMock(return_value="sycl_runtime")
+    monkeypatch.setattr(compat, "probe_architecture", probe)
+    result = await compat.assess_compatibility(cfg, {"name": "local"})
+    assert probe.call_args.kwargs["env"] == {"FROM": "launch"}
+    assert result["label"] == "SYCL runtime ABI mismatch"
