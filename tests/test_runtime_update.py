@@ -406,3 +406,15 @@ def test_doctor_warns_for_current_known_bad_runtime(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["--config", str(path), "doctor"])
     assert "known-bad" in result.output and "b12244" in result.output
     assert "fall back to CPU" in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize("tag,blocked", [("b12410", False), ("b12411", True), ("b12497", True), ("b12498", False)])
+@pytest.mark.parametrize("os_name", ["linux", "windows"])
+@pytest.mark.parametrize("backend", ["vulkan", "sycl"])
+def test_server_prompt_cache_range_is_known_bad(tag, blocked, os_name, backend):
+    from arc_llama.known_bad_runtimes import known_bad_reason
+
+    reason = known_bad_reason(tag, os_name, backend)
+    assert bool(reason) is blocked
+    if blocked:
+        assert "prompt cache" in reason and "b12498" in reason
