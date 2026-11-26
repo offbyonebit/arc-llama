@@ -5,5 +5,33 @@
     "platform": "windows",
     "backend": "sycl",
     "reason": "Windows SYCL release zips b12244 through b12299 fall back to CPU (fixed in b12300 by the MKL DLL packaging)."
+  },
+  {
+    "min_tag": "b12411",
+    "max_tag": "b12497",
+    "platform": "linux",
+    "backend": "vulkan",
+    "reason": "llama-server b12411 through b12497 can reuse the wrong prompt cache for hybrid models and LoRA requests (fixed in b12498)."
+  },
+  {
+    "min_tag": "b12411",
+    "max_tag": "b12497",
+    "platform": "linux",
+    "backend": "sycl",
+    "reason": "llama-server b12411 through b12497 can reuse the wrong prompt cache for hybrid models and LoRA requests (fixed in b12498)."
+  },
+  {
+    "min_tag": "b12411",
+    "max_tag": "b12497",
+    "platform": "windows",
+    "backend": "vulkan",
+    "reason": "llama-server b12411 through b12497 can reuse the wrong prompt cache for hybrid models and LoRA requests (fixed in b12498)."
+  },
+  {
+    "min_tag": "b12411",
+    "max_tag": "b12497",
+    "platform": "windows",
+    "backend": "sycl",
+    "reason": "llama-server b12411 through b12497 can reuse the wrong prompt cache for hybrid models and LoRA requests (fixed in b12498)."
   }
 ]
