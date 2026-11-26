@@ -17,7 +17,7 @@ SYMBOL_ERROR = (
 def test_runtime_pin():
     from arc_llama.runtime_pin import LLAMA_CPP_BUILD
 
-    assert LLAMA_CPP_BUILD == "b12395"
+    assert LLAMA_CPP_BUILD == "b12635"
 
 
 @pytest.mark.parametrize("platform_name", ["linux", "win32"])

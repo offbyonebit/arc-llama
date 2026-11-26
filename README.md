@@ -202,7 +202,7 @@ curl http://127.0.0.1:11437/v1/chat/completions \
 
 ### Updating llama.cpp safely
 
-New portable installs default to llama.cpp **b12395**. If you stay on oneAPI 2026.1 for SYCL, use `--runtime-version b12243`.
+New portable installs default to llama.cpp **b12635**. If you stay on oneAPI 2026.1 for SYCL, use `--runtime-version b12243`.
 Linux SYCL needs the oneAPI 2026.2 runtime: install the versioned 2026.2 packages beside 2026.1, then point `paths.oneapi_setvars` at its `setvars.sh` if your shell already sources 2026.1.
 Windows needs nothing extra; update the Arc driver to 32.0.101.8826 or newer if SYCL shows no device.
 `arc-llama runtime update` installs the newest llama.cpp release beside your
