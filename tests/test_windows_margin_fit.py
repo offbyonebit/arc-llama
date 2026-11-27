@@ -19,6 +19,7 @@ SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 _PROBE = r"""
 import asyncio, json, subprocess, signal, sys, shutil, tempfile, ctypes, socket, threading, platform, importlib.metadata, logging, getpass, mimetypes, uuid, locale, selectors
+import gguf  # pulls in numpy, which runs OS checks at import, so load it before faking
 sys.platform = PLATFORM  # only module-level margin checks read this
 import arc_llama.recipes as recipes
 import arc_llama.router as router
