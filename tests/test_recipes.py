@@ -70,6 +70,7 @@ class TestSuggestCtx:
             vram_mb=8 * 1024,
             model_file_mb=6 * 1024,
             kv_type=KVCacheType.Q8_0,
+            safety_margin_mb=256,
             f16_bytes_per_token=f16_per_token,
         )
         # After the default compute/safety reserves, KV has exactly 1 GiB.
@@ -118,12 +119,14 @@ class TestSuggestCtx:
             model_file_mb=6 * 1024,
             kv_type=KVCacheType.F16,
             ctx_cap=1_000_000,
+            safety_margin_mb=256,
         )
         f32_ctx = suggest_ctx(
             vram_mb=8 * 1024,
             model_file_mb=6 * 1024,
             kv_type=KVCacheType.F32,
             ctx_cap=1_000_000,
+            safety_margin_mb=256,
         )
         assert f32_ctx < f16_ctx
 

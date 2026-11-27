@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -269,7 +270,7 @@ def suggest_ctx(
     kv_type: KVCacheType,
     kv_class: str = "default",
     compute_buffer_mb: int = 768,
-    safety_margin_mb: int = 256,
+    safety_margin_mb: int = 768 if sys.platform == "win32" else 256,  # match router._VRAM_SAFETY_MARGIN_MB
     ctx_cap: int = DEFAULT_CTX_CAP,
     trained_ctx: int | None = None,
     parallel: int = 1,
