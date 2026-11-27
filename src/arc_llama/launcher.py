@@ -139,6 +139,15 @@ _IS_WINDOWS = sys.platform == "win32"
 # when exercised under tests that monkeypatch _IS_WINDOWS on a Linux runner.
 _CTRL_BREAK_EVENT = getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM)
 
+
+def _has_console() -> bool:
+    """False under pythonw.exe, where children would get their own console."""
+    try:
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return True
+
+
 # Linux prctl(2) constant. We don't import a real binding — one syscall.
 _PR_SET_PDEATHSIG = 1
 
@@ -809,6 +818,10 @@ class LlamaServer:
             # without Unix-specific killpg. The constant is only defined on
             # Windows; the getattr guard keeps tests on Linux valid.
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if not _has_console():
+                # pythonw/login startup: without this Windows opens a visible
+                # console for the child, and closing it kills the model.
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
             popen_kwargs["preexec_fn"] = _preexec_isolate_and_pdeathsig
         try:
@@ -996,12 +1009,13 @@ class LlamaServer:
             # processes. CTRL_BREAK_EVENT goes to the whole CREATE_NEW_PROCESS_GROUP
             # (the closest equivalent to SIGTERM here); taskkill /T kills the whole
             # subtree, mirroring killpg on the Linux side below.
+            grace = drain_seconds
             try:
                 proc.send_signal(_CTRL_BREAK_EVENT)
             except (ProcessLookupError, OSError):
-                pass
+                grace = 0  # no shared console, so the break never arrived
             try:
-                proc.wait(timeout=drain_seconds)
+                proc.wait(timeout=grace)
             except subprocess.TimeoutExpired:
                 log.warning("[%s] CTRL_BREAK timed out, force-killing process tree", self.name)
                 try:
@@ -1009,6 +1023,7 @@ class LlamaServer:
                         ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                         capture_output=True,
                         timeout=drain_seconds,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                 except (subprocess.TimeoutExpired, OSError) as exc:
                     if proc.poll() is None:

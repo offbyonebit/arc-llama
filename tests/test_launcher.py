@@ -725,6 +725,8 @@ class TestWindowsLifecycle:
         from arc_llama import launcher as launcher_mod
 
         monkeypatch.setattr(launcher_mod, "_IS_WINDOWS", True)
+        # Pin a console parent: a CI runner without one would add CREATE_NO_WINDOW.
+        monkeypatch.setattr(launcher_mod, "_has_console", lambda: True)
         plan = build_plan(
             Config(paths=type("P", (), {"llama_server": "/bin/llama-server"})()),
             ModelConfig(name="m", path="/m.gguf", port=18080, gpu_pci_slot="00:00.0"),

@@ -218,6 +218,29 @@ arc-llama runtime rollback               # undo the last switch
 Stop `arc-llama serve` first if it has a model loaded; the canary respects the
 single-resident GPU lock.
 
+### Starting at Windows login
+
+Use the current Python environment and config to register login startup:
+
+```bash
+arc-llama autostart enable
+arc-llama autostart status
+arc-llama autostart disable
+```
+
+The task starts `serve` at your next login for your user, with no elevated run
+level or password. `--config PATH` before `autostart` selects another config;
+each user/config pair has its own task. Status shows the registered command.
+Disable removes only this command's task; a server already running continues
+until stopped. Task Scheduler keeps the startup command inspectable without a
+Startup-folder shortcut.
+
+Startup prefers the current environment's `pythonw.exe`. If it is absent,
+Windows PowerShell starts the same Python with a hidden window and waits for
+the server. Output goes to the log path printed by enable, under the state
+directory's `autostart` folder. Relative paths use the config folder when it
+exists. On Linux these commands print the `arc-llama systemd` alternative.
+
 ### Keeping long chats usable
 
 In the bundled chat, use **Compact chat** or `/compact` (optionally
