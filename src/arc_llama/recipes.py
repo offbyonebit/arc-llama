@@ -35,6 +35,18 @@ class KVCacheType(str, Enum):
     Q4_0 = "q4_0"
 
 
+# ggml block storage relative to 32 f16 elements (64 bytes).
+KV_TYPE_F16_SCALE: dict[KVCacheType, float] = {
+    KVCacheType.F32: 2.0,
+    KVCacheType.F16: 1.0,
+    KVCacheType.Q8_0: 0.53125,
+    KVCacheType.Q5_1: 0.375,
+    KVCacheType.Q5_0: 0.34375,
+    KVCacheType.Q4_1: 0.3125,
+    KVCacheType.Q4_0: 0.28125,
+}
+
+
 # Approx KV bytes per token at f16 for a few well-known architectures.
 # Numbers are tuned against `memory_breakdown_print` measurements on a real
 # Battlemage B60 stack. They're upper bounds for sizing; actual usage with
@@ -244,15 +256,7 @@ def estimate_kv_bytes(
         if f16_bytes_per_token is not None and f16_bytes_per_token > 0
         else KV_PER_TOKEN_F16_BYTES.get(kv_class, KV_PER_TOKEN_F16_BYTES["default"])
     )
-    scale = {
-        KVCacheType.F32: 2.0,
-        KVCacheType.F16: 1.0,
-        KVCacheType.Q8_0: 0.53125,
-        KVCacheType.Q5_1: 0.375,
-        KVCacheType.Q5_0: 0.375,
-        KVCacheType.Q4_1: 0.3125,
-        KVCacheType.Q4_0: 0.3125,
-    }.get(kv_type, 1.0)
+    scale = KV_TYPE_F16_SCALE.get(kv_type, 1.0)
     return int(ctx * f16_per_token * scale)
 
 
@@ -292,15 +296,7 @@ def suggest_ctx(
         if f16_bytes_per_token is not None and f16_bytes_per_token > 0
         else KV_PER_TOKEN_F16_BYTES.get(kv_class, KV_PER_TOKEN_F16_BYTES["default"])
     )
-    scale = {
-        KVCacheType.F32: 2.0,
-        KVCacheType.F16: 1.0,
-        KVCacheType.Q8_0: 0.53125,
-        KVCacheType.Q5_1: 0.375,
-        KVCacheType.Q5_0: 0.375,
-        KVCacheType.Q4_1: 0.3125,
-        KVCacheType.Q4_0: 0.3125,
-    }.get(kv_type, 1.0)
+    scale = KV_TYPE_F16_SCALE.get(kv_type, 1.0)
     if parallel < 1:
         parallel = 1
     bytes_per_token = int(f16_per_token * scale) * parallel

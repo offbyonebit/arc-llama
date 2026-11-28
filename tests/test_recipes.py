@@ -35,6 +35,23 @@ def test_reasoning_budget_argv_and_dict_round_trip(budget):
 
 
 class TestEstimateKvBytes:
+    @pytest.mark.parametrize(
+        ("kv_type", "scale"),
+        [
+            (KVCacheType.F32, 2.0),
+            (KVCacheType.F16, 1.0),
+            (KVCacheType.Q8_0, 0.53125),
+            (KVCacheType.Q5_1, 0.375),
+            (KVCacheType.Q5_0, 0.34375),
+            (KVCacheType.Q4_1, 0.3125),
+            (KVCacheType.Q4_0, 0.28125),
+        ],
+    )
+    def test_block_storage_scale(self, kv_type, scale):
+        assert estimate_kv_bytes(32768, kv_type, f16_bytes_per_token=1024) == (
+            32768 * 1024 * scale
+        )
+
     def test_default_f16(self):
         # 70 KiB/token at f16 for default class
         assert estimate_kv_bytes(1024, KVCacheType.F16, "default") == 1024 * 70 * 1024
@@ -64,6 +81,22 @@ class TestEstimateKvBytes:
 
 
 class TestSuggestCtx:
+    @pytest.mark.parametrize(
+        ("kv_type", "expected"),
+        [(KVCacheType.Q4_0, 57344), (KVCacheType.Q5_0, 45056)],
+    )
+    def test_quantized_block_sizes_use_remaining_vram(self, kv_type, expected):
+        ctx = suggest_ctx(
+            vram_mb=8192,
+            model_file_mb=6144,
+            kv_type=kv_type,
+            f16_bytes_per_token=64 * 1024,
+            safety_margin_mb=256,
+        )
+        assert ctx == expected
+        assert estimate_kv_bytes(ctx, kv_type, f16_bytes_per_token=64 * 1024) <= 1024**3
+        assert estimate_kv_bytes(ctx + 4096, kv_type, f16_bytes_per_token=64 * 1024) > 1024**3
+
     def test_q8_context_accounts_for_block_scale_bytes(self):
         f16_per_token = 64 * 1024
         ctx = suggest_ctx(
