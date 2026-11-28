@@ -74,6 +74,7 @@ class TestSuggestCtx:
             model_file_mb=6144,
             kv_type=kv_type,
             f16_bytes_per_token=64 * 1024,
+            safety_margin_mb=256,
         )
         assert ctx == expected
         assert estimate_kv_bytes(ctx, kv_type, f16_bytes_per_token=64 * 1024) <= 1024**3
